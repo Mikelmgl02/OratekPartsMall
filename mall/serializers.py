@@ -2,7 +2,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 from drf_spectacular.utils import extend_schema_field
-from .models import Account, Part, PartCode, StockEntry, SupplierItem
+from .models import Account, Membership, Part, PartCode, StockEntry, SupplierItem
 from .media_serializers import PartImageSerializer
 
 class SignupSerializer(serializers.Serializer):
@@ -28,9 +28,14 @@ class AccountSerializer(serializers.ModelSerializer):
     def get_capabilities(self, obj) -> list[str]:
         return sorted({role.capability for role in obj.roles.all()})
     roles = serializers.SlugRelatedField(many=True, read_only=True, slug_field='code')
+    permission = serializers.SerializerMethodField()
+    @extend_schema_field(serializers.ChoiceField(choices=Membership._meta.get_field('permission').choices))
+    def get_permission(self, obj):
+        # Only the caller's own membership, prefetched by AccountList; never other members' permissions.
+        return obj.own_memberships[0].permission
     class Meta:
         model = Account
-        fields = ['id', 'name', 'roles', 'capabilities']
+        fields = ['id', 'name', 'roles', 'capabilities', 'permission']
 
 class PartCodeSerializer(serializers.ModelSerializer):
     kind = serializers.CharField(read_only=True)

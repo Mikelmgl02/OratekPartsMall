@@ -6,21 +6,12 @@ import { AgGridReact, type CustomCellEditorProps, type CustomCellRendererProps }
 import type { ColDef, GetRowIdParams, GridReadyEvent, ValueSetterParams } from 'ag-grid-community';
 import { gridLocale, motionGridTheme } from '@/lib/ag-grid';
 import type { Deal } from '@/lib/deal-types';
+import { decimal, moneyFormatter, priceCents, quantityValue } from '@/lib/money';
 import { UppercaseTextarea } from './uppercase-field';
 
 type QuoteRow = { order_line_id: string; codigo: string; description: string; requested: number; quantity: string; unit_price: string };
 const rowId = ({ data }: GetRowIdParams<QuoteRow>) => data.order_line_id;
 
-function quantityValue(value: string) {
-  return /^\d{1,4}$/.test(value.trim()) ? Number(value) : null;
-}
-function priceCents(value: string): bigint | null {
-  const normalized = value.trim().replace(',', '.');
-  if (!/^\d{1,10}(?:\.\d{1,2})?$/.test(normalized)) return null;
-  const [whole, fraction = ''] = normalized.split('.');
-  return BigInt(whole) * BigInt(100) + BigInt(fraction.padEnd(2, '0'));
-}
-function decimal(cents: bigint) { return `${cents / BigInt(100)}.${String(cents % BigInt(100)).padStart(2, '0')}`; }
 function rowCents(row: QuoteRow) { return BigInt(quantityValue(row.quantity) ?? 0) * (priceCents(row.unit_price) ?? BigInt(0)); }
 
 function NumericEditor({ value, onValueChange, data, colDef, stopEditing, api, node, column }: CustomCellEditorProps<QuoteRow, string>) {
@@ -49,10 +40,7 @@ export default function QuotationEditor({ deal, disabled, onSend }: { deal: Deal
   const [currency, setCurrency] = useState(deal.quotation?.currency || 'USD');
   const [terms, setTerms] = useState(deal.quotation?.terms || '');
   const [error, setError] = useState('');
-  const formatMoney = useMemo(() => {
-    const formatter = new Intl.NumberFormat('es-PA', { style: 'currency', currency });
-    return (cents: bigint) => formatter.formatToParts(cents / BigInt(100)).map(part => part.type === 'fraction' ? String(cents % BigInt(100)).padStart(2, '0') : part.value).join('');
-  }, [currency]);
+  const formatMoney = useMemo(() => moneyFormatter(currency), [currency]);
   const total = rows.reduce((sum, row) => sum + rowCents(row), BigInt(0));
   const completed = rows.filter(row => {
     const quantity = quantityValue(row.quantity);

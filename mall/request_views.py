@@ -93,6 +93,12 @@ def request_summary(row):
             'quotation_currency': row.quotation_currency}
 
 
+def supplier_request_summary(row):
+    """Supplier list rows only: private draft and availability badges never reach the client's views or DealCommand results."""
+    return {**request_summary(row), 'draft_state': getattr(row, 'draft_state', None),
+            'availability_alert': getattr(row, 'availability_alert', None)}
+
+
 def request_detail(row):
     from .deal_views import deal_data
     return {**request_summary(row), **deal_data(row), 'notes': row.notes,
@@ -202,7 +208,8 @@ class ClientPartRequestState(APIView):
 def submission_result(submission):
     if submission.result is not None:
         return submission.result
-    requests = submission.requests.annotate(line_count=Count('lines'), unit_count=Coalesce(Sum('lines__quantity'), 0)).order_by('supplier_name', 'id')
+    requests = submission.requests.annotate(line_count=Count('lines'), unit_count=Coalesce(Sum('lines__quantity'), 0),
+                                            **quote_summary_fields()).order_by('supplier_name', 'id')
     return {'submission_id': str(submission.submission_id), 'created_at': submission.created_at.isoformat(),
             'requests': [{'id': str(row.pk), 'reference': row.reference,
                           'supplier': {'id': str(row.supplier_id), 'name': row.supplier_name},
@@ -329,7 +336,7 @@ class AccountRequests(APIView):
                                | Q(pk__in=matching_lines.values('request_id')))
         paginator = PageNumberPagination()
         page = paginator.paginate_queryset(rows, request, view=self)
-        return paginator.get_paginated_response([request_summary(row) for row in page])
+        return paginator.get_paginated_response([supplier_request_summary(row) for row in page])
 
     @extend_schema(request=RequestSubmission, responses=OpenApiTypes.OBJECT,
                    description='Envía una solicitud separada a cada proveedor. No reserva ni descuenta existencias.')

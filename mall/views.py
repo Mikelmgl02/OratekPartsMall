@@ -1,5 +1,5 @@
 from django.db import transaction
-from django.db.models import F, Q
+from django.db.models import F, Prefetch, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, permissions, status
@@ -19,6 +19,18 @@ def account_for(user, account_id, capability=None):
     if capability and not account.roles.filter(capability=capability).exists():
         raise PermissionDenied('La cuenta no tiene el rol requerido.')
     return account
+
+PERMISSION_RANK = {'staff': 0, 'manager': 1, 'owner': 2}
+
+def membership_for(user, account_id, capability, minimum=None):
+    """Like account_for, plus the caller's own membership; non-members (superusers included) get 404."""
+    membership = get_object_or_404(Membership.objects.select_related('account'), account_id=account_id, account__active=True, user=user)
+    account = membership.account
+    if capability and not account.roles.filter(capability=capability).exists():
+        raise PermissionDenied('La cuenta no tiene el rol requerido.')
+    if minimum and PERMISSION_RANK.get(membership.permission, -1) < PERMISSION_RANK[minimum]:
+        raise PermissionDenied('Tu permiso en la cuenta no permite esta acción.')
+    return account, membership
 
 class SignupView(APIView):
     permission_classes = [permissions.AllowAny]
@@ -50,7 +62,8 @@ class LogoutView(APIView):
 class AccountList(generics.ListAPIView):
     serializer_class = AccountSerializer
     def get_queryset(self):
-        return Account.objects.filter(memberships__user=self.request.user, active=True).prefetch_related('roles').order_by('name', 'id')
+        own = Prefetch('memberships', queryset=Membership.objects.filter(user=self.request.user), to_attr='own_memberships')
+        return Account.objects.filter(memberships__user=self.request.user, active=True).prefetch_related('roles', own).order_by('name', 'id')
 
 def catalog_parts(search=''):
     query = Part.objects.filter(active=True, merged_into__isnull=True)

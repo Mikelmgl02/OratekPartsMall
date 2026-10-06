@@ -1,8 +1,9 @@
 export type Page<T> = { count: number; next: string | null; previous: string | null; results: T[] };
-export type Account = { id: string; name: string; roles: string[]; capabilities: string[] };
+export type MembershipPermission = 'owner' | 'manager' | 'staff';
+export type Account = { id: string; name: string; roles: string[]; capabilities: string[]; permission?: MembershipPermission };
 export type SessionUser = { id: number; username: string; first_name: string; last_name: string; is_superuser: boolean };
 export type AdminSection = 'inventory' | 'alternates' | 'accounts' | 'users' | 'invitations' | 'analytics' | 'templates' | 'applications';
-export type Member = { id: number; user: number; account: string; permission: 'owner' | 'manager' | 'staff'; username: string; email: string; account_name: string; user_active: boolean; permission_label: string };
+export type Member = { id: number; user: number; account: string; permission: MembershipPermission; username: string; email: string; account_name: string; user_active: boolean; permission_label: string };
 export type ManagedAccount = { id: string; name: string; active: boolean; roles: string[]; member_count: number; members: Member[] };
 export type ManagedUser = SessionUser & { email: string; is_active: boolean; is_staff: boolean; date_joined: string; memberships: Member[] };
 export type ManagedRole = { code: string; name: string; capability: string };
@@ -106,6 +107,10 @@ function validationMessage(value: unknown): string {
 export class RequestError extends Error {
   constructor(message: string, public status: number) { super(message); }
 }
+// Keeps the whole error body (exceptions, conflicts, current draft) for callers that recover from 409s.
+export class ApiError extends RequestError {
+  constructor(message: string, status: number, public detail: string, public body: unknown) { super(message, status); }
+}
 export async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const headers = new Headers(options?.headers);
   if (!(options?.body instanceof FormData)) headers.set('Content-Type', 'application/json');
@@ -114,8 +119,8 @@ export async function request<T>(url: string, options?: RequestInit): Promise<T>
   let data;
   try { data = await response.json(); } catch { throw new Error('No se pudo cargar esta página. Inténtalo de nuevo.'); }
   if (!response.ok) {
-    const message = typeof data.detail === 'string' ? data.detail : validationMessage(data);
-    throw new RequestError(message || 'Ocurrió un error. Inténtalo de nuevo.', response.status);
+    const message = (typeof data.detail === 'string' ? data.detail : validationMessage(data)) || 'Ocurrió un error. Inténtalo de nuevo.';
+    throw new ApiError(message, response.status, message, data);
   }
   return data;
 }

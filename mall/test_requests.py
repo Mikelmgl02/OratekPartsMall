@@ -1,5 +1,6 @@
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from decimal import Decimal
 from unittest import skipUnless
 
 from django.db import close_old_connections, connection
@@ -222,6 +223,32 @@ class SupplierRequestWorkflowTests(APITestCase):
         # Replaying a successful, unchanged submission does not create a new
         # request or revalidate later stock against the historical snapshot.
         self.assertEqual(self.submit(data).data, response.data)
+        self.assertEqual(ClientRequestSubmission.objects.count(), 1)
+
+    def test_replay_of_unfrozen_submission_reports_the_latest_quotation_summary(self):
+        data = self.payload([(self.item_a, 3)])
+        order = SupplierRequest.objects.get(pk=self.submit(data).data['requests'][0]['id'])
+        # A submission without a frozen receipt is rebuilt from its live orders when the same send is replayed.
+        ClientRequestSubmission.objects.update(result=None)
+        receipt = {'id': str(order.pk), 'reference': order.reference, 'supplier': {'id': str(self.supplier_a.pk), 'name': 'PROVEEDOR A'},
+                   'line_count': 1, 'unit_count': 3, 'quotation_revision': None, 'quoted_unit_count': None,
+                   'quotation_total': None, 'quotation_currency': None}
+        self.assertEqual(self.submit(data).data['requests'], [receipt])
+        self.client.force_authenticate(self.seller_a)
+        self.client.post(f'{self.url(self.supplier_a)}{order.pk}/review/', {}, format='json')
+        order.refresh_from_db()
+        quoted = self.client.post(f'/api/v1/accounts/{self.supplier_a.pk}/deals/{order.pk}/actions/', {
+            'operation_id': str(uuid.uuid4()), 'expected_version': order.version, 'action': 'quote', 'currency': 'PAB',
+            'lines': [{'order_line_id': str(order.lines.get().pk), 'quantity': 2, 'unit_price': '12.34'}]}, format='json')
+        self.assertEqual(quoted.status_code, 200)
+        self.client.force_authenticate(self.buyer)
+        replay = self.submit(data)
+        self.assertEqual(replay.status_code, 200)
+        [row] = replay.data['requests']
+        # SQLite renders subquery decimals with extra digits; PostgreSQL keeps the column scale.
+        self.assertEqual(Decimal(row.pop('quotation_total')), Decimal('24.68'))
+        receipt.pop('quotation_total')
+        self.assertEqual(row, {**receipt, 'quotation_revision': 1, 'quoted_unit_count': 2, 'quotation_currency': 'PAB'})
         self.assertEqual(ClientRequestSubmission.objects.count(), 1)
 
     def test_submission_id_is_scoped_to_client_account(self):

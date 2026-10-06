@@ -71,7 +71,13 @@ SPECTACULAR_SETTINGS = {"TITLE": "MotionPartes API", "VERSION": "0.1.0", "COMPON
     "SupplierItemSourceEnum": [("upload", "Carga manual"), ("apiag", "apiag-cloud")], "InventorySourceEnum": ["upload", "apiag"],
     "ReferenceKindEnum": ["alias", "oem", "manufacturer"],
     "DealActionEnum": ["quote", "accept", "request_adjustment", "return_quote"], "MatchingReviewActionEnum": ["approve", "dismiss"],
-    "MatchingStateEnum": ["running", "retrying", "waiting_import", "queued", "completed", "idle"]}}
+    "MatchingStateEnum": ["running", "retrying", "waiting_import", "queued", "completed", "idle"],
+    # Private pricing (supplier-only). MembershipPermissionEnum carries the Membership.permission labels.
+    "CurrencyEnum": ["USD", "PAB"], "MembershipPermissionEnum": [("owner", "Propietario"), ("manager", "Administrador"), ("staff", "Empleado")],
+    "SupplierPolicyEnum": ["confirm", "block"], "PriceSourceEnum": ["engine", "previous", "manual", "none"],
+    "QuantitySourceEnum": ["requested", "available", "previous", "manual", "assistant"], "PricingRuleScopeEnum": ["all", "client"],
+    "PricingRuleTargetEnum": ["all", "line", "brand", "item"], "PricingRuleKindEnum": ["discount", "net_price"],
+    "ExceptionSeverityEnum": ["block", "confirm", "info"], "QuoteDraftStatusEnum": ["editing", "review_requested"]}}
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY') or os.getenv('GEM_API_KEY', '')
 GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-3.5-flash-lite')
 CATALOG_LOW_STOCK_THRESHOLD = max(1, int(os.getenv('CATALOG_LOW_STOCK_THRESHOLD', '5')))
