@@ -22,8 +22,9 @@ from mall.catalog_grouping_suggestions import CatalogGroupingList, CatalogGroupi
 from mall.supplier_import import SupplierInventoryImport, SupplierInventoryImportTemplate, SupplierInventoryImportJobView, SupplierInventoryImportErrors
 from mall.request_views import AccountRequests, ClientSentRequests, ClientSentRequestDetail, ClientPartRequestState, SupplierRequestDetail, SupplierRequestReview
 from mall.deal_views import DealActions, DealMessages
-from mall.pricing_views import PricingSettingsView
-from mall.quote_drafts import QuotationTrace, QuoteDraftDiscard, QuoteDraftView
+from mall.pricing_views import (PriceHistory, PriceListDetail, PriceListsView, PricesExport, PricesView, PricingHistory,
+                               PricingSettingsView)
+from mall.quote_drafts import QuotationTrace, QuoteDraftDiscard, QuoteDraftReprice, QuoteDraftView
 from .health import health
 
 class LoginView(ObtainAuthToken):
@@ -87,10 +88,17 @@ urlpatterns = [
     path('api/v1/accounts/<uuid:account_id>/requests/<uuid:pk>/review/', SupplierRequestReview.as_view()),
     path('api/v1/accounts/<uuid:account_id>/requests/<uuid:pk>/draft/', QuoteDraftView.as_view()),
     path('api/v1/accounts/<uuid:account_id>/requests/<uuid:pk>/draft/discard/', QuoteDraftDiscard.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/requests/<uuid:pk>/draft/reprice/', QuoteDraftReprice.as_view()),
     path('api/v1/accounts/<uuid:account_id>/requests/<uuid:pk>/quotations/<uuid:quotation_id>/trace/', QuotationTrace.as_view()),
     path('api/v1/accounts/<uuid:account_id>/deals/<uuid:pk>/actions/', DealActions.as_view()),
     path('api/v1/accounts/<uuid:account_id>/deals/<uuid:pk>/messages/', DealMessages.as_view()),
     path('api/v1/accounts/<uuid:account_id>/pricing/settings/', PricingSettingsView.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/pricing/history/', PricingHistory.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/price-lists/', PriceListsView.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/price-lists/<uuid:pk>/', PriceListDetail.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/prices/', PricesView.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/prices/export/', PricesExport.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/prices/<uuid:item_id>/history/', PriceHistory.as_view()),
     path('api/v1/catalog/', views.CatalogList.as_view()),
     path('api/v1/catalog/<uuid:pk>/technical/', CatalogTechnicalDetail.as_view()),
     path('api/v1/catalog/<uuid:part_id>/suppliers/', views.OffersView.as_view()),

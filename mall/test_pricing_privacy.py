@@ -3,17 +3,23 @@
 Each slice that stores private pricing data seeds it in seed_private_markers(); the canary then calls every
 client-reachable endpoint and fails if any marker leaks. The key-set pins fail on any new client-facing key.
 """
+import io
 import json
+import logging
 import uuid
+from decimal import Decimal
 
 from django.contrib import admin
+from openpyxl import load_workbook
 from rest_framework.test import APITestCase
 
 from . import test_deals as deal_tests
 from . import test_requests as request_tests
 from .management import ManagedInventorySerializer
-from .models import SupplierItem, User
-from .pricing_models import PricingAuditEvent, SupplierPricingSettings, record_pricing_event
+from .models import Membership, SupplierItem, User
+from .pricing_models import (PriceChange, PriceList, PriceListEntry, PricingAuditEvent, SupplierItemPricing, SupplierPricingSettings,
+                             record_pricing_event)
+from .pricing_services import set_prices
 from .quote_draft_models import DealQuotationAudit, DealQuotationDraft, DealQuotationDraftLine, DealQuotationLineAudit
 from .request_models import DealCommand, SupplierRequest
 from .serializers import SupplierItemSerializer
@@ -27,7 +33,19 @@ QUOTATION_LINE_KEYS = {'order_line_id', 'codigo', 'sku', 'description', 'quantit
 EVENT_KEYS = {'id', 'kind', 'description', 'account_name', 'actor_name', 'created_at', 'quotation_id'}
 CLIENT_LINE_KEYS = {'id', 'part_id', 'sku', 'name', 'codigo', 'brand', 'description', 'quantity'}
 SUPPLIER_LINE_KEYS = CLIENT_LINE_KEYS | {'supplier_item_id', 'supplier_invent_id', 'stock'}
-MARKERS = ['777.77', '666.66', '555.55', 'SECRETO-REGLA', 'SECRETO-PERFIL', 'SECRETO-BORRADOR', 'SECRETO-IA', 'SECRETO-AUDITORIA']
+MARKERS = ['777.77', '666.66', '555.55', 'SECRETO-REGLA', 'SECRETO-PERFIL', 'SECRETO-BORRADOR', 'SECRETO-IA', 'SECRETO-AUDITORIA',
+           'SECRETO-LINEA', 'LISTA-SECRETA', 'SECRETA_X']
+XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+
+class LogCapture(logging.Handler):
+    """Every log record (INFO and above) emitted while the canary runs; SQL debug logging is not application logging."""
+    def __init__(self):
+        super().__init__(logging.INFO)
+        self.lines = []
+
+    def emit(self, record):
+        self.lines.append(f'{record.name} {record.getMessage()} {record.args!r}')
 
 
 class PricingPrivacyTests(APITestCase):
@@ -51,14 +69,23 @@ class PricingPrivacyTests(APITestCase):
         return response
 
     def seed_private_markers(self, order):
-        """Later slices add real rows here: prices and floors (S3), net rules and profiles (S5), assistant output (S7).
-        Drafts only exist while the supplier prepares a revision, so seed_private_draft() adds one during the adjustment."""
+        """Real private rows: price lists, entries, LINEA, floors and their history (S3); net rules and profiles arrive with S5 and
+        assistant output with S7. Drafts only exist while the supplier prepares a revision, so seed_private_draft() adds one later."""
         SupplierPricingSettings.objects.create(supplier=self.supplier_a, default_currency='PAB', config_min_permission='manager',
                                                accept_shortfall_policy='allow', assistant_enabled=True, updated_by=self.seller_a)
+        Membership.objects.filter(user=self.seller_a, account=self.supplier_a).update(permission='manager')
+        default = PriceList.objects.create(supplier=self.supplier_a, code='SECRETA_X', name='LISTA-SECRETA', currency='USD', is_default=True, created_by=self.seller_a)
+        set_prices(self.supplier_a, self.seller_a, changes=[{'list_id': default.pk, 'supplier_item_id': item.pk, 'unit_price': Decimal('777.77'), 'expected_revision': None}
+                                                            for item in (self.item_a, self.item_a2)],
+                   items=[{'supplier_item_id': self.item_a.pk, 'discount_group': 'SECRETO-LINEA', 'floor_price': Decimal('666.66'), 'expected_revision': None}],
+                   reference='op:SECRETO-AUDITORIA')
+        self.assertEqual((PriceListEntry.objects.count(), SupplierItemPricing.objects.count(), PriceChange.objects.count()), (2, 1, 4))
         record_pricing_event(self.supplier_a, self.seller_a, 'prices_edited', client=self.client_account, order=order, object_id='SECRETO-AUDITORIA',
                              payload={'list_price': '777.77', 'floor_price': '666.66', 'net_price': '555.55', 'rule': 'SECRETO-REGLA',
                                       'profile_note': 'SECRETO-PERFIL', 'draft_note': 'SECRETO-BORRADOR', 'assistant': 'SECRETO-IA'})
-        stored = json.dumps(list(PricingAuditEvent.objects.values('object_id', 'payload')))
+        stored = json.dumps([list(PricingAuditEvent.objects.values('object_id', 'payload')), list(PriceList.objects.values('code', 'name')),
+                             list(PriceChange.objects.values('new_value', 'new_text')), list(SupplierItemPricing.objects.values('discount_group', 'floor_price'))],
+                            default=str)
         self.assertTrue(all(marker in stored for marker in MARKERS), 'The canary must seed every marker it looks for.')
 
     def seed_private_draft(self, order):
@@ -77,6 +104,13 @@ class PricingPrivacyTests(APITestCase):
         DealQuotationLineAudit.objects.filter(line__quotation_id=quotation['id']).update(explanation={'list_price': '777.77', 'rule': 'SECRETO-REGLA'})
         self.assertEqual(DealQuotationLineAudit.objects.filter(line__quotation_id=quotation['id']).count(), 2)
 
+    def pricing_paths(self, account):
+        """The supplier's private pricing endpoints, plus the same endpoints under the caller's own account."""
+        private, own = f'/api/v1/accounts/{self.supplier_a.pk}', f'/api/v1/accounts/{account.pk}'
+        return [f'{private}/pricing/settings/', f'{private}/price-lists/', f'{private}/prices/', f'{private}/prices/?status=below_floor',
+                f'{private}/prices/{self.item_a.pk}/history/', f'{private}/prices/export/', f'{private}/pricing/history/',
+                f'{own}/price-lists/', f'{own}/prices/', f'{own}/prices/{self.item_a.pk}/history/', f'{own}/prices/export/', f'{own}/pricing/history/']
+
     def calls(self, user, account, order, *, writes=()):
         self.client.force_authenticate(user)
         account_url, part = f'/api/v1/accounts/{account.pk}', self.part.pk
@@ -84,24 +118,57 @@ class PricingPrivacyTests(APITestCase):
             '/api/v1/accounts/', '/api/v1/catalog/?include_facets=1', f'/api/v1/catalog/?search={self.part.sku}&include_facets=1',
             f'/api/v1/catalog/{part}/technical/', f'/api/v1/catalog/{part}/suppliers/', '/api/v1/wishlist/', '/api/v1/wishlist/state/',
             f'{account_url}/catalog/{part}/request-state/', f'{account_url}/sent-requests/', f'{account_url}/sent-requests/{order.pk}/',
-            f'{account_url}/requests/', f'{account_url}/requests/{order.pk}/', self.messages(order, account),
-            f'/api/v1/accounts/{self.supplier_a.pk}/pricing/settings/', *self.trace_paths]}
+            f'{account_url}/requests/', f'{account_url}/requests/{order.pk}/', self.messages(order, account), *self.pricing_paths(account), *self.trace_paths]}
         responses[f'PUT /api/v1/wishlist/{part}/'] = self.client.put(f'/api/v1/wishlist/{part}/')
         responses['POST messages'] = self.client.post(self.messages(order, account), {'message_id': str(uuid.uuid4()), 'body': 'HOLA'}, format='json')
+        responses['POST analytics'] = self.client.post('/api/v1/analytics/events/', {
+            'event_id': str(uuid.uuid4()), 'visit_id': str(uuid.uuid4()), 'account_id': str(account.pk), 'kind': 'basket_add', 'part_id': str(part),
+            'supplier_item_id': str(self.item_a.pk), 'quantity': 1}, format='json')
+        private = f'/api/v1/accounts/{self.supplier_a.pk}'
+        responses['POST prices'] = self.client.post(f'{private}/prices/', {'changes': [{'list_id': str(PriceList.objects.get().pk), 'supplier_item_id': str(self.item_a.pk),
+                                                                                         'unit_price': '1.00', 'expected_revision': 1}]}, format='json')
+        responses['POST price-lists'] = self.client.post(f'{private}/price-lists/', {'code': 'ROBADA', 'name': 'ROBADA'}, format='json')
         for name, call in writes:
             responses[name] = call()
         return responses
 
+    def oratek_calls(self):
+        """Oratek superusers have no supplier membership: management and analytics never show supplier prices (decision D5)."""
+        self.client.force_authenticate(self.root)
+        return {path: self.client.get(path) for path in [
+            '/api/v1/management/inventory/', '/api/v1/management/catalog/', '/api/v1/management/analytics/', f'/api/v1/management/accounts/{self.supplier_a.pk}/',
+            f'/api/v1/management/inventory/{self.item_a.pk}/', *self.pricing_paths(self.supplier_a)]}
+
     def assert_no_markers(self, label, responses):
         for path, response in responses.items():
             self.assertLess(response.status_code, 500, f'{label} {path}')
-            body = response.content.decode()
+            if response.get('Content-Type') == XLSX_TYPE:
+                body = json.dumps([[cell.value for cell in row] for sheet in load_workbook(io.BytesIO(response.content)) for row in sheet.iter_rows()], default=str)
+            else:
+                body = response.content.decode()
             for marker in MARKERS:
                 self.assertNotIn(marker, body, f'{label} {path} filtró {marker}')
 
     def test_private_pricing_markers_never_reach_clients_or_competitors(self):
+        capture, root = LogCapture(), logging.getLogger()
+        level = root.level
+        root.addHandler(capture)
+        root.setLevel(logging.INFO)
+        try:
+            self.canary()
+        finally:
+            root.removeHandler(capture)
+            root.setLevel(level)
+        for marker in MARKERS:
+            self.assertNotIn(marker, '\n'.join(capture.lines), f'Los registros filtraron {marker}')
+
+    def canary(self):
         order = self.order()
         self.seed_private_markers(order)
+        # The supplier itself does see its private data (so the markers are real and reachable).
+        self.client.force_authenticate(self.seller_a)
+        own = {path: self.client.get(path).content.decode() for path in self.pricing_paths(self.supplier_a)[1:4]}
+        self.assertTrue(all(marker in ''.join(own.values()) for marker in ['777.77', '666.66', 'SECRETO-LINEA', 'SECRETA_X']))
         self.review(order)
         quote = self.quote(order).data['quotation']
         self.seed_private_trace(quote)
@@ -142,10 +209,12 @@ class PricingPrivacyTests(APITestCase):
             ('POST requests', lambda: self.submit(self.payload([(self.item_a, 2)]), account=client_b))]))
         self.assert_no_markers('proveedor B', self.calls(self.seller_b, self.supplier_b, order, writes=[
             ('POST quote', lambda: self.action(order, 'quote', account=self.supplier_b, lines=[]))]))
+        self.assert_no_markers('Oratek', self.oratek_calls())
         self.assertEqual(DealCommand.objects.filter(account=self.client_account).count(), 2)
         for command in DealCommand.objects.all():
             for marker in MARKERS:
                 self.assertNotIn(marker, json.dumps(command.result))
+        self.assertEqual((PriceListEntry.objects.get(item=self.item_a).unit_price, PriceList.objects.count()), (Decimal('777.77'), 1))
 
     def test_client_facing_payload_key_sets_are_pinned(self):
         receipt = self.submit(self.payload([(self.item_a, 3), (self.item_a2, 2)]))
@@ -191,7 +260,8 @@ class PricingPrivacyTests(APITestCase):
         self.assertEqual({key for offer in offers for item in offer['items'] for key in item}, {'id', 'codigo', 'brand', 'description'})
 
     def test_pricing_models_stay_out_of_admin_and_management_serializers(self):
-        for model in [SupplierPricingSettings, PricingAuditEvent, DealQuotationDraft, DealQuotationDraftLine, DealQuotationAudit, DealQuotationLineAudit]:
+        for model in [SupplierPricingSettings, PricingAuditEvent, DealQuotationDraft, DealQuotationDraftLine, DealQuotationAudit, DealQuotationLineAudit,
+                      PriceList, PriceListEntry, SupplierItemPricing, PriceChange]:
             self.assertNotIn(model, admin.site._registry)
         self.assertEqual(SupplierItemSerializer.Meta.fields, ['id', 'supplier_invent_id', 'part', 'codigo', 'brand', 'description', 'references',
                                                               'matching_status', 'source', 'reported_quantity', 'reserved_quantity',

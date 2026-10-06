@@ -1382,3 +1382,62 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .matching-oem-help, .matching-progress { display: block; }
 .matching-oem-help p, .matching-progress p { margin: 6px 0 0; }
 .matching-progress > svg { vertical-align: middle; margin-right: 6px; }
+
+/* Supplier-only private prices: Precios section, price grid and the quotation's price origin. */
+.supplier-pricing { display:flex; flex-direction:column; gap:18px; padding:25px; border:1px solid var(--line); border-radius:12px; background:white; min-width:0; }
+.supplier-pricing-private { display:flex; align-items:flex-start; gap:10px; padding:12px 14px; border-radius:10px; background:#f1f6ea; color:#4d6a3a; font-size:11px; line-height:1.7; }
+.supplier-pricing-private>svg { flex-shrink:0; margin-top:2px; }
+.supplier-pricing-tabs { display:flex; flex-wrap:wrap; gap:6px; border-bottom:1px solid var(--line); padding-bottom:10px; }
+.supplier-pricing-tabs>button { display:inline-flex; align-items:center; gap:7px; padding:9px 13px; border-radius:8px; font-size:12px; color:#7a896f; }
+.supplier-pricing-tabs>button.selected { color:#46662f; background:#eaf1df; font-weight:600; }
+.supplier-pricing-panel { display:flex; flex-direction:column; gap:16px; min-width:0; }
+.supplier-pricing-heading { display:flex; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; gap:12px 18px; }
+.supplier-pricing-heading>div:first-child { min-width:0; flex:1 1 280px; }
+.supplier-pricing-heading h2 { font-size:18px; letter-spacing:-.5px; }
+.supplier-pricing-heading p { margin-top:5px; font-size:11px; line-height:1.7; color:#88997b; }
+.supplier-pricing-readonly { font-size:11px; color:#8a6a24; background:#fbf8ef; border-radius:8px; padding:10px 12px; }
+.supplier-pricing .table-scroll { position:relative; }
+.price-list-table td small { display:block; margin-top:3px; font-size:10px; color:#998451; }
+.price-list-table tr.archived td { color:#9aa58f; }
+.price-list-default { display:inline-flex; align-items:center; gap:5px; color:#4f7a42; font-weight:600; font-size:11px; }
+.price-grid-panel { display:flex; flex-direction:column; gap:12px; min-width:0; padding-top:6px; }
+.price-grid-panel .panel-heading { margin-bottom:0; gap:12px; flex-wrap:wrap; }
+.price-grid-panel .panel-heading h3 { font-size:15px; }
+.price-grid-panel .panel-heading p { margin-top:4px; font-size:11px; color:#88997b; }
+.price-grid-controls { display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px; }
+.price-grid-search { flex:1 1 260px; max-width:440px; min-height:42px; }
+.price-grid-list { display:inline-flex; align-items:center; gap:8px; font-size:11px; color:#647858; }
+.price-grid-list select { padding:8px 10px; border:1px solid var(--line); border-radius:7px; background:#fff; font-size:11px; }
+.price-grid .price-grid-edited { background:#fff8e1; color:#6f5520; font-weight:700; }
+.price-grid-actions { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:8px 10px; font-size:11px; color:#7a896f; }
+.price-grid-actions>span { margin-right:auto; min-width:0; }
+.pricing-audit-list { list-style:none; margin:0; padding:0; display:grid; gap:8px; }
+.pricing-audit-list li { display:flex; flex-direction:column; gap:4px; padding:10px 12px; border:1px solid var(--line); border-radius:9px; background:#fcfdf9; min-width:0; }
+.pricing-audit-list li>div { display:flex; flex-wrap:wrap; gap:4px 10px; font-size:12px; color:#405238; overflow-wrap:anywhere; }
+.pricing-audit-list small { font-size:10px; color:#7f8d73; overflow-wrap:anywhere; }
+.quotation-grid .quotation-origin-chip { display:inline-block; align-self:center; height:auto; min-height:0; max-width:100%; padding:3px 9px; border-radius:999px; background:#eef3e6;
+  color:#4d6a3a; font-size:11px; font-weight:600; line-height:1.5; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:pointer;
+  text-decoration:underline dotted; text-underline-offset:3px; }
+.quotation-grid .quotation-origin-chip.manual { background:#fbf8ef; color:#7a5d1f; }
+.quotation-grid .quotation-origin-chip.versión-anterior { background:#eef1f7; color:#3f5170; }
+.quotation-grid .quotation-origin-chip.sin-precio { background:#fff0e8; color:#a14c2d; }
+.quotation-grid .quotation-repriced-cell { animation:quotation-repriced 4s ease-out; }
+@keyframes quotation-repriced { 0%, 30% { background:#e3f1cf; } 100% { background:#f7faef; } }
+.quotation-alert-chip { display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border-radius:999px; background:#eef3e6; color:#4d6a3a; font-size:11px; font-weight:700; }
+.quotation-alert-chip.block { background:#fff0e8; color:#a14c2d; }
+.quotation-alert-chip.confirm { background:#fbf8ef; color:#8a6a24; }
+.quotation-price-notice { margin:0; }
+.quotation-exception .quotation-exception-action { font-weight:700; color:#415b32; text-decoration:underline; text-underline-offset:3px; font-size:inherit; }
+.quotation-exceptions ul { max-height:260px; overflow:auto; }
+.price-drawer { display:flex; flex-direction:column; gap:14px; min-width:0; font-size:12px; color:#405238; }
+.price-drawer-item { display:flex; flex-direction:column; gap:3px; }
+.price-drawer-item small { color:#7f8d73; font-size:11px; overflow-wrap:anywhere; }
+.price-drawer dl { display:grid; gap:8px; margin:0; }
+.price-drawer dl>div { display:flex; justify-content:space-between; gap:12px; padding:9px 11px; border-radius:8px; background:#f6f8f2; }
+.price-drawer dt { color:#647858; }
+.price-drawer dd { margin:0; font-weight:700; text-align:right; overflow-wrap:anywhere; }
+.price-drawer h4 { font-size:13px; }
+.price-drawer-steps { margin:0; padding-left:20px; display:grid; gap:8px; line-height:1.6; }
+.price-drawer-steps small { display:block; color:#7f8d73; font-size:10px; }
+.price-drawer-note { color:#5f7052; line-height:1.7; }
+@media (max-width:600px) { .supplier-pricing { padding:16px 14px; } .price-grid-actions>span { flex-basis:100%; } }

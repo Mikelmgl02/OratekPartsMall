@@ -3,14 +3,22 @@
 
 Shared by draft GET and save, publish and the audit trace. Acknowledgements are tied to the value they confirm: one counts only
 while its context equals the freshly computed context, so editing the quantity or price, or a further stock drop, needs a new
-confirmation. Price codes (stale_price, below_floor, manual_price, …) arrive with the pricing engine.
+confirmation. Price codes compare the line with the live pricing_engine result (passed in, never computed here); a stored price is
+never changed by them: a moved suggestion only raises stale_price.
 """
 import hashlib
 
 # Codes a supplier may confirm. A block policy turns a confirmable code into a block that no acknowledgement lifts.
-ACKNOWLEDGEABLE = ('offered_gt_available', 'offered_gt_requested', 'identity_changed', 'zero_price')
-EXCEPTION_CODES = ('quantity_missing', 'price_missing', 'all_zero', 'draft_outdated', *ACKNOWLEDGEABLE, 'reduced_to_stock', 'zero_offered')
+# Keep in sync with QuoteExceptionCodeEnum / AcknowledgeableExceptionEnum (config/settings.py) and the frontend label map.
+ACKNOWLEDGEABLE = ('offered_gt_available', 'offered_gt_requested', 'identity_changed', 'zero_price', 'below_floor', 'stale_price')
+EXCEPTION_CODES = ('quantity_missing', 'price_missing', 'all_zero', 'draft_outdated', *ACKNOWLEDGEABLE, 'reduced_to_stock', 'zero_offered',
+                   'manual_price', 'differs_from_list', 'no_list_price', 'currency_parity', 'currency_mismatch')
 SEVERITIES = ('block', 'confirm', 'info')
+
+
+def es_money(value):
+    """12345.5 -> '12.345,50', the format of every amount in these messages."""
+    return f'{value:,.2f}'.replace(',', '_').replace('.', ',').replace('_', '.')
 
 
 def identity_context(item):
@@ -19,9 +27,11 @@ def identity_context(item):
     return hashlib.sha256('|'.join(str(value) for value in values).encode()).hexdigest()[:12]
 
 
-def line_findings(line, value, entry, settings_row):
-    """Exceptions of one order line for value {quantity, unit_price, quantity_source?} and its check_lines entry."""
+def line_findings(line, value, entry, settings_row, suggestion=None):
+    """Exceptions of one order line for value {quantity, unit_price, quantity_source?, price_source?, engine_fingerprint?}, its
+    check_lines entry and its live pricing_engine result (None when not priced: the price codes are skipped)."""
     quantity, price, found = value['quantity'], value['unit_price'], []
+    source, suggested = value.get('price_source'), suggestion.unit_price if suggestion else None
     def add(code, severity, message, context=''):
         found.append({'code': code, 'severity': severity, 'message': message, 'context': context})
     if quantity is None:
@@ -40,10 +50,24 @@ def line_findings(line, value, entry, settings_row):
                 f'{quantity}>{line.quantity}')
         if price is not None and price == 0:
             add('zero_price', 'confirm', 'Precio 0,00 con unidades ofrecidas.', f'{quantity}@0.00')
+        floor = suggestion.floor_price if suggestion else None
+        if price is not None and floor is not None and price < floor:
+            add('below_floor', 'confirm', f'Precio por debajo de tu mínimo ({es_money(floor)}).', f'{price:.2f}<{floor:.2f}')
+        stored = value.get('engine_fingerprint')
+        # Only a moved value is stale: a new fingerprint with the same price (an unrelated settings change) needs nothing.
+        if suggestion and source == 'engine' and price is not None and stored and stored != suggestion.fingerprint and price != suggested:
+            add('stale_price', 'confirm', f'Tu precio sugerido cambió de {es_money(price)} a {es_money(suggested)} desde que se calculó.'
+                if suggested is not None else f'Tu lista ya no sugiere un precio para este artículo (antes {es_money(price)}).',
+                f'{stored[:12]}>{suggestion.fingerprint[:12]}')
     if value.get('quantity_source') == 'available' and quantity is not None and quantity < line.quantity:
         add('reduced_to_stock', 'info', f'Ajustado a tus existencias ({quantity} de {line.quantity}).')
     if quantity == 0:
         add('zero_offered', 'info', 'No ofreces este artículo.')
+    if suggested is not None and price is not None and price != suggested and source in ('manual', 'previous'):
+        add('manual_price' if source == 'manual' else 'differs_from_list', 'info', f'Precio manual · sugerido {es_money(suggested)}.' if source == 'manual'
+            else f'La versión anterior usó {es_money(price)}; tu lista sugiere hoy {es_money(suggested)}.')
+    if suggestion and suggestion.status == 'missing' and quantity != 0:
+        add('no_list_price', 'info', 'Sin precio en tu lista.')
     return found
 
 
@@ -57,19 +81,31 @@ def acknowledge(found, acknowledgements):
     return found
 
 
-def compute_exceptions(lines, values, stock, settings_row, *, acknowledgements=None, order_acknowledgements=(), outdated=False):
+def compute_exceptions(lines, values, stock, settings_row, *, pricing=None, acknowledgements=None, order_acknowledgements=(), outdated=False):
     """-> {lines: {order_line_pk: [finding]}, order: [finding], summary: {blocking, to_confirm, info}}.
 
-    values and stock are keyed by order line pk; acknowledgements maps an order line pk to its stored [{code, context, user_id, at}].
+    values, stock and pricing (live pricing_engine results) are keyed by order line pk; acknowledgements maps an order line pk to its
+    stored [{code, context, user_id, at}].
     """
-    acknowledgements = acknowledgements or {}
-    per_line = {line.pk: acknowledge(line_findings(line, values[line.pk], stock[line.pk], settings_row), acknowledgements.get(line.pk))
+    acknowledgements, pricing = acknowledgements or {}, pricing or {}
+    per_line = {line.pk: acknowledge(line_findings(line, values[line.pk], stock[line.pk], settings_row, pricing.get(line.pk)), acknowledgements.get(line.pk))
                 for line in lines}
     order = []
     if outdated:
         order.append({'code': 'draft_outdated', 'severity': 'block', 'message': 'El borrador se preparó sobre una versión anterior; recárgalo.', 'context': ''})
     if lines and all(values[line.pk]['quantity'] == 0 for line in lines):
         order.append({'code': 'all_zero', 'severity': 'block', 'message': 'Ofrece al menos una unidad.', 'context': ''})
+    results = [result for result in pricing.values() if result]
+    parity = next((result for result in results if result.parity_applied), None)
+    if parity:
+        step = next(step for step in parity.explanation['steps'] if step['kind'] == 'parity')
+        order.append({'code': 'currency_parity', 'severity': 'info', 'context': '',
+                      'message': f'Paridad USD/PAB 1:1 aplicada: tu lista está en {step["from"]} y la cotización en {step["to"]}.'})
+    mismatch = next((result for result in results if result.status == 'currency_mismatch'), None)
+    if mismatch:
+        order.append({'code': 'currency_mismatch', 'severity': 'info', 'context': '', 'message': (
+            f'Moneda distinta: tu lista está en {mismatch.explanation["price_list"]["currency"]} y la cotización en {mismatch.explanation["currency"]}; '
+            'sin precio sugerido.')})
     acknowledge(order, order_acknowledgements)
     every = order + [item for found in per_line.values() for item in found]
     return {'lines': per_line, 'order': order, 'summary': {

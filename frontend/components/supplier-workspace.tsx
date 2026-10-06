@@ -1,19 +1,30 @@
 'use client';
 import { useEffect, useId, useRef, useState } from 'react';
-import { ArrowDownLeft, ArrowUpRight, Boxes, ChevronRight, CircleHelp, ClipboardList, FileSpreadsheet, History, LoaderCircle, Menu, PackagePlus, RefreshCw, Store, X } from 'lucide-react';
+import { ArrowDownLeft, ArrowUpRight, Boxes, ChevronRight, CircleHelp, ClipboardList, FileSpreadsheet, History, LoaderCircle, Menu, PackagePlus, RefreshCw, Store, Tags, X } from 'lucide-react';
 import Modal from './modal';
 import SupplierInventoryImport from './supplier-inventory-import';
+import SupplierPricing from './supplier-pricing';
 import SupplierRequests from './supplier-requests';
 import { usePageViewport } from './app-shell';
 import { UppercaseInput } from './uppercase-field';
 import { Account, LedgerEntry, Page, StockItem, request } from '@/lib/types';
-function initialSection(): 'inventory' | 'requests' {
+import { type SupplierSection, supplierSections } from '@/lib/supplier-navigation';
+const sections = [{ key: 'inventory', label: 'Inventario', detail: 'Existencias y movimientos', Icon: Boxes },
+  { key: 'pricing', label: 'Precios', detail: 'Listas, clientes y reglas', Icon: Tags },
+  { key: 'requests', label: 'Solicitudes', detail: 'Órdenes y cotizaciones', Icon: ClipboardList }] as const;
+const headings: Record<SupplierSection, [string, (name: string) => string]> = {
+  inventory: ['Tu inventario, en un solo lugar.', name => `Administra el inventario de ${name} y revisa cada ajuste.`],
+  pricing: ['Tus precios privados, en un solo lugar.', name => `Mantén las listas de precios de ${name} para cotizar más rápido.`],
+  requests: ['Tus solicitudes, en un solo lugar.', name => `Consulta lo que los clientes solicitan a ${name}.`],
+};
+function initialSection(): SupplierSection {
   if (typeof window === 'undefined') return 'inventory';
   const params = new URL(window.location.href).searchParams;
-  return params.get('vista') === 'proveedor' && params.get('seccion') === 'solicitudes' ? 'requests' : 'inventory';
+  const match = sections.find(({ key }) => supplierSections[key] === params.get('seccion'));
+  return params.get('vista') === 'proveedor' && match ? match.key : 'inventory';
 }
 export default function SupplierWorkspace({ account }: { account: Account }) {
-  const [section, setSection] = useState<'inventory' | 'requests'>(initialSection);
+  const [section, setSection] = useState<SupplierSection>(initialSection);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const menuToggle = useRef<HTMLButtonElement>(null);
   const viewport = usePageViewport();
@@ -34,26 +45,29 @@ export default function SupplierWorkspace({ account }: { account: Account }) {
     request<Page<StockItem>>(`/api/market/accounts/${account.id}/inventory?page=${page}`).then(result => { if (!cancelled) setItems(result); }).catch(error => { if (!cancelled) setError(error.message); }).finally(() => { if (!cancelled) setBusy(false); });
     return () => { cancelled = true; };
   }, [account.id, page, revision, section]);
-  function selectSection(next: 'inventory' | 'requests') { setSection(next); setEditing(false); setImporting(false); setLedgerItem(null); viewport.current?.scrollTo({ top: 0, behavior: 'instant' }); }
+  function selectSection(next: SupplierSection) { setSection(next); setEditing(false); setImporting(false); setLedgerItem(null); viewport.current?.scrollTo({ top: 0, behavior: 'instant' }); }
   function closeSidebar() { setSidebarOpen(false); if (window.matchMedia('(max-width: 760px)').matches) menuToggle.current?.focus(); }
+  // Vertical tabs: arrows cycle through every section, Home and End jump to the first and last.
   function tabKey(event: React.KeyboardEvent<HTMLButtonElement>) {
-    let next: 'inventory' | 'requests';
-    if (event.key === 'Home') next = 'inventory';
-    else if (event.key === 'End') next = 'requests';
-    else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') next = section === 'inventory' ? 'requests' : 'inventory';
+    const index = sections.findIndex(({ key }) => key === section), steps: Record<string, number> = { ArrowDown: 1, ArrowUp: -1 };
+    let next: SupplierSection;
+    if (event.key === 'Home') next = sections[0].key;
+    else if (event.key === 'End') next = sections[sections.length - 1].key;
+    else if (event.key in steps) next = sections[(index + steps[event.key] + sections.length) % sections.length].key;
     else if (event.key === 'Escape') { event.preventDefault(); closeSidebar(); return; }
     else return;
     event.preventDefault(); selectSection(next); document.getElementById(`${tabId}-${next}-tab`)?.focus();
   }
+  const current = sections.find(({ key }) => key === section)!;
   return <section className="workspace section-container supplier-workspace-layout" aria-label="Panel de proveedor">
-    <button ref={menuToggle} type="button" className="supplier-menu-toggle" aria-expanded={sidebarOpen} aria-controls={`${tabId}-side-menu`} onClick={() => setSidebarOpen(value => !value)}>{sidebarOpen ? <X size={18}/> : <Menu size={18}/>}<span>Menú de proveedor</span><small>{section === 'inventory' ? 'Inventario' : 'Solicitudes'}</small></button>
+    <button ref={menuToggle} type="button" className="supplier-menu-toggle" aria-expanded={sidebarOpen} aria-controls={`${tabId}-side-menu`} onClick={() => setSidebarOpen(value => !value)}>{sidebarOpen ? <X size={18}/> : <Menu size={18}/>}<span>Menú de proveedor</span><small>{current.label}</small></button>
     <aside id={`${tabId}-side-menu`} className={`supplier-sidebar ${sidebarOpen ? 'is-open' : ''}`} aria-label="Navegación del proveedor">
       <div className="supplier-sidebar-heading"><span><Store size={22}/></span><div><strong>Panel de proveedor</strong><small>{account.name}</small></div></div>
       <div className="supplier-sidebar-label">GESTIÓN</div>
-      <div className="supplier-workspace-tabs" role="tablist" aria-label="Secciones del proveedor" aria-orientation="vertical">{([{ key: 'inventory', label: 'Inventario', detail: 'Existencias y movimientos', Icon: Boxes }, { key: 'requests', label: 'Solicitudes', detail: 'Órdenes y cotizaciones', Icon: ClipboardList }] as const).map(({ key, label, detail, Icon }) => <button type="button" key={key} role="tab" aria-label={label} id={`${tabId}-${key}-tab`} aria-selected={section === key} aria-controls={`${tabId}-${key}-panel`} tabIndex={section === key ? 0 : -1} onClick={() => { selectSection(key); closeSidebar(); }} onKeyDown={tabKey}><Icon size={18}/><span><strong>{label}</strong><small>{detail}</small></span>{section === key && <ChevronRight size={15}/>}</button>)}</div>
+      <div className="supplier-workspace-tabs" role="tablist" aria-label="Secciones del proveedor" aria-orientation="vertical">{sections.map(({ key, label, detail, Icon }) => <button type="button" key={key} role="tab" aria-label={label} id={`${tabId}-${key}-tab`} aria-selected={section === key} aria-controls={`${tabId}-${key}-panel`} tabIndex={section === key ? 0 : -1} onClick={() => { selectSection(key); closeSidebar(); }} onKeyDown={tabKey}><Icon size={18}/><span><strong>{label}</strong><small>{detail}</small></span>{section === key && <ChevronRight size={15}/>}</button>)}</div>
     </aside>
     <div className="supplier-workspace-content">
-    <div className="section-heading"><div><span className="eyebrow">Panel de proveedores</span><h1>{section === 'inventory' ? 'Tu inventario, en un solo lugar.' : 'Tus solicitudes, en un solo lugar.'}</h1><p>{section === 'inventory' ? `Administra el inventario de ${account.name} y revisa cada ajuste.` : `Consulta lo que los clientes solicitan a ${account.name}.`}</p></div>{section === 'inventory' && <div className="supplier-workspace-actions"><button className="button soft" onClick={() => setImporting(true)}><FileSpreadsheet size={18}/>Importar Excel</button><button className="button primary" onClick={() => setEditing(true)}><PackagePlus size={18}/>Actualizar existencias</button></div>}</div>
+    <div className="section-heading"><div><span className="eyebrow">Panel de proveedores</span><h1>{headings[section][0]}</h1><p>{headings[section][1](account.name)}</p></div>{section === 'inventory' && <div className="supplier-workspace-actions"><button className="button soft" onClick={() => setImporting(true)}><FileSpreadsheet size={18}/>Importar Excel</button><button className="button primary" onClick={() => setEditing(true)}><PackagePlus size={18}/>Actualizar existencias</button></div>}</div>
     <div role="tabpanel" id={`${tabId}-inventory-panel`} aria-labelledby={`${tabId}-inventory-tab`} hidden={section !== 'inventory'}>{section === 'inventory' && <>
     {notice && <div className="notice success" role="status">{notice}</div>}
     <div className="workspace-summary"><div><Boxes size={23}/><span>Registros de inventario</span><strong>{items.count}</strong></div><div><ClipboardList size={23}/><span>Coincidencias por revisar</span><strong>{items.results.filter(item => item.matching_status !== 'matched').length}<small> en esta página</small></strong></div><div><CircleHelp size={23}/><span>¿Falta una coincidencia en el catálogo?</span><p>Los artículos pendientes serán visibles para los clientes cuando tu administrador apruebe su coincidencia.</p></div></div>
@@ -66,7 +80,7 @@ export default function SupplierWorkspace({ account }: { account: Account }) {
     {editing && <StockForm account={account} onClose={() => setEditing(false)} onSaved={() => {setEditing(false); setRevision(revision+1);}}/>}
     {importing && <SupplierInventoryImport key={account.id} account={account} onClose={() => { setImporting(false); setRevision(value => value + 1); }} onSaved={result => { setRevision(value => value + 1); setNotice(`Importación completada: ${result.applied_summary.created_items} artículos nuevos y ${result.applied_summary.updated_items} actualizados.${result.summary.rejected_rows ? ` ${result.summary.rejected_rows} filas pendientes; abre Importar Excel para descargar el archivo de correcciones.` : ''}`); }}/>} 
     {ledgerItem && <Ledger account={account} item={ledgerItem} onClose={() => setLedgerItem(null)}/>}
-    </>}</div><div role="tabpanel" id={`${tabId}-requests-panel`} aria-labelledby={`${tabId}-requests-tab`} hidden={section !== 'requests'}>{section === 'requests' && <SupplierRequests key={account.id} account={account}/>}</div>
+    </>}</div><div role="tabpanel" id={`${tabId}-pricing-panel`} aria-labelledby={`${tabId}-pricing-tab`} hidden={section !== 'pricing'}>{section === 'pricing' && <SupplierPricing key={account.id} account={account}/>}</div><div role="tabpanel" id={`${tabId}-requests-panel`} aria-labelledby={`${tabId}-requests-tab`} hidden={section !== 'requests'}>{section === 'requests' && <SupplierRequests key={account.id} account={account}/>}</div>
     </div>
   </section>;
 }

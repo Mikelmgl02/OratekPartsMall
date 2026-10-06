@@ -22,19 +22,21 @@ test('pricing settings proxy requires a session and same-origin writes', async (
 
 test('quotation draft proxy routes require a session and same-origin writes', async ({ request }) => {
   const draft = `/api/market/accounts/${account}/requests/${account}/draft`;
-  for (const response of [await request.get(draft), await request.post(draft, { data: {} }), await request.post(`${draft}/discard`, { data: {} })]) {
+  for (const response of [await request.get(draft), await request.post(draft, { data: {} }), await request.post(`${draft}/discard`, { data: {} }),
+    await request.post(`${draft}/reprice`, { data: {} })]) {
     expect(response.status()).toBe(401);
   }
-  for (const path of [draft, `${draft}/discard`]) {
+  for (const path of [draft, `${draft}/discard`, `${draft}/reprice`]) {
     const denied = await request.post(path, { headers: foreign, data: { save_id: account, expected_draft_version: 0 } });
     expect(denied.status()).toBe(403);
     expect(await denied.json()).toEqual({ detail: 'El origen de la solicitud no es válido.' });
   }
-  // Later slices add reprice and the assistant; until then these neighbours, GET on discard and other methods stay unknown.
-  for (const route of [`${draft}/reprice`, `${draft}/assistant`, `${draft}/discard/extra`]) {
+  // The assistant arrives later; until then it, GET on discard or reprice and other methods stay unknown.
+  for (const route of [`${draft}/assistant`, `${draft}/discard/extra`, `${draft}/reprice/extra`]) {
     expect((await request.post(route, { headers: foreign, data: {} })).status()).toBe(404);
   }
   expect((await request.get(`${draft}/discard`, { headers: foreign })).status()).toBe(404);
+  expect((await request.get(`${draft}/reprice`, { headers: foreign })).status()).toBe(404);
   expect((await request.put(draft, { headers: foreign, data: {} })).status()).toBe(404);
   expect((await request.delete(draft, { headers: foreign })).status()).toBe(404);
 });
@@ -50,4 +52,32 @@ test('the supplier-only quotation trace is a session-bound read and nothing else
     expect((await request.get(route, { headers: foreign })).status()).toBe(404);
   }
   expect((await request.delete(trace, { headers: foreign })).status()).toBe(404);
+});
+
+test('price lists, the price grid and their history are session-bound, with same-origin writes only', async ({ request }) => {
+  const base = `/api/market/accounts/${account}`;
+  for (const path of [`${base}/price-lists`, `${base}/prices`, `${base}/prices/${account}/history`, `${base}/pricing/history`, `${base}/prices/export`]) {
+    const anonymous = await request.get(path);
+    expect(anonymous.status()).toBe(401);
+    expect(await anonymous.json()).toEqual({ detail: 'Inicia sesión para continuar.' });
+  }
+  for (const path of [`${base}/price-lists`, `${base}/price-lists/${account}`, `${base}/prices`]) {
+    expect((await request.post(path, { data: {} })).status()).toBe(401);
+    const denied = await request.post(path, { headers: foreign, data: { expected_version: 1 } });
+    expect(denied.status()).toBe(403);
+    expect(await denied.json()).toEqual({ detail: 'El origen de la solicitud no es válido.' });
+  }
+  // History and exports are reads; neighbouring paths, writes to reads and other methods stay unknown before reaching the API.
+  for (const path of [`${base}/prices/${account}/history`, `${base}/pricing/history`, `${base}/price-lists/${account}/archive`, `${base}/prices/${account}`, `${base}/pricing`]) {
+    expect((await request.post(path, { headers: foreign, data: {} })).status()).toBe(404);
+  }
+  for (const path of [`${base}/price-lists/${account}`, `${base}/prices/not-a-uuid/history`, `${base}/prices/import`]) {
+    expect((await request.get(path, { headers: foreign })).status()).toBe(404);
+  }
+  expect((await request.delete(`${base}/prices`, { headers: foreign })).status()).toBe(404);
+  expect((await request.put(`${base}/price-lists`, { headers: foreign, data: {} })).status()).toBe(404);
+  // The binary export route validates its account and list before any session check.
+  expect((await request.get('/api/market/accounts/not-a-uuid/prices/export')).status()).toBe(404);
+  expect((await request.get(`${base}/prices/export?list=1;drop`)).status()).toBe(404);
+  expect((await request.post(`${base}/prices/export`, { headers: foreign, data: {} })).status()).toBe(405);
 });

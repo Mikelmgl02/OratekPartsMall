@@ -8,7 +8,7 @@ import { UppercaseTextarea } from './uppercase-field';
 import { Account, ApiError, request } from '@/lib/types';
 import type { SupplierRequestLine } from '@/lib/request-types';
 import type { Deal, DealMessage, Quotation } from '@/lib/deal-types';
-import type { QuotationTrace, QuoteDraft, QuoteDraftEnvelope } from '@/lib/pricing-types';
+import type { QuotationTrace, QuoteDraft, QuoteDraftEnvelope, QuoteDraftLine } from '@/lib/pricing-types';
 
 const QuoteEditor = dynamic(() => import('./quotation-editor'), { ssr: false, loading: () => <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando editor de cotización…</div> });
 
@@ -49,6 +49,8 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   // The supplier's private draft for the next revision; a failed load leaves the editor without autosave.
   const [draftLoad, setDraftLoad] = useState<{ key: string; draft: QuoteDraft | null } | null>(null);
   const [hasDraft, setHasDraft] = useState(false);
+  // The editor's last confirmed draft keeps the Artículos suggestions current after saves and reprices.
+  const [liveDraft, setLiveDraft] = useState<{ key: string; draft: QuoteDraft } | null>(null);
   const draftPath = `${base}/requests/${orderId}/draft`;
   const acceptDetail = useCallback((value: Deal) => {
     if (!mounted.current) return;
@@ -110,6 +112,10 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
     } finally { inFlight.current = false; if (mounted.current) setBusy(false); }
   }
   const stockWarnings = supplier && deal ? (deal.lines as SupplierRequestLine[]).filter(line => !line.stock || line.stock.shortfall > 0).length : 0;
+  // Supplier-only "Precio sugerido": the live suggestion of the private draft, shown once the supplier has price lists.
+  const loaded = liveDraft?.key === draftKey ? liveDraft.draft : draftLoad?.key === draftKey ? draftLoad.draft : null;
+  const priced = supplier && loaded?.pricing.configured ? loaded : null;
+  const suggestions = new Map((priced?.lines || []).map(line => [line.order_line_id, line]));
   const activeStep = !deal ? 0 : deal.status === 'pending' ? 0 : deal.status === 'reviewed' ? 1 : deal.status === 'handshaked' ? 3 : 2;
   const content = <>
     <div className="deal-detail">
@@ -128,17 +134,17 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
           {deal.notes && <section className="supplier-request-notes"><h4>Notas del cliente</h4><p>{deal.notes}</p></section>}
           {supplier && <div className="supplier-request-stock-heading"><div><h4>Existencias de tu inventario</h4><p>Disponibles = reportadas menos reservadas. Confirma las unidades que puedes suministrar.</p></div><button type="button" className="button soft small" disabled={busy} onClick={() => void load()}><RefreshCw size={15}/>Actualizar existencias</button></div>}
           {stockWarnings > 0 && <div className="notice supplier-request-stock-warning" role="status">{stockWarnings} {stockWarnings === 1 ? 'artículo requiere' : 'artículos requieren'} confirmar disponibilidad. La orden conserva todas las unidades pedidas.</div>}
-          <div className="table-scroll deal-lines supplier-request-lines"><table><thead><tr><th>Código / descripción</th><th>SKU interno</th>{supplier && <th>Tu ID de inventario</th>}<th>Solicitadas</th>{supplier && <th>Disponibles</th>}</tr></thead><tbody>{deal.lines.map(line => <tr key={line.id}><td><strong>{line.codigo}</strong><span>{line.brand || 'SIN MARCA INDICADA'}</span><small>{line.description}</small></td><td>{line.sku}</td>{supplier && <td>{'supplier_invent_id' in line && line.supplier_invent_id}</td>}<td>{line.quantity}</td>{supplier && <td>{'stock' in line && line.stock ? <><strong>{line.stock.available_quantity}</strong><small>Reportadas: {line.stock.reported_quantity} · Reservadas: {line.stock.reserved_quantity}</small><small className={line.stock.shortfall ? "stock-shortfall" : "stock-sufficient"}>{line.stock.shortfall ? `Faltan ${line.stock.shortfall} unidades` : "Existencias suficientes"}</small></> : <><strong className="stock-shortfall">Revisar artículo</strong><small>El código o el vínculo con el SKU cambió. Confirma la equivalencia en Inventario.</small></>}</td>}</tr>)}</tbody></table></div>
+          <div className="table-scroll deal-lines supplier-request-lines"><table><thead><tr><th>Código / descripción</th><th>SKU interno</th>{supplier && <th>Tu ID de inventario</th>}<th>Solicitadas</th>{supplier && <th>Disponibles</th>}{priced && <th>Precio sugerido</th>}</tr></thead><tbody>{deal.lines.map(line => <tr key={line.id}><td><strong>{line.codigo}</strong><span>{line.brand || 'SIN MARCA INDICADA'}</span><small>{line.description}</small></td><td>{line.sku}</td>{supplier && <td>{'supplier_invent_id' in line && line.supplier_invent_id}</td>}<td>{line.quantity}</td>{supplier && <td>{'stock' in line && line.stock ? <><strong>{line.stock.available_quantity}</strong><small>Reportadas: {line.stock.reported_quantity} · Reservadas: {line.stock.reserved_quantity}</small><small className={line.stock.shortfall ? "stock-shortfall" : "stock-sufficient"}>{line.stock.shortfall ? `Faltan ${line.stock.shortfall} unidades` : "Existencias suficientes"}</small></> : <><strong className="stock-shortfall">Revisar artículo</strong><small>El código o el vínculo con el SKU cambió. Confirma la equivalencia en Inventario.</small></>}</td>}{priced && <td><SuggestedPrice line={suggestions.get(line.id)} currency={priced.currency}/></td>}</tr>)}</tbody></table></div>
           {supplier && ['reviewed', 'adjustment'].includes(deal.status) && <button type="button" className="button primary" onClick={() => { setQuoteVisited(true); setTab('quote'); }}>Preparar cotización<FileText size={16}/></button>}
           {deal.quotation && <button type="button" className="button soft" onClick={() => setTab('quote')}>Ver cotización · v{deal.quotation.revision}<FileText size={16}/></button>}
         </>}
         <div className="deal-quote-tab" hidden={tab !== 'quote'}>
           {deal.quotation && <QuoteView quote={deal.quotation}/>}
-          {supplier && deal.quotation && <QuoteTrace key={deal.quotation.id} path={`${base}/requests/${orderId}/quotations/${deal.quotation.id}/trace`}/>}
+          {supplier && deal.quotation && <QuoteTrace key={deal.quotation.id} path={`${base}/requests/${orderId}/quotations/${deal.quotation.id}/trace`} currency={deal.quotation.currency}/>}
           {!deal.quotation && !supplier && <div className="notice">El proveedor preparará tu cotización. Te aparecerán aquí las cantidades, precios y condiciones.</div>}
           {editable && (tab === 'quote' || quoteVisited) && (draftLoad?.key === draftKey
             ? <QuoteEditor key={`${draftKey}:${draftLoad.draft ? draftLoad.draft.persisted ? 'saved' : 'virtual' : 'fallback'}`} deal={deal} draft={draftLoad.draft} draftPath={draftPath}
-                disabled={busy} onSend={values => act('quote', values)} onDraftChange={setHasDraft}/>
+                disabled={busy} onSend={values => act('quote', values)} onDraftChange={(persisted, next) => { setHasDraft(persisted); setLiveDraft({ key: draftKey, draft: next }); }}/>
             : <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando borrador de cotización…</div>)}
           {supplier && deal.status === 'adjustment' && deal.quotation && <button type="button" className="button soft" disabled={busy} onClick={() => void act('return_quote', { quotation_id: deal.quotation!.id })}>Devolver la misma cotización para confirmar<Send size={15}/></button>}
           {supplier && deal.status === 'adjustment' && deal.quotation && hasDraft && <small className="deal-draft-warning">Si devuelves la misma cotización, se descartará el borrador en curso.</small>}
@@ -169,12 +175,26 @@ function QuoteView({ quote, historical = false }: { quote: Quotation; historical
 }
 
 const priceSources = { engine: 'Lista o regla', previous: 'Versión anterior', manual: 'Manual', none: 'Sin precio', unspecified: 'Sin especificar' };
+// Keep in sync with EXCEPTION_CODES (mall/quotation_exceptions.py); the trace lists the block and confirm ones.
 const alertNames: Record<string, string> = { offered_gt_available: 'Más que las disponibles', offered_gt_requested: 'Más que las solicitadas',
-  identity_changed: 'Artículo cambiado', zero_price: 'Precio 0,00' };
+  identity_changed: 'Artículo cambiado', zero_price: 'Precio 0,00', below_floor: 'Bajo tu precio mínimo', stale_price: 'Precio sugerido cambió',
+  quantity_missing: 'Falta la cantidad', price_missing: 'Falta el precio', all_zero: 'Sin unidades', draft_outdated: 'Borrador desactualizado',
+  reduced_to_stock: 'Ajustado a existencias', zero_offered: 'No ofrecido', manual_price: 'Precio manual', differs_from_list: 'Distinto de tu lista',
+  no_list_price: 'Sin precio en tu lista', currency_parity: 'Paridad USD/PAB', currency_mismatch: 'Moneda distinta' };
+const suggestionStates: Record<string, string> = { missing: 'Sin precio en tu lista', identity_changed: 'Artículo cambiado', currency_mismatch: 'Moneda distinta',
+  out_of_range: 'Fuera de rango', no_price_list: 'Sin lista de precios' };
+
+function SuggestedPrice({ line, currency }: { line?: QuoteDraftLine; currency: string }) {
+  const suggestion = line?.suggestion;
+  if (!suggestion) return <>—</>;
+  const explanation = suggestion.explanation, base = explanation.base;
+  if (suggestion.unit_price === null) return <small>{suggestionStates[explanation.status] || 'Sin precio sugerido'}</small>;
+  return <><strong>{money(suggestion.unit_price, currency)}</strong><small>{base ? `Lista ${base.price_list_code}${base.fallback ? ' (respaldo)' : ''}` : 'Lista'}{explanation.steps.some(step => step.kind === 'parity') ? ' · paridad USD/PAB' : ''}</small></>;
+}
 const acceptResults = { ok: 'Existencias verificadas al confirmar', blocked: 'Confirmación bloqueada por existencias', accepted_with_shortfall: 'Confirmado con faltante' };
 
 // Supplier-only publication trace: read each time it is opened (an accept check may have been added), never shown to the client.
-function QuoteTrace({ path }: { path: string }) {
+function QuoteTrace({ path, currency }: { path: string; currency: string }) {
   const [trace, setTrace] = useState<QuotationTrace | null>(null);
   const [error, setError] = useState('');
   const loading = useRef(false);
@@ -191,7 +211,7 @@ function QuoteTrace({ path }: { path: string }) {
         {check && <p className={`deal-trace-check ${check.result}`}>{acceptResults[check.result]} · {date(check.at)}</p>}
         <div className="table-scroll"><table><thead><tr><th>Artículo</th><th>Ofrecidas</th><th>Disponibles al cotizar</th><th>Al confirmar</th><th>Origen del precio</th><th>Alertas</th></tr></thead>
           <tbody>{trace.lines.map(line => <tr key={line.order_line_id}><td><strong>{line.codigo}</strong><small>{line.description}</small></td><td>{line.quantity}</td>
-            <td>{line.identity_ok_at_quote ? line.available_at_quote : 'Artículo cambiado'}</td><td>{line.available_at_accept ?? '—'}</td><td>{priceSources[line.price_source]}</td>
+            <td>{line.identity_ok_at_quote ? line.available_at_quote : 'Artículo cambiado'}</td><td>{line.available_at_accept ?? '—'}</td><td>{priceSources[line.price_source]}{line.suggested_price && <small>Sugerido {money(line.suggested_price, currency)}</small>}</td>
             <td>{line.exceptions.some(item => item.severity !== 'info') ? line.exceptions.filter(item => item.severity !== 'info').map(item => <small key={item.code}>{alertNames[item.code] || item.code} ({item.context}) · {item.acknowledged_by ? `confirmada por ${item.acknowledged_by.name}` : 'sin confirmar'}</small>) : '—'}</td></tr>)}</tbody></table></div>
       </>}
   </details>;

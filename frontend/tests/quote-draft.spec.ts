@@ -229,17 +229,27 @@ test('alerts gate publishing: adjusting to available stock and confirming a chan
   await openQuote(page);
   const panel = content(page).locator('details.quotation-exceptions');
   await expect(panel.locator('summary')).toHaveText('Revisa antes de enviar (4)');
+  // On load the review panel stays folded, so currency, terms and send stay close; a compact count beside the grid opens it.
+  await expect(panel).not.toHaveAttribute('open', '');
+  const chip = content(page).getByRole('button', { name: '4 por revisar', exact: true });
+  await expect(chip).toHaveAttribute('aria-expanded', 'false');
+  await chip.click();
   await expect(panel).toHaveAttribute('open', '');
+  await expect(chip).toHaveAttribute('aria-expanded', 'true');
   await expect(quoteCell(page, 'alerts')).toHaveText('1 por corregir');
   await expect(panel.getByRole('listitem').filter({ hasText: 'Falta el precio.' })).toHaveCount(2);
+  await panel.locator('summary').click();
+  await expect(panel).not.toHaveAttribute('open', '');
   await editQuote(page, 'unit_price', '12.50');
   await editQuote(page, 'unit_price', '4', '00700-NP', secondId);
   await expect(quoteCell(page, 'alerts')).toHaveText('1 por confirmar');
   await expect(quoteCell(page, 'alerts', secondId)).toHaveText('1 por confirmar');
   await expect(panel.locator('summary')).toHaveText('Revisa antes de enviar (2)');
-  // The server refuses unreviewed alerts: the panel stays open with the error and nothing is published.
+  await expect(content(page).getByRole('button', { name: '2 por revisar', exact: true })).toBeVisible();
+  // The server refuses unreviewed alerts: the panel opens by itself with the error and nothing is published.
   await content(page).getByRole('button', { name: 'Confirmar y enviar cotización', exact: true }).click();
   await expect(content(page).getByRole('alert')).toHaveText('Revisa las alertas antes de enviar.');
+  await expect(panel).toHaveAttribute('open', '');
   expect(state.actions).toEqual([expect.objectContaining({ action: 'quote', draft_version: state.drafts.current().draft_version })]);
   expect(state.getOrder().status).toBe('reviewed');
   const savesBefore = state.drafts.saves.length;

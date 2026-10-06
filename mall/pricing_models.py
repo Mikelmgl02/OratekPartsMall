@@ -3,6 +3,8 @@
 Nothing here is registered in Django admin, exposed to management endpoints or read by client-facing
 serializers: prices and their configuration are visible only to members of the supplier account.
 """
+import uuid
+
 from django.conf import settings
 from django.db import models
 from django.db.models import Q
@@ -65,6 +67,91 @@ class PricingAuditEvent(models.Model):
     class Meta:
         ordering = ['-created_at', '-id']
         indexes = [models.Index(fields=['supplier', '-created_at'], name='pricing_audit_supplier_idx')]
+
+
+PRICE_LIST_CODE = r'^[A-Z0-9_]{1,30}$'
+PRICE_WRITE_SOURCES = [('manual', 'Manual'), ('import', 'Importación'), ('api', 'Integración')]
+PRICE_CHANGE_KINDS = [('list_price', 'Precio de lista'), ('floor_price', 'Precio mínimo'), ('discount_group', 'Línea')]
+
+
+class PriceList(models.Model):
+    """A named supplier price list. Codes are immutable (they key import columns PRECIO_<CODE>); the currency is fixed once it has prices."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    supplier = models.ForeignKey('mall.Account', on_delete=models.PROTECT, related_name='price_lists')
+    code = models.CharField(max_length=30)
+    name = models.CharField(max_length=120)
+    currency = models.CharField(max_length=3, choices=CURRENCY_CHOICES, default='USD')
+    is_default = models.BooleanField(default=False)
+    active = models.BooleanField(default=True)
+    version = models.PositiveIntegerField(default=1)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-is_default', 'code']
+        constraints = [
+            models.UniqueConstraint(fields=['supplier', 'code'], name='unique_price_list_code'),
+            models.UniqueConstraint(fields=['supplier'], condition=Q(is_default=True), name='one_default_price_list'),
+            models.CheckConstraint(condition=~Q(is_default=True, active=False), name='default_price_list_active'),
+            models.CheckConstraint(condition=Q(currency__in=choice_values(CURRENCY_CHOICES)), name='valid_price_list_currency'),
+        ]
+
+
+class PriceListEntry(models.Model):
+    """One item's price in one list. Invariant kept by pricing_services: item.supplier_id == price_list.supplier_id."""
+    id = models.BigAutoField(primary_key=True)
+    price_list = models.ForeignKey(PriceList, on_delete=models.PROTECT, related_name='entries')
+    item = models.ForeignKey('mall.SupplierItem', on_delete=models.PROTECT, related_name='price_entries')
+    unit_price = models.DecimalField(max_digits=12, decimal_places=2)
+    revision = models.PositiveIntegerField(default=1)
+    source = models.CharField(max_length=10, choices=PRICE_WRITE_SOURCES, default='manual')
+    reference = models.CharField(max_length=120, blank=True, default='')
+    updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='+')
+    updated_at = models.DateTimeField()
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['price_list', 'item'], name='unique_price_list_item'),
+                       models.CheckConstraint(condition=Q(unit_price__gt=0), name='positive_list_price')]
+        indexes = [models.Index(fields=['item'], name='price_entry_item_idx')]
+
+
+class SupplierItemPricing(models.Model):
+    """Commercial attributes of an item, kept apart from SupplierItem so price writes never touch stock rows or their timestamps."""
+    item = models.OneToOneField('mall.SupplierItem', on_delete=models.PROTECT, primary_key=True, related_name='pricing')
+    supplier = models.ForeignKey('mall.Account', on_delete=models.PROTECT, related_name='+')
+    discount_group = models.CharField(max_length=60, blank=True, default='', help_text='LINEA o familia propia del proveedor.')
+    floor_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    revision = models.PositiveIntegerField(default=1)
+    updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='+')
+    updated_at = models.DateTimeField()
+
+    class Meta:
+        constraints = [models.CheckConstraint(condition=Q(floor_price__isnull=True) | Q(floor_price__gte=0), name='valid_item_floor_price')]
+        indexes = [models.Index(fields=['supplier', 'discount_group'], name='item_pricing_group_idx')]
+
+
+class PriceChange(models.Model):
+    """Append-only history of every list price, floor price and LINEA change. Null values mean none or removed."""
+    id = models.BigAutoField(primary_key=True)
+    supplier = models.ForeignKey('mall.Account', on_delete=models.PROTECT, related_name='price_changes')
+    item = models.ForeignKey('mall.SupplierItem', on_delete=models.PROTECT, related_name='price_changes')
+    price_list = models.ForeignKey(PriceList, on_delete=models.PROTECT, null=True, blank=True, related_name='changes')
+    kind = models.CharField(max_length=20, choices=PRICE_CHANGE_KINDS)
+    old_value = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    new_value = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    old_text = models.CharField(max_length=60, blank=True, default='')
+    new_text = models.CharField(max_length=60, blank=True, default='')
+    source = models.CharField(max_length=10, choices=PRICE_WRITE_SOURCES)
+    reference = models.CharField(max_length=120, blank=True, default='')
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        constraints = [models.CheckConstraint(condition=Q(kind__in=choice_values(PRICE_CHANGE_KINDS)), name='valid_price_change_kind')]
+        indexes = [models.Index(fields=['supplier', 'item', '-created_at'], name='price_change_item_idx'),
+                   models.Index(fields=['price_list', '-created_at'], name='price_change_list_idx')]
 
 
 def pricing_settings(account, *, lock=False):

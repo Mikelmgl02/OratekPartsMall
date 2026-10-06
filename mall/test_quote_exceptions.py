@@ -163,7 +163,8 @@ class QuoteExceptionTests(APITestCase):
         self.assertEqual((audit.draft_version, audit.publisher_id, audit.publisher_permission, audit.order_exceptions, audit.accept_check),
                          (ready['draft_version'], self.seller_a.pk, 'staff', [], None))
         self.assertEqual(audit.settings_snapshot, {'version': 1, 'over_stock_policy': 'confirm', 'over_request_policy': 'confirm',
-                                                   'accept_shortfall_policy': 'block', 'publish_min_permission': 'staff', 'prefill_quantity': 'requested'})
+                                                   'accept_shortfall_policy': 'block', 'publish_min_permission': 'staff', 'prefill_quantity': 'requested',
+                                                   'usd_pab_parity': True})
         rows = {row.line.order_line_id: row for row in DealQuotationLineAudit.objects.select_related('line')}
         self.assertEqual(set(rows), set(quotation.lines.values_list('order_line_id', flat=True)))
         first = rows[uuid.UUID(ids[self.item_a.pk])]
@@ -177,7 +178,8 @@ class QuoteExceptionTests(APITestCase):
         event = PricingAuditEvent.objects.get(kind='quotation_published')
         self.assertEqual((event.supplier_id, event.actor_id, event.client_id, event.order_id, event.object_id, event.payload),
                          (self.supplier_a.pk, self.seller_a.pk, self.client_account.pk, order.pk, str(quotation.pk),
-                          {'revision': 1, 'draft_version': ready['draft_version'], 'confirmed': 2, 'unacknowledged': 0}))
+                          {'revision': 1, 'draft_version': ready['draft_version'], 'confirmed': 2, 'unacknowledged': 0,
+                           'price_sources': {'manual': 2}}))
 
     def test_block_policies_refuse_even_acknowledged_alerts_and_the_legacy_path_enforces_only_them(self):
         order = self.reviewed()

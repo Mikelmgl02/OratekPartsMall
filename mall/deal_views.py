@@ -1,6 +1,7 @@
 """Account-scoped deal transitions. A row lock and version protect every decision."""
 import hashlib
 import json
+from collections import Counter
 from decimal import Decimal
 
 from django.db import transaction
@@ -15,6 +16,7 @@ from rest_framework.views import APIView
 
 from .availability import record_accept_check, shortfall_since_quote
 from .models import Membership
+from .pricing_engine import ENGINE_VERSION, price_lines
 from .pricing_models import pricing_settings, record_pricing_event
 from .quotation_exceptions import audit_findings, compute_exceptions, publish_blockers
 from .quote_draft_models import DealQuotationAudit, DealQuotationDraft, DealQuotationLineAudit
@@ -30,7 +32,8 @@ RETURN_SHORTFALL_DETAIL = 'Las existencias cambiaron desde esta versión. Prepar
 # Shown to the client: it must never carry quantities or any other digit.
 ACCEPT_SHORTFALL_DETAIL = ('El proveedor debe confirmar la disponibilidad de algunos artículos antes de cerrar el acuerdo. '
                            'Solicita un ajuste para que el proveedor prepare una versión actualizada.')
-SETTINGS_SNAPSHOT = ('version', 'over_stock_policy', 'over_request_policy', 'accept_shortfall_policy', 'publish_min_permission', 'prefill_quantity')
+SETTINGS_SNAPSHOT = ('version', 'over_stock_policy', 'over_request_policy', 'accept_shortfall_policy', 'publish_min_permission', 'prefill_quantity',
+                     'usd_pab_parity')
 
 
 def iso(value):
@@ -133,44 +136,53 @@ def bind_draft(row, latest, data):
 
 
 def quote_exceptions(row, account, data, draft):
-    """Exceptions recomputed with live stock: the draft's own values and acknowledgements, or the payload on the legacy path."""
+    """Exceptions recomputed with live stock and live suggestions: the draft's own values and acknowledgements, or the payload on the
+    legacy path (which carries no price source, so it never raises stale_price)."""
     settings_row, lines = pricing_settings(account), {line.pk: line for line in row.lines.select_related('supplier_item')}
     drafted = {line.order_line_id: line for line in draft.lines.all()} if draft else {}
     offered = {line['order_line_id']: line for line in data['lines']}
-    values = {pk: {'quantity': drafted[pk].quantity, 'unit_price': drafted[pk].unit_price, 'quantity_source': drafted[pk].quantity_source}
+    values = {pk: {field: getattr(drafted[pk], field) for field in ('quantity', 'unit_price', 'quantity_source', 'price_source', 'engine_fingerprint')}
               if pk in drafted else {'quantity': offered[pk]['quantity'], 'unit_price': offered[pk]['unit_price']} for pk in lines}
     stock = stock_by_line(lines.values())
-    result = compute_exceptions(list(lines.values()), values, stock, settings_row, acknowledgements={pk: line.acknowledgements for pk, line in drafted.items()},
+    pricing = price_lines(account, row.client_id, data['currency'], [(line, values[pk]['quantity']) for pk, line in lines.items()], settings_row=settings_row)
+    result = compute_exceptions(list(lines.values()), values, stock, settings_row, pricing=pricing,
+                                acknowledgements={pk: line.acknowledgements for pk, line in drafted.items()},
                                 order_acknowledgements=draft.order_acknowledgements if draft else ())
-    return {'settings': settings_row, 'stock': stock, 'drafted': drafted, 'result': result}
+    return {'settings': settings_row, 'stock': stock, 'drafted': drafted, 'result': result, 'pricing': pricing}
 
 
 def write_quote_audit(quotation, prior, request, account, draft, context):
     """Supplier-only trace of a publication: live stock at quote time, server-derived sources and every alert with its confirmation."""
-    settings_row, stock, drafted, result = context['settings'], context['stock'], context['drafted'], context['result']
+    settings_row, stock, drafted, result, pricing = context['settings'], context['stock'], context['drafted'], context['result'], context['pricing']
     previous = {line.order_line_id: line for line in prior.lines.all()} if prior else {}
     permission = Membership.objects.filter(account=account, user=request.user).values_list('permission', flat=True).first()
+    configured = any(suggestion.configured for suggestion in pricing.values())
     DealQuotationAudit.objects.create(quotation=quotation, draft_version=draft.draft_version if draft else None, publisher=request.user,
-                                      publisher_permission=permission, settings_snapshot={field: getattr(settings_row, field) for field in SETTINGS_SNAPSHOT},
+                                      publisher_permission=permission, engine_version=ENGINE_VERSION if configured else '',
+                                      settings_snapshot={field: getattr(settings_row, field) for field in SETTINGS_SNAPSHOT},
                                       order_exceptions=audit_findings(result['order']))
     def sources(line):
-        drafted_line, prior_line = drafted.get(line.order_line_id), previous.get(line.order_line_id)
-        # S2 derives previous or manual (none for a blank price offered at 0 units); the engine source arrives with price lists.
-        price = 'none' if drafted_line and drafted_line.unit_price is None else 'previous' if prior_line and prior_line.unit_price == line.unit_price else 'manual'
+        drafted_line, prior_line, suggestion = drafted.get(line.order_line_id), previous.get(line.order_line_id), pricing[line.order_line_id]
+        # Derived on the server, never taken from the client: the live suggestion, then the previous revision, else a typed price.
+        price = 'none' if drafted_line and drafted_line.unit_price is None else 'engine' if suggestion.unit_price is not None and suggestion.unit_price == line.unit_price \
+            else 'previous' if prior_line and prior_line.unit_price == line.unit_price else 'manual'
         quantity = drafted_line.quantity_source if drafted_line else 'previous' if prior_line and prior_line.quantity == line.quantity \
             else 'requested' if line.quantity == line.order_line.quantity else 'manual'
         return price, quantity
     audits = []
     for line in quotation.lines.select_related('order_line'):
-        entry, (price_source, quantity_source) = stock[line.order_line_id], sources(line)
+        entry, (price_source, quantity_source), suggestion = stock[line.order_line_id], sources(line), pricing[line.order_line_id]
         audits.append(DealQuotationLineAudit(line=line, available_at_quote=entry['available'], identity_ok_at_quote=entry['identity_ok'],
-                                             price_source=price_source, quantity_source=quantity_source,
+                                             price_source=price_source, quantity_source=quantity_source, suggested_price=suggestion.unit_price,
+                                             engine_fingerprint=suggestion.fingerprint if suggestion.configured else '',
+                                             explanation=suggestion.explanation if suggestion.configured else {},
                                              exceptions=audit_findings(result['lines'][line.order_line_id])))
     DealQuotationLineAudit.objects.bulk_create(audits)
     found = [item for items in [result['order'], *result['lines'].values()] for item in items if item['severity'] == 'confirm']
     record_pricing_event(account, request.user, 'quotation_published', client_id=quotation.order.client_id, order=quotation.order, object_id=str(quotation.pk),
                          payload={'revision': quotation.revision, 'draft_version': draft.draft_version if draft else None,
-                                  'confirmed': sum(item['acknowledged'] for item in found), 'unacknowledged': sum(not item['acknowledged'] for item in found)})
+                                  'confirmed': sum(item['acknowledged'] for item in found), 'unacknowledged': sum(not item['acknowledged'] for item in found),
+                                  'price_sources': dict(Counter(audit.price_source for audit in audits))})
 
 
 class DealActions(APIView):

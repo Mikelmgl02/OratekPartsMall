@@ -57,6 +57,9 @@ async function mockSession(page: Page, accounts = supplierAccounts.slice(0, 1)) 
       reported_quantity: 10, reserved_quantity: 0, available_quantity: 10, updated_at: '2026-10-02T12:00:00Z' },
   ] } }));
   await page.route(/\/api\/market\/accounts\/[^/]+\/sent-requests(?:\?.*)?$/, route => route.fulfill({ json: emptyPage }));
+  // Keyboard navigation passes through the private Precios section.
+  await page.route(/\/api\/market\/accounts\/[^/]+\/price-lists$/, route => route.fulfill({ json: { can_configure: true, item_count: 0, results: [] } }));
+  await page.route(/\/api\/market\/accounts\/[^/]+\/prices(?:\?.*)?$/, route => route.fulfill({ json: emptyPage }));
   await page.route('**/request-state', route => route.fulfill({ json: { totals: {sent_quantity:0, pending_quantity:0, reviewed_quantity:0}, items:[] } }));
   await page.route(/\/api\/market\/accounts\/[^/]+\/deals\/[^/]+\/messages(?:\?.*)?$/, route => route.fulfill({ json: { results: [], cursor: 0, has_more: false, has_earlier: false } }));
   await page.route(/\/api\/market\/accounts\/[^/]+\/requests\/[^/]+\/review$/, route => route.fulfill({ json: detail('reviewed') }));
@@ -190,9 +193,16 @@ test('ordinary supplier searches, filters and pages requests, sees each own item
   await expect(sidebar.getByRole('tablist')).toHaveAttribute('aria-orientation', 'vertical');
   const requestsTab = sidebar.getByRole('tab', { name: 'Solicitudes', exact: true });
   await requestsTab.focus();
+  // Arrows cycle through the three sections; Home and End jump to the first and the last.
   await requestsTab.press('ArrowUp');
+  await expect(sidebar.getByRole('tab', { name: 'Precios', exact: true })).toBeFocused();
+  await page.keyboard.press('ArrowUp');
   await expect(sidebar.getByRole('tab', { name: 'Inventario', exact: true })).toBeFocused();
-  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('ArrowUp');
+  await expect(requestsTab).toBeFocused();
+  await page.keyboard.press('Home');
+  await expect(sidebar.getByRole('tab', { name: 'Inventario', exact: true })).toBeFocused();
+  await page.keyboard.press('End');
   await expect(requestsTab).toBeFocused();
   await expect(requestsTab).toHaveAttribute('aria-selected', 'true');
   await expect(requests(page).getByRole('article')).toHaveCount(2);
