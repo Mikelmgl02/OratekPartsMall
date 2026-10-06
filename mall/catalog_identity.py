@@ -11,9 +11,16 @@ from .catalog_families import normalized_reference
 from .models import CatalogIdentityChange, Part, PartCode
 
 
+def company_registry():
+    """An explicit CATALOG_COMPANY_SUFFIXES setting wins; otherwise the admin suffix table (company_code TAGs, FEB/FEBEST)."""
+    if hasattr(settings, 'CATALOG_COMPANY_SUFFIXES'):
+        return settings.CATALOG_COMPANY_SUFFIXES
+    from .catalog_suffixes import company_suffixes
+    return company_suffixes()
+
+
 def company_reference(sku):
-    # This registry is deliberately explicit and can be extended per deployment.
-    registry = getattr(settings, 'CATALOG_COMPANY_SUFFIXES', {'FEB': 'FEBEST', 'FEBEST': 'FEBEST'})
+    registry = company_registry()
     base, sep, suffix = sku.strip().upper().rpartition('-')
     if sep and base and suffix in registry:
         return {'code': base, 'brand': registry[suffix].strip().upper(), 'ref_type': 'company'}
@@ -124,7 +131,7 @@ def prefer_oem(part, *, actor=None, selected=None, confirm_current=False):
 def reconcile_identities(actor=None):
     """Shared by every feed: inexpensive local references before AI matching."""
     criteria = Q(codes__ref_type='oem')
-    for suffix in getattr(settings, 'CATALOG_COMPANY_SUFFIXES', {'FEB': 'FEBEST', 'FEBEST': 'FEBEST'}):
+    for suffix in company_registry():
         criteria |= Q(sku__endswith='-' + suffix)
     ids = Part.objects.filter(criteria, active=True, merged_into__isnull=True).values_list('pk', flat=True).distinct()
     promoted = 0

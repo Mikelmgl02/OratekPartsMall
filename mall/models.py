@@ -297,3 +297,4 @@ from .pricing_models import (SupplierPricingSettings, PricingAuditEvent, PriceLi
 from .quote_draft_models import DealQuotationDraft, DealQuotationDraftLine, DealQuotationAudit, DealQuotationLineAudit
 from .price_import_models import PriceImportJob, PriceImportBatch
 from .quote_assistant_models import QuoteAssistantRun, AIUsageRecord
+from .catalog_suffix_models import CatalogCodeSuffix, CatalogCodeSuffixChange

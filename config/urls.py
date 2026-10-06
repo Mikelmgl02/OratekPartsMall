@@ -17,6 +17,7 @@ from mall.catalog_assistant import CatalogAssistantList, CatalogAssistantDetail
 from mall.catalog_import_issues import CatalogImportIssueList, CatalogImportIssueDetail
 from mall.catalog_grouping import CatalogGroupingMerge
 from mall.oem_lookup import CatalogOEMLookup
+from mall.catalog_suffix_views import CompanySuffixes, SuffixDetail, SuffixList
 from mall.catalog_media import CatalogImages, CatalogImageDetail, CatalogImageOrder
 from mall.catalog_grouping_suggestions import CatalogGroupingList, CatalogGroupingClassify
 from mall.supplier_import import SupplierInventoryImport, SupplierInventoryImportTemplate, SupplierInventoryImportJobView, SupplierInventoryImportErrors
@@ -58,6 +59,9 @@ urlpatterns = [
     path('api/v1/management/catalog/import/jobs/<uuid:pk>/', CatalogImportJobView.as_view()),
     path('api/v1/management/catalog/import/jobs/<uuid:pk>/classification/', CatalogClassification.as_view()),
     path('api/v1/management/catalog/<uuid:pk>/oem-lookup/', CatalogOEMLookup.as_view()),
+    path('api/v1/management/catalog/suffixes/', SuffixList.as_view()),
+    path('api/v1/management/catalog/suffixes/<path:token>/', SuffixDetail.as_view()),
+    path('api/v1/management/catalog/company-suffixes/', CompanySuffixes.as_view()),
     path('api/v1/management/catalog/<uuid:pk>/', management.CatalogDetail.as_view()),
     path('api/v1/management/catalog/<uuid:pk>/images/', CatalogImages.as_view()),
     path('api/v1/management/catalog/<uuid:pk>/images/order/', CatalogImageOrder.as_view()),

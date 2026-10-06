@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Search, LoaderCircle, Plus } from 'lucide-react';
 import { ManagedPart, PartReference, request } from '@/lib/types';
+import { CompanySuffixes, LEGACY_COMPANY_SUFFIXES, companyCode } from '@/lib/suffix-types';
 import { UppercaseInput } from './uppercase-field';
 
 type Suggestion = PartReference & { relationship: 'equivalent' | 'component' | 'uncertain'; source_url: string; reason: string };
@@ -10,10 +11,16 @@ type Lookup = { references: Suggestion[]; note: string; cached: boolean; sources
 const relationLabel = { equivalent: 'POSIBLE EQUIVALENCIA', component: 'REFERENCIA AL CONJUNTO', uncertain: 'POR VERIFICAR' };
 
 export default function OEMReferenceLookup({ part, onAdd }: { part: ManagedPart; onAdd: (rows: PartReference[]) => void }) {
+  // Company suffixes come from the suffix table (Inventario → Sufijos); they load when the panel first opens.
+  const [suffixes, setSuffixes] = useState<Record<string, string> | null>(null);
+  const known = suffixes ?? {};
   const companies = part.codes.filter(row => row.ref_type === 'company' || row.kind === 'manufacturer');
-  const inferred = companies.find(row => !/-FEB(?:EST)?$/.test(row.code)) || companies[0];
-  const [company, setCompany] = useState(inferred?.brand || (/-FEB(?:EST)?$/.test(part.sku) ? 'FEBEST' : ''));
-  const [code, setCode] = useState(inferred?.code || part.sku.replace(/-FEB(?:EST)?$/, ''));
+  const inferred = companies.find(row => !companyCode(row.code, known)) || companies[0];
+  const own = companyCode(part.sku, known);
+  const [companyInput, setCompany] = useState<string | null>(null);
+  const [codeInput, setCode] = useState<string | null>(null);
+  const company = companyInput ?? (inferred?.brand || own?.brand || '');
+  const code = codeInput ?? (inferred?.code || own?.code || part.sku);
   const [result, setResult] = useState<Lookup | null>(null);
   const [busy, setBusy] = useState(false); const [error, setError] = useState('');
   const [selected, setSelected] = useState<number[]>([]); const [reviewed, setReviewed] = useState(false);
@@ -25,10 +32,15 @@ export default function OEMReferenceLookup({ part, onAdd }: { part: ManagedPart;
     catch(error) { setError(error instanceof Error ? error.message : 'No se pudo consultar el OEM.'); }
     finally { setBusy(false); }
   }
-  return <details className="oem-lookup"><summary>Buscar referencias OEM con IA</summary><div className="stack-form">
+  function opened(open: boolean) {
+    if (!open || suffixes) return;
+    // An API that does not list them yet (older backend) keeps the previous registry instead of inferring nothing.
+    request<CompanySuffixes>('/api/management/catalog/company-suffixes').then(result => setSuffixes(result?.suffixes ?? LEGACY_COMPANY_SUFFIXES)).catch(() => setSuffixes(LEGACY_COMPANY_SUFFIXES));
+  }
+  return <details className="oem-lookup" onToggle={event => opened(event.currentTarget.open)}><summary>Buscar referencias OEM con IA</summary><div className="stack-form">
     <p>Consulta fuentes del fabricante para este artículo. Reutilizamos las búsquedas guardadas para ahorrar tokens. Las propuestas se revisan antes de agregarlas.</p>
-    <div className="form-row"><label>Empresa del código<UppercaseInput disabled={busy} value={company} onChange={event => {setCompany(event.target.value); reset();}} maxLength={120} placeholder="EJ.: FEBEST"/></label><label>Código de empresa<UppercaseInput disabled={busy} value={code} onChange={event => {setCode(event.target.value); reset();}} maxLength={120}/></label></div>
-    <button type="button" className="button soft" disabled={busy || !code.trim()} onClick={search}>{busy ? <LoaderCircle size={16} className="spin"/> : <Search size={16}/>} {busy ? 'Consultando fuentes…' : 'Buscar OEM'}</button>
+    <div className="form-row"><label>Empresa del código<UppercaseInput disabled={busy || !suffixes} value={company} onChange={event => {setCompany(event.target.value); reset();}} maxLength={120} placeholder="EJ.: FEBEST"/></label><label>Código de empresa<UppercaseInput disabled={busy || !suffixes} value={code} onChange={event => {setCode(event.target.value); reset();}} maxLength={120}/></label></div>
+    <button type="button" className="button soft" disabled={busy || !suffixes || !code.trim()} onClick={search}>{busy ? <LoaderCircle size={16} className="spin"/> : <Search size={16}/>} {busy ? 'Consultando fuentes…' : 'Buscar OEM'}</button>
     {error && <div role="alert" className="notice error">{error}</div>}
     {result && <><p>{result.note}</p><small>{result.cached ? 'BÚSQUEDA GUARDADA · SIN NUEVA LLAMADA A IA' : `BÚSQUEDA CON FUENTES · ${result.metrics.total_tokens ?? 0} TOKENS`}</small>
       {!result.references.length && <p>No hay referencias OEM propuestas. Puedes registrar una referencia verificada en la biblioteca de equivalencias.</p>}
