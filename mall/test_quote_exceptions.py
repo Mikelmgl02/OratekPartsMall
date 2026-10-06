@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest import skipUnless
 
 from django.db import connection
+from django.test import override_settings
 from rest_framework.test import APITestCase, APITransactionTestCase
 
 from . import test_deals as deal_tests
@@ -181,7 +182,9 @@ class QuoteExceptionTests(APITestCase):
                           {'revision': 1, 'draft_version': ready['draft_version'], 'confirmed': 2, 'unacknowledged': 0,
                            'price_sources': {'manual': 2}}))
 
+    @override_settings(QUOTES_REQUIRE_DRAFT=False)
     def test_block_policies_refuse_even_acknowledged_alerts_and_the_legacy_path_enforces_only_them(self):
+        """The draftless legacy path exists only with QUOTES_REQUIRE_DRAFT=0."""
         order = self.reviewed()
         quantities, prices = {self.item_a: 9, self.item_a2: 2}, {self.item_a: '5.00', self.item_a2: '3.00'}
         legacy = self.publish(order, quantities, prices)
@@ -378,9 +381,11 @@ class ConcurrentAvailabilityTests(APITransactionTestCase):
             order = SupplierRequest.objects.get(pk=result['requests'][0]['id'])
             self.call(self.seller, f'/api/v1/accounts/{self.supplier.pk}/requests/{order.pk}/review/', {})
             order.refresh_from_db()
+            lines = [{'order_line_id': str(order.lines.get().pk), 'quantity': 4, 'unit_price': '1.25'}]
+            _, draft = self.call(self.seller, f'/api/v1/accounts/{self.supplier.pk}/requests/{order.pk}/draft/',
+                                 {'save_id': str(uuid.uuid4()), 'expected_draft_version': 0, 'lines': lines})
             code, quoted = self.call(self.seller, f'/api/v1/accounts/{self.supplier.pk}/deals/{order.pk}/actions/', {
-                'operation_id': str(uuid.uuid4()), 'expected_version': order.version, 'action': 'quote',
-                'lines': [{'order_line_id': str(order.lines.get().pk), 'quantity': 4, 'unit_price': '1.25'}]})
+                'operation_id': str(uuid.uuid4()), 'expected_version': order.version, 'action': 'quote', 'draft_version': draft['draft_version'], 'lines': lines})
             self.assertEqual(code, 200)
             def accept():
                 return self.call(self.buyer, f'/api/v1/accounts/{self.client_account.pk}/deals/{order.pk}/actions/', {

@@ -32,7 +32,7 @@ from .pricing_models import PricingAuditEvent, PricingRule, SupplierPricingSetti
 from .quote_assistant import RESPONSE_SCHEMA, QuoteAssistantProviderError, validate_output
 from .quote_assistant_models import AIUsageRecord, QuoteAssistantRun
 from .quote_draft_models import DealQuotationDraft, DealQuotationLineAudit
-from .quote_drafts import QuoteAssistantThrottle
+from .quote_drafts import ASSISTANT_OFF_DETAIL, QuoteAssistantThrottle
 from .request_models import SupplierRequest
 
 A, A2 = '58411-1R000-G', '58411-1R000-KSM'
@@ -81,6 +81,7 @@ class QuoteAssistantTests(APITestCase):
     submit = request_tests.SupplierRequestWorkflowTests.submit
     review = deal_tests.DealWorkflowTests.review
     action = deal_tests.DealWorkflowTests.action
+    drafted = deal_tests.DealWorkflowTests.drafted
     messages = deal_tests.DealWorkflowTests.messages
     draft_url = draft_tests.QuoteDraftTests.draft_url
     save = draft_tests.QuoteDraftTests.save
@@ -155,8 +156,8 @@ class QuoteAssistantTests(APITestCase):
         order = self.reviewed()
         self.say(order, 'MENSAJE-ANTERIOR-A-LA-VERSION')
         self.client.force_authenticate(self.seller_a)
-        self.assertEqual(self.action(order, 'quote', lines=[{'order_line_id': str(line.pk), 'quantity': line.quantity, 'unit_price': '731.19'}
-                                                            for line in order.lines.all()]).status_code, 200)
+        lines = [{'order_line_id': str(line.pk), 'quantity': line.quantity, 'unit_price': '731.19'} for line in order.lines.all()]
+        self.assertEqual(self.action(order, 'quote', lines=lines, draft_version=self.drafted(order, lines)).status_code, 200)
         self.client.force_authenticate(self.buyer)
         quotation = order.quotations.get()
         self.assertEqual(self.action(order, 'request_adjustment', quotation_id=str(quotation.pk), reason='solo necesito 2 del tambor').status_code, 200)
@@ -332,11 +333,26 @@ class QuoteAssistantTests(APITestCase):
         self.assertEqual(DealQuotationDraft.objects.get().draft_version, 1)
         self.save(order, 1, lines=[{'order_line_id': lines[A]['order_line_id'], 'quantity': 3}])
         self.assertEqual(self.price_of(order, A), ('9.00', 'engine', 'manual'))
+        # The same texts again are a free cache hit that never re-offers what the supplier decided: its proposals keep their decisions.
         rerun = self.completed(order, 2)
-        stale = self.decide(order, rerun.data['latest_run']['id'], 1, [(self.proposals(rerun)['quantity_change']['id'], 'apply')])
-        self.assertEqual((stale.status_code, stale.data['draft']['draft_version']), (409, 2))
         self.assertEqual(QuoteAssistantRun.objects.filter(cached=True).count(), 1, 'The second interpretation of the same texts was free.')
-        applied_again = self.decide(order, rerun.data['latest_run']['id'], 2, [(self.proposals(rerun)['quantity_change']['id'], 'apply')])
+        self.assertEqual({item['kind']: item['decision'] for item in rerun.data['latest_run']['proposals']},
+                         {'quantity_change': 'applied', 'line_note': 'applied', 'terms': 'applied', 'unmatched': 'dismissed', 'price_request': 'dismissed', 'question': 'dismissed'})
+        noop = self.decide(order, rerun.data['latest_run']['id'], 2, [(self.proposals(rerun)['terms']['id'], 'apply')])
+        self.assertEqual((noop.status_code, noop.data['draft_version'], noop.data['terms']), (200, 2, 'ENTREGA MAÑANA EN EL TALLER DEL CLIENTE'))
+        self.assertEqual(self.price_of(order, A), ('9.00', 'engine', 'manual'))
+        self.assertNotIn('client_price_request', [item['code'] for item in self.by_code(self.get_draft(order))[A]['exceptions']])
+        # New client text is a new interpretation: its quantity is offered again, and a stale draft version conflicts.
+        self.say(order, 'MEJOR SOLO 2 DEL TAMBOR')
+        with self.provider({**OUTPUT, 'proposals': [{'i': 0, 'kind': 'quantity_change', 'quantity': 2, 'evidence': 'MEJOR SOLO 2 DEL TAMBOR'}]}):
+            rerun = self.start(order, 2)
+        again = self.proposals(rerun)
+        self.assertEqual((again['quantity_change']['decision'], again['terms']['decision']), (None, None))
+        stale = self.decide(order, rerun.data['latest_run']['id'], 1, [(again['quantity_change']['id'], 'apply')])
+        self.assertEqual((stale.status_code, stale.data['draft']['draft_version']), (409, 2))
+        # Its terms item is already in the draft (applied from the first interpretation), so applying it never repeats the text.
+        applied_again = self.decide(order, rerun.data['latest_run']['id'], 2, [(again['quantity_change']['id'], 'apply'), (again['terms']['id'], 'apply')])
+        self.assertEqual((applied_again.status_code, applied_again.data['terms']), (200, 'ENTREGA MAÑANA EN EL TALLER DEL CLIENTE'))
         self.assertEqual(self.price_of(order, A), ('10.00', 'engine', 'assistant'))
         # Publishing links the applying run in the supplier-only trace; prices are re-derived on the server.
         draft = applied_again.data
@@ -379,6 +395,22 @@ class QuoteAssistantTests(APITestCase):
         self.client.force_authenticate(self.seller_a)
         self.assertEqual(self.action(order, 'return_quote', quotation_id=str(order.quotations.get().pk)).status_code, 200)
         self.assertEqual(QuoteAssistantRun.objects.get(pk=adjusted.data['latest_run']['id']).decisions, {})
+
+    def test_stored_proposals_cannot_be_applied_or_dismissed_once_the_owner_disables_the_assistant(self):
+        order = self.reviewed()
+        response = self.completed(order)
+        run_id, found = response.data['latest_run']['id'], self.proposals(response)
+        SupplierPricingSettings.objects.filter(supplier=self.supplier_a).update(assistant_enabled=False)
+        for action in ['apply', 'dismiss']:
+            refused = self.decide(order, run_id, 0, [(found['terms']['id'], action)])
+            self.assertEqual((refused.status_code, refused.data['detail']), (403, ASSISTANT_OFF_DETAIL))
+        self.assertFalse(DealQuotationDraft.objects.exists())
+        self.assertEqual(QuoteAssistantRun.objects.get().decisions, {})
+        self.assertFalse(PricingAuditEvent.objects.filter(kind='assistant_applied').exists())
+        # Turned on again, the same stored proposal applies normally.
+        SupplierPricingSettings.objects.filter(supplier=self.supplier_a).update(assistant_enabled=True)
+        applied = self.decide(order, run_id, 0, [(found['terms']['id'], 'apply')])
+        self.assertEqual((applied.status_code, applied.data['terms']), (200, 'ENTREGA MAÑANA EN EL TALLER DEL CLIENTE'))
 
     def test_a_cache_hit_makes_no_call_and_the_same_run_id_is_idempotent(self):
         order = self.reviewed()

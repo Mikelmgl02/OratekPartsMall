@@ -20,6 +20,7 @@ from urllib.error import URLError
 
 from django.conf import settings
 from django.db import connection, transaction
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework.exceptions import APIException
 
@@ -38,6 +39,8 @@ PROMPT_VERSION = '2026-10-06'
 FEATURE = 'quote_assistant'
 MAX_LINES, NOTES_CAP, REASON_CAP, MESSAGE_CAP, MAX_MESSAGES, TEXT_CAP = 150, 4000, 4000, 4000, 12, 12000
 CLAIM_SECONDS, CACHE_DAYS, PROVIDER_TIMEOUT, MAX_OUTPUT_TOKENS = 75, 30, 45, 1500
+# Set in a run's metrics by `python -m mall.purge_quote_assistant` once its text (summary, notes, evidence) is blanked after CACHE_DAYS.
+PURGED_KEY = 'text_purged_at'
 CLAIM_LOCK = 724631110  # pg advisory lock key (matching_worker uses 724631109)
 LINE_KINDS = ('quantity_change', 'remove_line', 'line_note')
 TERMS_KINDS = ('entrega', 'retiro', 'factura', 'otro')
@@ -285,9 +288,18 @@ def validate_output(output, lines, texts):
 
 
 def cached_run(row, fingerprint, now):
-    """The cache: a completed provider answer for the same order and input, younger than 30 days (its proposals point at this order's lines)."""
+    """The cache: a completed provider answer for the same order and input, younger than 30 days (its proposals point at this order's lines).
+    A purged output is never served, whatever the retention and cache windows."""
     return QuoteAssistantRun.objects.filter(order=row, input_fingerprint=fingerprint, status='completed', cached=False,
-                                            created_at__gte=now - timedelta(days=CACHE_DAYS)).order_by('-created_at').first()
+                                            created_at__gte=now - timedelta(days=CACHE_DAYS)).exclude(metrics__has_key=PURGED_KEY).order_by('-created_at').first()
+
+
+def taken_decisions(source, latest):
+    """Decisions already taken in this revision on the same output (the cache source and its cached copies), so a cache hit never re-offers a
+    proposal the supplier applied or dismissed. Each keeps the run it was taken on, which the publication trace links."""
+    runs = QuoteAssistantRun.objects.filter(Q(pk=source.pk) | Q(cached=True, metrics__cached_from=str(source.pk)), order_id=source.order_id,
+                                            base_quotation=latest, status='completed').order_by('created_at', 'id').only('id', 'decisions')
+    return {key: {'run_id': str(run.pk), **decision} for run in runs for key, decision in run.decisions.items()}
 
 
 def audit(run, user, row, **payload):
@@ -303,7 +315,7 @@ def start_run(row, account, user, run_id, latest, draft_version, lines, payload,
               'engine_version': ENGINE_VERSION, 'model': model, 'created_by': user}
     hit = cached_run(row, fingerprint, now)
     if hit:
-        run = QuoteAssistantRun.objects.create(**common, status='completed', cached=True, output=hit.output, finished_at=now,
+        run = QuoteAssistantRun.objects.create(**common, status='completed', cached=True, output=hit.output, finished_at=now, decisions=taken_decisions(hit, latest),
                                                metrics={'cached': True, 'cached_from': str(hit.pk), 'rejected_items': hit.metrics.get('rejected_items', 0)})
         record_usage(FEATURE, account, cached_calls=1)
         audit(run, user, row, proposals=len(hit.output.get('proposals', [])))
@@ -397,7 +409,9 @@ def run_data(run, lines, fingerprint=None):
 
 
 def latest_run(row, latest):
-    return QuoteAssistantRun.objects.select_related('created_by').filter(order=row, base_quotation=latest, status='completed').order_by('-created_at', '-id').first()
+    # A run whose text was purged after 30 days is no longer shown; its proposals cannot be applied either.
+    return QuoteAssistantRun.objects.select_related('created_by').filter(order=row, base_quotation=latest, status='completed').exclude(
+        metrics__has_key=PURGED_KEY).order_by('-created_at', '-id').first()
 
 
 def assistant_block(row, settings_row, latest, lines, *, run=None):
@@ -450,6 +464,7 @@ def applied_runs(order, base_quotation):
     links = {}
     for run in QuoteAssistantRun.objects.filter(order=order, base_quotation=base_quotation, status='completed').order_by('created_at', 'id').only('id', 'output', 'decisions'):
         for proposal in run.output.get('proposals', []):
-            if proposal.get('order_line_id') and run.decisions.get(proposal['id'], {}).get('action') == 'applied':
-                links[uuid.UUID(proposal['order_line_id'])] = run.pk
+            decision = run.decisions.get(proposal['id'], {})
+            if proposal.get('order_line_id') and decision.get('action') == 'applied':
+                links[uuid.UUID(proposal['order_line_id'])] = uuid.UUID(decision['run_id']) if decision.get('run_id') else run.pk
     return links

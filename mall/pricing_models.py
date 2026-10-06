@@ -17,7 +17,7 @@ SHORTFALL_POLICY_CHOICES = [('block', 'Bloquear la confirmación'), ('allow', 'P
 PREFILL_QUANTITY_CHOICES = [('requested', 'Solicitadas'), ('available', 'Hasta las existencias')]
 OWNER_ONLY_SETTINGS = ('config_min_permission', 'publish_min_permission', 'assistant_enabled')
 PRICING_AUDIT_KINDS = {'settings_changed', 'price_list_changed', 'prices_edited', 'price_import_applied', 'profile_changed',
-                       'rule_created', 'rule_updated', 'rule_archived', 'draft_discarded', 'draft_review_requested',
+                       'rule_created', 'rule_updated', 'rule_archived', 'draft_discarded', 'draft_review_requested', 'draft_review_withdrawn',
                        'quotation_published', 'accept_blocked_shortfall', 'accept_with_shortfall', 'assistant_run', 'assistant_applied'}
 
 

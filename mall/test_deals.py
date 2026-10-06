@@ -7,9 +7,11 @@ from django.db import close_old_connections, connection
 from django.test.utils import CaptureQueriesContext
 from rest_framework.test import APITestCase, APITransactionTestCase, APIClient
 
+from .deal_views import DRAFT_REQUIRED
 from .models import Account, Membership, Part, Role, SupplierItem, User
+from .quote_draft_models import DealQuotationDraft
 from .request_models import (SupplierRequest, SupplierRequestLine, ClientRequestSubmission,
-                             RequestContribution, DealQuotation, DealEvent, DealMessage)
+                             RequestContribution, DealQuotation, DealEvent, DealMessage, DealCommand)
 from . import test_requests as request_tests
 
 
@@ -42,10 +44,29 @@ class DealWorkflowTests(APITestCase):
                 'action': action, **extra}
         return self.client.post(f'/api/v1/accounts/{account.pk}/deals/{order.pk}/actions/', body, format='json')
 
-    def quote(self, order, **kwargs):
-        return self.action(order, 'quote', lines=[{'order_line_id': str(line.pk), 'quantity': line.quantity,
-                                                'unit_price': '12.35'} for line in order.lines.all()],
-                           terms=' retiro mañana ', **kwargs)
+    def drafted(self, order, lines, currency='USD', terms=''):
+        """Saves the lines, currency and terms as the order's draft and confirms its alerts -> the draft_version to publish."""
+        url = f'/api/v1/accounts/{self.supplier_a.pk}/requests/{order.pk}/draft/'
+        def save(version, changes):
+            return self.client.post(url, {'save_id': str(uuid.uuid4()), 'expected_draft_version': version, 'currency': currency, 'terms': terms,
+                                          'lines': changes}, format='json').data
+        draft = save(self.client.get(url).data['draft']['draft_version'], lines)
+        acks = [{'order_line_id': line['order_line_id'], 'acknowledge': [{'code': item['code'], 'context': item['context']} for item in line['exceptions']
+                                                                         if item['severity'] == 'confirm']}
+                for line in draft['lines'] if any(item['severity'] == 'confirm' for item in line['exceptions'])]
+        if acks:
+            draft = save(draft['draft_version'], acks)
+        self.draft_version = draft['draft_version']
+        return self.draft_version
+
+    def quote(self, order, lines=None, **kwargs):
+        """Publishes through the reviewed draft (QUOTES_REQUIRE_DRAFT): the supplier's quote on an editable order saves its draft first."""
+        order.refresh_from_db()
+        lines = lines or [{'order_line_id': str(line.pk), 'quantity': line.quantity, 'unit_price': '12.35'} for line in order.lines.all()]
+        kwargs.setdefault('terms', ' retiro mañana ')
+        if kwargs.get('account', self.supplier_a) == self.supplier_a and order.status in ('reviewed', 'adjustment') and 'draft_version' not in kwargs:
+            kwargs['draft_version'] = self.drafted(order, lines, kwargs.get('currency', 'USD'), kwargs['terms'])
+        return self.action(order, 'quote', lines=lines, **kwargs)
 
     def messages(self, order, account=None):
         return f'/api/v1/accounts/{(account or self.client_account).pk}/deals/{order.pk}/messages/'
@@ -118,7 +139,7 @@ class DealWorkflowTests(APITestCase):
         self.assertEqual(self.action(order, 'accept', quotation_id=quote1['id']).status_code, 409)
         self.client.force_authenticate(self.seller_a)
         lines = [{'order_line_id': str(line.pk), 'quantity': 1, 'unit_price': '10.00'} for line in order.lines.all()]
-        quote2 = self.action(order, 'quote', lines=lines).data['quotation']
+        quote2 = self.quote(order, lines).data['quotation']
         self.assertEqual((quote2['revision'], quote2['total']), (2, '20.00'))
         self.assertEqual(DealQuotation.objects.get(pk=quote1['id']).total, Decimal('61.75'))
         self.client.force_authenticate(self.buyer)
@@ -141,8 +162,8 @@ class DealWorkflowTests(APITestCase):
         self.action(order, 'request_adjustment', quotation_id=quote1['id'], reason='SOLO UNA UNIDAD')
         self.client.force_authenticate(self.seller_a)
         offered = {self.item_a.pk: 1, self.item_a2.pk: 0}
-        quote2 = self.action(order, 'quote', lines=[{'order_line_id': str(lines[pk].pk), 'quantity': quantity, 'unit_price': '9.00'}
-                                                    for pk, quantity in offered.items()]).data['quotation']
+        quote2 = self.quote(order, [{'order_line_id': str(lines[pk].pk), 'quantity': quantity, 'unit_price': '9.00'}
+                                    for pk, quantity in offered.items()]).data['quotation']
         self.client.force_authenticate(self.buyer)
         self.assertEqual(self.action(order, 'accept', quotation_id=quote2['id']).status_code, 200)
         self.submit(self.payload([(self.item_a, 4), (self.item_b, 6)]))
@@ -164,8 +185,8 @@ class DealWorkflowTests(APITestCase):
         other_item = self.item(self.supplier_a, self.seller_a, 'A-OTRO', '99999-OTRO', 5)
         response = self.submit(self.payload([(self.item_a, 3), (other_item, 2)]))
         order = SupplierRequest.objects.get(pk=response.data['requests'][0]['id']); self.review(order)
-        quote = self.action(order, 'quote', lines=[{'order_line_id': str(line.pk), 'quantity': 0 if line.part_id == self.part.pk else 2,
-                                                   'unit_price': '5.00'} for line in order.lines.all()]).data['quotation']
+        quote = self.quote(order, [{'order_line_id': str(line.pk), 'quantity': 0 if line.part_id == self.part.pk else 2,
+                                    'unit_price': '5.00'} for line in order.lines.all()]).data['quotation']
         self.client.force_authenticate(self.buyer)
         self.assertEqual(self.action(order, 'accept', quotation_id=quote['id']).status_code, 200)
         totals, items = self.request_state()
@@ -178,7 +199,7 @@ class DealWorkflowTests(APITestCase):
         order = self.order(); self.review(order)
         key = uuid.uuid4(); version = order.version
         first = self.quote(order, operation_id=key, expected_version=version)
-        again = self.quote(order, operation_id=key, expected_version=version)
+        again = self.quote(order, operation_id=key, expected_version=version, draft_version=self.draft_version)
         self.assertEqual(again.data, first.data)
         self.assertEqual(DealQuotation.objects.count(), 1)
         quote_id = first.data['quotation']['id']
@@ -222,7 +243,21 @@ class DealWorkflowTests(APITestCase):
             self.assertEqual(self.action(order, 'quote', lines=lines).status_code, 400)
         self.assertFalse(DealQuotation.objects.exists())
         lines = [{'order_line_id': str(value.pk), 'quantity': 0 if value.pk == line.pk else 1, 'unit_price': '3.50'} for value in order.lines.all()]
-        self.assertEqual(self.action(order, 'quote', lines=lines).data['quotation']['total'], '3.50')
+        self.assertEqual(self.quote(order, lines).data['quotation']['total'], '3.50')
+
+    def test_quotes_require_the_reviewed_draft_and_legacy_commands_still_replay(self):
+        order = self.order(); self.review(order)
+        lines = [{'order_line_id': str(line.pk), 'quantity': line.quantity, 'unit_price': '12.35'} for line in order.lines.all()]
+        refused = self.action(order, 'quote', lines=lines)
+        self.assertEqual((refused.status_code, refused.data['detail']), (409, DRAFT_REQUIRED))
+        self.assertFalse(DealQuotation.objects.exists() or DealCommand.objects.exists() or DealQuotationDraft.objects.exists())
+        # Only with the legacy path re-opened (QUOTES_REQUIRE_DRAFT=0) does a draftless quote publish; its stored command replays afterwards.
+        key, version = uuid.uuid4(), order.version
+        with self.settings(QUOTES_REQUIRE_DRAFT=False):
+            legacy = self.action(order, 'quote', lines=lines, operation_id=key, expected_version=version)
+        self.assertEqual(legacy.status_code, 200)
+        self.assertIsNone(DealQuotation.objects.get().audit.draft_version)
+        self.assertEqual(self.action(order, 'quote', lines=lines, operation_id=key, expected_version=version).data, legacy.data)
 
     def test_messages_are_private_durable_retry_safe_and_cursor_paginated(self):
         order = self.order(); body = {'message_id': str(uuid.uuid4()), 'body': ' necesito retiro '}
@@ -314,9 +349,12 @@ class ConcurrentDealTests(APITransactionTestCase):
         self.call(self.seller, f'/api/v1/accounts/{self.supplier.pk}/requests/{order.pk}/review/', {})
         order.refresh_from_db()
         path = f'/api/v1/accounts/{self.supplier.pk}/deals/{order.pk}/actions/'
+        lines = [{'order_line_id': str(order.lines.get().pk), 'quantity': 2, 'unit_price': '1.25'}]
+        _, draft = self.call(self.seller, f'/api/v1/accounts/{self.supplier.pk}/requests/{order.pk}/draft/',
+                             {'save_id': str(uuid.uuid4()), 'expected_draft_version': 0, 'lines': lines})
         def quote(_):
             return self.call(self.seller, path, {'operation_id': str(uuid.uuid4()), 'expected_version': order.version,
-                'action': 'quote', 'lines': [{'order_line_id': str(order.lines.get().pk), 'quantity': 2, 'unit_price': '1.25'}]})
+                'action': 'quote', 'draft_version': draft['draft_version'], 'lines': lines})
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(quote, range(2)))
         self.assertEqual(sorted(value[0] for value in results), [200, 409])

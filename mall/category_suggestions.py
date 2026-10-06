@@ -185,7 +185,7 @@ def category_provider(rows, choices, instructions):
                     'type': 'object', 'properties': {'i': {'type': 'integer'}, 't': {'type': 'integer'},
                     'c': {'type': 'integer'}}, 'required': ['i', 't', 'c'], 'additionalProperties': False}}},
                 'required': ['assignments'], 'additionalProperties': False}}}
-    output, usage = generate_json(payload, len(rows), with_usage=True)
+    output, usage = generate_json(payload, len(rows), with_usage=True, feature='category_suggestions')
     if not isinstance(output, dict) or set(output) != {'assignments'} or not isinstance(output['assignments'], list):
         raise ClassificationProviderError()
     assigned = {}

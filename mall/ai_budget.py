@@ -3,6 +3,8 @@
 The token prices (GEMINI_INPUT_USD_PER_MTOK / GEMINI_OUTPUT_USD_PER_MTOK) are placeholders until the owner sets them from Google's current
 price sheet. A feature with a monthly budget of 0 is off (403); a reached cap answers 429; nothing here stores or logs text.
 """
+import json
+import logging
 import math
 from decimal import ROUND_CEILING, Decimal
 
@@ -17,6 +19,13 @@ from .quote_assistant_models import AIUsageRecord, QuoteAssistantRun
 ESTIMATED_OUTPUT_TOKENS = 1500
 FEATURE_BUDGETS = {'quote_assistant': 'QUOTE_ASSISTANT_MONTHLY_USD'}
 USAGE_FIELDS = ('calls', 'cached_calls', 'failed_calls', 'input_tokens', 'output_tokens', 'thinking_tokens', 'cost_micro_usd')
+TOKEN_FIELDS = ('input_tokens', 'output_tokens', 'thinking_tokens')
+# Every feature that records AI usage. The catalog features record platform usage (account null) through generate_json(feature=...);
+# the quotation assistant records its own, per supplier.
+FEATURE_LABELS = {'quote_assistant': 'Asistente de cotización', 'catalog_classification': 'Clasificación de importaciones',
+                  'catalog_assistant': 'Asistente de inventario', 'catalog_grouping': 'Agrupación de SKU', 'category_suggestions': 'Tipos de repuesto',
+                  'oem_lookup': 'Referencias OEM', 'matching': 'Emparejamiento de proveedores'}
+logger = logging.getLogger(__name__)
 
 
 class AssistantDisabled(APIException):
@@ -107,3 +116,23 @@ def record_usage(feature, account=None, *, day=None, **values):
                 return
         except IntegrityError:
             rows.update(**increments)
+
+
+def record_provider_call(feature, payload, usage, *, failed=False, billed=True):
+    """One catalog AI call in the platform's usage. usage holds the tokens the provider reported (empty when it never answered): they are
+    charged at the configured rates, plus the grounding fee of an answered Google Search request; a call that may have been billed without
+    reported tokens is charged at its pre-call estimate. Never raises: a recording problem is logged (feature name only) and the feature's
+    own result or error is unchanged."""
+    try:
+        tokens = {field: usage.get(field, 0) for field in TOKEN_FIELDS}
+        if any(tokens.values()):
+            cost = token_cost(*tokens.values())
+        elif billed:
+            cost = estimate_cost(len(json.dumps(payload, ensure_ascii=False)), payload.get('generationConfig', {}).get('maxOutputTokens', ESTIMATED_OUTPUT_TOKENS))
+        else:
+            cost = 0
+        if usage and any('google_search' in tool for tool in payload.get('tools', [])):
+            cost += micro_usd(settings.GEMINI_GROUNDING_USD_PER_CALL)
+        record_usage(feature, None, calls=int(not failed), failed_calls=int(failed), cost_micro_usd=cost, **tokens)
+    except Exception as error:
+        logger.warning('AI usage could not be recorded: feature=%s error=%s', feature, type(error).__name__)

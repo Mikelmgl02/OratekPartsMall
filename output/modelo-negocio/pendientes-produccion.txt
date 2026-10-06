@@ -36,17 +36,17 @@ CANASTA Y SOLICITUDES
 [ ] Seguimiento centralizado de solicitudes, cotizaciones, negociaciones y acuerdos.
 
 PRECIOS PRIVADOS Y COTIZACIÓN ASISTIDA POR IA — ESENCIAL
-[ ] Carga y actualización de precios internos por proveedor, sin publicación en catálogo.
-[ ] Perfil privado para cada pareja retail–proveedor.
-[ ] Configuración de precios y reglas comerciales por cliente a cargo del proveedor.
-[ ] Cálculo de precios/descuentos conforme a reglas del proveedor; sin precios inventados por IA.
-[ ] Asistente de IA para interpretar solicitudes y preparar cotizaciones privadas.
-[ ] Borrador de cotización bajo control y revisión del proveedor.
-[ ] Gestión de datos incompletos y excepciones antes de emitir una cotización.
-[ ] Comunicación directa y negociación entre retail y responsables del proveedor.
-[ ] Versiones e historial de cotizaciones y cambios del acuerdo.
-[ ] Confirmación mutua de la misma versión del acuerdo y comprobación de disponibilidad.
-[ ] Acceso a precios, condiciones y acuerdos solo para las partes autorizadas.
+[x] Carga y actualización de precios internos por proveedor, sin publicación en catálogo.
+[x] Perfil privado para cada pareja retail–proveedor.
+[x] Configuración de precios y reglas comerciales por cliente a cargo del proveedor.
+[x] Cálculo de precios/descuentos conforme a reglas del proveedor; sin precios inventados por IA.
+[x] Asistente de IA para interpretar solicitudes y preparar cotizaciones privadas.
+[x] Borrador de cotización bajo control y revisión del proveedor.
+[x] Gestión de datos incompletos y excepciones antes de emitir una cotización.
+[x] Comunicación directa y negociación entre retail y responsables del proveedor.
+[x] Versiones e historial de cotizaciones y cambios del acuerdo.
+[x] Confirmación mutua de la misma versión del acuerdo y comprobación de disponibilidad.
+[x] Acceso a precios, condiciones y acuerdos solo para las partes autorizadas.
 
 INVENTARIO, LEDGER Y CONCILIACIÓN
 [ ] Copia propia del inventario en Motion Parts, independiente del ERP.

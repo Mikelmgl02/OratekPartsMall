@@ -102,6 +102,7 @@ class CategoryEngineTests(TestCase):
         with patch('mall.category_suggestions.generate_json',return_value=({'assignments':[{'i':0,'t':-1,'c':99}]},{})) as transport:
             results,_=category_provider([[0,'UNKNOWN','','']],choices,'')
         self.assertEqual(results[0]['confidence'],0)
+        self.assertEqual(transport.call_args.kwargs['feature'],'category_suggestions')
         sent=json.loads(transport.call_args.args[0]['contents'][0]['parts'][0]['text'])
         self.assertNotIn('candidates',sent)
         self.assertEqual(sent['articulos'],[[0,'UNKNOWN','','']])

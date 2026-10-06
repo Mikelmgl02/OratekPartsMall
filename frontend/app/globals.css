@@ -505,6 +505,13 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .analytics-empty { color:var(--muted); padding:22px 0; font-size:11px; line-height:1.6; }
 .analytics-footnote { color:var(--muted); font-size:10px; line-height:1.8; margin-top:14px; }
 .analytics-panel td.analytics-attention { color:#b46936; font-weight:700; }
+.analytics-ai-budget { display:flex; flex-direction:column; gap:10px; padding:16px; border:1px solid var(--line); border-radius:10px; background:#f8faf3; min-width:0; }
+.analytics-ai-budget>div:first-child { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
+.analytics-ai-budget strong { display:flex; gap:7px; align-items:center; font-size:12px; color:#3d542f; }
+.analytics-ai-budget>div:first-child span { color:#63735a; font-size:11px; }
+.analytics-ai-budget progress { display:block; width:100%; height:10px; accent-color:#8ea65b; }
+.analytics-ai-budget.over progress { accent-color:#b46936; }
+.analytics-ai-budget small { color:var(--muted); font-size:10px; line-height:1.7; }
 @media(max-width:1050px) { .analytics-kpis { grid-template-columns:repeat(2,minmax(0,1fr)); }.analytics-columns { grid-template-columns:1fr; }.analytics-heading { align-items:flex-start; flex-direction:column; } }
 @media(max-width:760px) { .analytics-panel { padding:14px; }.analytics-panel-heading { align-items:flex-start; flex-direction:column; gap:12px; }.analytics-kpi { padding:13px; }.analytics-kpi>strong { font-size:24px; }.analytics-chart { gap:2px; height:110px; }.analytics-filters { flex-wrap:wrap; }.analytics-dashboard select { min-height:40px; } }
 
@@ -1203,7 +1210,8 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .quotation-draft-discard { display:inline-flex; flex-wrap:wrap; align-items:center; gap:10px; }
 .quotation-draft-discard button { color:inherit; font-weight:700; font-size:inherit; text-decoration:underline; }
 .quotation-draft-conflict, .quotation-draft-fallback { margin-bottom:0; }
-.quotation-draft-conflict span { min-width:0; overflow-wrap:anywhere; }
+.quotation-draft-conflict span, .quotation-draft-fallback span { min-width:0; overflow-wrap:anywhere; }
+.quotation-draft-fallback>svg { flex:none; }
 .quotation-grid .quotation-stock-short { color:#a14c2d; font-weight:600; }
 .quotation-grid .quotation-stock-review { color:#a14c2d; font-size:11px; }
 .deal-tabs .deal-tab-dot { width:7px; height:7px; flex:0 0 7px; border-radius:50%; background:#45886a; }

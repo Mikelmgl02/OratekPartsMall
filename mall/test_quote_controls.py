@@ -54,10 +54,16 @@ class QuoteControlTests(APITestCase):
             'publish_min_permission': permission}, format='json')
         self.assertEqual((response.status_code, response.data['publish_min_permission']), (200, permission))
 
+    drafted = deal_tests.DealWorkflowTests.drafted
+
     def quote_as(self, user, order, **extra):
+        """Publishes as user through the reviewed draft, which that member saves first unless draft_version is given."""
         self.client.force_authenticate(user)
-        return self.action(order, 'quote', lines=[{'order_line_id': str(line.pk), 'quantity': line.quantity, 'unit_price': '12.35'} for line in order.lines.all()],
-                           terms='RETIRO MAÑANA', **extra)
+        order.refresh_from_db()
+        lines = [{'order_line_id': str(line.pk), 'quantity': line.quantity, 'unit_price': '12.35'} for line in order.lines.all()]
+        if order.status in ('reviewed', 'adjustment') and 'draft_version' not in extra:
+            extra['draft_version'] = self.drafted(order, lines, extra.get('currency', 'USD'), 'RETIRO MAÑANA')
+        return self.action(order, 'quote', lines=lines, terms='RETIRO MAÑANA', **extra)
 
     def state(self, order):
         order.refresh_from_db()
@@ -118,7 +124,7 @@ class QuoteControlTests(APITestCase):
         published = self.quote_as(self.manager, order, operation_id=key, expected_version=version)
         self.assertEqual(published.status_code, 200)
         before = self.state(order)
-        replayed = self.quote_as(self.seller_a, order, operation_id=key, expected_version=version)
+        replayed = self.quote_as(self.seller_a, order, operation_id=key, expected_version=version, draft_version=self.draft_version)
         self.assertEqual((replayed.status_code, replayed.data), (200, published.data))
         self.assertEqual(self.state(order), before)
         changed = self.quote_as(self.seller_a, order, operation_id=key, expected_version=version, currency='PAB')
@@ -134,7 +140,7 @@ class QuoteControlTests(APITestCase):
         self.assertEqual(self.quote_as(self.seller_a, second, operation_id=retry_key).status_code, 403)
         self.assertFalse(DealCommand.objects.filter(order=second).exists())
         self.require('staff')
-        self.assertEqual(self.quote_as(self.seller_a, second, operation_id=retry_key).status_code, 200)
+        self.assertEqual(self.quote_as(self.seller_a, second, operation_id=retry_key, draft_version=self.draft_version).status_code, 200)
 
     def test_client_decisions_ignore_publish_permissions(self):
         self.require('owner')
@@ -211,6 +217,11 @@ class QuoteControlTests(APITestCase):
                 self.assertEqual(draft['review_requested_by'] is None, status == 'editing')
         self.assertEqual(self.by_code(draft)['58411-1R000-G']['note'], 'REVISAR EMPAQUE')
         self.assertEqual(PricingAuditEvent.objects.filter(kind='draft_review_requested').count(), 5)
+        # Every withdrawal is audited: by a change to what the client would receive, or by the member; withdrawing nothing records nothing.
+        withdrawn = PricingAuditEvent.objects.filter(kind='draft_review_withdrawn').order_by('id')
+        self.assertEqual([(event.actor, event.order, event.payload['reason']) for event in withdrawn],
+                         [(self.seller_a, order, reason) for reason in ['edited', 'edited', 'edited', 'edited', 'withdrawn']])
+        self.assertEqual(set(withdrawn.last().payload), {'draft_version', 'revision', 'reason'})
         self.assertEqual(self.save(order, draft['draft_version'], request_review='quizás').status_code, 400)
 
     def test_a_reprice_that_moves_a_price_withdraws_the_request(self):
@@ -225,6 +236,8 @@ class QuoteControlTests(APITestCase):
         self.price(price_list, self.item_a, Decimal('13.10'))
         moved = self.reprice(order, 2, 'engine').data
         self.assertEqual(([row['unit_price'] for row in moved['repriced']], moved['status'], moved['review_requested_by']), (['13.10'], 'editing', None))
+        self.assertEqual(list(PricingAuditEvent.objects.filter(kind='draft_review_withdrawn').values_list('payload', flat=True)),
+                         [{'draft_version': 3, 'revision': 1, 'reason': 'edited'}])
 
     def test_draft_state_appears_only_in_the_supplier_list_for_the_current_revision(self):
         order = self.reviewed()

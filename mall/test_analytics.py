@@ -1,12 +1,23 @@
+import json
 import uuid
 from datetime import timedelta
+from decimal import Decimal
 
+from django.db import connection
+from django.test import override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
+from .ai_budget import record_usage
+from .analytics import ai_spend, quotation_kpis
 from .analytics_models import UsageEvent, UsageVisit
 from .models import Account, Membership, Part, PartCode, Role, StockEntry, SupplierItem, User
-from .request_models import ClientRequestSubmission, SupplierRequest, SupplierRequestLine
+from .pricing_models import PricingAuditEvent, record_pricing_event
+from .request_models import ClientRequestSubmission, DealQuotation, DealQuotationLine, SupplierRequest, SupplierRequestLine
+
+QUOTATION_KPI_KEYS = {'first_quotes', 'average_quote_seconds', 'quoted_orders', 'handshaked_orders', 'average_revisions', 'blocked_accepts', 'blocked_orders',
+                      'accepted_with_shortfall'}
 
 
 class AnalyticsTests(APITestCase):
@@ -155,3 +166,64 @@ class AnalyticsTests(APITestCase):
         self.assertEqual(response.data['top_parts'][0]['views'], 2)
         self.assertEqual(self.dashboard(10).status_code, 400)
         self.assertEqual(self.dashboard('bad').status_code, 400)
+
+    def deal(self, reference, *, status='quoted', revisions=1, hours=5):
+        """An order quoted revisions times, the first version published one hour after the client sent it; its prices are private markers."""
+        submission = ClientRequestSubmission.objects.create(client=self.account, submission_id=uuid.uuid4(), actor=self.buyer, payload_hash=reference)
+        order = SupplierRequest.objects.create(submission=submission, client=self.account, supplier=self.supplier, client_name=self.account.name,
+                                               supplier_name=self.supplier.name, reference=reference, status=status)
+        now = timezone.now()
+        SupplierRequest.objects.filter(pk=order.pk).update(created_at=now - timedelta(hours=hours))
+        line = SupplierRequestLine.objects.create(request=order, supplier_item=self.item, part=self.part, supplier_invent_id='STABLE-1', sku=self.part.sku,
+                                                  codigo=self.item.codigo, quantity=2)
+        for revision in range(1, revisions + 1):
+            quotation = DealQuotation.objects.create(order=order, revision=revision, terms='SECRETO-TERMINOS', total=Decimal('1555.54'), published_by=self.root,
+                                                     supplier_confirmed_at=now)
+            DealQuotationLine.objects.create(quotation=quotation, order_line=line, quantity=2, unit_price=Decimal('777.77'))
+            DealQuotation.objects.filter(pk=quotation.pk).update(created_at=now - timedelta(hours=hours - revision))
+        return order
+
+    @override_settings(AI_MONTHLY_BUDGET_USD=Decimal('200'), QUOTE_ASSISTANT_MONTHLY_USD=Decimal('40'))
+    def test_quotation_and_ai_kpis_are_aggregates_without_prices(self):
+        first = self.deal('KPI-1', status='handshaked', revisions=2)
+        self.deal('KPI-2', revisions=1)
+        old = self.deal('KPI-OLD', revisions=1, hours=24 * 40)
+        for order in (first, first, old):
+            record_pricing_event(self.supplier, self.root, 'accept_blocked_shortfall', client=self.account, order=order, payload={'lines': [{'quantity': 2}]})
+        record_pricing_event(self.supplier, self.root, 'accept_with_shortfall', client=self.account, order=first)
+        PricingAuditEvent.objects.filter(order=old).update(created_at=timezone.now() - timedelta(days=40))
+        today = timezone.localdate()
+        record_usage('quote_assistant', self.supplier, calls=2, cost_micro_usd=2_700)
+        record_usage('category_suggestions', None, calls=3, failed_calls=1, cost_micro_usd=12_345_678)
+        record_usage('oem_lookup', None, day=today.replace(day=1) - timedelta(days=1), calls=1, cost_micro_usd=99_000_000)
+        response = self.dashboard()
+        self.assertEqual(response.status_code, 200)
+        quotations, ai = response.data['quotations'], response.data['ai']
+        self.assertEqual(set(quotations), QUOTATION_KPI_KEYS)
+        # The 40-day-old order and its blocked accept fall outside the period; versions count every revision of an order quoted in it.
+        self.assertEqual(quotations, {'first_quotes': 2, 'average_quote_seconds': 3600, 'quoted_orders': 2, 'handshaked_orders': 1, 'average_revisions': 1.5,
+                                      'blocked_accepts': 2, 'blocked_orders': 1, 'accepted_with_shortfall': 1})
+        self.assertEqual({key: ai[key] for key in ['month', 'spend_micro_usd', 'budget_micro_usd', 'assistant_budget_micro_usd']},
+                         {'month': today.strftime('%Y-%m'), 'spend_micro_usd': 12_348_378, 'budget_micro_usd': 200_000_000, 'assistant_budget_micro_usd': 40_000_000})
+        self.assertEqual([(row['feature'], row['label'], row['calls'], row['failed_calls'], row['cost_micro_usd']) for row in ai['features']],
+                         [('category_suggestions', 'Tipos de repuesto', 3, 1, 12_345_678), ('quote_assistant', 'Asistente de cotización', 2, 0, 2_700)])
+        self.assertEqual({key for row in ai['features'] for key in row}, {'feature', 'label', 'calls', 'cached_calls', 'failed_calls', 'cost_micro_usd'})
+        content = json.dumps({'quotations': quotations, 'ai': ai})
+        for marker in ['777.77', '1555.54', 'SECRETO-TERMINOS', self.supplier.name, str(self.supplier.pk), self.account.name, 'KPI-1']:
+            self.assertNotIn(marker, content)
+
+    def test_quotation_and_ai_kpis_read_a_constant_number_of_queries(self):
+        start, now = timezone.now() - timedelta(days=30), timezone.now()
+        counts = []
+        for batch in range(2):
+            for index in range(1 + batch * 6):
+                order = self.deal(f'KPI-{batch}-{index}', status='handshaked' if index % 2 else 'quoted', revisions=1 + index % 3)
+                record_pricing_event(self.supplier, self.root, 'accept_blocked_shortfall', client=self.account, order=order)
+                record_usage(f'feature-{index}', None, calls=1, cost_micro_usd=10)
+            with CaptureQueriesContext(connection) as queries:
+                quotation_kpis(start, now)
+                ai_spend(timezone.localdate())
+            counts.append(len(queries))
+        self.assertEqual(counts[0], counts[1])
+        self.assertEqual(counts[0], 4)
+

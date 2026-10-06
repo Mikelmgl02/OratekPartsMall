@@ -4,6 +4,7 @@ import json
 from collections import Counter
 from decimal import Decimal
 
+from django.conf import settings
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -34,6 +35,7 @@ RETURN_SHORTFALL_DETAIL = 'Las existencias cambiaron desde esta versión. Prepar
 # Shown to the client: it must never carry quantities or any other digit.
 ACCEPT_SHORTFALL_DETAIL = ('El proveedor debe confirmar la disponibilidad de algunos artículos antes de cerrar el acuerdo. '
                            'Solicita un ajuste para que el proveedor prepare una versión actualizada.')
+DRAFT_REQUIRED = 'Prepara la cotización en el borrador y envía la versión guardada: las cotizaciones se publican solo desde el borrador revisado.'
 PUBLISH_DENIED = 'Tu permiso en la cuenta no permite publicar cotizaciones. Solicita la aprobación de un administrador de tu cuenta.'
 SETTINGS_SNAPSHOT = ('version', 'over_stock_policy', 'over_request_policy', 'accept_shortfall_policy', 'publish_min_permission', 'prefill_quantity',
                      'usd_pab_parity')
@@ -120,9 +122,12 @@ def command_fingerprint(data):
 
 
 def bind_draft(row, latest, data):
-    """A quote is bound to the saved draft when one exists for the latest revision or the payload names a draft_version."""
+    """A quote is bound to the saved draft when one exists for the latest revision or the payload names a draft_version. With
+    QUOTES_REQUIRE_DRAFT (the default) a quote without one is refused (409); stored commands still replay before this check."""
     draft = DealQuotationDraft.objects.prefetch_related('lines').filter(order=row, base_quotation=latest).first()
     if draft is None and 'draft_version' not in data:
+        if settings.QUOTES_REQUIRE_DRAFT:
+            raise RequestConflict(DRAFT_REQUIRED)
         return None
     if draft is None or draft.draft_version != data.get('draft_version'):
         raise RequestConflict('Hay un borrador guardado; revísalo antes de publicar.' if draft and 'draft_version' not in data
@@ -202,7 +207,8 @@ def publish_permission(account, user):
 class DealActions(APIView):
     @extend_schema(request=DealActionSerializer, responses=OpenApiTypes.OBJECT,
                    description='Decisiones del acuerdo. quote y return_quote exigen el permiso mínimo para publicar del proveedor (403 antes de comprobar '
-                               'la versión). Repetir un operation_id de la misma cuenta con el mismo contenido devuelve el resultado guardado.')
+                               'la versión). quote se publica desde el borrador guardado: draft_version y el contenido deben coincidir con él (409 si falta '
+                               'o no coincide). Repetir un operation_id de la misma cuenta con el mismo contenido devuelve el resultado guardado.')
     @transaction.atomic
     def post(self, request, account_id, pk):
         account, row = participant(request.user, account_id, pk, lock=True)

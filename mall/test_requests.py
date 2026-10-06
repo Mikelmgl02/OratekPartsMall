@@ -237,9 +237,12 @@ class SupplierRequestWorkflowTests(APITestCase):
         self.client.force_authenticate(self.seller_a)
         self.client.post(f'{self.url(self.supplier_a)}{order.pk}/review/', {}, format='json')
         order.refresh_from_db()
+        lines = [{'order_line_id': str(order.lines.get().pk), 'quantity': 2, 'unit_price': '12.34'}]
+        draft = self.client.post(f'{self.url(self.supplier_a)}{order.pk}/draft/', {'save_id': str(uuid.uuid4()), 'expected_draft_version': 0,
+                                                                                  'currency': 'PAB', 'lines': lines}, format='json').data
         quoted = self.client.post(f'/api/v1/accounts/{self.supplier_a.pk}/deals/{order.pk}/actions/', {
             'operation_id': str(uuid.uuid4()), 'expected_version': order.version, 'action': 'quote', 'currency': 'PAB',
-            'lines': [{'order_line_id': str(order.lines.get().pk), 'quantity': 2, 'unit_price': '12.34'}]}, format='json')
+            'draft_version': draft['draft_version'], 'lines': lines}, format='json')
         self.assertEqual(quoted.status_code, 200)
         self.client.force_authenticate(self.buyer)
         replay = self.submit(data)

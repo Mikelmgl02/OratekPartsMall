@@ -59,9 +59,10 @@ async function fixture(page: Page, status: 'reviewed' | 'adjustment' = 'reviewed
     const payload = route.request().postDataJSON(); actions.push(payload);
     if (payload.action === 'quote') {
       const draft = drafts.current();
-      // Same binding as the server: a sent draft_version, or any saved draft, must match the saved version and its values.
-      if ((payload.draft_version !== undefined || draft.persisted) && payload.draft_version !== draft.draft_version) return route.fulfill({ status: 409, json: { detail: 'El borrador cambió. Revísalo antes de publicar.' } });
-      if (payload.draft_version !== undefined && !matchesDraft(payload, draft)) return route.fulfill({ status: 409, json: { detail: 'La cotización no coincide con el borrador guardado.' } });
+      // Same binding as the server (QUOTES_REQUIRE_DRAFT): every quote names the saved draft_version and matches its values.
+      if (payload.draft_version === undefined) return route.fulfill({ status: 409, json: { detail: 'Prepara la cotización en el borrador y envía la versión guardada.' } });
+      if (payload.draft_version !== draft.draft_version) return route.fulfill({ status: 409, json: { detail: 'El borrador cambió. Revísalo antes de publicar.' } });
+      if (!matchesDraft(payload, draft)) return route.fulfill({ status: 409, json: { detail: 'La cotización no coincide con el borrador guardado.' } });
       const blockers = exceptions ? publishBlockers(draft) : [];
       if (blockers.length) return route.fulfill({ status: 409, json: { detail: 'Revisa las alertas antes de enviar.', exceptions: blockers } });
       const quote = quotation(order.quotations.length + 1, payload.lines, payload.currency, payload.terms);
@@ -206,21 +207,30 @@ test('leaving the order while a save is in flight still saves the edits made aft
   expect(state.actions).toEqual([]);
 });
 
-test('when the draft cannot be loaded the editor keeps working without autosave', async ({ page }) => {
+test('when the draft cannot be loaded the editor is read-only and Reintentar loads the draft before anything can be sent', async ({ page }) => {
   const state = await fixture(page);
-  await page.route(/\/api\/market\/accounts\/[^/]+\/requests\/[^/]+\/draft$/, route => route.fulfill({ status: 500, json: { detail: 'Error interno.' } }));
+  let failing = true;
+  await page.route(/\/api\/market\/accounts\/[^/]+\/requests\/[^/]+\/draft$/, route => failing ? route.fulfill({ status: 500, json: { detail: 'Error interno.' } }) : route.fallback());
   await openQuote(page);
-  await expect(content(page).getByText('No se pudo cargar el borrador guardado; tus cambios no se guardarán automáticamente.', { exact: true })).toBeVisible();
+  const notice = content(page).getByRole('alert').filter({ hasText: 'No se pudo cargar el borrador de la cotización.' });
+  await expect(notice).toContainText('Las cotizaciones se preparan y se envían desde el borrador guardado.');
   await expect(draftStatus(page)).toHaveCount(0);
   await expect(quoteCell(page, 'available')).toHaveText('3');
+  // Quotations are published only from the saved draft (QUOTES_REQUIRE_DRAFT): nothing here can be edited or sent.
+  await expect(content(page).getByRole('button', { name: 'Confirmar y enviar cotización', exact: true })).toHaveCount(0);
+  await expect(termsField(page)).toBeDisabled();
+  await quoteCell(page, 'unit_price').click();
+  await expect(content(page).getByLabel('Precio de 58411-1R000-G', { exact: true })).toHaveCount(0);
+  await notice.getByRole('button', { name: 'Reintentar', exact: true }).click();
+  await expect(notice).toContainText('Todavía no se pudo cargar. Inténtalo de nuevo en unos segundos.');
+  failing = false;
+  await notice.getByRole('button', { name: 'Reintentar', exact: true }).click();
+  await expect(draftStatus(page)).toHaveText('Borrador nuevo · se guarda automáticamente al editar');
+  await expect(notice).toHaveCount(0);
   await editQuote(page, 'unit_price', '12.50');
-  await editQuote(page, 'unit_price', '1.00', '00700-NP', secondId);
-  await page.waitForTimeout(1500);
-  expect(state.drafts.saves).toEqual([]);
-  await content(page).getByRole('button', { name: 'Confirmar y enviar cotización', exact: true }).click();
-  await expect(content(page).getByRole('region', { name: 'Cotización vigente v1', exact: true })).toContainText('63.50');
-  expect(state.actions).toHaveLength(1);
-  expect(state.actions[0]).not.toHaveProperty('draft_version');
+  await expect(draftStatus(page)).toContainText('Borrador v1 · guardado por EMPLEADO');
+  expect(state.drafts.saves).toEqual([{ save_id: any, expected_draft_version: 0, lines: [{ order_line_id: lineId, unit_price: '12.50' }] }]);
+  expect(state.actions).toEqual([]);
   expect(state.unexpected).toEqual([]);
 });
 
@@ -275,29 +285,6 @@ test('alerts gate publishing: adjusting to available stock and confirming a chan
   await expect(content(page).getByRole('region', { name: 'Cotización vigente v1', exact: true })).toContainText('41.50');
   expect(state.actions).toHaveLength(2);
   expect(state.actions[1]).toMatchObject({ action: 'quote', lines: [{ order_line_id: lineId, quantity: 3, unit_price: '12.50' }, { order_line_id: secondId, quantity: 1, unit_price: '4.00' }] });
-  expect(state.unexpected).toEqual([]);
-});
-
-test('without a saved draft a refused publish lists its alerts read-only', async ({ page }) => {
-  const state = await fixture(page);
-  await page.route(/\/api\/market\/accounts\/[^/]+\/requests\/[^/]+\/draft$/, route => route.fulfill({ status: 500, json: { detail: 'Error interno.' } }));
-  await page.route(`/api/market/accounts/${supplierId}/deals/${orderId}/actions`, route => {
-    state.actions.push(route.request().postDataJSON());
-    return route.fulfill({ status: 409, json: { detail: 'Revisa las alertas antes de enviar.', exceptions: [
-      { order_line_id: lineId, code: 'offered_gt_available', severity: 'block', message: 'Ofreces 5 y tienes 3 disponibles.', context: '5>3', acknowledged: false }] } });
-  });
-  await openQuote(page);
-  await expect(content(page).locator('details.quotation-exceptions')).toHaveCount(0);
-  await editQuote(page, 'unit_price', '12.50');
-  await editQuote(page, 'unit_price', '1.00', '00700-NP', secondId);
-  await content(page).getByRole('button', { name: 'Confirmar y enviar cotización', exact: true }).click();
-  const panel = content(page).locator('details.quotation-exceptions');
-  await expect(panel.locator('summary')).toHaveText('Revisa antes de enviar (1)');
-  await expect(panel.getByRole('listitem')).toHaveText(['58411-1R000-GOfreces 5 y tienes 3 disponibles.Corrige para continuar']);
-  await expect(quoteCell(page, 'alerts')).toHaveText('1 por corregir');
-  await expect(content(page).getByRole('alert')).toHaveText('Revisa las alertas antes de enviar.');
-  expect(state.actions).toHaveLength(1);
-  expect(state.actions[0]).not.toHaveProperty('draft_version');
   expect(state.unexpected).toEqual([]);
 });
 

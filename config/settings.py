@@ -115,6 +115,10 @@ QUOTE_ASSISTANT_DAILY_RUNS_PER_ACCOUNT = max(1, int(os.getenv('QUOTE_ASSISTANT_D
 # Google's prices: set both from Google's current Gemini price sheet for GEMINI_MODEL. Thinking tokens are counted at the output rate.
 GEMINI_INPUT_USD_PER_MTOK = env_usd('GEMINI_INPUT_USD_PER_MTOK', '1.00')
 GEMINI_OUTPUT_USD_PER_MTOK = env_usd('GEMINI_OUTPUT_USD_PER_MTOK', '5.00')
+# PLACEHOLDER fee per Google Search grounded request (the OEM lookup), added to its token cost. Set it from Google's price sheet too.
+GEMINI_GROUNDING_USD_PER_CALL = env_usd('GEMINI_GROUNDING_USD_PER_CALL', '0.035')
+# Every quotation is published from the supplier-reviewed server draft (draft_version). 0 re-opens the draftless legacy API path.
+QUOTES_REQUIRE_DRAFT = os.getenv('QUOTES_REQUIRE_DRAFT', '1').lower() in ('true', '1', 'yes')
 CATALOG_LOW_STOCK_THRESHOLD = max(1, int(os.getenv('CATALOG_LOW_STOCK_THRESHOLD', '5')))
 CATALOG_HIGH_STOCK_THRESHOLD = int(os.getenv('CATALOG_HIGH_STOCK_THRESHOLD', '20'))
 if CATALOG_HIGH_STOCK_THRESHOLD <= CATALOG_LOW_STOCK_THRESHOLD:

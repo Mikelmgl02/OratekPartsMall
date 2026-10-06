@@ -158,7 +158,7 @@ def classify(user, pk, index):
         # the assistant offers only active canonical targets that were captured.
         allowed = {sku: [target for target in options if target in rows] for sku, options in allowed.items()}
         candidates = {sku: row for sku, row in candidates.items() if sku in rows}
-        proposals = validate_suggestions(call_provider(source, candidates, allowed, instructions=job.instructions),
+        proposals = validate_suggestions(call_provider(source, candidates, allowed, instructions=job.instructions, feature='catalog_assistant'),
                                          source, candidates, allowed, preserve_unverified_groups=True)
         positions = {part_id: index * AI_BATCH_SIZE + position for position, part_id in enumerate(selected)}
         with transaction.atomic():

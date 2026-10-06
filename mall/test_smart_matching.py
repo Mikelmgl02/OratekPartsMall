@@ -151,6 +151,7 @@ class SmartMatchingTests(APITestCase):
             self.assertEqual(analyze_ambiguous(),1)
             self.assertEqual(analyze_ambiguous(),0)
             provider.assert_called_once()
+        self.assertEqual(provider.call_args.kwargs['feature'],'matching')
         item.refresh_from_db();self.assertIsNone(item.part_id)
         self.assertTrue(MatchingCase.objects.get(item=item).ai['needs_review'])
 

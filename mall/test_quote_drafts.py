@@ -38,6 +38,7 @@ class QuoteDraftTests(APITestCase):
     review = deal_tests.DealWorkflowTests.review
     action = deal_tests.DealWorkflowTests.action
     quote = deal_tests.DealWorkflowTests.quote
+    drafted = deal_tests.DealWorkflowTests.drafted
 
     def draft_url(self, order, account=None, suffix=''):
         return f'/api/v1/accounts/{(account or self.supplier_a).pk}/requests/{order.pk}/draft/{suffix}'
@@ -193,7 +194,7 @@ class QuoteDraftTests(APITestCase):
         order = self.reviewed()
         lines = [{'order_line_id': str(line.pk), 'quantity': 0 if line.supplier_item_id == self.item_a2.pk else 3,
                   'unit_price': '0' if line.supplier_item_id == self.item_a2.pk else '12.35'} for line in order.lines.all()]
-        quote = self.action(order, 'quote', currency='PAB', terms='retiro', lines=lines).data['quotation']
+        quote = self.quote(order, lines, currency='PAB', terms='retiro').data['quotation']
         self.client.force_authenticate(self.buyer)
         self.assertEqual(self.action(order, 'request_adjustment', quotation_id=quote['id'], reason='MENOS').status_code, 200)
         self.client.force_authenticate(self.seller_a)
@@ -284,7 +285,9 @@ class QuoteDraftTests(APITestCase):
         key = uuid.uuid4()
         body = {'operation_id': str(key), 'expected_version': order.version, 'action': 'quote', 'terms': ' retiro ',
                 'lines': [{'order_line_id': str(line.pk), 'quantity': line.quantity, 'unit_price': '12.35'} for line in order.lines.all()]}
-        self.assertEqual(self.client.post(f'/api/v1/accounts/{self.supplier_a.pk}/deals/{order.pk}/actions/', body, format='json').status_code, 200)
+        # Only through the legacy path, re-opened with QUOTES_REQUIRE_DRAFT=0; with the default a draftless quote is refused.
+        with self.settings(QUOTES_REQUIRE_DRAFT=False):
+            self.assertEqual(self.client.post(f'/api/v1/accounts/{self.supplier_a.pk}/deals/{order.pk}/actions/', body, format='json').status_code, 200)
         serializer = DealActionSerializer(data=body)
         serializer.is_valid(raise_exception=True)
         self.assertEqual(DealCommand.objects.get(operation_id=key).payload_hash, command_fingerprint(serializer.validated_data))

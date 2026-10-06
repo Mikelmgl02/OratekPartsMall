@@ -112,7 +112,7 @@ class CatalogGroupingClassify(APIView):
         # source separately, but cannot invent chains or merge sibling targets.
         candidates = {target: proposed_parent or source[0]}
         allowed = {sku: [] if sku == target else [target] for sku in [target, *selected]}
-        proposals = validate_suggestions(call_provider(source, candidates, allowed), source, candidates, allowed)
+        proposals = validate_suggestions(call_provider(source, candidates, allowed, feature='catalog_grouping'), source, candidates, allowed)
         canonical = next((item for item in proposals if item['source_sku'] == target), proposals[0])
         category = canonical['category']
         subcategory = canonical['subcategory']

@@ -21,6 +21,7 @@ from rest_framework.exceptions import APIException, NotFound, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .ai_budget import record_provider_call
 from .classification_models import CatalogClassificationState, CatalogClassificationSuggestion
 from .catalog_import import ImportResponse
 from .management import IsSuperuser
@@ -254,7 +255,7 @@ def response_schema(source):
         'required': ['suggestions'], 'additionalProperties': False}
 
 
-def call_provider(source, candidates, candidate_skus, instructions=''):
+def call_provider(source, candidates, candidate_skus, instructions='', feature='catalog_classification'):
     key, model = provider_configuration()
     if not key:
         raise ClassificationUnavailable()
@@ -267,11 +268,30 @@ def call_provider(source, candidates, candidate_skus, instructions=''):
                    ensure_ascii=False)}]}],
                'generationConfig': {'temperature': 0.1, 'maxOutputTokens': 16000,
                    'responseMimeType': 'application/json', 'responseJsonSchema': response_schema(source)}}
-    return generate_json(payload, len(source))
+    return generate_json(payload, len(source), feature=feature)
 
 
-def generate_json(payload, source_count, *, with_usage=False, with_grounding=False, raw_text=False, timeout=PROVIDER_TIMEOUT):
-    """Shared bounded provider transport; never logs inventory or credentials."""
+def generate_json(payload, source_count, *, feature=None, **options):
+    """Shared bounded provider transport; never logs inventory or credentials. With feature (the catalog AI features), each call is added to
+    the platform's AI usage (AIUsageRecord, account null) so AI_MONTHLY_BUDGET_USD sees every feature's spend: the reported tokens, or
+    the estimate when a failed call may still have been billed. Recording never changes the result or the error the caller gets. The quotation
+    assistant passes no feature: it records its own usage."""
+    if feature is None:
+        return provider_json(payload, source_count, **options)
+    usage = {}
+    try:
+        result = provider_json(payload, source_count, usage=usage, **options)
+    except ClassificationUnavailable:
+        raise
+    except Exception as error:
+        # An HTTP error or a failed connection generated nothing; a timeout, truncated or malformed answer may have been billed.
+        record_provider_call(feature, payload, usage, failed=True, billed=not isinstance(error.__context__, URLError))
+        raise
+    record_provider_call(feature, payload, usage)
+    return result
+
+
+def provider_json(payload, source_count, *, with_usage=False, with_grounding=False, raw_text=False, timeout=PROVIDER_TIMEOUT, usage=None):
     key, model = provider_configuration()
     if not key:
         raise ClassificationUnavailable()
@@ -284,6 +304,8 @@ def generate_json(payload, source_count, *, with_usage=False, with_grounding=Fal
         if len(raw) > MAX_PROVIDER_BYTES:
             raise ClassificationProviderError()
         result = json.loads(raw)
+        if usage is not None:
+            usage.update(reported_usage(result))
         candidate = result.get('candidates', [])[0]
         if candidate.get('finishReason') != 'STOP':
             raise ClassificationProviderError('La IA no pudo completar este lote. Reinténtalo; no se aplicó ningún cambio.')
@@ -317,6 +339,14 @@ def generate_json(payload, source_count, *, with_usage=False, with_grounding=Fal
         raise ClassificationProviderError('La IA tardó demasiado en responder. Puedes reanudar este lote sin duplicar propuestas.')
     except (ValueError, KeyError, IndexError, TypeError):
         raise ClassificationProviderError()
+
+
+def reported_usage(result):
+    """Token counts from a provider answer, read defensively so a malformed answer still fails exactly where it did before."""
+    usage = result.get('usageMetadata') if isinstance(result, dict) else None
+    usage = usage if isinstance(usage, dict) else {}
+    return {key: value if type(value := usage.get(field, 0)) is int and value >= 0 else 0
+            for key, field in [('input_tokens', 'promptTokenCount'), ('output_tokens', 'candidatesTokenCount'), ('thinking_tokens', 'thoughtsTokenCount')]}
 
 
 def validate_suggestions(output, source, candidates, candidate_skus, *, preserve_unverified_groups=False):

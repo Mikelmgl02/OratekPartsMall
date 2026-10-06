@@ -31,7 +31,7 @@ class CatalogAssistantTests(APITestCase):
     def action(self, job, **data):
         return self.client.post(f'{self.url}{job["id"]}/', data, format='json')
 
-    def provider(self, source, candidates, allowed, instructions=''):
+    def provider(self, source, candidates, allowed, instructions='', **kwargs):
         return {'suggestions': [{
             'source_sku': row['sku'], 'target_sku': self.base.sku if row['sku']==self.variant.sku else row['sku'],
             'category': 'frenos', 'subcategory': 'tambores de freno', 'confidence': 0.85,
@@ -81,7 +81,7 @@ class CatalogAssistantTests(APITestCase):
         with patch('mall.catalog_assistant.call_provider', side_effect=self.provider) as provider:
             result = self.action(job, mode='classify', batch_index=0)
         self.assertEqual(result.status_code, 200, result.data)
-        self.assertEqual(provider.call_args.kwargs['instructions'], 'USAR FRENOS')
+        self.assertEqual((provider.call_args.kwargs['instructions'], provider.call_args.kwargs['feature']), ('USAR FRENOS', 'catalog_assistant'))
         self.assertEqual(result.data['results'][0]['target_sku'], self.base.sku)
         self.assertEqual(result.data['results'][0]['candidates'][0]['sku'], self.base.sku)
         self.assertEqual(self.client.post(self.url, {'id':job['id'],'scope':'all'}, format='json').status_code, 409)
@@ -141,7 +141,7 @@ class CatalogAssistantTests(APITestCase):
 
     def test_unverified_grouping_is_kept_separate_without_blocking_classifications(self):
         job = self.start()
-        def uncertain_provider(source, candidates, allowed, instructions=''):
+        def uncertain_provider(source, candidates, allowed, instructions='', **kwargs):
             output = self.provider(source, candidates, allowed, instructions)
             variant = next(item for item in output['suggestions'] if item['source_sku'] == self.variant.sku)
             variant['source_reference'] = 'NO VERIFIABLE REFERENCE'

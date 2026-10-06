@@ -99,7 +99,7 @@ def lookup_oem(part, *, company='', code=''):
         'contents': [{'role': 'user', 'parts': [{'text': 'Busca en Google las referencias OEM verificables para este código de empresa: ' + json.dumps(info, ensure_ascii=False)}]}],
         'tools': [{'google_search': {}}],
         'generationConfig': {'temperature': 0, 'maxOutputTokens': 4000},
-    }, 1, with_grounding=True, raw_text=True, timeout=45)
+    }, 1, with_grounding=True, raw_text=True, timeout=45, feature='oem_lookup')
     sources = []
     for chunk in grounding.get('groundingChunks', [])[:40]:
         web = chunk.get('web', {})
@@ -112,7 +112,7 @@ def lookup_oem(part, *, company='', code=''):
         'systemInstruction': {'parts': [{'text': PROMPT + '\nExtrae SOLO la evidencia del informe de búsqueda adjunto. No agregues códigos, fabricantes ni enlaces de memoria. Las fuentes de grounding adjuntas son enlaces reales consultados: usa source_url de esa lista cuando el informe no incluya un enlace directo. No realices otra búsqueda.'}]},
         'contents': [{'role': 'user', 'parts': [{'text': json.dumps({'item': info, 'research': research['text'], 'sources': sources}, ensure_ascii=False)}]}],
         'generationConfig': {'temperature': 0, 'maxOutputTokens': 5000, 'responseMimeType': 'application/json'},
-    }, 1, with_usage=True, timeout=45)
+    }, 1, with_usage=True, timeout=45, feature='oem_lookup')
     metrics = {key: search_metrics.get(key, 0) + parse_metrics.get(key, 0) for key in set(search_metrics) | set(parse_metrics)}
     if not isinstance(result, dict) or not isinstance(result.get('references'), list) or len(result['references']) > 20:
         raise ClassificationProviderError('La búsqueda OEM no devolvió referencias válidas. El catálogo no cambió.')

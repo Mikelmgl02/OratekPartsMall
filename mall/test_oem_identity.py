@@ -126,6 +126,8 @@ class OEMIdentityTests(APITestCase):
         a = lookup_oem(self.part); b = lookup_oem(self.part)
         self.assertFalse(a['cached']); self.assertTrue(b['cached'])
         self.assertEqual(provider.call_count, 2)
+        # Both provider calls (the grounded search and the extraction) count as OEM lookup spend in the platform AI budget.
+        self.assertEqual({call.kwargs['feature'] for call in provider.call_args_list}, {'oem_lookup'})
         self.assertEqual(self.part.codes.count(), 0)
         self.assertEqual(a['references'][0]['ref_type'], 'oem')
         self.assertTrue(a['needs_review'])

@@ -49,7 +49,7 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   const retry = useRef<{ payload: string; id: string } | null>(null);
   const onChangedRef = useRef(onChanged); onChangedRef.current = onChanged;
   const latestVersion = useRef<number | undefined>(undefined);
-  // The supplier's private draft for the next revision; a failed load leaves the editor without autosave.
+  // The supplier's private draft for the next revision; a failed load leaves the editor read-only until it loads.
   const [draftLoad, setDraftLoad] = useState<{ key: string; draft: QuoteDraft | null } | null>(null);
   const [hasDraft, setHasDraft] = useState(false);
   // The editor's last confirmed draft keeps the Artículos suggestions current after saves and reprices.
@@ -96,6 +96,13 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
     }).catch(() => { if (!cancelled) setDraftLoad({ key: draftKey, draft: null }); });
     return () => { cancelled = true; };
   }, [editable, draftKey, draftPath, draftLoad?.key, load]);
+  // After a failed load the editor is read-only and offers to load the draft again; quotations are published only from it.
+  const retryDraft = useCallback(async () => {
+    const value = await request<QuoteDraftEnvelope>(draftPath);
+    if (!mounted.current) return;
+    setDraftLoad({ key: draftKey, draft: value.draft }); setHasDraft(!!value.draft?.persisted);
+    if (!value.editable) void load();
+  }, [draftPath, draftKey, load]);
   async function act(action: string, extra: Record<string, unknown> = {}): Promise<true | ApiError | false> {
     if (!deal || inFlight.current) return false;
     inFlight.current = true; setBusy(true); setError(''); setNotice('');
@@ -169,7 +176,7 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
           {!deal.quotation && !supplier && <div className="notice">El proveedor preparará tu cotización. Te aparecerán aquí las cantidades, precios y condiciones.</div>}
           {editable && (tab === 'quote' || quoteVisited) && (draftLoad?.key === draftKey
             ? <QuoteEditor key={`${draftKey}:${draftLoad.draft ? draftLoad.draft.persisted ? 'saved' : 'virtual' : 'fallback'}`} deal={deal} draft={draftLoad.draft} draftPath={draftPath}
-                disabled={busy} onSend={values => act('quote', values)} pricingRevision={pricingRevision} simulatorHref={supplierPricingHref(account.id, 'simulator')}
+                disabled={busy} onSend={values => act('quote', values)} onRetryDraft={retryDraft} pricingRevision={pricingRevision} simulatorHref={supplierPricingHref(account.id, 'simulator')}
                 onCopyToChat={text => { setChatInsert({ text, id: Date.now() }); setTab('chat'); }}
                 onDraftChange={(persisted, next) => { setHasDraft(persisted); setLiveDraft({ key: draftKey, draft: next }); }}/>
             : <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando borrador de cotización…</div>)}

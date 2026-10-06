@@ -4,6 +4,7 @@ import json
 import uuid
 from datetime import timedelta
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Avg, Count, F, Max, Min, Q, Sum
 from django.db.models.functions import Coalesce, TruncDate
@@ -17,11 +18,14 @@ from rest_framework.response import Response
 from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
 
+from .ai_budget import FEATURE_LABELS, micro_usd
 from .analytics_models import UsageEvent, UsageVisit
 from .catalog_availability import catalog_availability
 from .management import IsSuperuser
 from .models import Part, SupplierItem, User
-from .request_models import ClientRequestSubmission, SupplierRequest, SupplierRequestLine
+from .pricing_models import PricingAuditEvent
+from .quote_assistant_models import AIUsageRecord
+from .request_models import ClientRequestSubmission, DealQuotation, SupplierRequest, SupplierRequestLine
 from .views import account_for, catalog_parts
 
 
@@ -102,6 +106,32 @@ class UsageEvents(APIView):
 
 def seconds(value):
     return round(value.total_seconds()) if value is not None else None
+
+
+def quotation_kpis(start, now):
+    """Platform-wide quotation KPIs for superusers: counts, durations and rates only. Never a price, total, currency, supplier or client
+    (decision D5), and three aggregate queries whatever the volume."""
+    quotations = DealQuotation.objects.filter(created_at__gte=start, created_at__lte=now)
+    first = quotations.filter(revision=1).aggregate(first_quotes=Count('pk'), turnaround=Avg(F('created_at') - F('order__created_at')))
+    # Orders with a version published in the period: every version they needed so far (revisions are sequential and immutable) and
+    # how many the client already accepted.
+    deals = DealQuotation.objects.filter(order_id__in=quotations.values('order_id')).aggregate(
+        versions=Count('pk'), quoted_orders=Count('order_id', distinct=True), handshaked_orders=Count('order_id', distinct=True, filter=Q(order__status='handshaked')))
+    checks = PricingAuditEvent.objects.filter(kind__in=['accept_blocked_shortfall', 'accept_with_shortfall'], created_at__gte=start, created_at__lte=now).aggregate(
+        blocked_accepts=Count('pk', filter=Q(kind='accept_blocked_shortfall')), blocked_orders=Count('order_id', filter=Q(kind='accept_blocked_shortfall'), distinct=True),
+        accepted_with_shortfall=Count('pk', filter=Q(kind='accept_with_shortfall')))
+    return {'first_quotes': first['first_quotes'], 'average_quote_seconds': seconds(first['turnaround']), 'quoted_orders': deals['quoted_orders'],
+            'handshaked_orders': deals['handshaked_orders'], 'average_revisions': round(deals['versions'] / deals['quoted_orders'], 2) if deals['quoted_orders'] else None,
+            **checks}
+
+
+def ai_spend(today):
+    """This month's AI spend of every feature that records usage, against AI_MONTHLY_BUDGET_USD (amounts in micro-USD; one query)."""
+    rows = list(AIUsageRecord.objects.filter(day__gte=today.replace(day=1), day__lte=today).values('feature').annotate(
+        calls=Sum('calls'), cached_calls=Sum('cached_calls'), failed_calls=Sum('failed_calls'), cost_micro_usd=Sum('cost_micro_usd')).order_by('-cost_micro_usd', 'feature'))
+    return {'month': today.strftime('%Y-%m'), 'spend_micro_usd': sum(row['cost_micro_usd'] for row in rows),
+            'budget_micro_usd': micro_usd(settings.AI_MONTHLY_BUDGET_USD), 'assistant_budget_micro_usd': micro_usd(settings.QUOTE_ASSISTANT_MONTHLY_USD),
+            'features': [{**row, 'label': FEATURE_LABELS.get(row['feature'], row['feature'])} for row in rows]}
 
 
 class AnalyticsDashboard(APIView):
@@ -189,4 +219,5 @@ class AnalyticsDashboard(APIView):
                          'summary': {**visit_totals, 'returning_users': returning, **event_totals, **request_totals},
                          'daily': [{'date': day.isoformat(), **counts} for day, counts in daily.items()],
                          'top_searches': top_searches, 'missing_searches': missing_searches,
-                         'top_parts': top_parts, 'suppliers': suppliers, 'visitors': visitors})
+                         'top_parts': top_parts, 'suppliers': suppliers, 'visitors': visitors,
+                         'quotations': quotation_kpis(start, now), 'ai': ai_spend(today)})

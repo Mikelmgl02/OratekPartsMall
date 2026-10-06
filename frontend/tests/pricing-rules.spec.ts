@@ -338,7 +338,7 @@ test('the order header shows the pair profile; configuring the client makes the 
   await recalculate.click();
   await expect(quote(lineA, 'unit_price')).toContainText('13.50');
   await expect(quote(lineA, 'price_source')).toHaveText('Regla');
-  await expect(content.getByRole('status').filter({ hasText: '1 precio recalculado con tu lista.' })).toBeVisible();
+  await expect(content.getByRole('status').filter({ hasText: '1 precio recalculado con tu lista y tus reglas: KSM-123 (FILTROS TALLER CENTRAL).' })).toBeVisible();
   expect(drafts.reprices).toEqual([{ save_id: any, expected_draft_version: 1, scope: 'engine' }]);
   await quote(lineA, 'price_source').getByRole('button').click();
   const drawer = page.getByRole('dialog', { name: '¿De dónde sale este precio?' });

@@ -65,10 +65,11 @@ class CatalogGroupingSuggestionTests(APITestCase):
         proposals = [self.proposal(self.base.sku, self.base.sku, ''),
                      self.proposal(self.ksm.sku, self.base.sku, self.base.sku)]
         proposals[1]['category'] = 'OTRA CATEGORIA'
-        with patch('mall.catalog_grouping_suggestions.call_provider', return_value={'suggestions': list(reversed(proposals))}):
+        with patch('mall.catalog_grouping_suggestions.call_provider', return_value={'suggestions': list(reversed(proposals))}) as provider:
             response = self.client.post(self.url + 'classify/',
                 {'target_sku': self.base.sku, 'source_skus': [self.ksm.sku]}, format='json')
         self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(provider.call_args.kwargs['feature'], 'catalog_grouping')
         self.assertEqual(response.data['source_skus'], [self.ksm.sku])
         self.assertEqual(response.data['category'], 'FRENOS')
         self.assertEqual(Part.objects.filter(active=True).count(), 3)

@@ -68,10 +68,12 @@ class PricingPrivacyTests(APITestCase):
     assistant_paths = ()
     import_job = uuid.UUID(int=0)
 
+    drafted = deal_tests.DealWorkflowTests.drafted
+
     def quote(self, order, price='13.00'):
         self.client.force_authenticate(self.seller_a)
-        response = self.action(order, 'quote', lines=[{'order_line_id': str(line.pk), 'quantity': line.quantity, 'unit_price': price}
-                                                      for line in order.lines.all()], terms='ENTREGA EN 48 HORAS')
+        lines = [{'order_line_id': str(line.pk), 'quantity': line.quantity, 'unit_price': price} for line in order.lines.all()]
+        response = self.action(order, 'quote', lines=lines, terms='ENTREGA EN 48 HORAS', draft_version=self.drafted(order, lines, terms='ENTREGA EN 48 HORAS'))
         self.assertEqual(response.status_code, 200)
         return response
 
@@ -315,6 +317,13 @@ class PricingPrivacyTests(APITestCase):
         self.assert_no_markers('proveedor B', self.calls(self.seller_b, self.supplier_b, order, writes=[
             ('POST quote', lambda: self.action(order, 'quote', account=self.supplier_b, lines=[]))]))
         self.assert_no_markers('Oratek', self.oratek_calls())
+        # The superuser KPIs (S8) read quotations, blocked accepts and AI usage, but never a price, total, supplier or client of a deal.
+        kpis = self.client.get('/api/v1/management/analytics/').data
+        self.assertEqual((kpis['quotations']['first_quotes'], kpis['quotations']['blocked_accepts'], [row['feature'] for row in kpis['ai']['features']]),
+                         (1, 1, ['quote_assistant']))
+        shown = json.dumps({'quotations': kpis['quotations'], 'ai': kpis['ai']})
+        for marker in ['13.00', '65.00', self.supplier_a.name, str(self.supplier_a.pk), self.client_account.name, str(self.client_account.pk), order.reference]:
+            self.assertNotIn(marker, shown)
         self.assertEqual(DealCommand.objects.filter(account=self.client_account).count(), 2)
         for command in DealCommand.objects.all():
             for marker in MARKERS:

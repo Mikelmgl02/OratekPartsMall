@@ -17,6 +17,6 @@ export type Deal = (ClientRequestDetail | SupplierRequestDetail) & {
 };
 export type QuotePayload = {
   currency: 'USD' | 'PAB'; terms: string; lines: { order_line_id: string; quantity: number; unit_price: string }[];
-  // Binds publishing to the reviewed server draft; absent only when the draft could not be loaded.
-  draft_version?: number;
+  // Binds publishing to the reviewed server draft: the server refuses a quote without it (QUOTES_REQUIRE_DRAFT).
+  draft_version: number;
 };

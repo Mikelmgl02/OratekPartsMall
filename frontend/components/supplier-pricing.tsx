@@ -140,7 +140,8 @@ function PriceListForm({ account, list, first, onClose, onSaved }: { account: Ac
 const kindLabels: Record<string, string> = {
   settings_changed: 'Configuración de precios', price_list_changed: 'Lista de precios', prices_edited: 'Precios editados', price_import_applied: 'Importación de precios',
   profile_changed: 'Perfil de cliente', rule_created: 'Regla creada', rule_updated: 'Regla actualizada', rule_archived: 'Regla archivada',
-  draft_discarded: 'Borrador descartado', draft_review_requested: 'Aprobación solicitada', quotation_published: 'Cotización publicada',
+  draft_discarded: 'Borrador descartado', draft_review_requested: 'Aprobación solicitada', draft_review_withdrawn: 'Solicitud de aprobación retirada',
+  quotation_published: 'Cotización publicada',
   accept_blocked_shortfall: 'Confirmación bloqueada por existencias', accept_with_shortfall: 'Confirmado con faltante',
   assistant_run: 'Asistente de cotización', assistant_applied: 'Propuesta del asistente aplicada',
 };
@@ -158,6 +159,7 @@ function auditDetail(entry: PricingAuditEntry) {
   if (entry.kind === 'price_list_changed') return `${payload.action === 'created' ? 'Creada' : 'Actualizada'} · ${payload.code}`;
   if (entry.kind === 'quotation_published') return `Versión ${payload.revision}`;
   if (entry.kind === 'draft_review_requested') return `Versión ${payload.revision} · borrador v${payload.draft_version}`;
+  if (entry.kind === 'draft_review_withdrawn') return `Versión ${payload.revision} · borrador v${payload.draft_version}${payload.reason === 'edited' ? ' · por cambios en la cotización' : ''}`;
   if (entry.kind === 'settings_changed') return Object.keys((entry.payload.new as Record<string, unknown> | undefined) || {}).map(key => settingLabels[key] || key).join(' · ');
   if (entry.kind === 'profile_changed') return payload.action === 'created' ? 'Perfil creado' : `Versión ${payload.version}`;
   if (entry.kind.startsWith('rule_')) return String((entry.payload.new as Record<string, unknown> | undefined)?.name ?? payload.name ?? '');

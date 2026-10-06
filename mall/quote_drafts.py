@@ -20,12 +20,13 @@ from rest_framework.response import Response
 from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
 
+from .ai_budget import AssistantDisabled
 from .availability import check_lines
 from .pricing_engine import ENGINE_VERSION, client_profile, price_lines
 from .pricing_models import CURRENCY_CHOICES, PERMISSION_CHOICES, choice_values, pricing_settings, record_pricing_event
 from .quotation_exceptions import ACKNOWLEDGEABLE, EXCEPTION_CODES, SEVERITIES, compute_exceptions
 from .models import User
-from .quote_assistant import (APPLICABLE, DECISION_STATES, IN_PROGRESS, MAX_LINES, NO_CLIENT_TEXT, NOT_APPLICABLE, PROPOSAL_KINDS, TOO_MANY_LINES,
+from .quote_assistant import (APPLICABLE, DECISION_STATES, IN_PROGRESS, MAX_LINES, NO_CLIENT_TEXT, NOT_APPLICABLE, PROPOSAL_KINDS, PURGED_KEY, TOO_MANY_LINES,
                               QuoteAssistantProviderError, assistant_block, assistant_findings, build_input, ensure_enabled, execute_run,
                               has_client_text, start_run)
 from .quote_assistant_models import RUN_STATUS_CHOICES, QuoteAssistantRun
@@ -40,6 +41,8 @@ REPRICE_SCOPES = ('blank', 'engine', 'lines')
 VALUE_FIELDS = ('quantity', 'quantity_source', 'unit_price', 'price_source', 'note', 'engine_unit_price', 'engine_fingerprint', 'explanation')
 ENGINE_FIELDS = ('engine_unit_price', 'engine_fingerprint', 'explanation')
 CONFLICT_DETAIL = 'Otro miembro de tu equipo modificó este borrador.'
+ASSISTANT_OFF_DETAIL = 'El asistente de IA está desactivado en tu cuenta: sus propuestas guardadas ya no se pueden aplicar ni descartar.'
+PURGED_RUN_DETAIL = 'El texto de esta interpretación se borró a los 30 días. Vuelve a interpretar la solicitud del cliente.'
 NOT_EDITABLE_DETAIL = 'Esta orden ya no admite cambios en el borrador de cotización. Actualiza el acuerdo.'
 
 
@@ -452,11 +455,15 @@ LINE_UPDATE_FIELDS = ['quantity', 'quantity_source', 'unit_price', 'price_source
 def review_state(draft, row, latest, account, user, requested, edited, now):
     """Approval request: request_review true asks for it (again after a content edit), false withdraws it, and editing what the client would
     receive (quantities, prices, currency, terms) without the flag withdraws it too. Notes and alert confirmations keep it."""
+    payload = {'draft_version': draft.draft_version, 'revision': latest.revision + 1 if latest else 1}
     if requested and (draft.status != 'review_requested' or edited):
         draft.status, draft.review_requested_by, draft.review_requested_at = 'review_requested', user, now
-        record_pricing_event(account, user, 'draft_review_requested', client_id=row.client_id, order=row, object_id=str(row.pk),
-                             payload={'draft_version': draft.draft_version, 'revision': latest.revision + 1 if latest else 1})
+        record_pricing_event(account, user, 'draft_review_requested', client_id=row.client_id, order=row, object_id=str(row.pk), payload=payload)
     elif requested is False or (requested is None and edited):
+        if draft.status == 'review_requested':
+            # Withdrawn by the member (withdrawn) or by a change to what the client would receive (edited).
+            record_pricing_event(account, user, 'draft_review_withdrawn', client_id=row.client_id, order=row, object_id=str(row.pk),
+                                 payload={**payload, 'reason': 'withdrawn' if requested is False else 'edited'})
         draft.status, draft.review_requested_by, draft.review_requested_at = 'editing', None, None
 
 
@@ -672,7 +679,8 @@ class QuoteAssistantView(APIView):
                     raise RequestConflict(IN_PROGRESS)
                 if existing.status == 'failed':
                     raise QuoteAssistantProviderError(existing.error or None)
-                return Response(assistant_state(row, account, run=existing))
+                # A run whose text was purged is never shown again, not even to a late retry of its run_id.
+                return Response(assistant_state(row, account, run=None if PURGED_KEY in existing.metrics else existing))
             if row.status not in EDITABLE_STATUSES:
                 raise RequestConflict(NOT_EDITABLE_DETAIL)
             model = ensure_enabled(pricing_settings(account))
@@ -694,9 +702,11 @@ class QuoteAssistantView(APIView):
 
 class QuoteAssistantDecisions(APIView):
     @extend_schema(operation_id='v1_accounts_requests_draft_assistant_decisions', request=QuoteAssistantDecisionsRequest,
-                   responses={200: QuoteDraftSerializer, 409: QuoteDraftConflict},
+                   responses={200: QuoteDraftSerializer, 403: OpenApiResponse(description='El propietario desactivó el asistente: sus propuestas ya no se aplican.'),
+                              409: QuoteDraftConflict},
                    description='Aplica o descarta propuestas del asistente. Aplicar es un guardado del borrador: cambia solo cantidades (origen assistant, '
-                               'con el precio de tu lista recalculado), la nota interna o las condiciones. Las solicitudes de precio solo se descartan.')
+                               'con el precio de tu lista recalculado), la nota interna o las condiciones; una condición o nota ya presente no se repite. '
+                               'Las solicitudes de precio solo se descartan.')
     @transaction.atomic
     def post(self, request, account_id, pk, run_id):
         account, membership, row = supplier_order(request.user, account_id, pk, lock=True)
@@ -705,10 +715,15 @@ class QuoteAssistantDecisions(APIView):
         data = serializer.validated_data
         if row.status not in EDITABLE_STATUSES:
             raise RequestConflict(NOT_EDITABLE_DETAIL)
+        # The owner's opt-in (decision D3) covers stored proposals too: once it is off, nothing from the assistant reaches the draft.
+        if not pricing_settings(account).assistant_enabled:
+            raise AssistantDisabled(ASSISTANT_OFF_DETAIL)
         run = get_object_or_404(QuoteAssistantRun.objects.select_for_update().filter(order=row, status='completed'), pk=run_id)
         latest = latest_quotation(row)
         if run.base_quotation_id != (latest.pk if latest else None):
             raise RequestConflict('Esta interpretación corresponde a una versión anterior de la cotización. Vuelve a interpretar la solicitud.')
+        if PURGED_KEY in run.metrics:
+            raise RequestConflict(PURGED_RUN_DETAIL)
         proposals = {proposal['id']: proposal for proposal in run.output.get('proposals', [])}
         for decision in data['decisions']:
             proposal = proposals.get(decision['proposal_id'])
@@ -743,11 +758,12 @@ class QuoteAssistantDecisions(APIView):
                 if proposal['kind'] in ('quantity_change', 'remove_line') and proposal['quantity'] != line.quantity:
                     requantified.setdefault(line.order_line_id, line.quantity)
                     line.quantity, line.quantity_source, changed[line.order_line_id], edited = proposal['quantity'], 'assistant', line, True
-                elif proposal['kind'] == 'line_note':
+                # A note or terms item already in the draft (the same text from another interpretation) is never appended twice.
+                elif proposal['kind'] == 'line_note' and proposal['text'] not in line.note.split(' · '):
                     line.note, changed[line.order_line_id] = ' · '.join(filter(None, [line.note, proposal['text']])), line
                     if len(line.note) > 500:
                         raise ValidationError({'decisions': f'La nota interna de {lines[line.order_line_id].codigo} superaría 500 caracteres.'})
-                elif proposal['kind'] == 'terms':
+                elif proposal['kind'] == 'terms' and proposal['text'] not in terms.split('\n'):
                     terms = '\n'.join(filter(None, [terms, proposal['text']]))
             if len(terms) > 5000:
                 raise ValidationError({'decisions': 'Las condiciones superarían 5.000 caracteres.'})

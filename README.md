@@ -2,7 +2,7 @@
 
 Brand: **MotionPartes by Oratek**. Domain: `motionpartes.com`. The local development site remains at http://localhost:8080/; public domain hosting and HTTPS are not configured yet.
 
-Django REST Framework foundation for an invitation-only auto-parts quotation marketplace. Catalog and inventory expose no public prices. Prices belong to private, versioned deal quotations.
+Django REST Framework foundation for an invitation-only auto-parts quotation marketplace. Catalog and inventory expose no public prices. Prices belong to private, versioned deal quotations; each supplier's own price lists and per-client rules only prepare suggestions for its quotations (see **Precios privados y cotización asistida**).
 
 ## Run with Docker Compose
 
@@ -43,10 +43,10 @@ Catalog entry fields use uppercase for internal SKUs, optional part names, descr
 - Account switching with explicitly assigned client/supplier capabilities. The live catalog uses Django's search and pagination; selecting an internal SKU shows its available supplier items with their individual codes and brands.
 - Catalog filter sidebar with collapsible grupo, subgrupo, existencias and proveedor sections, full-catalog counts, removable selections and a mobile drawer. `catalog/` accepts repeated `category`, `subcategory` and `supplier` parameters (OR within a dimension, AND between dimensions); `category=` or `subcategory=` selects unclassified values. `availability` accepts `in_stock` (any positive band), `low`, `medium`, `high`, `sold_out` or `unknown`. `include_facets=1` adds filter option counts before pagination, scoped to the search and other filters. Groups remain browsable independently of the chosen subgroups; subgroups follow selected groups. Stock bands aggregate all active eligible suppliers for each canonical SKU; supplier filters match linked supplier inventory, including sold-out records. Prices and exact stock quantities remain private.
 - Catalog cards include description, **Grupo / Subgrupo** (stored as `category` / `subcategory`), alternate codes, the number of suppliers with available stock, and the most recent stock update. `availability` in the catalog API contains only `status`, `supplier_count`, and `updated_at`; exact quantities remain private. Bands aggregate `max(0, reported_quantity - reserved_quantity)` across matched items from active supplier accounts: `sold_out` for zero, `low` for 1–5 units, `medium` for 6–20 units and `high` above that (defaults). `unknown` means no eligible supplier stock records exist. Configure the cutoffs with `CATALOG_LOW_STOCK_THRESHOLD` (default 5) and `CATALOG_HIGH_STOCK_THRESHOLD` (default 20); startup fails with `ImproperlyConfigured` unless the high threshold is greater than the low one. Clients receive the band name, never units or thresholds. Summaries use one stock query for the current page, without multiplying quantities for alternate codes or multiple supplier roles. Group and subgroup are also searchable; missing classifications display **SIN CLASIFICAR**.
-- Supplier workspace with stock records, matching statuses, manual stock updates, resumable Excel balance imports, paginated credit/debit ledger history, and private client requests in **Solicitudes**.
+- Supplier workspace with stock records, matching statuses, manual stock updates, resumable Excel balance imports, paginated credit/debit ledger history, private client requests in **Solicitudes** and private prices, client profiles and rules in **Precios**.
 - Draft request basket grouped by supplier, retaining the selected supplier item for each SKU. Different supplier items under one SKU have separate basket lines. Drafts are saved in local browser storage, separately for each active account and for preview mode. Client accounts submit the basket as separate requests per supplier; successful sends move their items from **Borrador** to database-backed **Enviadas**. Orders and private quotations continue in the deal workflow; delivery and payments remain separate.
 
-The supplier quotation editor uses **AG Grid Enterprise 33.3.2**, matching Essamobileapp's installed version. Supplier quantities and prices are editable; item identities and requested quantities are read-only. It supports sorting, column resizing, range copy/paste from Excel, Spanish menus and exact calculations in cents. Blank prices are allowed only for unavailable items (offered quantity zero). The editor validates all rows and commits the current cell before sending the quotation.
+The supplier quotation editor uses **AG Grid Enterprise 33.3.2**, matching Essamobileapp's installed version. Supplier quantities and prices are editable; item identities and requested quantities are read-only. It supports sorting, column resizing, range copy/paste from Excel, Spanish menus and exact calculations in cents. Blank prices are allowed only for unavailable items (offered quantity zero). Edits autosave to the supplier's private server draft; sending commits the current cell, validates all rows, saves pending edits and publishes exactly that draft version.
 
 Set `NEXT_PUBLIC_AG_GRID_LICENSE_KEY` in the root `.env` before building with Compose, or in `frontend/.env.local` for local frontend development. The license is registered before the grid is created. Compose provides the environment file through a BuildKit secret for the build step; only the AG Grid license is passed to the frontend build. AG Grid's browser-side license is included in the browser bundle as required by the library; other application credentials remain server-side. Environment files are ignored by Git. After changing only the license, run `docker compose build --no-cache frontend` before recreating the frontend, because build secrets do not invalidate Docker's cache.
 
@@ -101,7 +101,7 @@ SQLite is for local development. Set the `POSTGRES_*` variables in `.env.example
 
 An administrator creates an invitation with recipient email and expiration in the admin. Share its token privately with the recipient. Signup creates a user only. Then an administrator creates or selects an account, assigns its explicitly enabled roles, and adds employee memberships. Users can belong to multiple accounts, and accounts can carry several roles.
 
-Seeded roles: `supplier_retail`, `supplier_wholesale`, `client_business`, `client_walkin`. Additional roles can be added in the admin. Membership owner/manager/staff values establish the structure; this initial inventory API allows all members of a supplier account to ingest its inventory. Employee management is admin-only for now.
+Seeded roles: `supplier_retail`, `supplier_wholesale`, `client_business`, `client_walkin`. Additional roles can be added in the admin. Membership owner/manager/staff values establish the structure; this initial inventory API allows all members of a supplier account to ingest its inventory. Private pricing uses them for its configuration and publishing permissions (staff by default). Employee management is admin-only for now.
 
 ## Supplier stock imports
 
@@ -129,7 +129,7 @@ The following transitions are enforced by the API as well as the interface:
 | `adjustment` | Supplier publishes a new revision or returns the unchanged quotation | `quoted` |
 | `quoted` | Client accepts the exact current quotation | `handshaked` |
 
-`POST /api/v1/accounts/<account_id>/deals/<order_id>/actions/` accepts `action=quote|accept|request_adjustment|return_quote`, UUID `operation_id`, and `expected_version`. Quote decisions include `quotation_id`. Publishing includes all original `order_line_id` values exactly once, offered whole `quantity` (0 for unavailable lines), nonnegative `unit_price` with two decimals, `currency=USD|PAB` and optional uppercase `terms`. At least one offered unit is required. Prices/totals are computed with Decimal on the server. Publication constitutes supplier confirmation; client acceptance records the other confirmation and closes the agreement as **HANDSHAKED**. Published line prices and terms remain immutable, and adjustments create new revisions. Confirmed agreements appear in **Historial de compras** (`?vista=compras`), with agreed units, without implying delivery completion.
+`POST /api/v1/accounts/<account_id>/deals/<order_id>/actions/` accepts `action=quote|accept|request_adjustment|return_quote`, UUID `operation_id`, and `expected_version`. Quote decisions include `quotation_id`. Publishing includes all original `order_line_id` values exactly once, offered whole `quantity` (0 for unavailable lines), nonnegative `unit_price` with two decimals, `currency=USD|PAB`, optional uppercase `terms` and the `draft_version` of the supplier's saved draft, whose values the payload must repeat exactly (409 otherwise; see **Precios privados y cotización asistida**). At least one offered unit is required. Prices/totals are computed with Decimal on the server. Publication constitutes supplier confirmation; client acceptance records the other confirmation and closes the agreement as **HANDSHAKED**. Published line prices and terms remain immutable, and adjustments create new revisions. Confirmed agreements appear in **Historial de compras** (`?vista=compras`), with agreed units, without implying delivery completion.
 
 Account membership, participant identity and supplier/client capability are checked on every operation. Order row locks serialize review, additions and quotation decisions; stale versions and previous quotations return 409. Durable operation keys make lost responses safely retryable. An event history records decisions and the responsible account employee. Quotes remain private between the two accounts. Sending, quoting and handshaking do not change stock balances or create ledger entries; stock allocation, delivery and payment need their own workflow.
 
@@ -137,13 +137,93 @@ Account membership, participant identity and supplier/client capability are chec
 
 The supplier's quotation draft (`GET/POST .../requests/<order_id>/draft/`) carries alerts computed on the server against live stock: **block** (`quantity_missing`, `price_missing`, `all_zero`, `draft_outdated`), **confirm** (`offered_gt_available` "5>3", `offered_gt_requested` "6>4", `identity_changed`, `zero_price`) and **info** (`reduced_to_stock`, `zero_offered`). In the editor, **Alertas** summarizes each line and **Revisa antes de enviar** lists them; **Confirmo** saves `lines[].acknowledge: [{code, context}]` (or `revoke: [code]`) in the draft. A confirmation counts only while its context is unchanged, so another quantity, price or stock level needs a new one. **Ajustar a disponibles** offers min(requested, available) on lines above stock. Suppliers can turn offering above stock or above the requested units into a block (`over_stock_policy` / `over_request_policy=block` in `pricing/settings/`), which no confirmation lifts.
 
-Publishing a draft-bound quote returns 409 `{detail, exceptions}` while any alert blocks or awaits confirmation. A quote sent without a draft enforces only those block policies and records the remaining alerts as unconfirmed. Every publication stores a supplier-only trace: available units and item identity at quote time, the server-derived price and quantity source, and each alert with who confirmed it and when. `GET .../requests/<order_id>/quotations/<quotation_id>/trace/` returns it (supplier members only; `{"available": false}` for quotations published before this release); the order's **Ver origen de precios** shows it.
+Publishing a draft-bound quote returns 409 `{detail, exceptions}` while any alert blocks or awaits confirmation. Only with `QUOTES_REQUIRE_DRAFT=0` (legacy API clients) is a quote accepted without a draft; it then enforces only those block policies and records the remaining alerts as unconfirmed. Every publication stores a supplier-only trace: available units and item identity at quote time, the server-derived price and quantity source, and each alert with who confirmed it and when. `GET .../requests/<order_id>/quotations/<quotation_id>/trace/` returns it (supplier members only; `{"available": false}` for quotations published before this release); the order's **Ver origen de precios** shows it.
 
 `return_quote` and `accept` re-check live stock for each offered line. Only stock that dropped since the quote counts: a line falls short when fewer than `min(offered, available_at_quote)` units remain, or when its item identity changed after the quote. A line confirmed above stock ("5>3") is short only below the 3 units the supplier relied on. Quotations published before this release are exempt. A short `return_quote` returns 409. A short `accept` is blocked by default (`accept_shortfall_policy=block`): it returns 409 with a message that contains no quantities, the deal stays `quoted`, no command is stored, and the check is recorded privately for the supplier. The client sees that message and **Solicitar ajuste**. With `allow`, the accept proceeds and is recorded as a shortfall. The supplier's order list shows **Confirmación bloqueada por existencias** or **Confirmado con faltante** (`availability_alert`); client payloads gain no keys. These checks read stock without locking and never write it: no reservation, deduction or ledger entry is created.
 
 Each deal also has a persistent private conversation: `GET/POST .../deals/<order_id>/messages/`. Posting includes UUID `message_id` and uppercase `body` (up to 4,000 characters). Retry keys prevent duplicate messages. GET returns up to 100 messages with `cursor`, `has_more` and `has_earlier`; use `after` for new messages or `before` for earlier history. The interface refreshes chat every five seconds and deal/list state every fifteen seconds while the tab is visible. Chat is also available after handshake for delivery coordination; chat messages never change agreement terms. Older messages can be loaded without losing newer ones.
 
 Order lists retain the existing `/requests/` and `/sent-requests/` routes, with account-scoped search, pagination and all five status filters. `GET .../catalog/<part_id>/request-state/` reports units in mutually exclusive lifecycle states, including historical merged-SKU snapshots. Open orders (`pending`, `reviewed`, `quoted`, `adjustment`) count requested units; `handshaked_quantity` (**En acuerdos**) counts the units of the quotation the client accepted, which can differ from the requested units (0 for lines quoted as unavailable). Requested units the supplier did not agree to are not reported as a state; they remain visible on the order (requested line `quantity` vs. the accepted quotation, `unit_count` vs. `quoted_unit_count`). `sent_quantity` remains the total of requested units. Stock figures remain supplier-only, including reported/reserved/available quantities and shortfalls.
+
+## Precios privados y cotización asistida
+
+Each supplier prices its quotations from its own private data. Everything below is supplier-only: catalog, offers, client payloads, deal events, Django admin and Oratek management never carry supplier prices, profiles, rules, drafts or assistant output, and clients see only the prices of quotations sent to them. `mall/test_pricing_privacy.py` seeds private markers and pins the client-facing key sets. Suppliers work in **Precios** (**Listas de precios**, **Clientes**, **Reglas**, **Simulador**, **Historial**, **Configuración**) and on each order's **Cotización** tab.
+
+**Data model** (additive tables; none is registered in Django admin):
+
+- `SupplierPricingSettings` (one per supplier: default currency, USD/PAB parity, configuration and publish permissions, alert policies, accept shortfall policy, quantity prefill, assistant opt-in) and `PricingAuditEvent`, the private **Historial**.
+- `PriceList` / `PriceListEntry` (several named lists, one default; a list's currency is fixed once it has prices), `SupplierItemPricing` (the supplier's LINEA discount group and floor price) and the append-only `PriceChange`. Stored outside `SupplierItem`, so price writes never change stock rows, catalog `availability.updated_at` or stock import fingerprints.
+- `ClientPricingProfile` (one per supplier–client pair that has ordered: list, fallback to the default list, general discount, preferred currency, default terms, ERP customer code, internal notes) and `PricingRule` (scope all or client; target all, LINEA, brand or item; discount or net price; minimum quantity; validity window).
+- `DealQuotationDraft` / `DealQuotationDraftLine` (the server draft) and `DealQuotationAudit` / `DealQuotationLineAudit` (the immutable trace of each publication).
+- `PriceImportJob` / `PriceImportBatch` (separate from the stock import tables, so a price import never pauses matching).
+- `QuoteAssistantRun` and `AIUsageRecord` (AI runs and daily spend per feature).
+
+**Engine and precedence (decision D2).** `mall/pricing_engine.py` computes each suggested price from that data alone, with Decimal and a constant number of queries. The client's agreement comes first (its client-scoped rules and the profile's general discount), then the most specific target (item, then LINEA, then brand, then all), then the highest minimum quantity. Exactly one rule applies per line, never stacked; a remaining tie takes the higher price. The result is rounded once, ROUND_HALF_UP to 0.01. A list in the other currency is used only at 1:1 USD/PAB parity, when enabled. Every suggestion carries a step-by-step explanation (**¿De dónde sale este precio?**) and a fingerprint; the **Simulador** shows the outcome before saving a rule.
+
+**Drafts and alerts.** Every order in `reviewed` or `adjustment` has one private draft (`GET/POST .../requests/<order_id>/draft/`). Reading it writes nothing: it stays virtual until the first save. Saves are partial, versioned (`draft_version`), retry-safe (`save_id`) and autosaved, and never change the order's version or write client-visible activity. Values are prefilled from the saved draft, then the previous revision, then the engine, then blank; a price's source is `engine`, `previous`, `manual` or `none`, never AI. Server-computed alerts block, need a confirmation tied to the value on screen, or inform (see **Availability checks before mutual confirmation**). **Publishing requires the reviewed draft** (`QUOTES_REQUIRE_DRAFT=1`, the default): the `quote` action must name the saved `draft_version` and repeat its values exactly, so a draftless quote returns 409. If the editor cannot load the draft it shows the previous revision read-only with **Reintentar** instead of a send button. Publication consumes the draft and stores the trace (stock at quote time, suggested versus final price, server-derived sources, confirmations, applied assistant run), shown under **Ver origen de precios**. Members below `publish_min_permission` use **Solicitar aprobación**; editing quantities, prices, currency or terms afterwards withdraws the request, and both events appear in **Historial**.
+
+**Availability (decision D1).** Accepting is blocked when stock the supplier relied on dropped after the quote (below `min(offered, available at quote)`, or the item's identity changed). A line confirmed above stock counts only the units that were available at the quote, quotations published before the trace are exempt, and a supplier can choose `accept_shortfall_policy=allow`. The client receives a message without quantities and **Solicitar ajuste**.
+
+**Excel price import** (**Listas de precios → Importar Excel**, template and export in the same format): an `.xlsx` up to 5 MB, read from the `PRECIOS` sheet (or `LISTA_PRECIOS`, or the first sheet).
+
+| Column | Meaning |
+| --- | --- |
+| `ID_INVENTARIO_PROVEEDOR` | Required; the stock import's aliases are accepted. Rows are keyed by it. |
+| `CODIGO` | Optional check only; a different code warns but never blocks the row. |
+| `PRECIO` | The default list (created as `GENERAL` when the supplier has none). |
+| `PRECIO_<CÓDIGO>` | A named list; new lists need explicit confirmation before the first batch. |
+| `LINEA` (`FAMILIA`, `GRUPO_DESCUENTO`) | The supplier's discount group used by LINEA rules. |
+| `PRECIO_MINIMO` (`PRECIO_PISO`) | Floor price: offering below it needs a confirmation; the engine never clamps. |
+
+`MARCA` and `DESCRIPCION` are ignored but kept in the correction workbook; cost columns (`COSTO`, `PRECIO_COSTO`, `PRECIO_COMPRA`) and unknown columns are ignored and listed. A blank cell keeps the value, `BORRAR` removes it and `0` is skipped with a warning. Amounts are parsed as Decimal: ambiguous separators and more than two decimals are rejected, never rounded. The preview writes nothing; batches of 1,000 rows apply with a confirmation of changes above 50 %, the job expires after 7 days, and rejected rows download as a correction workbook.
+
+**Permissions (decisions D4 and D5).** Any member of the supplier account reads prices, lists, profiles, rules, drafts and traces, saves drafts and runs the assistant. Writing prices, lists, imports, profiles, rules and the other settings needs `config_min_permission`, and `quote` / `return_quote` need `publish_min_permission` (both staff by default; a refused member gets 403 before any version check). Only the owner changes permission settings and the AI opt-in. Run `python -m mall.pricing_preflight --check` before a supplier tightens permissions: it lists supplier accounts with no active owner or manager. Oratek superusers have no access to supplier prices, profiles or rules (supplier routes return 404); **Estadísticas** shows them aggregates without prices only.
+
+**AI quotation assistant.** **Interpretar solicitud del cliente** sends the order lines and the client's order notes, latest adjustment reason and chat since the latest revision (capped, with account and member names, emails, written amounts and every figure the supplier typed masked) to Gemini; it never sends prices, lists, rules, profiles, stock or other orders. It returns proposals (quantity change, remove line, internal line note, terms item; price requests, items outside the order and questions can only be dismissed), each with a verbatim quote of the client that the server verifies. The response schema has no price field and money text is dropped. Nothing changes the draft until a supplier applies a proposal, which is a draft save; an engine price then follows the new quantity deterministically. An identical interpretation within 30 days is a free cache hit that keeps the decisions already taken, the same note or terms text is never appended twice, and once the owner turns the assistant off its stored proposals can no longer be applied (403). Runs are capped per revision, per account and day, by the assistant's monthly budget and by the platform's, with a pre-call cost estimate.
+
+It ships dark. To enable it:
+
+1. Set `GEMINI_API_KEY` (and `GEMINI_MODEL`).
+2. Set `GEMINI_INPUT_USD_PER_MTOK`, `GEMINI_OUTPUT_USD_PER_MTOK` and `GEMINI_GROUNDING_USD_PER_CALL` from Google's current price sheet for that model. The defaults are placeholders, and every spend figure and cap depends on them.
+3. Set `QUOTE_ASSISTANT_MONTHLY_USD` above 0 (40 of the 200 platform budget is the recommended cap) and recreate the `app` and `matching` containers.
+4. Publish the privacy-policy and terms disclosure: Google Gemini processes order and chat text when a supplier enables the assistant.
+5. Each supplier's owner opts in under **Precios → Configuración → Asistente de IA** (after reading the disclosure there); its clients then see a notice in the deal chat.
+6. Schedule the retention purge below.
+
+**AI budget.** Every Gemini feature records its daily spend in `AIUsageRecord`: the assistant per supplier, and catalog classification, the inventory assistant, SKU grouping, part types, OEM lookup and supplier matching as platform usage (reported tokens at the configured rates, the grounding fee of an OEM search, or the estimate of a failed call that may have been billed). `AI_MONTHLY_BUDGET_USD` therefore covers all AI spend: the assistant refuses runs once the platform total would exceed it, catalog features keep working and are counted, and **Estadísticas** shows the month's spend by feature against the budget.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `QUOTES_REQUIRE_DRAFT` | `1` | Quotations are published only from the reviewed draft; `0` re-opens the draftless legacy API path. |
+| `QUOTE_ASSISTANT_MONTHLY_USD` | `0` | Assistant monthly cap; 0 keeps it off. |
+| `AI_MONTHLY_BUDGET_USD` | `200` | Platform-wide monthly AI budget. |
+| `QUOTE_ASSISTANT_RUNS_PER_REVISION` | `5` | Billable runs per draft revision. |
+| `QUOTE_ASSISTANT_DAILY_RUNS_PER_ACCOUNT` | `30` | Billable runs per supplier and day. |
+| `GEMINI_INPUT_USD_PER_MTOK` / `GEMINI_OUTPUT_USD_PER_MTOK` | `1.00` / `5.00` | Placeholder token prices (thinking tokens at the output rate). |
+| `GEMINI_GROUNDING_USD_PER_CALL` | `0.035` | Placeholder fee per Google Search grounded request. |
+
+**Retention purge.** `python -m mall.purge_quote_assistant [--dry-run]` blanks the summary, notes, terms texts, questions and quoted evidence of assistant runs older than 30 days (a cached copy goes with its source); runs, decisions, metrics and the trace's links are kept. It also deletes the staged batches of expired price imports and each job 30 days after it expired. It is idempotent and prints counts only. No extra container is needed; schedule it daily from the host, for example with cron:
+
+```sh
+15 3 * * * cd /path/to/OratekPartsMall && docker compose exec -T app python -m mall.purge_quote_assistant >> /var/log/motionpartes-purge.log 2>&1
+```
+
+Supplier routes, all under `/api/v1/accounts/<supplier_id>/` (any member reads; writes follow the permissions above):
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| GET / POST | `pricing/settings/` | Settings (currency, parity, permissions, policies, assistant opt-in) |
+| GET | `pricing/history/` | Private audit log |
+| GET / POST, POST | `price-lists/`, `price-lists/{id}/` | Price lists: list and create, then edit one |
+| GET / POST | `prices/` | Price grid and manual edits; `prices/{item_id}/history/` for one item |
+| GET | `prices/export/` | Excel export in the import format |
+| GET / POST | `prices/import/template/`, `prices/import/`, `prices/import/jobs/{job_id}/` | Excel import template, preview and batches; `.../errors/` correction workbook |
+| GET, GET / POST | `clients/`, `clients/{client_id}/profile/` | Clients that ordered and their private profile |
+| GET / POST, POST | `pricing-rules/`, `pricing-rules/{id}/` and `{id}/archive/` | Commercial rules: list and create, then edit or archive one |
+| POST | `pricing/simulate/` | Price lines for a client without saving |
+| GET / POST | `requests/{order_id}/draft/` | Quotation draft; `discard/` and `reprice/` |
+| GET / POST | `requests/{order_id}/draft/assistant/` | Assistant state and runs; `{run_id}/decisions/` applies or dismisses |
+| GET | `requests/{order_id}/quotations/{quotation_id}/trace/` | Publication trace |
 
 ## Administration
 
@@ -198,7 +278,7 @@ Deactivation preserves account and inventory history. Deactivating a user revoke
 
 ## Internal analytics
 
-Superusers can open **Administración → Estadísticas** to see 7-, 30- or 90-day activity in Panama time: visits, returning users, completed searches, searches without results, part-detail views, basket additions, requested units and supplier review times. Rankings highlight catalog gaps, popular SKUs, frequent visitors and suppliers with pending requests over 24 hours. The existing workflow records review, not order confirmation; confirmation and fulfillment metrics can be added when those transitions exist.
+Superusers can open **Administración → Estadísticas** to see 7-, 30- or 90-day activity in Panama time: visits, returning users, completed searches, searches without results, part-detail views, basket additions, requested units and supplier review times. Rankings highlight catalog gaps, popular SKUs, frequent visitors and suppliers with pending requests over 24 hours. **Cotizaciones y uso de IA** adds platform-wide quotation KPIs (time from sending to the first version, versions per quoted order, acceptance rate, accepts blocked by stock) and this month's AI spend by feature against `AI_MONTHLY_BUDGET_USD`; it shows no prices, totals, suppliers or clients and reads a constant number of queries. Fulfillment metrics can be added when that transition exists.
 
 `POST /api/v1/analytics/events/` accepts authenticated visit activity, completed searches, part views and basket additions for an active member account. The server validates event references, calculates search result counts itself and deduplicates event UUIDs. A visit ends after 30 minutes of inactivity; its browser key is shared across tabs and stored in local storage. Hidden tabs do not produce activity heartbeats. Superuser and demo browsing are excluded, and telemetry failure does not block shopping. Basket-added quantities are cumulative additions during the period, not current basket balances. SKU merges retain historical demand metrics.
 
@@ -337,9 +417,9 @@ Management endpoints under `/api/v1/management/catalog/{part_id}/images/`: GET g
 
 ## Next development stage
 
-Private supplier quotations (revisions, adjustments and handshake; see **Supplier orders and deals**) and vehicle applications (see **Technical templates and vehicle applications**) are implemented.
+Private supplier quotations (revisions, adjustments and handshake; see **Supplier orders and deals**), private supplier pricing with the AI quotation assistant (see **Precios privados y cotización asistida**) and vehicle applications (see **Technical templates and vehicle applications**) are implemented.
 
-Not implemented yet: stock reservation or deduction at handshake, fulfilment and partial deliveries, supplier price lists and per-client pricing rules, an AI quotation assistant, shared server-side baskets with retail approval (membership `permission` is stored but not enforced), notifications, ratings, CSV imports and the apiag-cloud transport adapter. `output/modelo-negocio/pendientes-produccion.txt` tracks the full production checklist.
+Not implemented yet: stock reservation or deduction at handshake, fulfilment and partial deliveries, shared server-side baskets with retail approval (membership `permission` is enforced only by the pricing settings), notifications, ratings, CSV imports and the apiag-cloud transport adapter. `output/modelo-negocio/pendientes-produccion.txt` tracks the full production checklist.
 
 Before implementing reservations, settle expiration, partial fulfillment and how uploads that contradict confirmed agreements are resolved. Stock deduction must also be coordinated with ERP fulfillment events to prevent decrementing a delivered quantity twice. The ledger already includes movement types for this stage, but only ingestion adjustments are currently written.
 
