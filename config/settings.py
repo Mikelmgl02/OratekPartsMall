@@ -77,7 +77,11 @@ SPECTACULAR_SETTINGS = {"TITLE": "MotionPartes API", "VERSION": "0.1.0", "COMPON
     "SupplierPolicyEnum": ["confirm", "block"], "PriceSourceEnum": ["engine", "previous", "manual", "none"],
     "QuantitySourceEnum": ["requested", "available", "previous", "manual", "assistant"], "PricingRuleScopeEnum": ["all", "client"],
     "PricingRuleTargetEnum": ["all", "line", "brand", "item"], "PricingRuleKindEnum": ["discount", "net_price"],
-    "ExceptionSeverityEnum": ["block", "confirm", "info"], "QuoteDraftStatusEnum": ["editing", "review_requested"]}}
+    "ExceptionSeverityEnum": ["block", "confirm", "info"], "QuoteDraftStatusEnum": ["editing", "review_requested"],
+    "QuoteExceptionCodeEnum": ["quantity_missing", "price_missing", "all_zero", "draft_outdated", "offered_gt_available", "offered_gt_requested",
+                               "identity_changed", "zero_price", "reduced_to_stock", "zero_offered"],
+    "AcknowledgeableExceptionEnum": ["offered_gt_available", "offered_gt_requested", "identity_changed", "zero_price"],
+    "AuditPriceSourceEnum": ["engine", "previous", "manual", "none", "unspecified"], "AcceptCheckResultEnum": ["ok", "blocked", "accepted_with_shortfall"]}}
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY') or os.getenv('GEM_API_KEY', '')
 GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-3.5-flash-lite')
 CATALOG_LOW_STOCK_THRESHOLD = max(1, int(os.getenv('CATALOG_LOW_STOCK_THRESHOLD', '5')))

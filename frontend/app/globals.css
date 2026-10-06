@@ -1208,6 +1208,31 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .quotation-grid .quotation-stock-review { color:#a14c2d; font-size:11px; }
 .deal-tabs .deal-tab-dot { width:7px; height:7px; flex:0 0 7px; border-radius:50%; background:#45886a; }
 .deal-draft-warning { color:var(--muted); font-size:12px; }
+/* Supplier-only quotation alerts: block, confirm (with value-tied "Confirmo") and info. */
+.quotation-grid .quotation-alert-cell { font-size:11px; color:#7a896f; cursor:pointer; }
+.quotation-grid .quotation-alert-cell.block { color:#a14c2d; font-weight:700; }
+.quotation-grid .quotation-alert-cell.confirm { color:#8a6a24; font-weight:700; }
+.quotation-exceptions { min-width:0; background:#fff; border:1px solid var(--line); border-radius:10px; padding:4px 12px; font-size:12px; }
+.quotation-exceptions summary { cursor:pointer; padding:8px 0; font-weight:700; color:#52743f; }
+.quotation-exceptions ul { list-style:none; margin:0; padding:0 0 8px; display:grid; gap:6px; }
+.quotation-exceptions p { margin:0 0 10px; color:var(--muted); font-size:11px; }
+.quotation-exception { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:6px 12px; padding:8px 10px; border-radius:8px; background:#f6f8f2; }
+.quotation-exception > div { flex:1 1 240px; min-width:0; display:flex; flex-wrap:wrap; gap:4px 8px; overflow-wrap:anywhere; }
+.quotation-exception > div button, .quotation-exception > div strong { font-weight:700; color:#415b32; text-decoration:underline; text-underline-offset:3px; }
+.quotation-exception.block { background:#fff0e8; color:#a14c2d; }
+.quotation-exception.confirm { background:#fbf8ef; color:#6f5520; }
+.quotation-exception.confirm.confirmed { background:#f1f7ea; color:#45652f; }
+.quotation-exception small { font-weight:700; }
+.quotation-exception label { display:inline-flex; align-items:center; gap:6px; font-weight:700; cursor:pointer; }
+.supplier-request-alert { display:inline-flex; align-items:center; gap:5px; padding:3px 8px; border-radius:999px; font-size:10px; font-weight:700; background:#fbf8ef; color:#8a6a24; }
+.supplier-request-alert.blocked { background:#fff0e8; color:#a14c2d; }
+.deal-adjust-hint { flex-basis:100%; color:var(--muted); font-size:12px; }
+.deal-quote-trace { min-width:0; font-size:12px; }
+.deal-quote-trace summary { cursor:pointer; padding:8px 0; color:#52743f; font-weight:700; }
+.deal-quote-trace td small { display:block; overflow-wrap:anywhere; }
+.deal-trace-check { font-weight:700; color:#45652f; }
+.deal-trace-check.blocked { color:#a14c2d; }
+.deal-trace-check.accepted_with_shortfall { color:#8a6a24; }
 
 .supplier-order-toolbar { justify-content:space-between; }
 .supplier-order-toolbar-actions { display:flex; align-items:center; gap:12px; }

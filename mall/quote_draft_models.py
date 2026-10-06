@@ -4,7 +4,7 @@ from django.conf import settings
 from django.db import models
 from django.db.models import Q
 
-from .pricing_models import CURRENCY_CHOICES, choice_values
+from .pricing_models import CURRENCY_CHOICES, PERMISSION_CHOICES, choice_values
 
 DRAFT_STATUS_CHOICES = [('editing', 'En edición'), ('review_requested', 'Listo para revisión')]
 QUANTITY_SOURCE_CHOICES = [('requested', 'Solicitadas'), ('available', 'Hasta las existencias'), ('previous', 'Versión anterior'),
@@ -61,3 +61,45 @@ class DealQuotationDraftLine(models.Model):
             models.CheckConstraint(condition=Q(quantity_source__in=choice_values(QUANTITY_SOURCE_CHOICES))
                                    & Q(price_source__in=choice_values(PRICE_SOURCE_CHOICES)), name='valid_quote_draft_line_sources'),
         ]
+
+
+# Published-quotation trace: supplier-only, never read by deal_data. 'unspecified' marks rows whose source cannot be derived.
+AUDIT_PRICE_SOURCE_CHOICES = PRICE_SOURCE_CHOICES + [('unspecified', 'Sin especificar')]
+
+
+class DealQuotationAudit(models.Model):
+    quotation = models.OneToOneField('mall.DealQuotation', on_delete=models.PROTECT, primary_key=True, related_name='audit')
+    draft_version = models.PositiveIntegerField(null=True, blank=True, help_text='Null when published without a draft (legacy path).')
+    publisher = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='+')
+    publisher_permission = models.CharField(max_length=10, choices=PERMISSION_CHOICES)
+    engine_version = models.CharField(max_length=20, blank=True, default='')
+    profile_id = models.UUIDField(null=True, blank=True)
+    profile_version = models.PositiveIntegerField(null=True, blank=True)
+    settings_snapshot = models.JSONField(default=dict, blank=True)
+    order_exceptions = models.JSONField(default=list, blank=True)
+    # {result: ok|blocked|accepted_with_shortfall, lines, at}; rewritten by every accept attempt.
+    accept_check = models.JSONField(null=True, blank=True)
+    accept_checked_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.CheckConstraint(condition=Q(publisher_permission__in=choice_values(PERMISSION_CHOICES)), name='valid_quote_audit_permission')]
+
+
+class DealQuotationLineAudit(models.Model):
+    line = models.OneToOneField('mall.DealQuotationLine', on_delete=models.PROTECT, primary_key=True, related_name='audit')
+    available_at_quote = models.PositiveIntegerField(null=True, blank=True)
+    identity_ok_at_quote = models.BooleanField()
+    available_at_accept = models.PositiveIntegerField(null=True, blank=True)
+    suggested_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    price_source = models.CharField(max_length=12, choices=AUDIT_PRICE_SOURCE_CHOICES)
+    quantity_source = models.CharField(max_length=10, choices=QUANTITY_SOURCE_CHOICES)
+    engine_fingerprint = models.CharField(max_length=64, blank=True, default='')
+    explanation = models.JSONField(default=dict, blank=True)
+    # [{code, severity, context, acknowledged_by, acknowledged_at}] as they stood when the revision was published.
+    exceptions = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.CheckConstraint(condition=Q(price_source__in=choice_values(AUDIT_PRICE_SOURCE_CHOICES))
+                                              & Q(quantity_source__in=choice_values(QUANTITY_SOURCE_CHOICES)), name='valid_quote_line_audit_sources')]

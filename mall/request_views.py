@@ -4,7 +4,7 @@ import json
 import uuid
 
 from django.db import IntegrityError, transaction
-from django.db.models import Count, Prefetch, Q, Sum, OuterRef, Subquery
+from django.db.models import Case, CharField, Count, Prefetch, Q, Sum, OuterRef, Subquery, Value, When
 from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -92,6 +92,14 @@ def request_summary(row):
             'quotation_revision': row.quotation_revision, 'quoted_unit_count': row.quoted_unit_count,
             'quotation_total': str(row.quotation_total) if row.quotation_total is not None else None,
             'quotation_currency': row.quotation_currency}
+
+
+def availability_alert():
+    """Supplier list only: the latest revision's accept check when stock blocked the client's confirmation or it closed with a shortfall."""
+    alerts = ['blocked', 'accepted_with_shortfall']
+    latest = DealQuotation.objects.filter(order_id=OuterRef('pk')).order_by('-revision').annotate(alert=Case(
+        *[When(audit__accept_check__result=value, then=Value(value)) for value in alerts], default=None, output_field=CharField()))
+    return Subquery(latest.values('alert')[:1])
 
 
 def supplier_request_summary(row):
@@ -322,7 +330,7 @@ class AccountRequests(APIView):
         filters = RequestFilters(data=request.query_params)
         filters.is_valid(raise_exception=True)
         data = filters.validated_data
-        rows = request_queryset(supplier)
+        rows = request_queryset(supplier).annotate(availability_alert=availability_alert())
         if data.get('status'):
             rows = rows.filter(status=data['status'])
         if data.get('search'):

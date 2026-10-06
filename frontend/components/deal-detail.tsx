@@ -5,10 +5,10 @@ import { Check, FileText, Handshake, History, LoaderCircle, LockKeyhole, Message
 import Modal from './modal';
 import DealStatusBadge from './deal-status';
 import { UppercaseTextarea } from './uppercase-field';
-import { Account, request } from '@/lib/types';
+import { Account, ApiError, request } from '@/lib/types';
 import type { SupplierRequestLine } from '@/lib/request-types';
 import type { Deal, DealMessage, Quotation } from '@/lib/deal-types';
-import type { QuoteDraft, QuoteDraftEnvelope } from '@/lib/pricing-types';
+import type { QuotationTrace, QuoteDraft, QuoteDraftEnvelope } from '@/lib/pricing-types';
 
 const QuoteEditor = dynamic(() => import('./quotation-editor'), { ssr: false, loading: () => <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando editor de cotización…</div> });
 
@@ -39,6 +39,8 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   const [adjusting, setAdjusting] = useState(false);
   const [reason, setReason] = useState('');
   const [confirming, setConfirming] = useState(false);
+  // A refused accept (for example, stock the supplier relied on changed) points the client to "Solicitar ajuste".
+  const [suggestAdjust, setSuggestAdjust] = useState(false);
   const mounted = useRef(false);
   const inFlight = useRef(false);
   const retry = useRef<{ payload: string; id: string } | null>(null);
@@ -54,7 +56,7 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
     const changed = latestVersion.current !== undefined && latestVersion.current !== value.version;
     latestVersion.current = value.version;
     setDeal(value);
-    if (changed) { setConfirming(false); onChangedRef.current?.(); }
+    if (changed) { setConfirming(false); setSuggestAdjust(false); onChangedRef.current?.(); }
   }, []);
   const load = useCallback(async (open = false) => {
     try {
@@ -84,7 +86,7 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
     }).catch(() => { if (!cancelled) setDraftLoad({ key: draftKey, draft: null }); });
     return () => { cancelled = true; };
   }, [editable, draftKey, draftPath, draftLoad?.key, load]);
-  async function act(action: string, extra: Record<string, unknown> = {}): Promise<boolean> {
+  async function act(action: string, extra: Record<string, unknown> = {}): Promise<true | ApiError | false> {
     if (!deal || inFlight.current) return false;
     inFlight.current = true; setBusy(true); setError(''); setNotice('');
     const payload = { action, expected_version: deal.version, ...extra };
@@ -93,13 +95,19 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
     try {
       const result = await request<Deal>(actionPath, { method: 'POST', body: JSON.stringify({ ...payload, operation_id: retry.current.id }) });
       if (!mounted.current) return true;
-      retry.current = null; acceptDetail(result); setAdjusting(false); setReason(''); setConfirming(false);
+      retry.current = null; acceptDetail(result); setAdjusting(false); setReason(''); setConfirming(false); setSuggestAdjust(false);
       setTab('quote');
       setNotice(action === 'accept' ? 'Acuerdo confirmado por ambas partes · HANDSHAKED.' : action === 'request_adjustment' ? 'Ajuste enviado al proveedor.' : 'Cotización confirmada por el proveedor y enviada al cliente.');
       onChangedRef.current?.();
       return true;
-    } catch (caught) { if (mounted.current) setError(failure(caught)); return false; }
-    finally { inFlight.current = false; if (mounted.current) setBusy(false); }
+    } catch (caught) {
+      if (!mounted.current) return false;
+      const refused = caught instanceof ApiError && caught.status === 409;
+      // Quote alerts are shown by the editor next to the affected lines.
+      if (!(refused && action === 'quote' && Array.isArray((caught.body as { exceptions?: unknown } | null)?.exceptions))) setError(failure(caught));
+      if (refused && action === 'accept') { setConfirming(false); setSuggestAdjust(true); void load(); }
+      return caught instanceof ApiError ? caught : false;
+    } finally { inFlight.current = false; if (mounted.current) setBusy(false); }
   }
   const stockWarnings = supplier && deal ? (deal.lines as SupplierRequestLine[]).filter(line => !line.stock || line.stock.shortfall > 0).length : 0;
   const activeStep = !deal ? 0 : deal.status === 'pending' ? 0 : deal.status === 'reviewed' ? 1 : deal.status === 'handshaked' ? 3 : 2;
@@ -126,6 +134,7 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
         </>}
         <div className="deal-quote-tab" hidden={tab !== 'quote'}>
           {deal.quotation && <QuoteView quote={deal.quotation}/>}
+          {supplier && deal.quotation && <QuoteTrace key={deal.quotation.id} path={`${base}/requests/${orderId}/quotations/${deal.quotation.id}/trace`}/>}
           {!deal.quotation && !supplier && <div className="notice">El proveedor preparará tu cotización. Te aparecerán aquí las cantidades, precios y condiciones.</div>}
           {editable && (tab === 'quote' || quoteVisited) && (draftLoad?.key === draftKey
             ? <QuoteEditor key={`${draftKey}:${draftLoad.draft ? draftLoad.draft.persisted ? 'saved' : 'virtual' : 'fallback'}`} deal={deal} draft={draftLoad.draft} draftPath={draftPath}
@@ -134,8 +143,9 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
           {supplier && deal.status === 'adjustment' && deal.quotation && <button type="button" className="button soft" disabled={busy} onClick={() => void act('return_quote', { quotation_id: deal.quotation!.id })}>Devolver la misma cotización para confirmar<Send size={15}/></button>}
           {supplier && deal.status === 'adjustment' && deal.quotation && hasDraft && <small className="deal-draft-warning">Si devuelves la misma cotización, se descartará el borrador en curso.</small>}
           {!supplier && deal.status === 'quoted' && deal.quotation && <div className="deal-client-decisions">
-            {confirming ? <div className="notice deal-confirmation"><strong>¿Confirmar este acuerdo por {money(deal.quotation.total, deal.quotation.currency)}?</strong><p>Aceptas las cantidades y condiciones de la cotización v{deal.quotation.revision}. El proveedor ya las confirmó.</p><div><button type="button" className="button primary" disabled={busy} onClick={() => void act('accept', { quotation_id: deal.quotation!.id })}>{busy ? <LoaderCircle size={15} className="spin"/> : <Handshake size={15}/>}Sí, confirmar acuerdo</button><button type="button" className="button soft" disabled={busy} onClick={() => setConfirming(false)}>Volver</button></div></div> : <button type="button" className="button primary" disabled={busy} onClick={() => { setConfirming(true); setAdjusting(false); }}>Confirmar cotización<Handshake size={16}/></button>}
-            {!confirming && <button type="button" className="button soft" disabled={busy} onClick={() => setAdjusting(value => !value)}>Solicitar ajuste</button>}
+            {confirming ? <div className="notice deal-confirmation"><strong>¿Confirmar este acuerdo por {money(deal.quotation.total, deal.quotation.currency)}?</strong><p>Aceptas las cantidades y condiciones de la cotización v{deal.quotation.revision}. El proveedor ya las confirmó.</p><div><button type="button" className="button primary" disabled={busy} onClick={() => void act('accept', { quotation_id: deal.quotation!.id })}>{busy ? <LoaderCircle size={15} className="spin"/> : <Handshake size={15}/>}Sí, confirmar acuerdo</button><button type="button" className="button soft" disabled={busy} onClick={() => setConfirming(false)}>Volver</button></div></div> : <button type="button" className={`button ${suggestAdjust ? 'soft' : 'primary'}`} disabled={busy} onClick={() => { setConfirming(true); setAdjusting(false); }}>Confirmar cotización<Handshake size={16}/></button>}
+            {!confirming && <button type="button" className={`button ${suggestAdjust ? 'primary' : 'soft'}`} disabled={busy} aria-describedby={suggestAdjust ? 'deal-adjust-hint' : undefined} onClick={() => setAdjusting(value => !value)}>Solicitar ajuste</button>}
+            {suggestAdjust && !confirming && <small id="deal-adjust-hint" className="deal-adjust-hint">Pide al proveedor una nueva versión con las unidades que puede confirmar.</small>}
             {adjusting && <form className="deal-adjustment" onSubmit={event => { event.preventDefault(); void act('request_adjustment', { quotation_id: deal.quotation!.id, reason }); }}><label>¿Qué necesitas ajustar?<UppercaseTextarea required maxLength={4000} value={reason} disabled={busy} onChange={event => setReason(event.target.value)} placeholder="INDICA LAS CANTIDADES O CONDICIONES QUE NECESITAS CAMBIAR…"/></label><button type="submit" className="button primary" disabled={busy || !reason.trim()}>{busy ? <LoaderCircle size={15} className="spin"/> : <Send size={15}/>}Enviar ajuste</button></form>}
           </div>}
           {deal.status === 'handshaked' && <div className="deal-handshake"><Handshake size={25}/><div><strong>HANDSHAKED · Acuerdo confirmado</strong><p>Confirmación del proveedor: {deal.quotation && date(deal.quotation.supplier_confirmed_at)}</p><p>Confirmación del cliente: {deal.quotation?.client_confirmed_at && date(deal.quotation.client_confirmed_at)}</p></div></div>}
@@ -156,6 +166,35 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
 
 function QuoteView({ quote, historical = false }: { quote: Quotation; historical?: boolean }) {
   return <section className={`deal-quote ${historical ? 'historical' : ''}`} aria-label={`${historical ? 'Cotización anterior' : 'Cotización vigente'} v${quote.revision}`}><div className="deal-quote-heading"><div><h3>Cotización v{quote.revision}</h3><small>Confirmada por el proveedor · {date(quote.supplier_confirmed_at)}</small></div><strong>{money(quote.total, quote.currency)}</strong></div><div className="table-scroll"><table><thead><tr><th>Artículo</th><th>Ofrecidas</th><th>Precio unitario</th><th>Importe</th></tr></thead><tbody>{quote.lines.map(line => <tr key={line.order_line_id}><td><strong>{line.codigo}</strong><small>{line.description}</small></td><td>{line.quantity === 0 ? 'No disponible' : line.quantity}</td><td>{money(line.unit_price, quote.currency)}</td><td>{money(line.total, quote.currency)}</td></tr>)}</tbody></table></div>{quote.terms && <div className="deal-terms"><h4>Condiciones</h4><p>{quote.terms}</p></div>}</section>;
+}
+
+const priceSources = { engine: 'Lista o regla', previous: 'Versión anterior', manual: 'Manual', none: 'Sin precio', unspecified: 'Sin especificar' };
+const alertNames: Record<string, string> = { offered_gt_available: 'Más que las disponibles', offered_gt_requested: 'Más que las solicitadas',
+  identity_changed: 'Artículo cambiado', zero_price: 'Precio 0,00' };
+const acceptResults = { ok: 'Existencias verificadas al confirmar', blocked: 'Confirmación bloqueada por existencias', accepted_with_shortfall: 'Confirmado con faltante' };
+
+// Supplier-only publication trace: read each time it is opened (an accept check may have been added), never shown to the client.
+function QuoteTrace({ path }: { path: string }) {
+  const [trace, setTrace] = useState<QuotationTrace | null>(null);
+  const [error, setError] = useState('');
+  const loading = useRef(false);
+  const open = (event: React.SyntheticEvent<HTMLDetailsElement>) => {
+    if (!event.currentTarget.open || loading.current) return;
+    loading.current = true; setError('');
+    request<QuotationTrace>(path).then(setTrace).catch(caught => setError(failure(caught))).finally(() => { loading.current = false; });
+  };
+  const check = trace?.available ? trace.accept_check : null;
+  return <details className="deal-quote-trace" onToggle={open}><summary>Ver origen de precios</summary>
+    {error ? <div className="notice error" role="alert">{error}</div> : !trace ? <p role="status">Cargando origen de la cotización…</p>
+      : !trace.available ? <p>Publicada antes de los precios privados.</p> : <>
+        <p>Publicada por {trace.publisher.name} · {trace.draft_version ? `borrador v${trace.draft_version}` : 'sin borrador guardado'} · {date(trace.published_at)}</p>
+        {check && <p className={`deal-trace-check ${check.result}`}>{acceptResults[check.result]} · {date(check.at)}</p>}
+        <div className="table-scroll"><table><thead><tr><th>Artículo</th><th>Ofrecidas</th><th>Disponibles al cotizar</th><th>Al confirmar</th><th>Origen del precio</th><th>Alertas</th></tr></thead>
+          <tbody>{trace.lines.map(line => <tr key={line.order_line_id}><td><strong>{line.codigo}</strong><small>{line.description}</small></td><td>{line.quantity}</td>
+            <td>{line.identity_ok_at_quote ? line.available_at_quote : 'Artículo cambiado'}</td><td>{line.available_at_accept ?? '—'}</td><td>{priceSources[line.price_source]}</td>
+            <td>{line.exceptions.some(item => item.severity !== 'info') ? line.exceptions.filter(item => item.severity !== 'info').map(item => <small key={item.code}>{alertNames[item.code] || item.code} ({item.context}) · {item.acknowledged_by ? `confirmada por ${item.acknowledged_by.name}` : 'sin confirmar'}</small>) : '—'}</td></tr>)}</tbody></table></div>
+      </>}
+  </details>;
 }
 
 function DealChat({ account, orderId, active }: { account: Account; orderId: string; active: boolean }) {

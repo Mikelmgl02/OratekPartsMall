@@ -293,4 +293,4 @@ from .analytics_models import UsageEvent, UsageVisit
 from .matching_models import MatchingQueue, MatchingCase, SupplierCodeMapping, MatchingDecision
 from .technical_models import PartType, TechnicalTemplate, TechnicalField, PartSpecification, Application, ItemApplication
 from .pricing_models import SupplierPricingSettings, PricingAuditEvent
-from .quote_draft_models import DealQuotationDraft, DealQuotationDraftLine
+from .quote_draft_models import DealQuotationDraft, DealQuotationDraftLine, DealQuotationAudit, DealQuotationLineAudit

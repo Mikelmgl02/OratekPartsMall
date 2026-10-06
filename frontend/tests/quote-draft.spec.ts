@@ -2,7 +2,7 @@ import { expect, Page, test } from '@playwright/test';
 import type { Deal, Quotation, QuotePayload } from '../lib/deal-types';
 import type { QuoteDraft } from '../lib/pricing-types';
 import type { SupplierRequestLine } from '../lib/request-types';
-import { applySave, mockQuoteDrafts, virtualDraft } from './quote-draft-mock';
+import { applySave, mockQuoteDrafts, publishBlockers, virtualDraft } from './quote-draft-mock';
 
 const clientId = '11111111-1111-4111-8111-111111111111';
 const supplierId = '22222222-2222-4222-8222-222222222222';
@@ -38,7 +38,7 @@ function matchesDraft(payload: QuotePayload, draft: QuoteDraft) {
       && (line.unit_price === null ? line.quantity === 0 && cents(sent.unit_price) === 0 : cents(sent.unit_price) === cents(line.unit_price))));
 }
 
-async function fixture(page: Page, status: 'reviewed' | 'adjustment' = 'reviewed') {
+async function fixture(page: Page, status: 'reviewed' | 'adjustment' = 'reviewed', { exceptions = false } = {}) {
   const previous = status === 'adjustment' ? quotation(1, [{ order_line_id: lineId, quantity: 5, unit_price: '9.00' }, { order_line_id: secondId, quantity: 1, unit_price: '2.00' }], 'USD', 'RETIRO') : null;
   let order: Deal = { id: orderId, reference: 'ORD-BORRADOR-001', client: { id: clientId, name: 'TALLER CENTRAL' }, supplier: { id: supplierId, name: 'REPUESTOS CENTRAL' },
     status, version: 3, created_at: stamp, reviewed_at: stamp, handshaked_at: null, line_count: 2, unit_count: 6, notes: '',
@@ -54,7 +54,7 @@ async function fixture(page: Page, status: 'reviewed' | 'adjustment' = 'reviewed
   await page.route(`/api/market/accounts/${supplierId}/requests/${orderId}`, route => route.fulfill({ json: order }));
   await page.route(`/api/market/accounts/${supplierId}/requests/${orderId}/review`, route => route.fulfill({ json: order }));
   await page.route(/\/api\/market\/accounts\/[^/]+\/deals\/[^/]+\/messages(?:\?.*)?$/, route => route.fulfill({ json: { results: [], cursor: 0, has_more: false, has_earlier: false } }));
-  const drafts = await mockQuoteDrafts(page, () => order);
+  const drafts = await mockQuoteDrafts(page, () => order, { exceptions });
   await page.route(`/api/market/accounts/${supplierId}/deals/${orderId}/actions`, route => {
     const payload = route.request().postDataJSON(); actions.push(payload);
     if (payload.action === 'quote') {
@@ -62,6 +62,8 @@ async function fixture(page: Page, status: 'reviewed' | 'adjustment' = 'reviewed
       // Same binding as the server: a sent draft_version, or any saved draft, must match the saved version and its values.
       if ((payload.draft_version !== undefined || draft.persisted) && payload.draft_version !== draft.draft_version) return route.fulfill({ status: 409, json: { detail: 'El borrador cambió. Revísalo antes de publicar.' } });
       if (payload.draft_version !== undefined && !matchesDraft(payload, draft)) return route.fulfill({ status: 409, json: { detail: 'La cotización no coincide con el borrador guardado.' } });
+      const blockers = exceptions ? publishBlockers(draft) : [];
+      if (blockers.length) return route.fulfill({ status: 409, json: { detail: 'Revisa las alertas antes de enviar.', exceptions: blockers } });
       const quote = quotation(order.quotations.length + 1, payload.lines, payload.currency, payload.terms);
       order = { ...order, status: 'quoted', version: order.version + 1, quotation: quote, quotations: [...order.quotations, quote] };
       drafts.clear();
@@ -219,5 +221,108 @@ test('when the draft cannot be loaded the editor keeps working without autosave'
   await expect(content(page).getByRole('region', { name: 'Cotización vigente v1', exact: true })).toContainText('63.50');
   expect(state.actions).toHaveLength(1);
   expect(state.actions[0]).not.toHaveProperty('draft_version');
+  expect(state.unexpected).toEqual([]);
+});
+
+test('alerts gate publishing: adjusting to available stock and confirming a changed item are saved to the draft first', async ({ page }) => {
+  const state = await fixture(page, 'reviewed', { exceptions: true });
+  await openQuote(page);
+  const panel = content(page).locator('details.quotation-exceptions');
+  await expect(panel.locator('summary')).toHaveText('Revisa antes de enviar (4)');
+  await expect(panel).toHaveAttribute('open', '');
+  await expect(quoteCell(page, 'alerts')).toHaveText('1 por corregir');
+  await expect(panel.getByRole('listitem').filter({ hasText: 'Falta el precio.' })).toHaveCount(2);
+  await editQuote(page, 'unit_price', '12.50');
+  await editQuote(page, 'unit_price', '4', '00700-NP', secondId);
+  await expect(quoteCell(page, 'alerts')).toHaveText('1 por confirmar');
+  await expect(quoteCell(page, 'alerts', secondId)).toHaveText('1 por confirmar');
+  await expect(panel.locator('summary')).toHaveText('Revisa antes de enviar (2)');
+  // The server refuses unreviewed alerts: the panel stays open with the error and nothing is published.
+  await content(page).getByRole('button', { name: 'Confirmar y enviar cotización', exact: true }).click();
+  await expect(content(page).getByRole('alert')).toHaveText('Revisa las alertas antes de enviar.');
+  expect(state.actions).toEqual([expect.objectContaining({ action: 'quote', draft_version: state.drafts.current().draft_version })]);
+  expect(state.getOrder().status).toBe('reviewed');
+  const savesBefore = state.drafts.saves.length;
+  await content(page).getByRole('button', { name: 'Ajustar a disponibles', exact: true }).click();
+  await expect(quoteCell(page, 'quantity')).toHaveText('3');
+  await expect(quoteCell(page, 'alerts')).toHaveText('Sin alertas');
+  await expect(content(page).getByRole('button', { name: 'Ajustar a disponibles', exact: true })).toHaveCount(0);
+  expect(state.drafts.saves.slice(savesBefore).map(({ save_id: _, ...save }) => save)).toEqual([
+    { expected_draft_version: state.drafts.current().draft_version - 1, lines: [{ order_line_id: lineId, quantity: 3 }] }]);
+  const confirm = panel.getByRole('checkbox', { name: 'Confirmo: 00700-NP · El artículo de tu inventario cambió desde la solicitud; confirma que ofreces el mismo repuesto.', exact: true });
+  await confirm.check();
+  await expect(quoteCell(page, 'alerts', secondId)).toHaveText('Confirmada');
+  await expect(panel.locator('summary')).toHaveText('Revisa antes de enviar (0)');
+  expect(state.drafts.saves.at(-1)).toEqual({ save_id: any, expected_draft_version: state.drafts.current().draft_version - 1,
+    lines: [{ order_line_id: secondId, acknowledge: [{ code: 'identity_changed', context: 'a1b2c3d4e5f6' }] }] });
+  // Withdrawing the confirmation is saved too, and the alert is pending again until confirmed.
+  await confirm.uncheck();
+  await expect(quoteCell(page, 'alerts', secondId)).toHaveText('1 por confirmar');
+  expect(state.drafts.saves.at(-1)).toMatchObject({ lines: [{ order_line_id: secondId, revoke: ['identity_changed'] }] });
+  await confirm.check();
+  await expect(quoteCell(page, 'alerts', secondId)).toHaveText('Confirmada');
+  await content(page).getByRole('button', { name: 'Confirmar y enviar cotización', exact: true }).click();
+  await expect(content(page).getByRole('region', { name: 'Cotización vigente v1', exact: true })).toContainText('41.50');
+  expect(state.actions).toHaveLength(2);
+  expect(state.actions[1]).toMatchObject({ action: 'quote', lines: [{ order_line_id: lineId, quantity: 3, unit_price: '12.50' }, { order_line_id: secondId, quantity: 1, unit_price: '4.00' }] });
+  expect(state.unexpected).toEqual([]);
+});
+
+test('without a saved draft a refused publish lists its alerts read-only', async ({ page }) => {
+  const state = await fixture(page);
+  await page.route(/\/api\/market\/accounts\/[^/]+\/requests\/[^/]+\/draft$/, route => route.fulfill({ status: 500, json: { detail: 'Error interno.' } }));
+  await page.route(`/api/market/accounts/${supplierId}/deals/${orderId}/actions`, route => {
+    state.actions.push(route.request().postDataJSON());
+    return route.fulfill({ status: 409, json: { detail: 'Revisa las alertas antes de enviar.', exceptions: [
+      { order_line_id: lineId, code: 'offered_gt_available', severity: 'block', message: 'Ofreces 5 y tienes 3 disponibles.', context: '5>3', acknowledged: false }] } });
+  });
+  await openQuote(page);
+  await expect(content(page).locator('details.quotation-exceptions')).toHaveCount(0);
+  await editQuote(page, 'unit_price', '12.50');
+  await editQuote(page, 'unit_price', '1.00', '00700-NP', secondId);
+  await content(page).getByRole('button', { name: 'Confirmar y enviar cotización', exact: true }).click();
+  const panel = content(page).locator('details.quotation-exceptions');
+  await expect(panel.locator('summary')).toHaveText('Revisa antes de enviar (1)');
+  await expect(panel.getByRole('listitem')).toHaveText(['58411-1R000-GOfreces 5 y tienes 3 disponibles.Corrige para continuar']);
+  await expect(quoteCell(page, 'alerts')).toHaveText('1 por corregir');
+  await expect(content(page).getByRole('alert')).toHaveText('Revisa las alertas antes de enviar.');
+  expect(state.actions).toHaveLength(1);
+  expect(state.actions[0]).not.toHaveProperty('draft_version');
+  expect(state.unexpected).toEqual([]);
+});
+
+test('the private trace of the current quotation loads only when the supplier opens it, and again on reopening', async ({ page }) => {
+  const state = await fixture(page, 'adjustment');
+  const quote = state.getOrder().quotation!, traces: string[] = [];
+  await page.route(/\/api\/market\/accounts\/[^/]+\/requests\/[^/]+\/quotations\/[^/]+\/trace$/, route => {
+    traces.push(new URL(route.request().url()).pathname);
+    return route.fulfill({ json: { available: true, quotation_id: quote.id, revision: 1, draft_version: 3, publisher: { name: 'EMPLEADO' }, publisher_permission: 'staff',
+      published_at: stamp, settings_snapshot: {}, order_exceptions: [], accept_check: { result: 'blocked', at: stamp, lines: [] }, lines: [
+        { order_line_id: lineId, codigo: '58411-1R000-G', brand: 'KSM', description: 'REPUESTO 58411-1R000-G', quantity: 5, unit_price: '9.00', available_at_quote: 3,
+          identity_ok_at_quote: true, available_at_accept: 2, suggested_price: null, price_source: 'manual', quantity_source: 'requested', engine_fingerprint: '', explanation: {},
+          exceptions: [{ code: 'offered_gt_available', severity: 'confirm', context: '5>3', acknowledged_by: { name: 'EMPLEADO' }, acknowledged_at: stamp }] },
+        { order_line_id: secondId, codigo: '00700-NP', brand: 'KSM', description: 'REPUESTO 00700-NP', quantity: 1, unit_price: '2.00', available_at_quote: null,
+          identity_ok_at_quote: false, available_at_accept: null, suggested_price: null, price_source: 'previous', quantity_source: 'requested', engine_fingerprint: '', explanation: {},
+          exceptions: [{ code: 'identity_changed', severity: 'confirm', context: 'a1b2c3d4e5f6', acknowledged_by: null, acknowledged_at: null }] }] } });
+  });
+  await openQuote(page);
+  const trace = content(page).locator('details.deal-quote-trace');
+  await expect(trace.locator('summary')).toHaveText('Ver origen de precios');
+  expect(traces).toEqual([]);
+  await trace.locator('summary').click();
+  await expect(trace).toContainText('Publicada por EMPLEADO · borrador v3');
+  await expect(trace).toContainText('Confirmación bloqueada por existencias');
+  const rows = trace.getByRole('row');
+  await expect(rows.nth(1)).toContainText('Más que las disponibles (5>3) · confirmada por EMPLEADO');
+  await expect(rows.nth(1).getByRole('cell').nth(2)).toHaveText('3');
+  await expect(rows.nth(1).getByRole('cell').nth(3)).toHaveText('2');
+  await expect(rows.nth(2).getByRole('cell').nth(2)).toHaveText('Artículo cambiado');
+  await expect(rows.nth(2)).toContainText('Versión anterior');
+  await expect(rows.nth(2)).toContainText('Artículo cambiado (a1b2c3d4e5f6) · sin confirmar');
+  // Reopening reads it again, so an accept check recorded meanwhile shows up.
+  await trace.locator('summary').click();
+  await trace.locator('summary').click();
+  await expect.poll(() => traces.length).toBe(2);
+  expect(new Set(traces)).toEqual(new Set([`/api/market/accounts/${supplierId}/requests/${orderId}/quotations/${quote.id}/trace`]));
   expect(state.unexpected).toEqual([]);
 });

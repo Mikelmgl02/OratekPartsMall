@@ -4,6 +4,10 @@ export type SupplierRequestSummary = {
   status: DealStatus; version?: number; handshaked_at?: string | null; updated_at?: string; created_at: string; reviewed_at: string | null;
   line_count: number; unit_count: number; quoted_unit_count?: number | null; quotation_total?: string | null; quotation_currency?: string | null; quotation_revision?: number | null;
 };
+// Supplier list rows only: private badges that never reach the client's payloads.
+export type SupplierRequestListItem = SupplierRequestSummary & {
+  draft_state?: 'editing' | 'review_requested' | null; availability_alert?: 'blocked' | 'accepted_with_shortfall' | null;
+};
 export type SupplierRequestLine = {
   id: string; supplier_item_id: string; supplier_invent_id: string; part_id: string;
   sku: string; name: string; codigo: string; brand: string; description: string; quantity: number;

@@ -1,12 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CloudOff, LoaderCircle, RotateCcw, Send } from 'lucide-react';
+import { CloudOff, LoaderCircle, PackageMinus, RotateCcw, Send } from 'lucide-react';
 import { AgGridReact, type CustomCellEditorProps, type CustomCellRendererProps } from 'ag-grid-react';
-import type { ColDef, GetRowIdParams, GridReadyEvent, ValueSetterParams } from 'ag-grid-community';
+import type { CellClickedEvent, ColDef, GetRowIdParams, GridReadyEvent, ValueSetterParams } from 'ag-grid-community';
 import { gridLocale, motionGridTheme } from '@/lib/ag-grid';
 import type { Deal, QuotePayload } from '@/lib/deal-types';
-import type { DraftStock, QuoteDraft, QuoteDraftEnvelope, QuoteDraftLineChange, QuoteDraftSave } from '@/lib/pricing-types';
+import type { DraftException, DraftStock, PublishException, QuoteDraft, QuoteDraftEnvelope, QuoteDraftLineChange, QuoteDraftSave } from '@/lib/pricing-types';
 import type { SupplierRequestLine } from '@/lib/request-types';
 import { ApiError, request } from '@/lib/types';
 import { decimal, moneyFormatter, priceCents, quantityValue } from '@/lib/money';
@@ -19,7 +19,28 @@ type Base = { version: number; persisted: boolean; currency: Currency; terms: st
   lines: Record<string, { quantity: number | null; unit_price: string | null }> };
 type SaveState = 'idle' | 'pending' | 'saving' | 'error' | 'conflict';
 type Outcome = 'saved' | 'rebased' | 'failed';
+// Server-computed alerts of the last confirmed draft (live) or of a refused draftless publish (not confirmable here).
+type Alerts = { lines: Record<string, DraftException[]>; order: DraftException[]; live: boolean };
+// A "Confirmo" click waiting to be saved: it confirms the context on screen or withdraws the confirmation.
+type PendingAck = { lineId: string; code: string; context: string; revoke: boolean };
 const rowId = ({ data }: GetRowIdParams<QuoteRow>) => data.order_line_id;
+const severityRank = { block: 0, confirm: 1, info: 2 };
+function alertsFrom(draft: QuoteDraft | null): Alerts {
+  return { lines: Object.fromEntries((draft?.lines || []).map(line => [line.order_line_id, line.exceptions])), order: draft?.order_exceptions || [], live: !!draft };
+}
+function alertsFromPublish(items: PublishException[]): Alerts {
+  const lines: Record<string, DraftException[]> = {};
+  for (const { order_line_id: id, ...item } of items) if (id) (lines[id] ||= []).push(item);
+  return { lines, order: items.filter(item => !item.order_line_id).map(({ order_line_id: _, ...item }) => item), live: false };
+}
+function alertLabel(items: DraftException[]) {
+  const blocking = items.filter(item => item.severity === 'block').length, confirm = items.filter(item => item.severity === 'confirm');
+  const pending = confirm.filter(item => !item.acknowledged).length, info = items.find(item => item.severity === 'info');
+  if (blocking) return `${blocking} por corregir`;
+  if (pending) return `${pending} por confirmar`;
+  if (confirm.length) return confirm.length === 1 ? 'Confirmada' : `${confirm.length} confirmadas`;
+  return info ? info.message : 'Sin alertas';
+}
 
 function rowCents(row: QuoteRow) { return BigInt(quantityValue(row.quantity) ?? 0) * (priceCents(row.unit_price) ?? BigInt(0)); }
 // undefined marks a cell that cannot be saved yet; a blank cell is a deliberate null.
@@ -68,7 +89,8 @@ function PartCell({ data }: CustomCellRendererProps<QuoteRow>) {
 
 export default function QuotationEditor({ deal, draft, draftPath, disabled, onSend, onDraftChange }: {
   deal: Deal; draft: QuoteDraft | null; draftPath: string; disabled: boolean;
-  onSend: (values: QuotePayload) => Promise<boolean>; onDraftChange?: (persisted: boolean) => void;
+  // Resolves true once published, or with the refused request's error so its alerts can be shown.
+  onSend: (values: QuotePayload) => Promise<true | ApiError | false>; onDraftChange?: (persisted: boolean) => void;
 }) {
   // Without a loaded draft the editor falls back to the previous revision and nothing is saved automatically.
   const autosave = draft !== null;
@@ -92,6 +114,12 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [error, setError] = useState('');
+  // Alerts are read by the Alertas column from a ref, like stock, so a refresh never rebuilds row state.
+  const alertsRef = useRef<Alerts>(alertsFrom(draft));
+  const [alerts, setAlerts] = useState(alertsRef.current);
+  const pendingAcks = useRef(new Map<string, PendingAck>());
+  const [, setAckRevision] = useState(0);
+  const [panelOpen, setPanelOpen] = useState(() => !!draft && draft.summary.blocking + draft.summary.to_confirm > 0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inFlight = useRef<Promise<Outcome> | null>(null);
   const attempt = useRef<{ key: string; id: string } | null>(null);
@@ -107,7 +135,7 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
 
   // These helpers only read refs, so the memoized grid callbacks can keep calling them safely.
   function pendingChanges() {
-    const current = base.current!, lines: QuoteDraftLineChange[] = [];
+    const current = base.current!, lines: QuoteDraftLineChange[] = [], acks = [...pendingAcks.current.values()];
     let invalid = 0;
     for (const row of rowsRef.current) {
       const prior = current.lines[row.order_line_id];
@@ -116,13 +144,16 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
       if (quantity === undefined || price === undefined) invalid++;
       if (quantity !== undefined && quantity !== prior.quantity) change.quantity = quantity;
       if (price !== undefined && price !== prior.unit_price) change.unit_price = price;
-      if ('quantity' in change || 'unit_price' in change) lines.push(change);
+      const own = acks.filter(ack => ack.lineId === row.order_line_id);
+      if (own.some(ack => !ack.revoke)) change.acknowledge = own.filter(ack => !ack.revoke).map(({ code, context }) => ({ code, context }));
+      if (own.some(ack => ack.revoke)) change.revoke = own.filter(ack => ack.revoke).map(ack => ack.code);
+      if (Object.keys(change).length > 1) lines.push(change);
     }
     const values = header.current;
     const body: Omit<QuoteDraftSave, 'save_id' | 'expected_draft_version'> = {
       ...(values.currency !== current.currency ? { currency: values.currency } : {}),
       ...(normalTerms(values.terms) !== current.terms ? { terms: normalTerms(values.terms) } : {}), ...(lines.length ? { lines } : {}) };
-    return { body, invalid, dirty: Object.keys(body).length > 0 };
+    return { body, invalid, acks, dirty: Object.keys(body).length > 0 };
   }
   function payloadFor(body: ReturnType<typeof pendingChanges>['body']) {
     const payload = { expected_draft_version: base.current!.version, ...body };
@@ -131,9 +162,14 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
     if (attempt.current?.key !== key) attempt.current = { key, id: crypto.randomUUID() };
     return JSON.stringify({ save_id: attempt.current.id, ...payload });
   }
+  function showAlerts(next: Alerts) {
+    alertsRef.current = next; setAlerts(next);
+    grid.current?.api?.refreshCells({ columns: ['alerts'], force: true });
+  }
   function refreshStock(next: QuoteDraft) {
     stock.current = draftStock(next);
     grid.current?.api?.refreshCells({ columns: ['available'], force: true });
+    showAlerts(alertsFrom(next));
   }
   function adopt(next: QuoteDraft) {
     base.current = baseFrom(next); setSaved(base.current); refreshStock(next);
@@ -144,6 +180,7 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
     rowsRef.current = values; setRows(values);
     header.current = { currency: next.currency, terms: next.terms }; setCurrency(next.currency); setTerms(next.terms);
     conflictRef.current = null; setConflict(null); attempt.current = null;
+    pendingAcks.current.clear(); setAckRevision(value => value + 1);
     adopt(next); setSaveState('idle'); setSaveError(''); setInvalidCells(0); setError('');
   }
   // Another member saved first: keep local edits on cells they did not touch; when both changed one cell, ask.
@@ -191,7 +228,7 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
     while (inFlight.current) await inFlight.current;
     if (!base.current || conflictRef.current || !mounted.current) return false;
     if (timer.current) { clearTimeout(timer.current); timer.current = null; }
-    const { body, invalid, dirty } = pendingChanges();
+    const { body, invalid, acks, dirty } = pendingChanges();
     setInvalidCells(invalid);
     if (!dirty && (base.current.persisted || !force)) { setSaveState('idle'); return true; }
     setSaveState('saving'); setSaveError('');
@@ -199,6 +236,11 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
     inFlight.current = task;
     const outcome = await task;
     inFlight.current = null;
+    if (outcome === 'saved') {
+      // Confirmations clicked while this save was in flight stay pending for the next one.
+      for (const [key, ack] of [...pendingAcks.current]) if (acks.includes(ack)) pendingAcks.current.delete(key);
+      setAckRevision(value => value + 1);
+    }
     if (outcome === 'rebased') return save(force);
     if (outcome === 'failed') return false;
     if (pendingChanges().dirty) { if (force) return save(force); schedule(); } else setSaveState('idle');
@@ -241,13 +283,42 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
     inFlight.current = null;
     if (mounted.current) setConfirmDiscard(false);
   }
-  // After a refused publish, compare with the server: a newer draft means another member saved in between.
+  // After a refused publish, compare with the server: a newer draft means another member saved in between; the same version
+  // still brings alerts recomputed with live stock.
   async function verify() {
     try {
       const envelope = await request<QuoteDraftEnvelope>(props.current.draftPath);
-      if (!mounted.current || !envelope.draft || !base.current || envelope.draft.draft_version === base.current.version) return;
+      if (!mounted.current || !envelope.draft || !base.current) return;
+      if (envelope.draft.draft_version === base.current.version) { adopt(envelope.draft); return; }
       if (rebase(envelope.draft) && pendingChanges().dirty) schedule();
     } catch { /* The publish error is already on screen. */ }
+  }
+  function focusRow(lineId: string | null | undefined, column = 'quantity') {
+    const api = grid.current?.api, node = lineId ? api?.getRowNode(lineId) : null;
+    if (!api || node?.rowIndex == null) return;
+    api.ensureIndexVisible(node.rowIndex); api.ensureColumnVisible(column); api.setFocusedCell(node.rowIndex, column);
+  }
+  function ackState(lineId: string, item: DraftException) {
+    const pending = pendingAcks.current.get(`${lineId}|${item.code}`);
+    return pending ? !pending.revoke && pending.context === item.context : item.acknowledged;
+  }
+  // "Confirmo" saves an acknowledgement tied to the context on screen; it counts while that value stays the same.
+  function toggleAck(lineId: string, item: DraftException, checked: boolean) {
+    if (!base.current || conflictRef.current) return;
+    pendingAcks.current.set(`${lineId}|${item.code}`, { lineId, code: item.code, context: item.context, revoke: !checked });
+    setAckRevision(value => value + 1);
+    void save();
+  }
+  // Offers min(requested, available) on every line above its available stock; nothing else changes.
+  function adjustToStock() {
+    if (disabled || publishing) return;
+    grid.current?.api?.stopEditing();
+    const next = rowsRef.current.map(row => {
+      const quantity = quantityValue(row.quantity), available = stock.current[row.order_line_id]?.available_quantity;
+      return quantity !== null && available !== undefined && quantity > available ? { ...row, quantity: String(Math.min(row.requested, available)) } : row;
+    });
+    rowsRef.current = next; setRows(next); setError('');
+    schedule();
   }
 
   const edited = useCallback((event: ValueSetterParams<QuoteRow>) => {
@@ -290,6 +361,14 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
       comparator: (a, b) => Number((priceCents(a || '') ?? BigInt(-1)) - (priceCents(b || '') ?? BigInt(-1))) },
     { colId: 'line_total', headerName: 'Importe', width: 155, minWidth: 145, type: 'numericColumn', valueGetter: params => params.data ? rowCents(params.data) : BigInt(0),
       valueFormatter: params => formatMoney(params.value ?? BigInt(0)), comparator: (a: bigint, b: bigint) => a === b ? 0 : a < b ? -1 : 1 },
+    { colId: 'alerts', headerName: 'Alertas', width: 175, minWidth: 160, sortable: false,
+      valueGetter: params => params.data ? alertLabel(alertsRef.current.lines[params.data.order_line_id] || []) : '',
+      tooltipValueGetter: params => (params.data && alertsRef.current.lines[params.data.order_line_id] || []).map(item => item.message).join(' · ') || undefined,
+      cellClass: params => {
+        const items = params.data ? alertsRef.current.lines[params.data.order_line_id] || [] : [];
+        return ['quotation-alert-cell', items.some(item => item.severity === 'block') ? 'block' : items.some(item => item.severity === 'confirm' && !item.acknowledged) ? 'confirm' : ''];
+      },
+      onCellClicked: (event: CellClickedEvent<QuoteRow>) => { if ((alertsRef.current.lines[event.data?.order_line_id || ''] || []).length) setPanelOpen(true); } },
   ], [disabled, formatMoney, edited, invalidTooltip]);
   const defaultColumn = useMemo<ColDef<QuoteRow>>(() => ({ sortable: true, resizable: true, cellDataType: false, wrapHeaderText: true, autoHeaderHeight: true }), []);
   useEffect(() => { if (disabled) grid.current?.api?.stopEditing(true); }, [disabled]);
@@ -334,7 +413,12 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
     grid.current?.api?.stopEditing();
     const lines = validLines();
     if (!lines) return;
-    if (!autosave) { void onSend({ currency: header.current.currency, terms: header.current.terms, lines }); return; }
+    if (!autosave) {
+      const outcome = await onSend({ currency: header.current.currency, terms: header.current.terms, lines });
+      const refused = publishAlerts(outcome);
+      if (refused && mounted.current) { showAlerts(alertsFromPublish(refused)); focusRow(refused.find(item => item.order_line_id)?.order_line_id); }
+      return;
+    }
     if (conflictRef.current) { setError('Carga la versión más reciente del borrador antes de enviar la cotización.'); return; }
     setPublishing(true); setError('');
     try {
@@ -343,10 +427,30 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
       // Read the values again: edits made during the flush were saved too, and the payload must equal the draft.
       const flushed = validLines();
       if (!flushed) return;
-      if (!await onSend({ currency: header.current.currency, terms: header.current.terms, lines: flushed, draft_version: base.current!.version })) await verify();
+      const outcome = await onSend({ currency: header.current.currency, terms: header.current.terms, lines: flushed, draft_version: base.current!.version });
+      if (outcome === true) return;
+      // Alerts not yet reviewed: open the panel with the server's live view and point at the first affected line.
+      const refused = publishAlerts(outcome);
+      await verify();
+      if (refused && mounted.current) focusRow(refused.find(item => item.order_line_id)?.order_line_id);
     } finally { if (mounted.current) setPublishing(false); }
   }
+  function publishAlerts(outcome: true | ApiError | false) {
+    const items = outcome instanceof ApiError && outcome.status === 409 ? (outcome.body as { exceptions?: PublishException[] } | null)?.exceptions : undefined;
+    if (!items || !mounted.current) return undefined;
+    setError(outcome instanceof ApiError ? outcome.detail : ''); setPanelOpen(true);
+    return items;
+  }
   const busy = disabled || publishing;
+  const overStock = rows.filter(row => {
+    const quantity = quantityValue(row.quantity), available = stock.current[row.order_line_id]?.available_quantity;
+    return quantity !== null && available !== undefined && quantity > available;
+  }).length;
+  const flat = [...alerts.order.map(item => ({ lineId: null as string | null, codigo: 'Cotización', item })),
+    ...rows.flatMap(row => (alerts.lines[row.order_line_id] || []).map(item => ({ lineId: row.order_line_id as string | null, codigo: row.codigo, item })))]
+    .sort((a, b) => severityRank[a.item.severity] - severityRank[b.item.severity]);
+  const confirmed = (lineId: string | null, item: DraftException) => lineId ? ackState(lineId, item) : item.acknowledged;
+  const toReview = flat.filter(({ lineId, item }) => item.severity === 'block' || (item.severity === 'confirm' && !confirmed(lineId, item))).length;
   const status = !autosave ? '' : saveState === 'conflict' ? 'Guardado automático en pausa' : saveState === 'saving' || saveState === 'pending' ? 'Guardando borrador…'
     : saveState === 'error' ? `Cambios sin guardar${saveError ? ` · ${saveError}` : ''}` : invalidCells ? 'Corrige las celdas marcadas para guardarlas.'
     : saved?.persisted ? `Borrador v${saved.version} · guardado por ${saved.updatedBy} ${ago(saved.updatedAt, now)}` : 'Borrador nuevo · se guarda automáticamente al editar';
@@ -360,13 +464,27 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
       {confirmDiscard && <span className="quotation-draft-discard">¿Descartar el borrador guardado?<button type="button" disabled={busy} onClick={() => void discard()}>Sí, descartar</button><button type="button" onClick={() => setConfirmDiscard(false)}>Cancelar</button></span>}
     </div> : <div className="notice quotation-draft-fallback" role="status"><CloudOff size={16}/>No se pudo cargar el borrador guardado; tus cambios no se guardarán automáticamente.</div>}
     {conflict && <div className="notice error quotation-draft-conflict" role="alert"><span>Otro miembro de tu equipo modificó este borrador</span><button type="button" onClick={() => replaceWith(conflict)}>Cargar la versión más reciente</button></div>}
-    <div className="quotation-grid-guide"><span>Haz clic en una celda para editar · Tab para avanzar</span><strong>{completed} de {rows.length} {rows.length === 1 ? 'artículo completo' : 'artículos completos'}</strong></div>
+    <div className="quotation-grid-guide"><span>Haz clic en una celda para editar · Tab para avanzar</span>{overStock > 0 && <button type="button" className="button soft small" disabled={busy}
+      title={`Ofrece como máximo lo disponible en ${overStock} ${overStock === 1 ? 'artículo' : 'artículos'}`} onClick={adjustToStock}><PackageMinus size={14}/>Ajustar a disponibles</button>}<strong>{completed} de {rows.length} {rows.length === 1 ? 'artículo completo' : 'artículos completos'}</strong></div>
     <div ref={host} className="quotation-grid" aria-label="Artículos de la cotización" style={{ height: Math.min(450, Math.max(170, rows.length * 56 + 60)) }}>
       <AgGridReact<QuoteRow> ref={grid} theme={motionGridTheme} localeText={gridLocale} rowData={rows} columnDefs={columns} defaultColDef={defaultColumn}
         getRowId={rowId} singleClickEdit stopEditingWhenCellsLoseFocus
         onGridReady={ready} cellSelection={!disabled} suppressClipboardPaste={disabled}
         ensureDomOrder suppressColumnVirtualisation enableBrowserTooltips loadThemeGoogleFonts={false}/>
     </div>
+    {flat.length > 0 && <details className="quotation-exceptions" open={panelOpen} onToggle={event => setPanelOpen(event.currentTarget.open)}>
+      <summary>Revisa antes de enviar ({toReview})</summary>
+      <ul aria-label="Alertas de la cotización">{flat.map(({ lineId, codigo, item }) => {
+        const checked = confirmed(lineId, item);
+        return <li key={`${lineId}|${item.code}`} className={`quotation-exception ${item.severity}${item.severity === 'confirm' && checked ? ' confirmed' : ''}`}>
+          <div>{lineId ? <button type="button" onClick={() => focusRow(lineId)}>{codigo}</button> : <strong>{codigo}</strong>}<span>{item.message}</span></div>
+          {item.severity === 'block' && <small>Corrige para continuar</small>}
+          {item.severity === 'confirm' && <label><input type="checkbox" checked={checked} disabled={!alerts.live || !lineId || busy || !!conflict}
+            aria-label={`Confirmo: ${codigo} · ${item.message}`} onChange={event => { if (lineId) toggleAck(lineId, item, event.target.checked); }}/>Confirmo</label>}
+        </li>;
+      })}</ul>
+      {!alerts.live && <p>Sin el borrador guardado no puedes confirmar alertas aquí. Corrige las marcadas y vuelve a enviar.</p>}
+    </details>}
     {error && <div className="notice error" role="alert">{error}</div>}
     <div className="deal-editor-total"><label>Moneda<select aria-label="Moneda de la cotización" disabled={disabled} value={currency} onChange={event => { header.current = { ...header.current, currency: event.target.value as Currency }; setCurrency(event.target.value as Currency); schedule(); }}><option value="USD">USD</option><option value="PAB">PAB</option></select></label><strong>Total: {formatMoney(total)}</strong></div>
     <label>Condiciones de entrega y cotización<UppercaseTextarea disabled={disabled} maxLength={5000} value={terms} onChange={event => { header.current = { ...header.current, terms: event.target.value }; setTerms(event.target.value); schedule(); }} placeholder="PLAZO DE ENTREGA, RETIRO Y OTRAS CONDICIONES…"/></label>

@@ -18,9 +18,11 @@ from rest_framework.views import APIView
 
 from .availability import check_lines
 from .pricing_models import CURRENCY_CHOICES, PERMISSION_CHOICES, choice_values, pricing_settings, record_pricing_event
-from .quote_draft_models import (DRAFT_STATUS_CHOICES, PRICE_SOURCE_CHOICES, QUANTITY_SOURCE_CHOICES, DealQuotationDraft,
-                                 DealQuotationDraftLine)
-from .request_models import SupplierRequest
+from .quotation_exceptions import ACKNOWLEDGEABLE, EXCEPTION_CODES, SEVERITIES, compute_exceptions
+from .models import User
+from .quote_draft_models import (AUDIT_PRICE_SOURCE_CHOICES, DRAFT_STATUS_CHOICES, PRICE_SOURCE_CHOICES, QUANTITY_SOURCE_CHOICES, DealQuotationAudit,
+                                 DealQuotationDraft, DealQuotationDraftLine)
+from .request_models import DealQuotation, SupplierRequest
 from .request_views import RequestConflict, WholeRequestQuantity
 from .views import PERMISSION_RANK, membership_for
 
@@ -38,8 +40,8 @@ class DraftStock(serializers.Serializer):
 
 
 class DraftException(serializers.Serializer):
-    code = serializers.CharField()
-    severity = serializers.ChoiceField(choices=['block', 'confirm', 'info'])
+    code = serializers.ChoiceField(choices=EXCEPTION_CODES)
+    severity = serializers.ChoiceField(choices=SEVERITIES)
     message = serializers.CharField()
     context = serializers.CharField(allow_blank=True)
     acknowledged = serializers.BooleanField()
@@ -110,14 +112,27 @@ class QuoteDraftConflict(serializers.Serializer):
     draft = QuoteDraftSerializer()
 
 
+class DraftAcknowledgement(serializers.Serializer):
+    code = serializers.ChoiceField(choices=ACKNOWLEDGEABLE)
+    context = serializers.CharField(max_length=100, allow_blank=True, help_text='El contexto que viste; la confirmación vale mientras siga igual.')
+
+
 class DraftLineChange(serializers.Serializer):
     order_line_id = serializers.UUIDField()
     quantity = WholeRequestQuantity(min_value=0, max_value=9999, allow_null=True, required=False)
     unit_price = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal('0'), allow_null=True, required=False)
     note = serializers.CharField(max_length=500, allow_blank=True, required=False)
+    acknowledge = DraftAcknowledgement(many=True, required=False, max_length=len(ACKNOWLEDGEABLE))
+    revoke = serializers.ListField(child=serializers.ChoiceField(choices=ACKNOWLEDGEABLE), required=False, max_length=len(ACKNOWLEDGEABLE))
 
     def validate_note(self, value):
         return value.strip().upper()
+
+    def validate(self, data):
+        codes = [ack['code'] for ack in data.get('acknowledge', [])] + data.get('revoke', [])
+        if len(codes) != len(set(codes)):
+            raise serializers.ValidationError('Confirma o retira cada alerta una sola vez.')
+        return data
 
 
 class QuoteDraftSave(serializers.Serializer):
@@ -191,20 +206,23 @@ def draft_payload(row, account, membership):
     settings_row, latest = pricing_settings(account), latest_quotation(row)
     draft, lines = current_draft(row, latest), list(order_lines(row).values())
     stock = stock_by_line(lines)
-    saved = {line.order_line_id: {field: getattr(line, field) for field in ('quantity', 'quantity_source', 'unit_price', 'price_source', 'note')}
-             for line in draft.lines.all()} if draft else {}
+    stored = {line.order_line_id: line for line in draft.lines.all()} if draft else {}
+    saved = {pk: {field: getattr(line, field) for field in ('quantity', 'quantity_source', 'unit_price', 'price_source', 'note')} for pk, line in stored.items()}
     initial = initial_values([line for line in lines if line.pk not in saved], latest, settings_row, stock)
     header = {'currency': draft.currency, 'terms': draft.terms, 'terms_origin': 'saved'} if draft else initial_header(latest, settings_row)
+    current = {line.pk: saved.get(line.pk) or initial[line.pk] for line in lines}
+    exceptions = compute_exceptions(lines, current, stock, settings_row, acknowledgements={pk: line.acknowledgements for pk, line in stored.items()},
+                                    order_acknowledgements=draft.order_acknowledgements if draft else ())
     total, values = Decimal('0'), []
     for line in lines:
-        value, entry = saved.get(line.pk) or initial[line.pk], stock[line.pk]
+        value, entry = current[line.pk], stock[line.pk]
         if value['quantity'] is not None and value['unit_price'] is not None:
             total += value['quantity'] * value['unit_price']
         values.append({'order_line_id': line.pk, 'codigo': line.codigo, 'brand': line.brand, 'description': line.description or line.name,
                        'requested': line.quantity, 'stock': {'reported_quantity': entry['reported'], 'reserved_quantity': entry['reserved'],
                        'available_quantity': entry['available'], 'shortfall': max(0, line.quantity - entry['available']),
                        'updated_at': entry['updated_at']} if entry['identity_ok'] else None,
-                       **value, 'suggestion': None, 'exceptions': []})
+                       **value, 'suggestion': None, 'exceptions': exceptions['lines'][line.pk]})
     user = draft.updated_by if draft else None
     return QuoteDraftSerializer({
         'persisted': bool(draft), 'draft_version': draft.draft_version if draft else 0, 'status': draft.status if draft else 'editing',
@@ -212,8 +230,8 @@ def draft_payload(row, account, membership):
         'updated_by': {'name': user.get_full_name() or user.username} if user else None,
         'permissions': {'can_publish': PERMISSION_RANK.get(membership.permission, -1) >= PERMISSION_RANK[settings_row.publish_min_permission],
                         'publish_requires': settings_row.publish_min_permission},
-        'lines': values, 'order_exceptions': [],
-        'summary': {'blocking': 0, 'to_confirm': 0, 'info': 0, 'total': total.quantize(Decimal('0.01')), 'line_count': len(values)}}).data
+        'lines': values, 'order_exceptions': exceptions['order'],
+        'summary': {**exceptions['summary'], 'total': total.quantize(Decimal('0.01')), 'line_count': len(values)}}).data
 
 
 def draft_conflict(row, account, membership):
@@ -278,10 +296,18 @@ class QuoteDraftView(APIView):
                 line.unit_price, line.price_source, dirty = change['unit_price'], 'none' if change['unit_price'] is None else 'manual', True
             if 'note' in change and change['note'] != line.note:
                 line.note, dirty = change['note'], True
+            if 'acknowledge' in change or 'revoke' in change:
+                # One acknowledgement per code, tied to the context the supplier saw; re-confirming the same context keeps the original.
+                acks = {ack['code']: ack for ack in line.acknowledgements if ack['code'] not in change.get('revoke', [])}
+                for ack in change.get('acknowledge', []):
+                    if acks.get(ack['code'], {}).get('context') != ack['context']:
+                        acks[ack['code']] = {'code': ack['code'], 'context': ack['context'], 'user_id': request.user.pk, 'at': now.isoformat()}
+                if list(acks.values()) != line.acknowledgements:
+                    line.acknowledgements, dirty = list(acks.values()), True
             if dirty:
                 line.updated_at = now
                 changed.append(line)
-        DealQuotationDraftLine.objects.bulk_update(changed, ['quantity', 'quantity_source', 'unit_price', 'price_source', 'note', 'updated_at'])
+        DealQuotationDraftLine.objects.bulk_update(changed, ['quantity', 'quantity_source', 'unit_price', 'price_source', 'note', 'acknowledgements', 'updated_at'])
         for field in ('currency', 'terms'):
             if field in data:
                 setattr(draft, field, data[field])
@@ -311,3 +337,87 @@ class QuoteDraftDiscard(APIView):
             record_pricing_event(account, request.user, 'draft_discarded', client_id=row.client_id, order=row, object_id=str(row.pk),
                                  payload={'draft_version': draft.draft_version, 'save_id': str(data['save_id'])})
         return Response(draft_payload(row, account, membership))
+
+
+class TraceException(serializers.Serializer):
+    code = serializers.ChoiceField(choices=EXCEPTION_CODES)
+    severity = serializers.ChoiceField(choices=SEVERITIES)
+    context = serializers.CharField(allow_blank=True)
+    acknowledged_by = DraftAuthor(allow_null=True)
+    acknowledged_at = serializers.DateTimeField(allow_null=True)
+
+
+class TraceLine(serializers.Serializer):
+    order_line_id = serializers.UUIDField()
+    codigo = serializers.CharField()
+    brand = serializers.CharField(allow_blank=True)
+    description = serializers.CharField(allow_blank=True)
+    quantity = serializers.IntegerField()
+    unit_price = serializers.DecimalField(max_digits=12, decimal_places=2)
+    available_at_quote = serializers.IntegerField(allow_null=True)
+    identity_ok_at_quote = serializers.BooleanField()
+    available_at_accept = serializers.IntegerField(allow_null=True)
+    suggested_price = serializers.DecimalField(max_digits=12, decimal_places=2, allow_null=True)
+    price_source = serializers.ChoiceField(choices=choice_values(AUDIT_PRICE_SOURCE_CHOICES))
+    quantity_source = serializers.ChoiceField(choices=choice_values(QUANTITY_SOURCE_CHOICES))
+    engine_fingerprint = serializers.CharField(allow_blank=True)
+    explanation = serializers.DictField()
+    exceptions = TraceException(many=True)
+
+
+class TraceAcceptLine(serializers.Serializer):
+    order_line_id = serializers.UUIDField()
+    quantity = serializers.IntegerField()
+    available_at_quote = serializers.IntegerField(allow_null=True)
+    available_at_accept = serializers.IntegerField(allow_null=True)
+    identity_ok_at_quote = serializers.BooleanField()
+    identity_ok_at_accept = serializers.BooleanField()
+    shortfall = serializers.BooleanField()
+
+
+class TraceAcceptCheck(serializers.Serializer):
+    result = serializers.ChoiceField(choices=['ok', 'blocked', 'accepted_with_shortfall'])
+    lines = TraceAcceptLine(many=True)
+    at = serializers.DateTimeField()
+
+
+class QuotationTraceSerializer(serializers.Serializer):
+    available = serializers.BooleanField(help_text='False para cotizaciones publicadas antes de la trazabilidad; el resto de campos se omite.')
+    quotation_id = serializers.UUIDField(required=False)
+    revision = serializers.IntegerField(required=False)
+    draft_version = serializers.IntegerField(allow_null=True, required=False, help_text='Null si se publicó sin borrador.')
+    publisher = DraftAuthor(required=False)
+    publisher_permission = serializers.ChoiceField(choices=PERMISSION_CHOICES, required=False)
+    published_at = serializers.DateTimeField(required=False)
+    settings_snapshot = serializers.DictField(required=False)
+    order_exceptions = TraceException(many=True, required=False)
+    accept_check = TraceAcceptCheck(allow_null=True, required=False)
+    lines = TraceLine(many=True, required=False)
+
+
+class QuotationTrace(APIView):
+    @extend_schema(operation_id='v1_accounts_requests_quotations_trace_retrieve', responses=QuotationTraceSerializer,
+                   description='Trazabilidad privada de una cotización publicada: existencias al cotizar y al confirmar, origen de cada precio '
+                               'y alertas confirmadas. Solo para el proveedor.')
+    def get(self, request, account_id, pk, quotation_id):
+        _, _, row = supplier_order(request.user, account_id, pk)
+        quotation = get_object_or_404(DealQuotation.objects.filter(order=row), pk=quotation_id)
+        audit = DealQuotationAudit.objects.select_related('publisher').filter(quotation=quotation).first()
+        if audit is None:
+            return Response({'available': False})
+        lines = list(quotation.lines.select_related('order_line', 'audit'))
+        found = [audit.order_exceptions] + [line.audit.exceptions for line in lines]
+        users = {user.pk: user for user in User.objects.filter(pk__in={item['acknowledged_by'] for items in found for item in items if item['acknowledged_by']})}
+        def trace(items):
+            return [{**item, 'acknowledged_by': {'name': users[item['acknowledged_by']].get_full_name() or users[item['acknowledged_by']].username}
+                     if item['acknowledged_by'] in users else None} for item in items]
+        return Response(QuotationTraceSerializer({
+            'available': True, 'quotation_id': quotation.pk, 'revision': quotation.revision, 'draft_version': audit.draft_version,
+            'publisher': {'name': audit.publisher.get_full_name() or audit.publisher.username}, 'publisher_permission': audit.publisher_permission,
+            'published_at': quotation.created_at, 'settings_snapshot': audit.settings_snapshot, 'order_exceptions': trace(audit.order_exceptions),
+            'accept_check': audit.accept_check,
+            'lines': [{'order_line_id': line.order_line_id, 'codigo': line.order_line.codigo, 'brand': line.order_line.brand,
+                       'description': line.order_line.description or line.order_line.name, 'quantity': line.quantity, 'unit_price': line.unit_price,
+                       **{field: getattr(line.audit, field) for field in ('available_at_quote', 'identity_ok_at_quote', 'available_at_accept', 'suggested_price',
+                                                                         'price_source', 'quantity_source', 'engine_fingerprint', 'explanation')},
+                       'exceptions': trace(line.audit.exceptions)} for line in lines]}).data)

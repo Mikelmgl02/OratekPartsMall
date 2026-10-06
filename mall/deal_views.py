@@ -13,12 +13,24 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .quote_draft_models import DealQuotationDraft
+from .availability import record_accept_check, shortfall_since_quote
+from .models import Membership
+from .pricing_models import pricing_settings, record_pricing_event
+from .quotation_exceptions import audit_findings, compute_exceptions, publish_blockers
+from .quote_draft_models import DealQuotationAudit, DealQuotationDraft, DealQuotationLineAudit
+from .quote_drafts import stock_by_line
 from .request_models import (SupplierRequest, DealQuotation, DealQuotationLine, DealEvent,
                              DealMessage, DealCommand)
 from .request_views import (RequestConflict, WholeRequestQuantity, request_detail_queryset,
                             request_detail, sent_request_queryset, sent_request_summary)
 from .views import account_for
+
+EXCEPTIONS_DETAIL = 'Revisa las alertas antes de enviar.'
+RETURN_SHORTFALL_DETAIL = 'Las existencias cambiaron desde esta versión. Prepara una nueva versión y confirma las alertas.'
+# Shown to the client: it must never carry quantities or any other digit.
+ACCEPT_SHORTFALL_DETAIL = ('El proveedor debe confirmar la disponibilidad de algunos artículos antes de cerrar el acuerdo. '
+                           'Solicita un ajuste o espera una nueva versión.')
+SETTINGS_SNAPSHOT = ('version', 'over_stock_policy', 'over_request_policy', 'accept_shortfall_policy', 'publish_min_permission', 'prefill_quantity')
 
 
 def iso(value):
@@ -105,7 +117,7 @@ def bind_draft(row, latest, data):
     """A quote is bound to the saved draft when one exists for the latest revision or the payload names a draft_version."""
     draft = DealQuotationDraft.objects.prefetch_related('lines').filter(order=row, base_quotation=latest).first()
     if draft is None and 'draft_version' not in data:
-        return
+        return None
     if draft is None or draft.draft_version != data.get('draft_version'):
         raise RequestConflict('Hay un borrador guardado; revísalo antes de publicar.' if draft and 'draft_version' not in data
                               else 'El borrador cambió. Revísalo antes de publicar.')
@@ -117,6 +129,48 @@ def bind_draft(row, latest, data):
             value.unit_price if value.unit_price is not None else Decimal('0') if value.quantity == 0 else None)
     if draft.currency != data['currency'] or draft.terms != data['terms'] or len(saved) != len(data['lines']) or not all(map(same, data['lines'])):
         raise RequestConflict('La cotización no coincide con el borrador guardado.')
+    return draft
+
+
+def quote_exceptions(row, account, data, draft):
+    """Exceptions recomputed with live stock: the draft's own values and acknowledgements, or the payload on the legacy path."""
+    settings_row, lines = pricing_settings(account), {line.pk: line for line in row.lines.select_related('supplier_item')}
+    drafted = {line.order_line_id: line for line in draft.lines.all()} if draft else {}
+    offered = {line['order_line_id']: line for line in data['lines']}
+    values = {pk: {'quantity': drafted[pk].quantity, 'unit_price': drafted[pk].unit_price, 'quantity_source': drafted[pk].quantity_source}
+              if pk in drafted else {'quantity': offered[pk]['quantity'], 'unit_price': offered[pk]['unit_price']} for pk in lines}
+    stock = stock_by_line(lines.values())
+    result = compute_exceptions(list(lines.values()), values, stock, settings_row, acknowledgements={pk: line.acknowledgements for pk, line in drafted.items()},
+                                order_acknowledgements=draft.order_acknowledgements if draft else ())
+    return {'settings': settings_row, 'stock': stock, 'drafted': drafted, 'result': result}
+
+
+def write_quote_audit(quotation, prior, request, account, draft, context):
+    """Supplier-only trace of a publication: live stock at quote time, server-derived sources and every alert with its confirmation."""
+    settings_row, stock, drafted, result = context['settings'], context['stock'], context['drafted'], context['result']
+    previous = {line.order_line_id: line for line in prior.lines.all()} if prior else {}
+    permission = Membership.objects.filter(account=account, user=request.user).values_list('permission', flat=True).first()
+    DealQuotationAudit.objects.create(quotation=quotation, draft_version=draft.draft_version if draft else None, publisher=request.user,
+                                      publisher_permission=permission, settings_snapshot={field: getattr(settings_row, field) for field in SETTINGS_SNAPSHOT},
+                                      order_exceptions=audit_findings(result['order']))
+    def sources(line):
+        drafted_line, prior_line = drafted.get(line.order_line_id), previous.get(line.order_line_id)
+        # S2 derives previous or manual (none for a blank price offered at 0 units); the engine source arrives with price lists.
+        price = 'none' if drafted_line and drafted_line.unit_price is None else 'previous' if prior_line and prior_line.unit_price == line.unit_price else 'manual'
+        quantity = drafted_line.quantity_source if drafted_line else 'previous' if prior_line and prior_line.quantity == line.quantity \
+            else 'requested' if line.quantity == line.order_line.quantity else 'manual'
+        return price, quantity
+    audits = []
+    for line in quotation.lines.select_related('order_line'):
+        entry, (price_source, quantity_source) = stock[line.order_line_id], sources(line)
+        audits.append(DealQuotationLineAudit(line=line, available_at_quote=entry['available'], identity_ok_at_quote=entry['identity_ok'],
+                                             price_source=price_source, quantity_source=quantity_source,
+                                             exceptions=audit_findings(result['lines'][line.order_line_id])))
+    DealQuotationLineAudit.objects.bulk_create(audits)
+    found = [item for items in [result['order'], *result['lines'].values()] for item in items if item['severity'] == 'confirm']
+    record_pricing_event(account, request.user, 'quotation_published', client_id=quotation.order.client_id, order=quotation.order, object_id=str(quotation.pk),
+                         payload={'revision': quotation.revision, 'draft_version': draft.draft_version if draft else None,
+                                  'confirmed': sum(item['acknowledged'] for item in found), 'unacknowledged': sum(not item['acknowledged'] for item in found)})
 
 
 class DealActions(APIView):
@@ -154,7 +208,13 @@ class DealActions(APIView):
                 raise ValidationError('Cotiza cada artículo de esta orden una sola vez. Usa cantidad 0 para los no disponibles.')
             if not any(line['quantity'] > 0 for line in data['lines']):
                 raise ValidationError('La cotización necesita al menos una unidad disponible.')
-            bind_draft(row, latest, data)
+            draft = bind_draft(row, latest, data)
+            context = quote_exceptions(row, account, data, draft)
+            # Bound quotes need every alert reviewed; the legacy (draftless) path enforces only explicit block policies.
+            blockers = publish_blockers(context['result'], legacy=draft is None)
+            if blockers:
+                return Response({'detail': EXCEPTIONS_DETAIL, 'exceptions': blockers}, status=409)
+            prior = latest
             total = sum((line['unit_price'] * line['quantity'] for line in data['lines']), Decimal('0')).quantize(Decimal('0.01'))
             if total >= Decimal('100000000000000'):
                 raise ValidationError('El total de la cotización supera el importe permitido.')
@@ -163,6 +223,7 @@ class DealActions(APIView):
                 published_by=request.user, supplier_confirmed_at=now)
             DealQuotationLine.objects.bulk_create([DealQuotationLine(quotation=latest,
                 order_line_id=line['order_line_id'], quantity=line['quantity'], unit_price=line['unit_price']) for line in data['lines']])
+            write_quote_audit(latest, prior, request, account, draft, context)
             row.status = 'quoted'
             description = f'COTIZACIÓN V{latest.revision} CONFIRMADA POR EL PROVEEDOR Y ENVIADA AL CLIENTE.'
             # The published revision consumes the draft (and any row prepared on an older revision).
@@ -170,6 +231,19 @@ class DealActions(APIView):
         elif action == 'accept':
             if row.status != 'quoted':
                 raise RequestConflict('La cotización no está disponible para confirmar.')
+            # Stock is read without a lock (lock order: this order row, then items); revisions published before the trace are exempt.
+            check = shortfall_since_quote(latest, {line.pk: line for line in row.lines.select_related('supplier_item')})
+            if check is not None:
+                policy = pricing_settings(row.supplier).accept_shortfall_policy
+                outcome = 'ok' if not check['short'] else 'blocked' if policy == 'block' else 'accepted_with_shortfall'
+                record_accept_check(check, outcome, now)
+                if check['short']:
+                    record_pricing_event(row.supplier, request.user, 'accept_blocked_shortfall' if outcome == 'blocked' else 'accept_with_shortfall',
+                                         client_id=row.client_id, order=row, object_id=str(latest.pk),
+                                         payload={'revision': latest.revision, 'lines': [line for line in check['lines'] if line['shortfall']]})
+                if outcome == 'blocked':
+                    # Returned rather than raised so the trace commits; no DealCommand is stored and the deal stays quoted.
+                    return Response({'detail': ACCEPT_SHORTFALL_DETAIL}, status=409)
             latest.client_confirmed_at = now
             latest.client_confirmed_by = request.user
             latest.save(update_fields=['client_confirmed_at', 'client_confirmed_by'])
@@ -187,6 +261,9 @@ class DealActions(APIView):
         else:
             if row.status != 'adjustment':
                 raise RequestConflict('Solo puedes devolver una cotización que tenga un ajuste solicitado.')
+            check = shortfall_since_quote(latest, {line.pk: line for line in row.lines.select_related('supplier_item')})
+            if check and check['short']:
+                raise RequestConflict(RETURN_SHORTFALL_DETAIL)
             row.status = 'quoted'
             description = data['reason'] or 'EL PROVEEDOR DEVOLVIÓ LA MISMA COTIZACIÓN PARA CONFIRMACIÓN.'
             DealQuotationDraft.objects.filter(order=row).delete()

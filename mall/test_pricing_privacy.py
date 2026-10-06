@@ -12,9 +12,9 @@ from rest_framework.test import APITestCase
 from . import test_deals as deal_tests
 from . import test_requests as request_tests
 from .management import ManagedInventorySerializer
-from .models import User
+from .models import SupplierItem, User
 from .pricing_models import PricingAuditEvent, SupplierPricingSettings, record_pricing_event
-from .quote_draft_models import DealQuotationDraft, DealQuotationDraftLine
+from .quote_draft_models import DealQuotationAudit, DealQuotationDraft, DealQuotationDraftLine, DealQuotationLineAudit
 from .request_models import DealCommand, SupplierRequest
 from .serializers import SupplierItemSerializer
 
@@ -41,6 +41,7 @@ class PricingPrivacyTests(APITestCase):
     review = deal_tests.DealWorkflowTests.review
     action = deal_tests.DealWorkflowTests.action
     messages = deal_tests.DealWorkflowTests.messages
+    trace_paths = ()
 
     def quote(self, order, price='13.00'):
         self.client.force_authenticate(self.seller_a)
@@ -70,6 +71,12 @@ class PricingPrivacyTests(APITestCase):
         self.assertIn('SECRETO-BORRADOR', response.content.decode())
         self.assertTrue(DealQuotationDraftLine.objects.filter(note='SECRETO-BORRADOR', unit_price='777.77').exists())
 
+    def seed_private_trace(self, quotation):
+        """The publication trace (S2) is supplier-only: stock at quote time, sources and acknowledgements."""
+        DealQuotationAudit.objects.filter(quotation_id=quotation['id']).update(settings_snapshot={'note': 'SECRETO-AUDITORIA'})
+        DealQuotationLineAudit.objects.filter(line__quotation_id=quotation['id']).update(explanation={'list_price': '777.77', 'rule': 'SECRETO-REGLA'})
+        self.assertEqual(DealQuotationLineAudit.objects.filter(line__quotation_id=quotation['id']).count(), 2)
+
     def calls(self, user, account, order, *, writes=()):
         self.client.force_authenticate(user)
         account_url, part = f'/api/v1/accounts/{account.pk}', self.part.pk
@@ -78,7 +85,7 @@ class PricingPrivacyTests(APITestCase):
             f'/api/v1/catalog/{part}/technical/', f'/api/v1/catalog/{part}/suppliers/', '/api/v1/wishlist/', '/api/v1/wishlist/state/',
             f'{account_url}/catalog/{part}/request-state/', f'{account_url}/sent-requests/', f'{account_url}/sent-requests/{order.pk}/',
             f'{account_url}/requests/', f'{account_url}/requests/{order.pk}/', self.messages(order, account),
-            f'/api/v1/accounts/{self.supplier_a.pk}/pricing/settings/']}
+            f'/api/v1/accounts/{self.supplier_a.pk}/pricing/settings/', *self.trace_paths]}
         responses[f'PUT /api/v1/wishlist/{part}/'] = self.client.put(f'/api/v1/wishlist/{part}/')
         responses['POST messages'] = self.client.post(self.messages(order, account), {'message_id': str(uuid.uuid4()), 'body': 'HOLA'}, format='json')
         for name, call in writes:
@@ -97,6 +104,9 @@ class PricingPrivacyTests(APITestCase):
         self.seed_private_markers(order)
         self.review(order)
         quote = self.quote(order).data['quotation']
+        self.seed_private_trace(quote)
+        self.trace_paths = [f'/api/v1/accounts/{account.pk}/requests/{order.pk}/quotations/{quote["id"]}/trace/'
+                            for account in (self.supplier_a, self.client_account, self.supplier_b)]
         responses = self.calls(self.buyer, self.client_account, order, writes=[
             ('POST request_adjustment', lambda: self.action(order, 'request_adjustment', quotation_id=quote['id'], reason='MENOS UNIDADES'))])
         self.assertIn('"unit_price":"13.00"', responses[f'/api/v1/accounts/{self.client_account.pk}/sent-requests/{order.pk}/'].content.decode())
@@ -114,6 +124,13 @@ class PricingPrivacyTests(APITestCase):
         self.assertEqual(self.action(order, 'return_quote', quotation_id=quote['id']).status_code, 200)
         self.assertFalse(DealQuotationDraft.objects.exists())
         self.client.force_authenticate(self.buyer)
+        # A stock drop blocks the accept: the client learns nothing about quantities, prices or the trace.
+        SupplierItem.objects.filter(pk=self.item_a.pk).update(reported_quantity=3)
+        SupplierPricingSettings.objects.filter(supplier=self.supplier_a).update(accept_shortfall_policy='block')
+        responses['POST accept bloqueado'] = blocked = self.action(order, 'accept', quotation_id=quote['id'])
+        self.assertEqual((blocked.status_code, set(blocked.data)), (409, {'detail'}))
+        self.assertNotRegex(blocked.content.decode(), r'\d')
+        SupplierItem.objects.filter(pk=self.item_a.pk).update(reported_quantity=10)
         responses['POST accept'] = self.action(order, 'accept', quotation_id=quote['id'])
         responses['POST requests'] = self.submit(self.payload([(self.item_a, 1), (self.item_b, 1)]))
         self.assertEqual((responses['POST accept'].status_code, responses['POST requests'].status_code), (200, 200))
@@ -174,7 +191,7 @@ class PricingPrivacyTests(APITestCase):
         self.assertEqual({key for offer in offers for item in offer['items'] for key in item}, {'id', 'codigo', 'brand', 'description'})
 
     def test_pricing_models_stay_out_of_admin_and_management_serializers(self):
-        for model in [SupplierPricingSettings, PricingAuditEvent, DealQuotationDraft, DealQuotationDraftLine]:
+        for model in [SupplierPricingSettings, PricingAuditEvent, DealQuotationDraft, DealQuotationDraftLine, DealQuotationAudit, DealQuotationLineAudit]:
             self.assertNotIn(model, admin.site._registry)
         self.assertEqual(SupplierItemSerializer.Meta.fields, ['id', 'supplier_invent_id', 'part', 'codigo', 'brand', 'description', 'references',
                                                               'matching_status', 'source', 'reported_quantity', 'reserved_quantity',

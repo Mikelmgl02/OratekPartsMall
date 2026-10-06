@@ -38,3 +38,16 @@ test('quotation draft proxy routes require a session and same-origin writes', as
   expect((await request.put(draft, { headers: foreign, data: {} })).status()).toBe(404);
   expect((await request.delete(draft, { headers: foreign })).status()).toBe(404);
 });
+
+test('the supplier-only quotation trace is a session-bound read and nothing else', async ({ request }) => {
+  const quotations = `/api/market/accounts/${account}/requests/${account}/quotations`, trace = `${quotations}/${account}/trace`;
+  const anonymous = await request.get(trace);
+  expect(anonymous.status()).toBe(401);
+  expect(await anonymous.json()).toEqual({ detail: 'Inicia sesión para continuar.' });
+  // Writes and neighbouring paths stay unknown before reaching the API.
+  expect((await request.post(trace, { headers: foreign, data: {} })).status()).toBe(404);
+  for (const route of [quotations, `${quotations}/${account}`, `${trace}/extra`, `${quotations}/not-a-uuid/trace`]) {
+    expect((await request.get(route, { headers: foreign })).status()).toBe(404);
+  }
+  expect((await request.delete(trace, { headers: foreign })).status()).toBe(404);
+});

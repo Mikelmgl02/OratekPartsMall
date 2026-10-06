@@ -30,6 +30,8 @@ async function fixture(page: Page) {
   const messages: DealMessage[] = [];
   const actions: Record<string, unknown>[] = [];
   let reviews = 0;
+  // When set, the server refuses accepts because stock the supplier relied on dropped after the quote.
+  let blockAccept = false;
   const unexpected: string[] = [];
   await page.route('**/api/**', route => { unexpected.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`); return route.fulfill({status:404, json:{detail:'Ruta no prevista'}}); });
   await page.route('**/api/session', route => route.fulfill({json:{authenticated:true, user:{id:801, username:'EMPLEADO', is_superuser:false}, accounts:{...empty, count:2, results:accounts}}}));
@@ -39,7 +41,9 @@ async function fixture(page: Page) {
   await page.route(/\/api\/market\/accounts\/[^/]+\/inventory(?:\?.*)?$/, route => route.fulfill({json:empty}));
   await page.route(/\/api\/market\/accounts\/[^/]+\/(sent-requests|requests)(?:\?.*)?$/, route => {
     const status = new URL(route.request().url()).searchParams.get('status');
-    const results = !status || status === order.status ? [{...order, quoted_unit_count: order.quotation?.lines.reduce((sum,line) => sum + line.quantity, 0)}] : [];
+    const supplierList = new URL(route.request().url()).pathname.includes('/requests');
+    const results = !status || status === order.status ? [{...order, quoted_unit_count: order.quotation?.lines.reduce((sum,line) => sum + line.quantity, 0),
+      ...(supplierList ? {draft_state: null, availability_alert: blockAccept ? 'blocked' : null} : {})}] : [];
     return route.fulfill({json:{...empty, count:results.length, results}});
   });
   await page.route(/\/api\/market\/accounts\/[^/]+\/(sent-requests|requests)\/[^/]+$/, route => route.fulfill({json:order}));
@@ -65,6 +69,7 @@ async function fixture(page: Page) {
   await page.route(/\/api\/market\/accounts\/[^/]+\/deals\/[^/]+\/actions$/, route => {
     const payload = route.request().postDataJSON(); actions.push(payload);
     if (payload.expected_version !== order.version) return route.fulfill({status:409, json:{detail:'El acuerdo cambió. Actualízalo.'}});
+    if (payload.action === 'accept' && blockAccept) return route.fulfill({status:409, json:{detail:'El proveedor debe confirmar la disponibilidad de algunos artículos antes de cerrar el acuerdo. Solicita un ajuste o espera una nueva versión.'}});
     // Publishing is bound to the saved draft, exactly like the server.
     if (payload.action === 'quote' && (!drafts.current().persisted || payload.draft_version !== drafts.current().draft_version)) return route.fulfill({status:409, json:{detail:'El borrador cambió. Revísalo antes de publicar.'}});
     if (payload.action === 'quote') {
@@ -92,7 +97,7 @@ async function fixture(page: Page) {
   });
   return {getOrder:() => order, setStatus:(status:DealStatus) => {order = {...order, status, version:order.version + 1};},
     setLines:(lines:Deal['lines']) => {order = {...order, lines, line_count:lines.length, unit_count:lines.reduce((sum,line) => sum + line.quantity, 0)} as Deal;},
-    actions, messages, drafts, reviews:() => reviews, unexpected, gridWarnings};
+    actions, messages, drafts, reviews:() => reviews, unexpected, gridWarnings, blockAccept:(value:boolean) => { blockAccept = value; }};
 }
 async function asSupplier(page: Page) {
   await backToRequests(page);
@@ -266,5 +271,65 @@ test('supplier pastes an Excel range into the grid while identities and requeste
   await dialog(page).getByRole('button', {name:'Confirmar y enviar cotización', exact:true}).click();
   await expect(dialog(page).getByRole('region', {name:'Cotización vigente v1', exact:true})).toContainText('2.50');
   expect(state.actions[0].lines).toEqual([{order_line_id:lineId, quantity:2, unit_price:'1.25'}, {order_line_id:secondId, quantity:0, unit_price:'0.00'}]);
+  expect(state.unexpected).toEqual([]);
+});
+
+test('a client accept refused for availability keeps the deal open, explains it without quantities and points to Solicitar ajuste', async ({page}) => {
+  const state = await fixture(page);
+  await page.goto('/'); await asSupplier(page); await quoteTab(page);
+  await editQuote(page, 'unit_price', '10.00');
+  await dialog(page).getByRole('button', {name:'Confirmar y enviar cotización', exact:true}).click();
+  await expect(dialog(page).getByRole('region', {name:'Cotización vigente v1', exact:true})).toBeVisible();
+  state.blockAccept(true);
+  await asClient(page); await quoteTab(page);
+  await dialog(page).getByRole('button', {name:'Confirmar cotización', exact:true}).click();
+  await dialog(page).getByRole('button', {name:'Sí, confirmar acuerdo', exact:true}).click();
+  const notice = dialog(page).getByRole('alert');
+  await expect(notice).toContainText('El proveedor debe confirmar la disponibilidad de algunos artículos antes de cerrar el acuerdo. Solicita un ajuste o espera una nueva versión.');
+  expect(await notice.textContent()).not.toMatch(/\d/);
+  const adjust = dialog(page).getByRole('button', {name:'Solicitar ajuste', exact:true});
+  await expect(adjust).toHaveClass(/primary/);
+  await expect(adjust).toHaveAccessibleDescription('Pide al proveedor una nueva versión con las unidades que puede confirmar.');
+  await expect(dialog(page).getByRole('button', {name:'Confirmar cotización', exact:true})).toHaveClass(/soft/);
+  await expect(dialog(page).getByText('HANDSHAKED · Acuerdo confirmado', {exact:true})).toHaveCount(0);
+  expect(state.getOrder().status).toBe('quoted');
+  await adjust.click();
+  await dialog(page).getByLabel('¿Qué necesitas ajustar?', {exact:true}).fill('confirmar disponibles');
+  await dialog(page).getByRole('button', {name:'Enviar ajuste', exact:true}).click();
+  await expect(dialog(page).getByText('Ajuste solicitado', {exact:true})).toBeVisible();
+  expect(state.actions.map(value => value.action)).toEqual(['quote', 'accept', 'request_adjustment']);
+  // The supplier's list flags the order privately; the client's own list never carries the badge.
+  await dialog(page).getByRole('button', {name:'Cerrar ventana', exact:true}).click();
+  await expect(page.getByText('Confirmación bloqueada por existencias', {exact:true})).toHaveCount(0);
+  await page.getByLabel('Cuenta activa', {exact:true}).selectOption(supplierId);
+  await page.goto('/');
+  await page.getByRole('button', {name:'Para proveedores', exact:true}).click();
+  await openSupplierNavigation(page);
+  await page.getByRole('tab', {name:'Solicitudes', exact:true}).click();
+  await expect(page.getByRole('article', {name:'Solicitud ORD-PRUEBA-001 de TALLER CENTRAL', exact:true})).toContainText('Confirmación bloqueada por existencias');
+  expect(state.unexpected).toEqual([]);
+});
+
+test('an accept refused because the deal moved on does not keep pointing the client to Solicitar ajuste', async ({page}) => {
+  const state = await fixture(page);
+  await page.goto('/'); await asSupplier(page); await quoteTab(page);
+  await editQuote(page, 'unit_price', '10.00');
+  await dialog(page).getByRole('button', {name:'Confirmar y enviar cotización', exact:true}).click();
+  await expect(dialog(page).getByRole('region', {name:'Cotización vigente v1', exact:true})).toBeVisible();
+  state.blockAccept(true);
+  await asClient(page); await quoteTab(page);
+  await dialog(page).getByRole('button', {name:'Confirmar cotización', exact:true}).click();
+  await dialog(page).getByRole('button', {name:'Sí, confirmar acuerdo', exact:true}).click();
+  const hint = dialog(page).getByText('Pide al proveedor una nueva versión con las unidades que puede confirmar.', {exact:true});
+  await expect(hint).toBeVisible();
+  // Another member asked for an adjustment and the supplier returned the same quotation: still quoted, on a newer version.
+  state.setStatus('adjustment'); state.setStatus('quoted'); state.blockAccept(false);
+  await dialog(page).getByRole('button', {name:'Confirmar cotización', exact:true}).click();
+  await dialog(page).getByRole('button', {name:'Sí, confirmar acuerdo', exact:true}).click();
+  await expect(dialog(page).getByRole('alert')).toContainText('El acuerdo cambió. Actualízalo.');
+  await expect(hint).toHaveCount(0);
+  await expect(dialog(page).getByRole('button', {name:'Solicitar ajuste', exact:true})).toHaveClass(/soft/);
+  await expect(dialog(page).getByRole('button', {name:'Confirmar cotización', exact:true})).toHaveClass(/primary/);
+  expect(state.actions.map(value => value.action)).toEqual(['quote', 'accept', 'accept']);
   expect(state.unexpected).toEqual([]);
 });

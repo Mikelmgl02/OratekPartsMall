@@ -81,11 +81,12 @@ class QuoteDraftTests(APITestCase):
                                                        'updated_at', 'updated_by', 'permissions', 'order_exceptions', 'summary']},
                          {'persisted': False, 'draft_version': 0, 'status': 'editing', 'base_quotation_id': None, 'currency': 'USD', 'terms': '',
                           'terms_origin': 'none', 'updated_at': None, 'updated_by': None, 'permissions': {'can_publish': True, 'publish_requires': 'staff'},
-                          'order_exceptions': [], 'summary': {'blocking': 0, 'to_confirm': 0, 'info': 0, 'total': '0.00', 'line_count': 2}})
+                          'order_exceptions': [], 'summary': {'blocking': 2, 'to_confirm': 0, 'info': 0, 'total': '0.00', 'line_count': 2}})
         line = self.by_code(draft)['58411-1R000-G']
         self.assertEqual({key: value for key, value in line.items() if key not in ['order_line_id', 'stock']},
                          {'codigo': '58411-1R000-G', 'brand': 'KSM', 'description': 'TAMBOR A-001', 'requested': 3, 'quantity': 3, 'quantity_source': 'requested',
-                          'unit_price': None, 'price_source': 'none', 'suggestion': None, 'note': '', 'exceptions': []})
+                          'unit_price': None, 'price_source': 'none', 'suggestion': None, 'note': '',
+                          'exceptions': [{'code': 'price_missing', 'severity': 'block', 'message': 'Falta el precio.', 'context': '', 'acknowledged': False}]})
         self.assertEqual({key: line['stock'][key] for key in ['reported_quantity', 'reserved_quantity', 'available_quantity', 'shortfall']},
                          {'reported_quantity': 10, 'reserved_quantity': 2, 'available_quantity': 8, 'shortfall': 0})
         self.assertFalse(DealQuotationDraft.objects.exists())
