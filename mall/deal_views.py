@@ -29,7 +29,7 @@ EXCEPTIONS_DETAIL = 'Revisa las alertas antes de enviar.'
 RETURN_SHORTFALL_DETAIL = 'Las existencias cambiaron desde esta versión. Prepara una nueva versión y confirma las alertas.'
 # Shown to the client: it must never carry quantities or any other digit.
 ACCEPT_SHORTFALL_DETAIL = ('El proveedor debe confirmar la disponibilidad de algunos artículos antes de cerrar el acuerdo. '
-                           'Solicita un ajuste o espera una nueva versión.')
+                           'Solicita un ajuste para que el proveedor prepare una versión actualizada.')
 SETTINGS_SNAPSHOT = ('version', 'over_stock_policy', 'over_request_policy', 'accept_shortfall_policy', 'publish_min_permission', 'prefill_quantity')
 
 

@@ -69,7 +69,7 @@ async function fixture(page: Page) {
   await page.route(/\/api\/market\/accounts\/[^/]+\/deals\/[^/]+\/actions$/, route => {
     const payload = route.request().postDataJSON(); actions.push(payload);
     if (payload.expected_version !== order.version) return route.fulfill({status:409, json:{detail:'El acuerdo cambió. Actualízalo.'}});
-    if (payload.action === 'accept' && blockAccept) return route.fulfill({status:409, json:{detail:'El proveedor debe confirmar la disponibilidad de algunos artículos antes de cerrar el acuerdo. Solicita un ajuste o espera una nueva versión.'}});
+    if (payload.action === 'accept' && blockAccept) return route.fulfill({status:409, json:{detail:'El proveedor debe confirmar la disponibilidad de algunos artículos antes de cerrar el acuerdo. Solicita un ajuste para que el proveedor prepare una versión actualizada.'}});
     // Publishing is bound to the saved draft, exactly like the server.
     if (payload.action === 'quote' && (!drafts.current().persisted || payload.draft_version !== drafts.current().draft_version)) return route.fulfill({status:409, json:{detail:'El borrador cambió. Revísalo antes de publicar.'}});
     if (payload.action === 'quote') {
@@ -285,7 +285,7 @@ test('a client accept refused for availability keeps the deal open, explains it 
   await dialog(page).getByRole('button', {name:'Confirmar cotización', exact:true}).click();
   await dialog(page).getByRole('button', {name:'Sí, confirmar acuerdo', exact:true}).click();
   const notice = dialog(page).getByRole('alert');
-  await expect(notice).toContainText('El proveedor debe confirmar la disponibilidad de algunos artículos antes de cerrar el acuerdo. Solicita un ajuste o espera una nueva versión.');
+  await expect(notice).toContainText('El proveedor debe confirmar la disponibilidad de algunos artículos antes de cerrar el acuerdo. Solicita un ajuste para que el proveedor prepare una versión actualizada.');
   expect(await notice.textContent()).not.toMatch(/\d/);
   const adjust = dialog(page).getByRole('button', {name:'Solicitar ajuste', exact:true});
   await expect(adjust).toHaveClass(/primary/);
