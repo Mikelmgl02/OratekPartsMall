@@ -49,6 +49,7 @@ async function mockSession(page: Page, accounts = supplierAccounts.slice(0, 1)) 
     user: { id: 43, username: 'USUARIO DE PRUEBA', first_name: '', last_name: '', is_superuser: false },
     accounts: { ...emptyPage, count: accounts.length, results: accounts } } }));
   await page.route(/\/api\/market\/catalog(?:\?.*)?$/, route => route.fulfill({ json: { ...emptyPage, count: 1, results: [part] } }));
+  await page.route(/\/api\/market\/catalog\/[^/]+\/technical$/, route => route.fulfill({ json: { part: new URL(route.request().url()).pathname.split('/')[4], part_type: null, revision: 0, template: null, values: {}, applications: [], missing_required: [] } }));
   await page.route(/\/api\/market\/accounts\/[^/]+\/inventory(?:\?.*)?$/, route => route.fulfill({ json: { ...emptyPage, count: 1, results: [
     { id: itemA, supplier_invent_id: 'inventario-existente', part: partId, codigo: 'INVENTARIO-EXISTENTE',
       brand: 'MARCA A', description: 'SALDO DEL PROVEEDOR', matching_status: 'matched', source: 'upload',
