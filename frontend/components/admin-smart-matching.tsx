@@ -10,7 +10,7 @@ type Case = {id:string;kind:string;sources:Row[];candidates:Row[];target_sku:str
 type Summary = {catalog_count?:number; oem_skus?:number; non_oem_skus?:number; supplier_total?:number; supplier_already_matched?:number; supplier_examined?:number; promoted_oems?:number; grouped_skus?:number; created_parents?:number; matched_items?:number; ai_analyzed?:number; ai_status?:string};
 type Overview = {running:boolean;queued:boolean;state?:string;stage?:string;last_run:string|null;summary:Summary;error:string;counts:Record<string,number>;count:number;next_offset:number|null;results:Case[]};
 const labels:Record<string,string> = {review:'POR REVISAR',unmatched:'SIN COINCIDENCIA',applied:'APLICADAS',dismissed:'DESCARTADAS'};
-const stages:Record<string,string> = {catalog:'Comparando SKU y referencias del catálogo…',parents:'Buscando familias de artículos sin SKU principal…',suppliers:'Vinculando artículos de proveedores pendientes…',ai:'Revisando casos ambiguos con IA…'};
+const stages:Record<string,string> = {catalog:'Comparando SKU y referencias del catálogo…',oem:'Buscando números OEM del catálogo…',parents:'Buscando familias de artículos sin SKU principal…',suppliers:'Vinculando artículos de proveedores pendientes…',ai:'Revisando casos ambiguos con IA…'};
 const aiLabels:Record<string,string> = {no_pending_cases:'IA no utilizada: no hay casos ambiguos de proveedores pendientes de analizar.',not_configured:'IA no disponible: falta configurar el proveedor.',disabled:'IA desactivada para esta ejecución.',failed:'La IA no pudo completar este lote. Las coincidencias automáticas se conservaron; puedes reintentar.',completed:'La IA generó propuestas para revisión.'};
 const number = (value:number) => value.toLocaleString('es-PA');
 

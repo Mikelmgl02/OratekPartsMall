@@ -22,6 +22,28 @@ def enqueue_matching(*args, **kwargs):
         transaction.on_commit(_enqueue)
 
 
+MATCHING_LOCK = 724631109  # pg advisory lock key of a matching pass (quote assistant 724631110, suffix table 724631111)
+
+
+@contextmanager
+def matching_lock():
+    """Session-level pg_try_advisory_lock: it survives per-item commits, so a long matching pass never overlaps another worker
+    or an OEM finder run. Yields False while someone else holds it; always True off PostgreSQL."""
+    from django.db import connection
+    if connection.vendor != 'postgresql':
+        yield True
+        return
+    with connection.cursor() as cursor:
+        cursor.execute('SELECT pg_try_advisory_lock(%s)', [MATCHING_LOCK])
+        locked = cursor.fetchone()[0]
+    try:
+        yield locked
+    finally:
+        if locked:
+            with connection.cursor() as cursor:
+                cursor.execute('SELECT pg_advisory_unlock(%s)', [MATCHING_LOCK])
+
+
 @contextmanager
 def matching_work():
     token = _inside_worker.set(True)

@@ -3,10 +3,11 @@ import logging
 import math
 import uuid
 from datetime import timedelta
-from django.db import transaction, connection
+from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
 from .matching_models import MatchingQueue, MatchingCase
-from .matching_queue import matching_work
+from .matching_queue import matching_lock, matching_work
 from .matching_engine import (MatchIndex, create_supplier_families, reconcile_catalog,
                               reconcile_items)
 from .catalog_classification import call_provider, provider_configuration, ClassificationProviderError
@@ -76,19 +77,10 @@ def analyze_ambiguous(limit=20, *, stats=None):
 def process_queue(*, force=False, use_ai=True):
     # A PostgreSQL session lock survives per-item commits and prevents a long
     # run from overlapping another worker even if its visibility lease expires.
-    locked = False
-    if connection.vendor == 'postgresql':
-        with connection.cursor() as cursor:
-            cursor.execute('SELECT pg_try_advisory_lock(%s)', [724631109])
-            locked = cursor.fetchone()[0]
+    with matching_lock() as locked:
         if not locked:
             return None
-    try:
         return _process_queue(force=force, use_ai=use_ai)
-    finally:
-        if locked:
-            with connection.cursor() as cursor:
-                cursor.execute('SELECT pg_advisory_unlock(%s)', [724631109])
 
 
 def _process_queue(*, force=False, use_ai=True):
@@ -127,6 +119,10 @@ def _process_queue(*, force=False, use_ai=True):
                        'supplier_already_matched': SupplierItem.objects.filter(matching_status='matched').count(),
                        'supplier_examined': 0, 'ai_eligible': 0, 'ai_status': 'disabled'}
             summary['grouped_skus'] = reconcile_catalog(actor, stats=summary)
+            if settings.OEM_FINDER_AUTO_STAGE:
+                from .oem_finder import worker_stage
+                stage('oem')
+                summary['oem_finder'] = worker_stage(actor)
             stage('parents')
             summary['created_parents'] = create_supplier_families()
             stage('suppliers')

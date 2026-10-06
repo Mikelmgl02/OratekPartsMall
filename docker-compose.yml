@@ -49,6 +49,8 @@ services:
       GEMINI_GROUNDING_USD_PER_CALL: ${GEMINI_GROUNDING_USD_PER_CALL:-0.035}
       # Quotations are published only from the supplier-reviewed draft; 0 re-opens the draftless legacy API path.
       QUOTES_REQUIRE_DRAFT: ${QUOTES_REQUIRE_DRAFT:-1}
+      # 1 runs the OEM finder dry run (review queue only, never renames) as a matching worker stage after catalog grouping.
+      OEM_FINDER_AUTO_STAGE: ${OEM_FINDER_AUTO_STAGE:-0}
       CATALOG_LOW_STOCK_THRESHOLD: ${CATALOG_LOW_STOCK_THRESHOLD:-5}
       CATALOG_HIGH_STOCK_THRESHOLD: ${CATALOG_HIGH_STOCK_THRESHOLD:-20}
       DO_SPACES_KEY: ${DO_SPACES_KEY:-}

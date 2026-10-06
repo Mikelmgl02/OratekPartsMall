@@ -47,7 +47,7 @@ class MatchingOverviewResponse(serializers.Serializer):
     running = serializers.BooleanField()
     queued = serializers.BooleanField()
     state = serializers.ChoiceField(choices=['running', 'retrying', 'waiting_import', 'queued', 'completed', 'idle'])
-    stage = serializers.CharField(allow_blank=True, help_text='catalog, parents, suppliers, ai, completed o failed.')
+    stage = serializers.CharField(allow_blank=True, help_text='catalog, oem, parents, suppliers, ai, completed o failed.')
     started_at = serializers.DateTimeField(allow_null=True)
     last_run = serializers.DateTimeField(allow_null=True)
     summary = serializers.DictField(help_text='Totales de la última ejecución.')
