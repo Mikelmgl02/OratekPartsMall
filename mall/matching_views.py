@@ -1,6 +1,8 @@
 from django.db import transaction
 from django.db.models import Count
 from django.utils import timezone
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import serializers
 from rest_framework.exceptions import NotFound, ValidationError, APIException
 from rest_framework.response import Response
@@ -24,14 +26,60 @@ def case_result(case):
             'supplier_name': case.item.supplier.name if case.item_id else ''}
 
 
+CASE_STATUSES = ['review', 'unmatched', 'applied', 'dismissed']
+
+
+class MatchingCaseResponse(serializers.Serializer):
+    id = serializers.UUIDField()
+    kind = serializers.CharField(help_text='supplier, catalog, catalog_reference o seed.')
+    sources = serializers.ListField(child=serializers.DictField())
+    candidates = serializers.ListField(child=serializers.DictField())
+    target_sku = serializers.CharField(allow_blank=True)
+    method = serializers.CharField(allow_blank=True)
+    reason = serializers.CharField(allow_blank=True)
+    status = serializers.CharField(help_text='review, unmatched, applied, dismissed o resolved.')
+    ai = serializers.DictField(help_text='Propuesta de IA en caché (target_sku, confidence, reason) o {error}; vacío si no se analizó.')
+    fingerprint = serializers.CharField(help_text='Envíalo al revisar; si los datos cambiaron, la revisión responde 409.')
+    supplier_name = serializers.CharField(allow_blank=True)
+
+
+class MatchingOverviewResponse(serializers.Serializer):
+    running = serializers.BooleanField()
+    queued = serializers.BooleanField()
+    state = serializers.ChoiceField(choices=['running', 'retrying', 'waiting_import', 'queued', 'completed', 'idle'])
+    stage = serializers.CharField(allow_blank=True, help_text='catalog, parents, suppliers, ai, completed o failed.')
+    started_at = serializers.DateTimeField(allow_null=True)
+    last_run = serializers.DateTimeField(allow_null=True)
+    summary = serializers.DictField(help_text='Totales de la última ejecución.')
+    error = serializers.CharField(allow_blank=True)
+    counts = serializers.DictField(child=serializers.IntegerField(), help_text='Casos por estado.')
+    count = serializers.IntegerField()
+    offset = serializers.IntegerField()
+    next_offset = serializers.IntegerField(allow_null=True)
+    results = MatchingCaseResponse(many=True)
+
+
+class MatchingRun(serializers.Serializer):
+    retry_ai = serializers.BooleanField(required=False, help_text='true reintenta solo las consultas de IA fallidas.')
+
+
+class MatchingRunResponse(serializers.Serializer):
+    queued = serializers.BooleanField()
+    detail = serializers.CharField()
+
+
 class MatchingOverview(APIView):
     permission_classes = [IsSuperuser]
 
+    @extend_schema(operation_id='v1_management_matching_list', responses=MatchingOverviewResponse, parameters=[
+        OpenApiParameter('status', OpenApiTypes.STR, enum=CASE_STATUSES, default='review'),
+        OpenApiParameter('offset', OpenApiTypes.INT, default=0, description='Casos a omitir; cada página trae 30 (usa next_offset).')],
+        description='Estado del análisis de coincidencias y casos del estado indicado.')
     def get(self, request):
         queue = MatchingQueue.objects.filter(pk=1).first()
         counts = dict(MatchingCase.objects.values('status').annotate(count=Count('pk')).values_list('status', 'count'))
         status = request.query_params.get('status', 'review')
-        if status not in ['review', 'unmatched', 'applied', 'dismissed']:
+        if status not in CASE_STATUSES:
             raise ValidationError('El estado no es válido.')
         try:
             offset = max(0, int(request.query_params.get('offset', 0)))
@@ -51,6 +99,8 @@ class MatchingOverview(APIView):
             'next_offset': offset + 30 if offset + 30 < count else None,
             'results': [case_result(case) for case in cases[offset:offset + 30]]})
 
+    @extend_schema(operation_id='v1_management_matching_run', request=MatchingRun, responses={202: MatchingRunResponse},
+                   description='Programa el análisis de coincidencias en segundo plano.')
     def post(self, request):
         if request.data.get('retry_ai') is True:
             # Keep valid cached responses; explicitly retry failed provider calls.
@@ -70,6 +120,9 @@ class ReviewRequest(serializers.Serializer):
 class MatchingReview(APIView):
     permission_classes = [IsSuperuser]
 
+    @extend_schema(operation_id='v1_management_matching_review', request=ReviewRequest, responses={
+        200: MatchingCaseResponse, 409: OpenApiResponse(description='El caso cambió, ya tiene otra decisión, el SKU destino no es válido o hay una importación del proveedor en curso.')},
+        description='Aprueba o descarta un caso con su fingerprint actual. Repetir la misma decisión devuelve el caso sin cambios.')
     def post(self, request, pk):
         data = ReviewRequest(data=request.data)
         data.is_valid(raise_exception=True)

@@ -65,10 +65,19 @@ if any((DO_SPACES_KEY, DO_SPACES_SECRET, DO_SPACES_BUCKET)):
         },
     }
 REST_FRAMEWORK = {"DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework.authentication.TokenAuthentication", "rest_framework.authentication.SessionAuthentication"], "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"], "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema", "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination", "PAGE_SIZE": 50, "DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.AnonRateThrottle"], "DEFAULT_THROTTLE_RATES": {"anon": "20/min"}}
-SPECTACULAR_SETTINGS = {"TITLE": "MotionPartes API", "VERSION": "0.1.0", "COMPONENT_SPLIT_REQUEST": True}
+SPECTACULAR_SETTINGS = {"TITLE": "MotionPartes API", "VERSION": "0.1.0", "COMPONENT_SPLIT_REQUEST": True, "ENUM_NAME_OVERRIDES": {
+    # Shared choice sets get one stable name; values and labels must match the fields exactly.
+    "LedgerDirectionEnum": [("credit", "Crédito"), ("debit", "Débito")],
+    "SupplierItemSourceEnum": [("upload", "Carga manual"), ("apiag", "apiag-cloud")], "InventorySourceEnum": ["upload", "apiag"],
+    "ReferenceKindEnum": ["alias", "oem", "manufacturer"],
+    "DealActionEnum": ["quote", "accept", "request_adjustment", "return_quote"], "MatchingReviewActionEnum": ["approve", "dismiss"],
+    "MatchingStateEnum": ["running", "retrying", "waiting_import", "queued", "completed", "idle"]}}
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY') or os.getenv('GEM_API_KEY', '')
 GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-3.5-flash-lite')
 CATALOG_LOW_STOCK_THRESHOLD = max(1, int(os.getenv('CATALOG_LOW_STOCK_THRESHOLD', '5')))
+CATALOG_HIGH_STOCK_THRESHOLD = int(os.getenv('CATALOG_HIGH_STOCK_THRESHOLD', '20'))
+if CATALOG_HIGH_STOCK_THRESHOLD <= CATALOG_LOW_STOCK_THRESHOLD:
+    raise ImproperlyConfigured(f'CATALOG_HIGH_STOCK_THRESHOLD ({CATALOG_HIGH_STOCK_THRESHOLD}) must be greater than CATALOG_LOW_STOCK_THRESHOLD ({CATALOG_LOW_STOCK_THRESHOLD}).')
 if not DEBUG:
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True

@@ -26,7 +26,7 @@ export default function PartRequestStates({ draftQuantity, history, loading, pre
   return <section className="part-request-summary" aria-label="Tus cantidades para este SKU">
     <h3>Tus cantidades para este SKU</h3>
     <div className="part-request-counts">{cards.map(({label,value,Icon,kind}) => <div className={kind} key={label}><span><Icon size={14}/>{label}</span><strong>{value === undefined ? loading ? <span className="skeleton-block" aria-label="Cargando cantidades"/> : '—' : value.toLocaleString('es-PA')}</strong><small>UNIDADES</small></div>)}</div>
-    <p>{preview ? 'Vista de ejemplo. Estas cantidades de la cesta se guardan únicamente en este navegador.' : 'Las unidades solicitadas aparecen una sola vez, según el estado de su orden. La cotización puede ofrecer una cantidad diferente. Enviar una solicitud no reserva existencias.'}</p>
+    <p>{preview ? 'Vista de ejemplo. Estas cantidades de la cesta se guardan únicamente en este navegador.' : 'Las unidades solicitadas aparecen una sola vez, según el estado de su orden. En acuerdos muestra las unidades de la cotización que aceptaste, que pueden diferir de las solicitadas. Enviar una solicitud no reserva existencias.'}</p>
     {error && <div className="notice error" role="alert">{error}<button onClick={onRetry}>Actualizar estados</button></div>}
   </section>;
 }

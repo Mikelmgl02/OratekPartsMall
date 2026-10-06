@@ -39,7 +39,7 @@ class PartCodeSerializer(serializers.ModelSerializer):
         fields = ['brand', 'code', 'kind', 'ref_type']
 
 class CatalogAvailabilitySerializer(serializers.Serializer):
-    status = serializers.ChoiceField(choices=['unknown', 'sold_out', 'low', 'high'])
+    status = serializers.ChoiceField(choices=['unknown', 'sold_out', 'low', 'medium', 'high'])
     supplier_count = serializers.IntegerField(min_value=0)
     updated_at = serializers.DateTimeField(allow_null=True)
 

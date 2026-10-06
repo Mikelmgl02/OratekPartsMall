@@ -328,7 +328,7 @@ def apply_category(user, pk, category, subcategory, offset):
 class CatalogAssistantList(APIView):
     permission_classes = [IsSuperuser]
 
-    @extend_schema(responses=OpenApiTypes.OBJECT)
+    @extend_schema(operation_id='v1_management_catalog_assistant_list', responses=OpenApiTypes.OBJECT)
     def get(self, request):
         scope, search = request.query_params.get('scope', 'unclassified'), request.query_params.get('search', '').strip()
         if scope not in ['unclassified', 'all'] or len(search) > 200:
@@ -336,7 +336,7 @@ class CatalogAssistantList(APIView):
         return Response({'configured': bool(provider_configuration()[0]), 'eligible_count': eligible_parts(scope, search).count(),
                          'jobs': [summary(job) for job in CatalogAssistantJob.objects.filter(owner=request.user)[:20]]})
 
-    @extend_schema(request=AssistantStart, responses=OpenApiTypes.OBJECT)
+    @extend_schema(operation_id='v1_management_catalog_assistant_create', request=AssistantStart, responses=OpenApiTypes.OBJECT)
     def post(self, request):
         serializer = AssistantStart(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -380,11 +380,11 @@ class CatalogAssistantDetail(APIView):
             raise ValidationError('La página solicitada no es válida.')
         return value
 
-    @extend_schema(responses=OpenApiTypes.OBJECT)
+    @extend_schema(operation_id='v1_management_catalog_assistant_retrieve', responses=OpenApiTypes.OBJECT)
     def get(self, request, pk):
         return Response(job_response(owned_job(request.user, pk), self.offset(request)))
 
-    @extend_schema(request=AssistantAction, responses=OpenApiTypes.OBJECT)
+    @extend_schema(operation_id='v1_management_catalog_assistant_action', request=AssistantAction, responses=OpenApiTypes.OBJECT)
     def post(self, request, pk):
         serializer = AssistantAction(data=request.data)
         serializer.is_valid(raise_exception=True)

@@ -74,7 +74,8 @@ class PartTypeList(generics.ListCreateAPIView):
     serializer_class = PartTypeSerializer
     filter_backends = [filters.SearchFilter]
     search_fields = ['category', 'name']
-    queryset = PartType.objects.annotate(part_count=Count('parts', filter=Q(parts__merged_into__isnull=True)))
+    # Meta.ordering is ignored on GROUP BY queries; pages need an explicit, unique order.
+    queryset = PartType.objects.annotate(part_count=Count('parts', filter=Q(parts__merged_into__isnull=True))).order_by('category', 'name', 'id')
 
 
 class PartTypeDetail(generics.RetrieveUpdateAPIView):

@@ -4,7 +4,7 @@ import { previewOffers } from './preview';
 export const emptyFilters: CatalogFilters = { category: [], subcategory: [], availability: '', supplier: [] };
 export const emptyFacets: CatalogFacets = { category: [], subcategory: [], availability: [], supplier: [] };
 export const stockFilterLabels: Record<string, string> = {
-  in_stock: 'Con existencias', high: 'Altas existencias', low: 'Bajas existencias',
+  in_stock: 'Con existencias', high: 'Altas existencias', medium: 'Existencias medias', low: 'Bajas existencias',
   sold_out: 'Agotado', unknown: 'Sin existencias reportadas',
 };
 export function filterCount(filters: CatalogFilters) {
@@ -20,7 +20,7 @@ export function matchesFilters(part: Part, filters: CatalogFilters) {
   const status = part.availability?.status || 'unknown';
   return (!filters.category.length || filters.category.includes(part.category || ''))
     && (!filters.subcategory.length || filters.subcategory.includes(part.subcategory || ''))
-    && (!filters.availability || (filters.availability === 'in_stock' ? status === 'low' || status === 'high' : filters.availability === status));
+    && (!filters.availability || (filters.availability === 'in_stock' ? ['low', 'medium', 'high'].includes(status) : filters.availability === status));
 }
 export function previewFacets(parts: Part[], filters: CatalogFilters): CatalogFacets {
   const result: CatalogFacets = { ...emptyFacets };

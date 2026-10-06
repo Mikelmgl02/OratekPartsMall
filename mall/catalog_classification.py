@@ -153,24 +153,24 @@ def candidate_context(groups, source_skus):
     source = [staged[sku] for sku in source_skus if sku in staged]
     bases = {base for sku in staged if (base := supplier_base(sku))}
     aliases = {code['code'] for row in source for code in row['codes']} | {row['sku'] for row in source} | {supplier_base(row['sku']) for row in source}
-    catalogue = Part.objects.filter(active=True, merged_into__isnull=True).filter(Q(sku__in=aliases) | Q(codes__code__in=aliases)).distinct().prefetch_related('codes')
+    catalogue = Part.objects.filter(active=True, merged_into__isnull=True).filter(Q(sku__in=aliases) | Q(codes__code__in=aliases)).distinct().order_by('sku').prefetch_related('codes')
     catalogue_rows = {part.sku: {'sku': part.sku, 'row': None, 'name': part.name,
                                'is_OEM': part.is_OEM,
                                'description': part.description[:2000], 'category': part.category,
                                'subcategory': part.subcategory,
-                               'codes': [{'brand': code.brand, 'code': code.code, 'ref_type': code.ref_type, 'reference_source': code.reference_source} for code in list(part.codes.all())[:40]]}
+                               'codes': [{'brand': code.brand, 'code': code.code, 'ref_type': code.ref_type, 'reference_source': code.reference_source} for code in sorted(part.codes.all(), key=lambda code: code.pk)[:40]]}
                       for part in catalogue[:AI_BATCH_SIZE * MAX_CANDIDATES]}
     # Exact part-number references in descriptions also identify existing SKUs.
     literal_refs = set()
     for row in source:
         literal_refs.update(re.findall(r'\b[A-Z0-9]+(?:[-./][A-Z0-9]+)+\b', f"{row['name']} {row['description']}".upper()))
     if literal_refs:
-        for part in Part.objects.filter(merged_into__isnull=True, sku__in=literal_refs).prefetch_related('codes')[:AI_BATCH_SIZE * MAX_CANDIDATES]:
+        for part in Part.objects.filter(merged_into__isnull=True, sku__in=literal_refs).order_by('sku').prefetch_related('codes')[:AI_BATCH_SIZE * MAX_CANDIDATES]:
             catalogue_rows[part.sku] = {'sku': part.sku, 'row': None, 'name': part.name,
                                       'is_OEM': part.is_OEM,
                                       'description': part.description[:2000], 'category': part.category,
                                       'subcategory': part.subcategory,
-                                      'codes': [{'brand': code.brand, 'code': code.code, 'ref_type': code.ref_type, 'reference_source': code.reference_source} for code in list(part.codes.all())[:40]]}
+                                      'codes': [{'brand': code.brand, 'code': code.code, 'ref_type': code.ref_type, 'reference_source': code.reference_source} for code in sorted(part.codes.all(), key=lambda code: code.pk)[:40]]}
     rows = {**catalogue_rows, **staged}
     blocked = set(Part.objects.filter(sku__in=bases).values_list('sku', flat=True)) | set(PartCode.objects.filter(code__in=bases).values_list('code', flat=True))
     families = family_candidates(rows, blocked)

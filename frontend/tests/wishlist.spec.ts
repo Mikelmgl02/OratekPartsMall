@@ -3,7 +3,7 @@ import type { Part } from '../lib/types';
 
 const parts: Part[] = [
   { id:'11111111-1111-4111-8111-111111111111', sku:'58411-1R000', name:'', description:'TAMBOR HYU ACCENT 11-16', category:'FRENOS', subcategory:'TAMBORES', codes:[{brand:'', code:'58411-1R000-G'}], availability:{status:'low', supplier_count:1, updated_at:null} },
-  { id:'22222222-2222-4222-8222-222222222222', sku:'FILTER-002', name:'', description:'FILTRO DE ACEITE', category:'FILTROS', subcategory:'ACEITE', codes:[], availability:{status:'high', supplier_count:2, updated_at:null} },
+  { id:'22222222-2222-4222-8222-222222222222', sku:'FILTER-002', name:'', description:'FILTRO DE ACEITE', category:'FILTROS', subcategory:'ACEITE', codes:[], availability:{status:'medium', supplier_count:2, updated_at:null} },
   { id:'33333333-3333-4333-8333-333333333333', sku:'BELT-003', name:'', description:'CORREA', codes:[], availability:{status:'sold_out', supplier_count:0, updated_at:null} },
 ];
 const account = {id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', name:'TALLER UNO', roles:['client_business'], capabilities:['client']};
@@ -72,6 +72,7 @@ test('search uses alternate codes and removal failures keep the saved item for r
   const state = await fixture(page, {initial:parts});
   await page.goto('/?vista=favoritos');
   await expect(page.locator('.wishlist-page .part-card')).toHaveCount(3);
+  await expect(page.getByRole('article', {name:'Repuesto FILTER-002', exact:true})).toContainText('EXISTENCIAS MEDIAS');
   await page.getByLabel('Buscar en mis favoritos').fill('58411-1r000-g');
   await expect(page.locator('.wishlist-page .part-card')).toHaveCount(1);
   state.failDelete();

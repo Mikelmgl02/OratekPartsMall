@@ -5,6 +5,7 @@ from datetime import timedelta
 from urllib.parse import urlsplit
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import serializers
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -37,6 +38,40 @@ compatibilidad garantizada. No sugieras MAIN para component o uncertain.
 class OEMLookupRequest(serializers.Serializer):
     company = serializers.CharField(max_length=120, required=False, allow_blank=True)
     code = serializers.CharField(max_length=120, required=False, allow_blank=True)
+
+
+class OEMLookupQuery(serializers.Serializer):
+    code = serializers.CharField()
+    company = serializers.CharField(allow_blank=True)
+    description = serializers.CharField(allow_blank=True)
+    category = serializers.CharField(allow_blank=True)
+    subcategory = serializers.CharField(allow_blank=True)
+
+
+class OEMLookupReference(serializers.Serializer):
+    code = serializers.CharField()
+    brand = serializers.CharField()
+    relationship = serializers.ChoiceField(choices=['equivalent', 'component', 'uncertain'])
+    source_url = serializers.URLField()
+    reason = serializers.CharField()
+    ref_type = serializers.CharField(help_text='Siempre oem.')
+    reference_source = serializers.URLField()
+
+
+class OEMLookupSource(serializers.Serializer):
+    url = serializers.URLField()
+    title = serializers.CharField()
+
+
+class OEMLookupResponse(serializers.Serializer):
+    query = OEMLookupQuery()
+    references = OEMLookupReference(many=True)
+    note = serializers.CharField(allow_blank=True)
+    sources = OEMLookupSource(many=True)
+    search_suggestions = serializers.CharField(allow_blank=True, help_text='HTML de sugerencias de Google Search.')
+    metrics = serializers.DictField(child=serializers.IntegerField(), help_text='Tokens usados por el proveedor de IA.')
+    needs_review = serializers.BooleanField()
+    cached = serializers.BooleanField()
 
 
 def safe_url(value):
@@ -108,6 +143,10 @@ def lookup_oem(part, *, company='', code=''):
 class CatalogOEMLookup(APIView):
     permission_classes = [IsSuperuser]
 
+    @extend_schema(request=OEMLookupRequest, responses={200: OEMLookupResponse,
+        502: OpenApiResponse(description='El proveedor de IA falló o no devolvió referencias verificables; puedes reintentar.'),
+        503: OpenApiResponse(description='El proveedor de IA no está configurado.')},
+        description='Investiga referencias OEM del SKU activo con búsqueda web. Devuelve propuestas para revisión y no modifica el catálogo; los resultados se guardan en caché 30 días.')
     def post(self, request, pk):
         data = OEMLookupRequest(data=request.data)
         data.is_valid(raise_exception=True)

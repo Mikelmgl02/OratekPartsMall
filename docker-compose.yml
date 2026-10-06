@@ -40,6 +40,7 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-${GEM_API_KEY:-}}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash-lite}
       CATALOG_LOW_STOCK_THRESHOLD: ${CATALOG_LOW_STOCK_THRESHOLD:-5}
+      CATALOG_HIGH_STOCK_THRESHOLD: ${CATALOG_HIGH_STOCK_THRESHOLD:-20}
       DO_SPACES_KEY: ${DO_SPACES_KEY:-}
       DO_SPACES_SECRET: ${DO_SPACES_SECRET:-}
       DO_SPACES_BUCKET: ${DO_SPACES_BUCKET:-}
@@ -80,6 +81,13 @@ services:
     depends_on:
       app:
         condition: service_healthy
+    healthcheck:
+      # Fails when the worker loop has not completed a pass or a query for MATCHING_HEARTBEAT_MAX_AGE (600 s).
+      test: ["CMD", "python", "-m", "mall.matching_runner", "--healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     restart: unless-stopped
 
   frontend:

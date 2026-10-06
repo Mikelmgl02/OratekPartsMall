@@ -37,7 +37,7 @@ class CatalogImportIssueSerializer(serializers.ModelSerializer):
     part_id = serializers.UUIDField(read_only=True, allow_null=True)
     can_repair = serializers.SerializerMethodField()
 
-    def get_can_repair(self, issue):
+    def get_can_repair(self, issue) -> bool:
         return job_can_repair(issue.job)
 
     class Meta:

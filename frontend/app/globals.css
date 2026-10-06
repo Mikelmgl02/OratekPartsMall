@@ -268,6 +268,7 @@ h1,h2,h3,h4 { font-family:'Manrope',Arial,sans-serif; }
 .catalog-stock-status { display:inline-flex; align-items:center; gap:6px; max-width:100%; border:1px solid transparent; border-radius:5px; padding:6px 8px; font-size:9px; font-weight:700; line-height:1.4; letter-spacing:.3px; }
 .catalog-stock-status svg { flex-shrink:0; }
 .catalog-stock-status.high { color:#35613c; background:#edf5e7; border-color:#dceacb; }
+.catalog-stock-status.medium { color:#605d2c; background:#f6f5e3; border-color:#e8e4c1; }
 .catalog-stock-status.low { color:#8a591d; background:#fff5df; border-color:#f3dfb6; }
 .catalog-stock-status.sold_out { color:#9a463f; background:#fff0ed; border-color:#f0d6d1; }
 .catalog-stock-status.unknown { color:#687066; background:#f3f4f0; border-color:#e4e7de; }

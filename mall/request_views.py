@@ -17,7 +17,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import Account, Part, SupplierItem
-from .request_models import ClientRequestSubmission, SupplierRequest, SupplierRequestLine, RequestContribution, DealEvent, DealQuotation
+from .request_models import ClientRequestSubmission, SupplierRequest, SupplierRequestLine, RequestContribution, DealEvent, DealQuotation, DealQuotationLine
 from .views import account_for
 
 
@@ -136,7 +136,7 @@ def sent_request_summary(row):
 
 
 class ClientSentRequests(APIView):
-    @extend_schema(parameters=[OpenApiParameter('search', OpenApiTypes.STR), OpenApiParameter('status', OpenApiTypes.STR),
+    @extend_schema(operation_id='v1_accounts_sent_requests_list', parameters=[OpenApiParameter('search', OpenApiTypes.STR), OpenApiParameter('status', OpenApiTypes.STR),
                                OpenApiParameter('page', OpenApiTypes.INT)], responses=OpenApiTypes.OBJECT)
     def get(self, request, account_id):
         client = account_for(request.user, account_id, 'client')
@@ -159,7 +159,7 @@ class ClientSentRequests(APIView):
 
 
 class ClientSentRequestDetail(APIView):
-    @extend_schema(responses=OpenApiTypes.OBJECT)
+    @extend_schema(operation_id='v1_accounts_sent_requests_retrieve', responses=OpenApiTypes.OBJECT)
     def get(self, request, account_id, pk):
         client = account_for(request.user, account_id, 'client')
         row = get_object_or_404(sent_request_queryset(client).select_related('submission').prefetch_related('lines'), pk=pk)
@@ -172,23 +172,26 @@ class ClientSentRequestDetail(APIView):
 
 
 class ClientPartRequestState(APIView):
-    """Only the active client's requested quantities, never supplier stock."""
+    """Only the active client's requested and agreed quantities, never supplier stock."""
     @extend_schema(responses=OpenApiTypes.OBJECT)
     def get(self, request, account_id, part_id):
         client = account_for(request.user, account_id, 'client')
         part = get_object_or_404(Part, pk=part_id, active=True, merged_into__isnull=True)
         family = Part.objects.filter(Q(pk=part.pk) | Q(merged_into=part)).values('pk')
-        lines = SupplierRequestLine.objects.filter(request__client=client, part_id__in=family)
+        # A closed deal counts the units of the quotation the client accepted, which can differ from those requested (or be 0).
+        agreed = DealQuotationLine.objects.filter(order_line=OuterRef('pk'), quotation__client_confirmed_at__isnull=False).order_by('-quotation__revision').values('quantity')[:1]
+        lines = SupplierRequestLine.objects.filter(request__client=client, part_id__in=family).annotate(agreed_quantity=Coalesce(Subquery(agreed), 0))
         quantities = {
             'sent_quantity': Coalesce(Sum('quantity'), 0),
             'pending_quantity': Coalesce(Sum('quantity', filter=Q(request__status='pending')), 0),
             'reviewed_quantity': Coalesce(Sum('quantity', filter=Q(request__status='reviewed')), 0),
             'quoted_quantity': Coalesce(Sum('quantity', filter=Q(request__status='quoted')), 0),
             'adjustment_quantity': Coalesce(Sum('quantity', filter=Q(request__status='adjustment')), 0),
-            'handshaked_quantity': Coalesce(Sum('quantity', filter=Q(request__status='handshaked')), 0),
+            'handshaked_quantity': Coalesce(Sum('agreed_quantity', filter=Q(request__status='handshaked')), 0),
         }
         totals = lines.aggregate(**quantities)
-        items = lines.values('supplier_item_id', 'request__supplier_id', 'codigo', 'brand').annotate(**quantities)
+        items = lines.values('supplier_item_id', 'request__supplier_id', 'codigo', 'brand').annotate(**quantities).order_by(
+            'codigo', 'brand', 'supplier_item_id', 'request__supplier_id')
         return Response({'part_id': str(part.pk), 'totals': totals,
                          'items': [{'supplier_item_id': str(row['supplier_item_id']),
                                     'supplier_id': str(row['request__supplier_id']),
@@ -307,7 +310,7 @@ def submit_request(*, client, actor, data):
 
 
 class AccountRequests(APIView):
-    @extend_schema(parameters=[OpenApiParameter('search', OpenApiTypes.STR), OpenApiParameter('status', OpenApiTypes.STR),
+    @extend_schema(operation_id='v1_accounts_requests_list', parameters=[OpenApiParameter('search', OpenApiTypes.STR), OpenApiParameter('status', OpenApiTypes.STR),
                                OpenApiParameter('page', OpenApiTypes.INT)], responses=OpenApiTypes.OBJECT)
     def get(self, request, account_id):
         supplier = account_for(request.user, account_id, 'supplier')
@@ -342,7 +345,7 @@ class AccountRequests(APIView):
 
 
 class SupplierRequestDetail(APIView):
-    @extend_schema(responses=OpenApiTypes.OBJECT)
+    @extend_schema(operation_id='v1_accounts_requests_retrieve', responses=OpenApiTypes.OBJECT)
     def get(self, request, account_id, pk):
         supplier = account_for(request.user, account_id, 'supplier')
         row = get_object_or_404(request_detail_queryset(supplier), pk=pk)

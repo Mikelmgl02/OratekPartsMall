@@ -7,7 +7,7 @@ from .catalog_grouping import merge_catalog_parts
 from .models import Account, Membership, Part, PartCode, Role, StockEntry, SupplierItem, User, WishlistItem
 
 
-@override_settings(CATALOG_LOW_STOCK_THRESHOLD=5)
+@override_settings(CATALOG_LOW_STOCK_THRESHOLD=5, CATALOG_HIGH_STOCK_THRESHOLD=20)
 class WishlistTests(APITestCase):
     url = '/api/v1/wishlist/'
 
@@ -42,6 +42,18 @@ class WishlistTests(APITestCase):
         self.assertEqual(self.client.delete(self.detail()).status_code, 204)
         self.assertEqual(self.client.delete(self.detail()).status_code, 204)
         self.assertEqual(WishlistItem.objects.count(), 0)
+
+    def test_saved_items_report_public_bands_at_threshold_boundaries(self):
+        supplier = Account.objects.create(name='PROVEEDOR')
+        supplier.roles.add(Role.objects.get(code='supplier_retail'))
+        item = SupplierItem.objects.create(supplier=supplier, part=self.part, supplier_invent_id='ONE', codigo=self.part.sku,
+                                          source='upload', reported_quantity=0, reserved_quantity=1, matching_status='matched')
+        WishlistItem.objects.create(user=self.user, part=self.part)
+        for reported, band in [(6, 'low'), (7, 'medium'), (21, 'medium'), (22, 'high'), (1, 'sold_out')]:
+            item.reported_quantity = reported
+            item.save()
+            availability = self.client.get(self.url).data['results'][0]['part']['availability']
+            self.assertEqual((availability['status'], set(availability)), (band, {'status', 'supplier_count', 'updated_at'}))
 
     def test_personal_ownership_even_with_shared_account(self):
         WishlistItem.objects.create(user=self.other, part=self.part)

@@ -1,5 +1,7 @@
+import warnings
 from decimal import Decimal
 
+from django.core.paginator import UnorderedObjectListWarning
 from rest_framework.test import APITestCase
 from rest_framework.exceptions import ValidationError
 
@@ -118,6 +120,20 @@ class TechnicalDataTests(APITestCase):
         self.assertEqual(self.part.part_type_id, self.type.pk)
         self.assertEqual((self.part.category, self.part.subcategory), ('FRENADO', 'DISCOS DE FRENO'))
         self.assertEqual(self.part.specifications.count(), 1)
+
+    def test_part_type_pages_are_ordered_by_group_name_and_id(self):
+        PartType.objects.bulk_create([PartType(category=f'GRUPO {index % 3}', name=f'SUBGRUPO {54 - index:02d}') for index in range(55)])
+        Part.objects.create(sku='TEST-DISC-2', category='FRENOS', subcategory='DISCOS')
+        Part.objects.create(sku='TEST-DISC-OLD', category='FRENOS', subcategory='DISCOS', active=False, merged_into=self.part)
+        expected = [str(pk) for pk in PartType.objects.order_by('category', 'name', 'id').values_list('id', flat=True)]
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', UnorderedObjectListWarning)
+            pages = [self.client.get('/api/v1/management/part-types/', {'page': page}) for page in (1, 2, 1)]
+        self.assertEqual([response.status_code for response in pages], [200, 200, 200])
+        self.assertEqual(pages[0].data, pages[2].data)
+        rows = [row for response in pages[:2] for row in response.data['results']]
+        self.assertEqual([row['id'] for row in rows], expected)
+        self.assertEqual(next(row['part_count'] for row in rows if row['id'] == str(self.type.pk)), 2)
 
     def test_catalog_can_select_type_by_id_but_cannot_silently_reassign_measurements(self):
         response = self.client.post('/api/v1/management/catalog/', {'sku': 'BY-ID', 'part_type': str(self.type.pk)}, format='json')

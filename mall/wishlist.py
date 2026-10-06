@@ -25,7 +25,7 @@ class WishlistSerializer(serializers.ModelSerializer):
     part = PartSerializer(read_only=True)
     available = serializers.SerializerMethodField()
 
-    def get_available(self, obj):
+    def get_available(self, obj) -> bool:
         return obj.part.active and not obj.part.merged_into_id
 
     class Meta:

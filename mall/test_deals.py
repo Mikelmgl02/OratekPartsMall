@@ -4,6 +4,7 @@ from decimal import Decimal
 from unittest import skipUnless
 
 from django.db import close_old_connections, connection
+from django.test.utils import CaptureQueriesContext
 from rest_framework.test import APITestCase, APITransactionTestCase, APIClient
 
 from .models import Account, Membership, Part, Role, SupplierItem, User
@@ -123,6 +124,55 @@ class DealWorkflowTests(APITestCase):
         self.client.force_authenticate(self.buyer)
         self.assertEqual(self.action(order, 'accept', quotation_id=quote1['id']).status_code, 409)
         self.assertEqual(self.action(order, 'accept', quotation_id=quote2['id']).status_code, 200)
+
+    def request_state(self, part=None):
+        self.client.force_authenticate(self.buyer)
+        response = self.client.get(f'/api/v1/accounts/{self.client_account.pk}/catalog/{(part or self.part).pk}/request-state/')
+        self.assertEqual(response.status_code, 200)
+        return response.data['totals'], {row['supplier_item_id']: row for row in response.data['items']}
+
+    def test_request_state_counts_units_agreed_in_the_accepted_revision(self):
+        order = self.order(); self.review(order)
+        lines = {line.supplier_item_id: line for line in order.lines.all()}
+        quote1 = self.quote(order).data['quotation']
+        with CaptureQueriesContext(connection) as small:
+            totals, _ = self.request_state()
+        self.assertEqual((totals['quoted_quantity'], totals['handshaked_quantity']), (5, 0))
+        self.action(order, 'request_adjustment', quotation_id=quote1['id'], reason='SOLO UNA UNIDAD')
+        self.client.force_authenticate(self.seller_a)
+        offered = {self.item_a.pk: 1, self.item_a2.pk: 0}
+        quote2 = self.action(order, 'quote', lines=[{'order_line_id': str(lines[pk].pk), 'quantity': quantity, 'unit_price': '9.00'}
+                                                    for pk, quantity in offered.items()]).data['quotation']
+        self.client.force_authenticate(self.buyer)
+        self.assertEqual(self.action(order, 'accept', quotation_id=quote2['id']).status_code, 200)
+        self.submit(self.payload([(self.item_a, 4), (self.item_b, 6)]))
+        with CaptureQueriesContext(connection) as large:
+            totals, items = self.request_state()
+        # Requested 3 + 2, revision 1 offered 5, the accepted revision 2 agreed 1 + 0. Later sends stay pending.
+        self.assertEqual(totals, {'sent_quantity': 15, 'pending_quantity': 10, 'reviewed_quantity': 0, 'quoted_quantity': 0,
+                                  'adjustment_quantity': 0, 'handshaked_quantity': 1})
+        self.assertEqual({pk: [items[str(pk)][key] for key in ('sent_quantity', 'pending_quantity', 'handshaked_quantity')]
+                          for pk in [self.item_a.pk, self.item_a2.pk, self.item_b.pk]},
+                         {self.item_a.pk: [7, 4, 1], self.item_a2.pk: [2, 0, 0], self.item_b.pk: [6, 6, 0]})
+        self.assertEqual(len(large), len(small))
+        old = Part.objects.create(sku='OLD-SKU', active=False, merged_into=self.part)
+        SupplierRequestLine.objects.filter(request=order).update(part=old, sku=old.sku)
+        self.assertEqual(self.request_state(), (totals, items))
+
+    def test_request_state_reports_zero_agreed_units_for_lines_quoted_as_unavailable(self):
+        other = Part.objects.create(sku='99999-OTRO', name='OTRO REPUESTO')
+        other_item = self.item(self.supplier_a, self.seller_a, 'A-OTRO', '99999-OTRO', 5)
+        response = self.submit(self.payload([(self.item_a, 3), (other_item, 2)]))
+        order = SupplierRequest.objects.get(pk=response.data['requests'][0]['id']); self.review(order)
+        quote = self.action(order, 'quote', lines=[{'order_line_id': str(line.pk), 'quantity': 0 if line.part_id == self.part.pk else 2,
+                                                   'unit_price': '5.00'} for line in order.lines.all()]).data['quotation']
+        self.client.force_authenticate(self.buyer)
+        self.assertEqual(self.action(order, 'accept', quotation_id=quote['id']).status_code, 200)
+        totals, items = self.request_state()
+        self.assertEqual(totals, {'sent_quantity': 3, 'pending_quantity': 0, 'reviewed_quantity': 0, 'quoted_quantity': 0,
+                                  'adjustment_quantity': 0, 'handshaked_quantity': 0})
+        self.assertEqual(items[str(self.item_a.pk)]['handshaked_quantity'], 0)
+        self.assertEqual(self.request_state(other)[0]['handshaked_quantity'], 2)
 
     def test_return_same_quote_and_retry_decisions_are_idempotent(self):
         order = self.order(); self.review(order)

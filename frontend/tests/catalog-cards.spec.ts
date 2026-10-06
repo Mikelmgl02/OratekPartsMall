@@ -1,11 +1,11 @@
 import { expect, test } from '@playwright/test';
 
-const parts = ['low', 'high', 'sold_out', 'unknown'].map((status, index) => ({
+const parts = ['low', 'high', 'sold_out', 'unknown', 'medium'].map((status, index) => ({
   id: `part-${index}`, sku: index === 0 ? '58411-1R000' : `SKU-${index}`, name: '',
   description: index === 0 ? 'DISCO DE FRENO VENTILADO DELANTERO PARA HYUNDAI ACCENT' : '',
   category: index === 0 ? 'FRENOS' : '', subcategory: index === 0 ? 'DISCOS DELANTEROS' : '',
   codes: index === 0 ? [{code: '58411-1R000-G', brand: 'MARCA A'}, {code: '58-1R0', brand: 'MARCA B'}, {code: 'D-HYU-1R', brand: ''}] : [],
-  availability: {status, supplier_count: status === 'low' ? 2 : status === 'high' ? 1 : 0, updated_at: status === 'unknown' ? null : '2026-10-02T16:30:00Z'},
+  availability: {status, supplier_count: status === 'low' ? 2 : status === 'high' || status === 'medium' ? 1 : 0, updated_at: status === 'unknown' ? null : '2026-10-02T16:30:00Z'},
 }));
 
 for (const viewport of [{name:'desktop', width:1440, height:1000}, {name:'mobile', width:390, height:844}]) {
@@ -14,7 +14,7 @@ for (const viewport of [{name:'desktop', width:1440, height:1000}, {name:'mobile
     await page.route('**/api/session', route => route.fulfill({json:{authenticated:true,
       user:{id:1, username:'CLIENTE', is_superuser:false}, accounts:{count:1, next:null, previous:null,
       results:[{id:'client-a', name:'CLIENTE', roles:['client_business'], capabilities:['client']}]}}}));
-    await page.route(/\/api\/market\/catalog(?:\?.*)?$/, route => route.fulfill({json:{count:4, next:null, previous:null, results:parts}}));
+    await page.route(/\/api\/market\/catalog(?:\?.*)?$/, route => route.fulfill({json:{count:parts.length, next:null, previous:null, results:parts}}));
     await page.route('**/api/market/catalog/part-0/suppliers', route => route.fulfill({json:[]}));
     await page.goto('/');
     const card = page.getByRole('article', {name:'Repuesto 58411-1R000', exact:true});
@@ -29,6 +29,7 @@ for (const viewport of [{name:'desktop', width:1440, height:1000}, {name:'mobile
     await expect(card.getByText('58411-1R000-G', {exact:true})).toBeVisible();
     await expect(card.getByRole('button', {name:'Ver los 3 alternos de 58411-1R000'})).toHaveText('+1');
     await expect(page.getByRole('article', {name:'Repuesto SKU-1', exact:true})).toContainText('ALTAS EXISTENCIAS');
+    await expect(page.getByRole('article', {name:'Repuesto SKU-4', exact:true})).toContainText('EXISTENCIAS MEDIAS');
     await expect(page.getByRole('article', {name:'Repuesto SKU-2', exact:true})).toContainText('AGOTADO');
     const unknown = page.getByRole('article', {name:'Repuesto SKU-3', exact:true});
     await expect(unknown).toContainText('SIN EXISTENCIAS REPORTADAS');

@@ -106,7 +106,7 @@ class CatalogGroupingClassify(APIView):
         for index, sku in enumerate(selected if proposed_parent else [target, *selected]):
             row = part_row(parts[sku])
             row['row'] = index + 1
-            row['codes'] = [{'brand': code.brand, 'code': code.code, 'ref_type': code.ref_type, 'reference_source': code.reference_source} for code in parts[sku].codes.all()][:40]
+            row['codes'] = [{'brand': code.brand, 'code': code.code, 'ref_type': code.ref_type, 'reference_source': code.reference_source} for code in sorted(parts[sku].codes.all(), key=lambda code: code.pk)][:40]
             source.append(row)
         # A family review has one explicit final SKU. The model can retain any
         # source separately, but cannot invent chains or merge sibling targets.

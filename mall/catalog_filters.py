@@ -10,9 +10,16 @@ from .models import Account, SupplierItem
 
 
 AVAILABILITY_LABELS = {
-    'in_stock': 'Con existencias', 'high': 'Altas existencias', 'low': 'Bajas existencias',
+    'in_stock': 'Con existencias', 'high': 'Altas existencias', 'medium': 'Existencias medias', 'low': 'Bajas existencias',
     'sold_out': 'Agotado', 'unknown': 'Sin existencias reportadas',
 }
+
+
+def stock_band_q(band):
+    low, high = settings.CATALOG_LOW_STOCK_THRESHOLD, settings.CATALOG_HIGH_STOCK_THRESHOLD
+    return {'unknown': Q(_stock_units__isnull=True), 'sold_out': Q(_stock_units=0), 'in_stock': Q(_stock_units__gt=0),
+            'low': Q(_stock_units__gt=0, _stock_units__lte=low), 'medium': Q(_stock_units__gt=low, _stock_units__lte=high),
+            'high': Q(_stock_units__gt=high)}[band]
 
 
 def eligible_items():
@@ -49,17 +56,7 @@ def apply_filters(query, values, omit=None):
         query = query.filter(pk__in=eligible_items().filter(supplier_id__in=values['supplier']).values('part_id'))
     band = values['availability'] if omit != 'availability' else ''
     if band:
-        query = with_stock_units(query)
-        if band == 'unknown':
-            query = query.filter(_stock_units__isnull=True)
-        elif band == 'sold_out':
-            query = query.filter(_stock_units=0)
-        elif band == 'in_stock':
-            query = query.filter(_stock_units__gt=0)
-        elif band == 'low':
-            query = query.filter(_stock_units__gt=0, _stock_units__lte=settings.CATALOG_LOW_STOCK_THRESHOLD)
-        else:
-            query = query.filter(_stock_units__gt=settings.CATALOG_LOW_STOCK_THRESHOLD)
+        query = with_stock_units(query).filter(stock_band_q(band))
     return query
 
 
@@ -72,13 +69,7 @@ def catalog_facets(base, values):
         rows = scope.values(field).annotate(count=Count('pk', distinct=True)).order_by(field)
         facets[field] = [{'value': row[field], 'label': row[field] or blank_label, 'count': row['count']} for row in rows]
     stock_scope = with_stock_units(apply_filters(base, values, omit='availability')).order_by()
-    counts = stock_scope.aggregate(
-        in_stock=Count('pk', distinct=True, filter=Q(_stock_units__gt=0)),
-        high=Count('pk', distinct=True, filter=Q(_stock_units__gt=settings.CATALOG_LOW_STOCK_THRESHOLD)),
-        low=Count('pk', distinct=True, filter=Q(_stock_units__gt=0, _stock_units__lte=settings.CATALOG_LOW_STOCK_THRESHOLD)),
-        sold_out=Count('pk', distinct=True, filter=Q(_stock_units=0)),
-        unknown=Count('pk', distinct=True, filter=Q(_stock_units__isnull=True)),
-    )
+    counts = stock_scope.aggregate(**{value: Count('pk', distinct=True, filter=stock_band_q(value)) for value in AVAILABILITY_LABELS})
     facets['availability'] = [{'value': value, 'label': label, 'count': counts[value]} for value, label in AVAILABILITY_LABELS.items()]
     supplier_scope = apply_filters(base, values, omit='supplier').order_by().values('pk')
     rows = (eligible_items().filter(part_id__in=supplier_scope)

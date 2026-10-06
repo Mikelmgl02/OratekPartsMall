@@ -4,7 +4,7 @@ from rest_framework.test import APITestCase
 from .models import Account, Membership, Part, PartCode, Role, SupplierItem, User
 
 
-@override_settings(CATALOG_LOW_STOCK_THRESHOLD=5)
+@override_settings(CATALOG_LOW_STOCK_THRESHOLD=5, CATALOG_HIGH_STOCK_THRESHOLD=20)
 class CatalogFilterTests(APITestCase):
     url = '/api/v1/catalog/'
 
@@ -41,19 +41,30 @@ class CatalogFilterTests(APITestCase):
         self.assertEqual(self.client.get(self.url, {'category': 'FRENOS', 'subcategory': 'ACEITE'}).data['count'], 0)
 
     def test_stock_filters_match_public_bands_and_do_not_multiply_items(self):
-        parts = {sku: self.part(sku) for sku in ['UNKNOWN', 'ZERO', 'LOW', 'HIGH']}
+        parts = {sku: self.part(sku) for sku in ['UNKNOWN', 'ZERO', 'LOW', 'MEDIUM-MIN', 'MEDIUM-MAX', 'HIGH']}
         self.item(parts['UNKNOWN'], 100, status='review')
         self.item(parts['ZERO'], 3, reserved=4)
         self.item(parts['LOW'], 2)
-        self.item(parts['LOW'], 4, reserved=2)
+        self.item(parts['LOW'], 5, reserved=2)
         for code in ['ALT-ONE', 'ALT-TWO']:
             PartCode.objects.create(part=parts['LOW'], code=code)
-        self.item(parts['HIGH'], 6)
-        for band, expected in [('unknown', ['UNKNOWN']), ('sold_out', ['ZERO']), ('low', ['LOW']), ('high', ['HIGH']), ('in_stock', ['HIGH', 'LOW'])]:
+            PartCode.objects.create(part=parts['MEDIUM-MAX'], code=f'MAX-{code}')
+        self.item(parts['MEDIUM-MIN'], 6)
+        self.item(parts['MEDIUM-MAX'], 15)
+        self.item(parts['MEDIUM-MAX'], 5, self.other)
+        self.item(parts['HIGH'], 21)
+        for band, expected in [('unknown', ['UNKNOWN']), ('sold_out', ['ZERO']), ('low', ['LOW']), ('medium', ['MEDIUM-MAX', 'MEDIUM-MIN']),
+                               ('high', ['HIGH']), ('in_stock', ['HIGH', 'LOW', 'MEDIUM-MAX', 'MEDIUM-MIN'])]:
             response = self.client.get(self.url, {'availability': band})
             self.assertEqual(response.status_code, 200)
             self.assertEqual([row['sku'] for row in response.data['results']], expected)
         self.assertEqual(self.client.get(self.url, {'availability': 'low', 'search': 'ALT-'}).data['count'], 1)
+        self.assertEqual(self.client.get(self.url, {'availability': 'medium', 'search': 'MAX-ALT'}).data['count'], 1)
+        facets = self.client.get(self.url, {'include_facets': '1'}).data['facets']['availability']
+        self.assertEqual([(row['value'], row['label'], row['count']) for row in facets], [
+            ('in_stock', 'Con existencias', 4), ('high', 'Altas existencias', 1), ('medium', 'Existencias medias', 2),
+            ('low', 'Bajas existencias', 1), ('sold_out', 'Agotado', 1), ('unknown', 'Sin existencias reportadas', 1)])
+        self.assertTrue(all(set(row) == {'value', 'label', 'count'} for row in facets))
 
     def test_facets_count_all_pages_and_respect_search_with_disjunctive_counts(self):
         Part.objects.bulk_create([Part(sku=f'DISC-{i:03}', category='FRENOS', subcategory='DISCOS') for i in range(60)])
@@ -85,7 +96,7 @@ class CatalogFilterTests(APITestCase):
         data = self.client.get(self.url, {'include_facets': '1'}).data
         self.assertEqual(data['count'], 2)
         self.assertEqual({row['value']: row['count'] for row in data['facets']['supplier']}, {str(self.supplier.pk): 1, str(self.other.pk): 1})
-        self.assertEqual({row['value']: row['count'] for row in data['facets']['availability']}, {'in_stock': 1, 'high': 0, 'low': 1, 'sold_out': 0, 'unknown': 1})
+        self.assertEqual({row['value']: row['count'] for row in data['facets']['availability']}, {'in_stock': 1, 'high': 0, 'medium': 0, 'low': 1, 'sold_out': 0, 'unknown': 1})
         self.assertEqual(self.client.get(self.url, {'category': ''}).data['results'][0]['sku'], 'UNCLASSIFIED')
         self.assertEqual(self.client.get(self.url, {'supplier': str(inactive_supplier.pk)}).data['count'], 0)
         self.assertNotIn('_stock_units', str(data))

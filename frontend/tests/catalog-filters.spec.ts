@@ -7,7 +7,7 @@ const supplierB = '22222222-2222-4222-8222-222222222222';
 const parts = Array.from({ length: 56 }, (_, index) => ({
   id: `part-${index}`, sku: `TEST-${String(index).padStart(3, '0')}`, name: '', description: 'REPUESTO TEST',
   category: index < 52 ? 'FRENOS' : 'FILTROS', subcategory: index < 50 ? 'DISCOS' : index < 52 ? 'PASTILLAS' : 'ACEITE',
-  codes: [], availability: { status: index === 0 ? 'low' : index < 54 ? 'high' : 'sold_out', supplier_count: index < 54 ? 1 : 0, updated_at: '2026-10-02T20:00:00Z' },
+  codes: [], availability: { status: index === 0 ? 'low' : index === 2 ? 'medium' : index < 54 ? 'high' : 'sold_out', supplier_count: index < 54 ? 1 : 0, updated_at: '2026-10-02T20:00:00Z' },
   supplier: index % 2 ? supplierB : supplierA,
 } satisfies Part & { supplier: string }));
 
@@ -42,6 +42,11 @@ test('desktop: combine groups, subgroups, stock and suppliers with removable fil
   await page.goto('/');
   const sidebar = page.getByRole('complementary', { name: 'Filtros del catálogo' });
   await expect(sidebar).toBeVisible();
+  await sidebar.getByRole('radio', { name: 'Existencias medias', exact: true }).check();
+  await expect.poll(() => queries.at(-1)?.get('availability')).toBe('medium');
+  await expect(page.locator('.part-card')).toHaveCount(1);
+  await expect(page.locator('.part-card')).toContainText('EXISTENCIAS MEDIAS');
+  await sidebar.getByRole('radio', { name: 'Todos los estados', exact: true }).check();
   await expect(sidebar.getByRole('checkbox', { name: 'FRENOS', exact: true })).toBeVisible();
   await sidebar.getByRole('checkbox', { name: 'FRENOS', exact: true }).check();
   await sidebar.getByRole('checkbox', { name: 'FILTROS', exact: true }).check();

@@ -1,12 +1,34 @@
+import os
+import runpy
+from unittest import mock
+from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from django.db import connection
-from django.test import override_settings
+from django.test import SimpleTestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils.dateparse import parse_datetime
 from rest_framework.test import APITestCase
 from .models import Account, Membership, Part, PartCode, Role, SupplierItem, User
 
 
-@override_settings(CATALOG_LOW_STOCK_THRESHOLD=5)
+class CatalogStockThresholdSettingsTests(SimpleTestCase):
+    def load(self, **env):
+        with mock.patch.dict(os.environ, {'DJANGO_DEBUG': '1', **env}):
+            if 'CATALOG_HIGH_STOCK_THRESHOLD' not in env:
+                os.environ.pop('CATALOG_HIGH_STOCK_THRESHOLD', None)
+            return runpy.run_path(str(settings.BASE_DIR / 'config' / 'settings.py'))
+
+    def test_high_threshold_defaults_to_twenty_and_must_exceed_low_threshold(self):
+        self.assertEqual(self.load(CATALOG_LOW_STOCK_THRESHOLD='5')['CATALOG_HIGH_STOCK_THRESHOLD'], 20)
+        loaded = self.load(CATALOG_LOW_STOCK_THRESHOLD='5', CATALOG_HIGH_STOCK_THRESHOLD='6')
+        self.assertEqual((loaded['CATALOG_LOW_STOCK_THRESHOLD'], loaded['CATALOG_HIGH_STOCK_THRESHOLD']), (5, 6))
+        for low, high in [('5', '5'), ('5', '3'), ('25', None)]:
+            env = {'CATALOG_LOW_STOCK_THRESHOLD': low, **({'CATALOG_HIGH_STOCK_THRESHOLD': high} if high else {})}
+            with self.subTest(low=low, high=high), self.assertRaisesMessage(ImproperlyConfigured, 'CATALOG_HIGH_STOCK_THRESHOLD'):
+                self.load(**env)
+
+
+@override_settings(CATALOG_LOW_STOCK_THRESHOLD=5, CATALOG_HIGH_STOCK_THRESHOLD=20)
 class CatalogAvailabilityTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user('catalog-buyer', 'catalog-buyer@example.invalid', 'StrongPassword123!')
@@ -25,14 +47,15 @@ class CatalogAvailabilityTests(APITestCase):
             matching_status=changes.pop('matching_status', 'matched'), **changes)
 
     def test_bands_boundaries_and_unknown_without_disclosing_quantities(self):
-        parts = {sku: Part.objects.create(sku=sku) for sku in ['UNKNOWN', 'ZERO', 'ONE', 'FIVE', 'SIX', 'OVERRESERVED']}
-        for sku, units, reserved in [('ZERO', 0, 0), ('ONE', 1, 0), ('FIVE', 5, 0), ('SIX', 6, 0), ('OVERRESERVED', 2, 4)]:
+        parts = {sku: Part.objects.create(sku=sku) for sku in ['UNKNOWN', 'ZERO', 'ONE', 'FIVE', 'SIX', 'TWENTY', 'TWENTY-ONE', 'OVERRESERVED']}
+        for sku, units, reserved in [('ZERO', 0, 0), ('ONE', 1, 0), ('FIVE', 5, 0), ('SIX', 6, 0), ('TWENTY', 24, 4), ('TWENTY-ONE', 21, 0), ('OVERRESERVED', 2, 4)]:
             self.item(parts[sku], units, reserved)
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
         results = {row['sku']: row['availability'] for row in response.data['results']}
         self.assertEqual({sku: row['status'] for sku, row in results.items()}, {
-            'UNKNOWN': 'unknown', 'ZERO': 'sold_out', 'ONE': 'low', 'FIVE': 'low', 'SIX': 'high', 'OVERRESERVED': 'sold_out',
+            'UNKNOWN': 'unknown', 'ZERO': 'sold_out', 'ONE': 'low', 'FIVE': 'low', 'SIX': 'medium',
+            'TWENTY': 'medium', 'TWENTY-ONE': 'high', 'OVERRESERVED': 'sold_out',
         })
         self.assertEqual(results['UNKNOWN'], {'status': 'unknown', 'supplier_count': 0, 'updated_at': None})
         self.assertEqual(results['ZERO']['supplier_count'], 0)
@@ -88,17 +111,24 @@ class CatalogAvailabilityTests(APITestCase):
         self.assertEqual(status(), 'low')
         item.reported_quantity = 10
         item.save()
+        self.assertEqual(status(), 'medium')
+        item.reported_quantity = 21
+        item.save()
         self.assertEqual(status(), 'high')
         item.reserved_quantity = 6
+        item.save()
+        self.assertEqual(status(), 'medium')
+        item.reported_quantity = 10
         item.save()
         self.assertEqual(status(), 'low')
         item.reported_quantity = 0
         item.save()
         self.assertEqual(status(), 'sold_out')
-        with override_settings(CATALOG_LOW_STOCK_THRESHOLD=20):
-            item.reported_quantity = 25
-            item.save()
-            self.assertEqual(status(), 'low')
+        with override_settings(CATALOG_LOW_STOCK_THRESHOLD=20, CATALOG_HIGH_STOCK_THRESHOLD=40):
+            for reported, band in [(26, 'low'), (27, 'medium'), (46, 'medium'), (47, 'high')]:
+                item.reported_quantity = reported
+                item.save()
+                self.assertEqual(status(), band)
 
     def test_catalog_stock_queries_are_batched_per_page(self):
         part = Part.objects.create(sku='FIRST')

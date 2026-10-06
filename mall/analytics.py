@@ -168,7 +168,7 @@ class AnalyticsDashboard(APIView):
                 received=Count('pk'), reviewed=Count('pk', filter=reviewed), pending=Count('pk', filter=Q(status='pending')),
                 pending_over_24h=Count('pk', filter=Q(status='pending', created_at__lt=now-timedelta(hours=24))),
                 oldest_pending=Min('created_at', filter=Q(status='pending')),
-                average_review=Avg(F('reviewed_at')-F('created_at'), filter=reviewed)).order_by('-received', 'supplier__name')[:12]:
+                average_review=Avg(F('reviewed_at')-F('created_at'), filter=reviewed)).order_by('-received', 'supplier__name', 'supplier_id')[:12]:
             suppliers.append({'id': str(row['supplier_id']), 'name': row['supplier__name'],
                               **{key: row[key] for key in ('received', 'reviewed', 'pending', 'pending_over_24h')},
                               'average_review_seconds': seconds(row['average_review']),
