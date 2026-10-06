@@ -16,6 +16,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .availability import line_item_identity_ok
 from .models import Account, Part, SupplierItem
 from .request_models import ClientRequestSubmission, SupplierRequest, SupplierRequestLine, RequestContribution, DealEvent, DealQuotation, DealQuotationLine
 from .views import account_for
@@ -113,10 +114,7 @@ def request_detail(row):
 def request_line_stock(line, supplier_id):
     """Current supplier-only stock, provided the captured item still matches."""
     item = line.supplier_item
-    if (item.supplier_id != supplier_id or item.part_id != line.part_id
-            or item.supplier_invent_id != line.supplier_invent_id
-            or item.codigo != line.codigo or item.brand != line.brand
-            or item.matching_status != 'matched'):
+    if not line_item_identity_ok(line, supplier_id):
         return None
     return {'reported_quantity': item.reported_quantity, 'reserved_quantity': item.reserved_quantity,
             'available_quantity': item.available_quantity,

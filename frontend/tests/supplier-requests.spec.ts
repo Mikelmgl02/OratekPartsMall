@@ -2,6 +2,7 @@ import { expect, Page, test } from '@playwright/test';
 import type { Account, BasketLine, Part } from '../lib/types';
 import type { SupplierRequestDetail } from '../lib/request-types';
 import { openSupplierNavigation } from './supplier-navigation';
+import { virtualDraft } from './quote-draft-mock';
 
 const supplierAccount = '11111111-1111-4111-8111-111111111111';
 const otherSupplierAccount = '22222222-2222-4222-8222-222222222222';
@@ -59,6 +60,8 @@ async function mockSession(page: Page, accounts = supplierAccounts.slice(0, 1)) 
   await page.route('**/request-state', route => route.fulfill({ json: { totals: {sent_quantity:0, pending_quantity:0, reviewed_quantity:0}, items:[] } }));
   await page.route(/\/api\/market\/accounts\/[^/]+\/deals\/[^/]+\/messages(?:\?.*)?$/, route => route.fulfill({ json: { results: [], cursor: 0, has_more: false, has_earlier: false } }));
   await page.route(/\/api\/market\/accounts\/[^/]+\/requests\/[^/]+\/review$/, route => route.fulfill({ json: detail('reviewed') }));
+  // Opening a reviewed order loads the supplier's private quotation draft (virtual until the first save).
+  await page.route(/\/api\/market\/accounts\/[^/]+\/requests\/[^/]+\/draft$/, route => route.fulfill({ json: { editable: true, draft: virtualDraft(detail('reviewed')) } }));
   return unexpected;
 }
 

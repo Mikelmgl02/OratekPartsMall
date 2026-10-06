@@ -23,6 +23,7 @@ from mall.supplier_import import SupplierInventoryImport, SupplierInventoryImpor
 from mall.request_views import AccountRequests, ClientSentRequests, ClientSentRequestDetail, ClientPartRequestState, SupplierRequestDetail, SupplierRequestReview
 from mall.deal_views import DealActions, DealMessages
 from mall.pricing_views import PricingSettingsView
+from mall.quote_drafts import QuoteDraftDiscard, QuoteDraftView
 from .health import health
 
 class LoginView(ObtainAuthToken):
@@ -84,6 +85,8 @@ urlpatterns = [
     path('api/v1/accounts/<uuid:account_id>/catalog/<uuid:part_id>/request-state/', ClientPartRequestState.as_view()),
     path('api/v1/accounts/<uuid:account_id>/requests/<uuid:pk>/', SupplierRequestDetail.as_view()),
     path('api/v1/accounts/<uuid:account_id>/requests/<uuid:pk>/review/', SupplierRequestReview.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/requests/<uuid:pk>/draft/', QuoteDraftView.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/requests/<uuid:pk>/draft/discard/', QuoteDraftDiscard.as_view()),
     path('api/v1/accounts/<uuid:account_id>/deals/<uuid:pk>/actions/', DealActions.as_view()),
     path('api/v1/accounts/<uuid:account_id>/deals/<uuid:pk>/messages/', DealMessages.as_view()),
     path('api/v1/accounts/<uuid:account_id>/pricing/settings/', PricingSettingsView.as_view()),

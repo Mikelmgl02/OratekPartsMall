@@ -14,6 +14,7 @@ from . import test_requests as request_tests
 from .management import ManagedInventorySerializer
 from .models import User
 from .pricing_models import PricingAuditEvent, SupplierPricingSettings, record_pricing_event
+from .quote_draft_models import DealQuotationDraft, DealQuotationDraftLine
 from .request_models import DealCommand, SupplierRequest
 from .serializers import SupplierItemSerializer
 
@@ -49,7 +50,8 @@ class PricingPrivacyTests(APITestCase):
         return response
 
     def seed_private_markers(self, order):
-        """Later slices add real rows here: prices and floors (S3), net rules and profiles (S5), drafts (S1), assistant output (S7)."""
+        """Later slices add real rows here: prices and floors (S3), net rules and profiles (S5), assistant output (S7).
+        Drafts only exist while the supplier prepares a revision, so seed_private_draft() adds one during the adjustment."""
         SupplierPricingSettings.objects.create(supplier=self.supplier_a, default_currency='PAB', config_min_permission='manager',
                                                accept_shortfall_policy='allow', assistant_enabled=True, updated_by=self.seller_a)
         record_pricing_event(self.supplier_a, self.seller_a, 'prices_edited', client=self.client_account, order=order, object_id='SECRETO-AUDITORIA',
@@ -57,6 +59,16 @@ class PricingPrivacyTests(APITestCase):
                                       'profile_note': 'SECRETO-PERFIL', 'draft_note': 'SECRETO-BORRADOR', 'assistant': 'SECRETO-IA'})
         stored = json.dumps(list(PricingAuditEvent.objects.values('object_id', 'payload')))
         self.assertTrue(all(marker in stored for marker in MARKERS), 'The canary must seed every marker it looks for.')
+
+    def seed_private_draft(self, order):
+        """A real server draft (S1) with a private price and internal note, saved through the supplier's own endpoint."""
+        self.client.force_authenticate(self.seller_a)
+        response = self.client.post(f'/api/v1/accounts/{self.supplier_a.pk}/requests/{order.pk}/draft/', {
+            'save_id': str(uuid.uuid4()), 'expected_draft_version': 0, 'terms': 'BORRADOR 666.66',
+            'lines': [{'order_line_id': str(line.pk), 'unit_price': '777.77', 'note': 'SECRETO-BORRADOR'} for line in order.lines.all()]}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('SECRETO-BORRADOR', response.content.decode())
+        self.assertTrue(DealQuotationDraftLine.objects.filter(note='SECRETO-BORRADOR', unit_price='777.77').exists())
 
     def calls(self, user, account, order, *, writes=()):
         self.client.force_authenticate(user)
@@ -88,8 +100,19 @@ class PricingPrivacyTests(APITestCase):
         responses = self.calls(self.buyer, self.client_account, order, writes=[
             ('POST request_adjustment', lambda: self.action(order, 'request_adjustment', quotation_id=quote['id'], reason='MENOS UNIDADES'))])
         self.assertIn('"unit_price":"13.00"', responses[f'/api/v1/accounts/{self.client_account.pk}/sent-requests/{order.pk}/'].content.decode())
+        self.seed_private_draft(order)
+        draft_path = f'/requests/{order.pk}/draft/'
+        drafting = self.calls(self.buyer, self.client_account, order, writes=[
+            ('GET borrador del proveedor', lambda: self.client.get(f'/api/v1/accounts/{self.supplier_a.pk}{draft_path}')),
+            ('GET borrador como cliente', lambda: self.client.get(f'/api/v1/accounts/{self.client_account.pk}{draft_path}'))])
+        self.assertEqual((drafting['GET borrador del proveedor'].status_code, drafting['GET borrador como cliente'].status_code), (404, 403))
+        responses.update({f'{path} (con borrador)': response for path, response in drafting.items()})
+        self.assert_no_markers('proveedor B con borrador', self.calls(self.seller_b, self.supplier_b, order, writes=[
+            ('GET borrador ajeno', lambda: self.client.get(f'/api/v1/accounts/{self.supplier_a.pk}{draft_path}')),
+            ('GET borrador desde su cuenta', lambda: self.client.get(f'/api/v1/accounts/{self.supplier_b.pk}{draft_path}'))]))
         self.client.force_authenticate(self.seller_a)
         self.assertEqual(self.action(order, 'return_quote', quotation_id=quote['id']).status_code, 200)
+        self.assertFalse(DealQuotationDraft.objects.exists())
         self.client.force_authenticate(self.buyer)
         responses['POST accept'] = self.action(order, 'accept', quotation_id=quote['id'])
         responses['POST requests'] = self.submit(self.payload([(self.item_a, 1), (self.item_b, 1)]))
@@ -151,7 +174,7 @@ class PricingPrivacyTests(APITestCase):
         self.assertEqual({key for offer in offers for item in offer['items'] for key in item}, {'id', 'codigo', 'brand', 'description'})
 
     def test_pricing_models_stay_out_of_admin_and_management_serializers(self):
-        for model in [SupplierPricingSettings, PricingAuditEvent]:
+        for model in [SupplierPricingSettings, PricingAuditEvent, DealQuotationDraft, DealQuotationDraftLine]:
             self.assertNotIn(model, admin.site._registry)
         self.assertEqual(SupplierItemSerializer.Meta.fields, ['id', 'supplier_invent_id', 'part', 'codigo', 'brand', 'description', 'references',
                                                               'matching_status', 'source', 'reported_quantity', 'reserved_quantity',

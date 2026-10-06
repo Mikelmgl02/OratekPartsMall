@@ -13,6 +13,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .quote_draft_models import DealQuotationDraft
 from .request_models import (SupplierRequest, DealQuotation, DealQuotationLine, DealEvent,
                              DealMessage, DealCommand)
 from .request_views import (RequestConflict, WholeRequestQuantity, request_detail_queryset,
@@ -81,6 +82,8 @@ class DealActionSerializer(serializers.Serializer):
     terms = serializers.CharField(required=False, default='', allow_blank=True, max_length=5000)
     reason = serializers.CharField(required=False, default='', allow_blank=True, max_length=4000)
     lines = QuoteLine(many=True, required=False, min_length=1)
+    # No default: legacy payloads keep a byte-identical DealCommand fingerprint.
+    draft_version = serializers.IntegerField(min_value=1, required=False)
 
     def validate(self, data):
         data['terms'] = data['terms'].strip().upper()
@@ -94,6 +97,28 @@ class DealActionSerializer(serializers.Serializer):
         return data
 
 
+def command_fingerprint(data):
+    return hashlib.sha256(json.dumps(data, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def bind_draft(row, latest, data):
+    """A quote is bound to the saved draft when one exists for the latest revision or the payload names a draft_version."""
+    draft = DealQuotationDraft.objects.prefetch_related('lines').filter(order=row, base_quotation=latest).first()
+    if draft is None and 'draft_version' not in data:
+        return
+    if draft is None or draft.draft_version != data.get('draft_version'):
+        raise RequestConflict('Hay un borrador guardado; revísalo antes de publicar.' if draft and 'draft_version' not in data
+                              else 'El borrador cambió. Revísalo antes de publicar.')
+    saved = {line.order_line_id: line for line in draft.lines.all()}
+    def same(line):
+        value = saved.get(line['order_line_id'])
+        # A blank price with quantity 0 counts as 0.00.
+        return value is not None and value.quantity == line['quantity'] and line['unit_price'] == (
+            value.unit_price if value.unit_price is not None else Decimal('0') if value.quantity == 0 else None)
+    if draft.currency != data['currency'] or draft.terms != data['terms'] or len(saved) != len(data['lines']) or not all(map(same, data['lines'])):
+        raise RequestConflict('La cotización no coincide con el borrador guardado.')
+
+
 class DealActions(APIView):
     @extend_schema(request=DealActionSerializer, responses=OpenApiTypes.OBJECT)
     @transaction.atomic
@@ -102,7 +127,7 @@ class DealActions(APIView):
         serializer = DealActionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        fingerprint = hashlib.sha256(json.dumps(data, sort_keys=True, default=str).encode()).hexdigest()
+        fingerprint = command_fingerprint(data)
         previous = DealCommand.objects.filter(order=row, account=account, operation_id=data['operation_id']).first()
         if previous:
             if previous.payload_hash != fingerprint:
@@ -129,6 +154,7 @@ class DealActions(APIView):
                 raise ValidationError('Cotiza cada artículo de esta orden una sola vez. Usa cantidad 0 para los no disponibles.')
             if not any(line['quantity'] > 0 for line in data['lines']):
                 raise ValidationError('La cotización necesita al menos una unidad disponible.')
+            bind_draft(row, latest, data)
             total = sum((line['unit_price'] * line['quantity'] for line in data['lines']), Decimal('0')).quantize(Decimal('0.01'))
             if total >= Decimal('100000000000000'):
                 raise ValidationError('El total de la cotización supera el importe permitido.')
@@ -139,6 +165,8 @@ class DealActions(APIView):
                 order_line_id=line['order_line_id'], quantity=line['quantity'], unit_price=line['unit_price']) for line in data['lines']])
             row.status = 'quoted'
             description = f'COTIZACIÓN V{latest.revision} CONFIRMADA POR EL PROVEEDOR Y ENVIADA AL CLIENTE.'
+            # The published revision consumes the draft (and any row prepared on an older revision).
+            DealQuotationDraft.objects.filter(order=row).delete()
         elif action == 'accept':
             if row.status != 'quoted':
                 raise RequestConflict('La cotización no está disponible para confirmar.')
@@ -147,6 +175,7 @@ class DealActions(APIView):
             latest.save(update_fields=['client_confirmed_at', 'client_confirmed_by'])
             row.status = 'handshaked'
             row.handshaked_at = now
+            DealQuotationDraft.objects.filter(order=row).delete()
             description = 'AMBAS PARTES CONFIRMARON LA COTIZACIÓN. ACUERDO CERRADO · HANDSHAKED.'
         elif action == 'request_adjustment':
             if row.status != 'quoted':
@@ -160,6 +189,7 @@ class DealActions(APIView):
                 raise RequestConflict('Solo puedes devolver una cotización que tenga un ajuste solicitado.')
             row.status = 'quoted'
             description = data['reason'] or 'EL PROVEEDOR DEVOLVIÓ LA MISMA COTIZACIÓN PARA CONFIRMACIÓN.'
+            DealQuotationDraft.objects.filter(order=row).delete()
         row.version += 1
         row.save(update_fields=['status', 'version', 'handshaked_at', 'updated_at'])
         DealEvent.objects.create(order=row, account=account, actor=request.user, kind=action,

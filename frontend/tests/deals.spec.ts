@@ -1,6 +1,7 @@
 import { expect, Page, test } from '@playwright/test';
 import type { Deal, DealMessage, DealStatus } from '../lib/deal-types';
 import { openSupplierNavigation } from './supplier-navigation';
+import { mockQuoteDrafts } from './quote-draft-mock';
 
 const clientId = '11111111-1111-4111-8111-111111111111';
 const supplierId = '22222222-2222-4222-8222-222222222222';
@@ -60,9 +61,12 @@ async function fixture(page: Page) {
     const after = Number(new URL(route.request().url()).searchParams.get('after') || 0);
     return route.fulfill({json:{results:messages.filter(value => value.id > after), cursor:messages.length, has_more:false, has_earlier:false}});
   });
+  const drafts = await mockQuoteDrafts(page, () => order);
   await page.route(/\/api\/market\/accounts\/[^/]+\/deals\/[^/]+\/actions$/, route => {
     const payload = route.request().postDataJSON(); actions.push(payload);
     if (payload.expected_version !== order.version) return route.fulfill({status:409, json:{detail:'El acuerdo cambió. Actualízalo.'}});
+    // Publishing is bound to the saved draft, exactly like the server.
+    if (payload.action === 'quote' && (!drafts.current().persisted || payload.draft_version !== drafts.current().draft_version)) return route.fulfill({status:409, json:{detail:'El borrador cambió. Revísalo antes de publicar.'}});
     if (payload.action === 'quote') {
       const revision = order.quotations.length + 1;
       const lines = payload.lines.map((line: {order_line_id:string; quantity:number; unit_price:string}) => {
@@ -73,10 +77,11 @@ async function fixture(page: Page) {
         terms:payload.terms, total:lines.reduce((sum:number,line:{total:string}) => sum + Number(line.total), 0).toFixed(2),
         created_at:stamp, supplier_confirmed_at:stamp, client_confirmed_at:null};
       order = {...order, status:'quoted', quotation:quote, quotations:[...order.quotations, quote]};
+      drafts.clear();
     } else if (payload.action === 'request_adjustment') {
       order = {...order, status:'adjustment'};
       messages.push({id:messages.length + 1, message_id:payload.operation_id, body:payload.reason, account_id:clientId, account_name:accounts[0].name, actor_name:'EMPLEADO', created_at:stamp});
-    } else if (payload.action === 'return_quote') order = {...order, status:'quoted'};
+    } else if (payload.action === 'return_quote') { order = {...order, status:'quoted'}; drafts.clear(); }
     else if (payload.action === 'accept') {
       order = {...order, status:'handshaked', handshaked_at:stamp, quotation:{...order.quotation!, client_confirmed_at:stamp}};
       order.quotations = order.quotations.map(quote => quote.id === order.quotation?.id ? order.quotation : quote);
@@ -87,7 +92,7 @@ async function fixture(page: Page) {
   });
   return {getOrder:() => order, setStatus:(status:DealStatus) => {order = {...order, status, version:order.version + 1};},
     setLines:(lines:Deal['lines']) => {order = {...order, lines, line_count:lines.length, unit_count:lines.reduce((sum,line) => sum + line.quantity, 0)} as Deal;},
-    actions, messages, reviews:() => reviews, unexpected, gridWarnings};
+    actions, messages, drafts, reviews:() => reviews, unexpected, gridWarnings};
 }
 async function asSupplier(page: Page) {
   await backToRequests(page);
@@ -161,6 +166,9 @@ for (const mobile of [false, true]) test(`${mobile ? 'mobile' : 'desktop'}: priv
   await editQuote(page, 'quantity', '3');
   await dialog(page).getByRole('button', {name:'Confirmar y enviar cotización', exact:true}).click();
   await expect(dialog(page).getByRole('region', {name:'Cotización vigente v2', exact:true})).toContainText('37.50');
+  // The adjustment draft started from v1's price; only the edited quantity was saved before publishing it.
+  expect(state.actions[2]).toMatchObject({action:'quote', draft_version:1, lines:[{order_line_id:lineId, quantity:3, unit_price:'12.50'}]});
+  expect(state.drafts.saves.at(-1)).toMatchObject({expected_draft_version:0, lines:[{order_line_id:lineId, quantity:3}]});
   await asClient(page); await quoteTab(page);
   await dialog(page).getByRole('button', {name:'Confirmar cotización', exact:true}).click();
   expect(state.getOrder().status).toBe('quoted');
@@ -178,6 +186,10 @@ for (const mobile of [false, true]) test(`${mobile ? 'mobile' : 'desktop'}: priv
   await expect(page.getByRole('article')).toContainText('3unidades acordadas');
   expect(state.messages).toHaveLength(2);
   expect(state.actions.map(value => value.action)).toEqual(['quote','request_adjustment','quote','accept']);
+  expect(state.actions[0]).toMatchObject({draft_version:1, lines:[{order_line_id:lineId, quantity:5, unit_price:'12.50'}]});
+  // The draft is supplier-only: the client's screens never ask for it.
+  expect(state.drafts.requests.length).toBeGreaterThan(0);
+  expect(state.drafts.requests.filter(value => !value.includes(`/accounts/${supplierId}/`))).toEqual([]);
   expect(state.unexpected).toEqual([]);
 });
 

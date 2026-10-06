@@ -8,8 +8,8 @@ async function handle(request: NextRequest, context: Context) {
   const { path } = await context.params;
   const route = path.join('/');
   const uuid = '[a-f0-9-]{36}';
-  const readable = new RegExp(`^(accounts|catalog|wishlist|wishlist/state|catalog/${uuid}/technical|catalog/${uuid}/suppliers|accounts/${uuid}/inventory|accounts/${uuid}/inventory/${uuid}/ledger|accounts/${uuid}/deals/${uuid}/messages|accounts/${uuid}/requests|accounts/${uuid}/requests/${uuid}|accounts/${uuid}/sent-requests|accounts/${uuid}/sent-requests/${uuid}|accounts/${uuid}/catalog/${uuid}/request-state|accounts/${uuid}/pricing/settings)$`);
-  const writable = new RegExp(`^(analytics/events|accounts/${uuid}/(inventory/ingest|requests|requests/${uuid}/review|deals/${uuid}/actions|deals/${uuid}/messages|pricing/settings))$`);
+  const readable = new RegExp(`^(accounts|catalog|wishlist|wishlist/state|catalog/${uuid}/technical|catalog/${uuid}/suppliers|accounts/${uuid}/inventory|accounts/${uuid}/inventory/${uuid}/ledger|accounts/${uuid}/deals/${uuid}/messages|accounts/${uuid}/requests|accounts/${uuid}/requests/${uuid}|accounts/${uuid}/sent-requests|accounts/${uuid}/sent-requests/${uuid}|accounts/${uuid}/catalog/${uuid}/request-state|accounts/${uuid}/pricing/settings|accounts/${uuid}/requests/${uuid}/draft)$`);
+  const writable = new RegExp(`^(analytics/events|accounts/${uuid}/(inventory/ingest|requests|requests/${uuid}/review|deals/${uuid}/actions|deals/${uuid}/messages|pricing/settings|requests/${uuid}/draft|requests/${uuid}/draft/discard))$`);
   const wishlistWritable = new RegExp(`^wishlist/${uuid}$`);
   const allowed = request.method === 'GET' ? readable.test(route) : request.method === 'POST' ? writable.test(route) : ['PUT', 'DELETE'].includes(request.method) && wishlistWritable.test(route);
   if (!allowed) return json({ detail: 'La ruta solicitada no existe.' }, 404);

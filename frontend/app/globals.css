@@ -1195,6 +1195,19 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .quotation-grid-guide { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; font-size:11px; color:#7a896f; }
 .quotation-grid-guide strong { color:#52743f; font-size:11px; }
 .quotation-grid-loading { display:flex; align-items:center; justify-content:center; gap:10px; min-height:170px; background:#f1f5eb; border:1px solid var(--line); border-radius:12px; color:#6e815e; font-size:12px; }
+/* Supplier-only server draft: autosave status, conflicts and live stock. */
+.quotation-draft-bar { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; padding:9px 12px; background:#fff; border:1px solid var(--line); border-radius:10px; color:#5f7052; font-size:12px; }
+.quotation-draft-bar > span[role=status] { flex:1 1 220px; min-width:0; display:flex; align-items:center; gap:7px; overflow-wrap:anywhere; }
+.quotation-draft-bar.error { background:#fff6f1; border-color:#f3d6c8; color:#a1543c; }
+.quotation-draft-bar.conflict { background:#fbf8ef; color:#8a6a24; }
+.quotation-draft-discard { display:inline-flex; flex-wrap:wrap; align-items:center; gap:10px; }
+.quotation-draft-discard button { color:inherit; font-weight:700; font-size:inherit; text-decoration:underline; }
+.quotation-draft-conflict, .quotation-draft-fallback { margin-bottom:0; }
+.quotation-draft-conflict span { min-width:0; overflow-wrap:anywhere; }
+.quotation-grid .quotation-stock-short { color:#a14c2d; font-weight:600; }
+.quotation-grid .quotation-stock-review { color:#a14c2d; font-size:11px; }
+.deal-tabs .deal-tab-dot { width:7px; height:7px; flex:0 0 7px; border-radius:50%; background:#45886a; }
+.deal-draft-warning { color:var(--muted); font-size:12px; }
 
 .supplier-order-toolbar { justify-content:space-between; }
 .supplier-order-toolbar-actions { display:flex; align-items:center; gap:12px; }

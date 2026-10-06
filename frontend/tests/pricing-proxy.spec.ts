@@ -19,3 +19,22 @@ test('pricing settings proxy requires a session and same-origin writes', async (
   expect((await request.put(settings, { headers: foreign, data: {} })).status()).toBe(404);
   expect((await request.delete(settings, { headers: foreign })).status()).toBe(404);
 });
+
+test('quotation draft proxy routes require a session and same-origin writes', async ({ request }) => {
+  const draft = `/api/market/accounts/${account}/requests/${account}/draft`;
+  for (const response of [await request.get(draft), await request.post(draft, { data: {} }), await request.post(`${draft}/discard`, { data: {} })]) {
+    expect(response.status()).toBe(401);
+  }
+  for (const path of [draft, `${draft}/discard`]) {
+    const denied = await request.post(path, { headers: foreign, data: { save_id: account, expected_draft_version: 0 } });
+    expect(denied.status()).toBe(403);
+    expect(await denied.json()).toEqual({ detail: 'El origen de la solicitud no es válido.' });
+  }
+  // Later slices add reprice and the assistant; until then these neighbours, GET on discard and other methods stay unknown.
+  for (const route of [`${draft}/reprice`, `${draft}/assistant`, `${draft}/discard/extra`]) {
+    expect((await request.post(route, { headers: foreign, data: {} })).status()).toBe(404);
+  }
+  expect((await request.get(`${draft}/discard`, { headers: foreign })).status()).toBe(404);
+  expect((await request.put(draft, { headers: foreign, data: {} })).status()).toBe(404);
+  expect((await request.delete(draft, { headers: foreign })).status()).toBe(404);
+});

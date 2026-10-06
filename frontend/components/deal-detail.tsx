@@ -8,6 +8,7 @@ import { UppercaseTextarea } from './uppercase-field';
 import { Account, request } from '@/lib/types';
 import type { SupplierRequestLine } from '@/lib/request-types';
 import type { Deal, DealMessage, Quotation } from '@/lib/deal-types';
+import type { QuoteDraft, QuoteDraftEnvelope } from '@/lib/pricing-types';
 
 const QuoteEditor = dynamic(() => import('./quotation-editor'), { ssr: false, loading: () => <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando editor de cotización…</div> });
 
@@ -43,6 +44,10 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   const retry = useRef<{ payload: string; id: string } | null>(null);
   const onChangedRef = useRef(onChanged); onChangedRef.current = onChanged;
   const latestVersion = useRef<number | undefined>(undefined);
+  // The supplier's private draft for the next revision; a failed load leaves the editor without autosave.
+  const [draftLoad, setDraftLoad] = useState<{ key: string; draft: QuoteDraft | null } | null>(null);
+  const [hasDraft, setHasDraft] = useState(false);
+  const draftPath = `${base}/requests/${orderId}/draft`;
   const acceptDetail = useCallback((value: Deal) => {
     if (!mounted.current) return;
     if (latestVersion.current !== undefined && value.version < latestVersion.current) return;
@@ -66,20 +71,34 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
     const timer = setInterval(() => { if (!inFlight.current && document.visibilityState === 'visible') void load(); }, 15000);
     return () => { mounted.current = false; clearInterval(timer); };
   }, [load]);
-  async function act(action: string, extra: Record<string, unknown> = {}) {
-    if (!deal || inFlight.current) return;
+  const editable = supplier && !!deal && ['reviewed', 'adjustment'].includes(deal.status);
+  const draftKey = deal ? `${deal.id}:${deal.quotation?.id || 'new'}` : '';
+  useEffect(() => {
+    if (!editable) { setDraftLoad(null); setHasDraft(false); return; }
+    if (draftLoad?.key === draftKey) return;
+    let cancelled = false;
+    request<QuoteDraftEnvelope>(draftPath).then(value => {
+      if (cancelled) return;
+      setDraftLoad({ key: draftKey, draft: value.draft }); setHasDraft(!!value.draft?.persisted);
+      if (!value.editable) void load();
+    }).catch(() => { if (!cancelled) setDraftLoad({ key: draftKey, draft: null }); });
+    return () => { cancelled = true; };
+  }, [editable, draftKey, draftPath, draftLoad?.key, load]);
+  async function act(action: string, extra: Record<string, unknown> = {}): Promise<boolean> {
+    if (!deal || inFlight.current) return false;
     inFlight.current = true; setBusy(true); setError(''); setNotice('');
     const payload = { action, expected_version: deal.version, ...extra };
     const serialized = JSON.stringify(payload);
     if (retry.current?.payload !== serialized) retry.current = { payload: serialized, id: crypto.randomUUID() };
     try {
       const result = await request<Deal>(actionPath, { method: 'POST', body: JSON.stringify({ ...payload, operation_id: retry.current.id }) });
-      if (!mounted.current) return;
+      if (!mounted.current) return true;
       retry.current = null; acceptDetail(result); setAdjusting(false); setReason(''); setConfirming(false);
       setTab('quote');
       setNotice(action === 'accept' ? 'Acuerdo confirmado por ambas partes · HANDSHAKED.' : action === 'request_adjustment' ? 'Ajuste enviado al proveedor.' : 'Cotización confirmada por el proveedor y enviada al cliente.');
       onChangedRef.current?.();
-    } catch (caught) { if (mounted.current) setError(failure(caught)); }
+      return true;
+    } catch (caught) { if (mounted.current) setError(failure(caught)); return false; }
     finally { inFlight.current = false; if (mounted.current) setBusy(false); }
   }
   const stockWarnings = supplier && deal ? (deal.lines as SupplierRequestLine[]).filter(line => !line.stock || line.stock.shortfall > 0).length : 0;
@@ -94,7 +113,7 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
         <div className={`deal-state-note ${deal.status}`}><LockKeyhole size={16}/><p>{stateDescription[deal.status]}{deal.handshaked_at && <strong> {date(deal.handshaked_at)}</strong>}</p></div>
         <nav className="deal-tabs" aria-label="Secciones del acuerdo">{([
           ['order', 'Artículos', FileText], ['quote', 'Cotización', Handshake], ['chat', 'Conversación', MessageSquare], ['history', 'Actividad', History],
-        ] as const).map(([value, label, Icon]) => <button type="button" key={value} className={tab === value ? 'selected' : ''} aria-pressed={tab === value} onClick={() => { setTab(value); if (value === 'quote') setQuoteVisited(true); }}><Icon size={15}/>{label}</button>)}</nav>
+        ] as const).map(([value, label, Icon]) => <button type="button" key={value} className={tab === value ? 'selected' : ''} aria-pressed={tab === value} title={value === 'quote' && hasDraft ? 'Hay un borrador de cotización guardado' : undefined} onClick={() => { setTab(value); if (value === 'quote') setQuoteVisited(true); }}><Icon size={15}/>{label}{value === 'quote' && hasDraft && <span className="deal-tab-dot" aria-hidden="true"/>}</button>)}</nav>
         {notice && <div className="notice success" role="status">{notice}</div>}
         {tab === 'order' && <>
           <div className="supplier-request-detail-counts"><span>{deal.line_count} artículos</span><strong>{deal.unit_count.toLocaleString('es-PA')} unidades solicitadas</strong></div>
@@ -108,8 +127,12 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
         <div className="deal-quote-tab" hidden={tab !== 'quote'}>
           {deal.quotation && <QuoteView quote={deal.quotation}/>}
           {!deal.quotation && !supplier && <div className="notice">El proveedor preparará tu cotización. Te aparecerán aquí las cantidades, precios y condiciones.</div>}
-          {supplier && (tab === 'quote' || quoteVisited) && ['reviewed', 'adjustment'].includes(deal.status) && <QuoteEditor key={`${deal.id}:${deal.quotation?.id || 'new'}`} deal={deal} disabled={busy} onSend={values => void act('quote', values)}/>}
+          {editable && (tab === 'quote' || quoteVisited) && (draftLoad?.key === draftKey
+            ? <QuoteEditor key={`${draftKey}:${draftLoad.draft ? draftLoad.draft.persisted ? 'saved' : 'virtual' : 'fallback'}`} deal={deal} draft={draftLoad.draft} draftPath={draftPath}
+                disabled={busy} onSend={values => act('quote', values)} onDraftChange={setHasDraft}/>
+            : <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando borrador de cotización…</div>)}
           {supplier && deal.status === 'adjustment' && deal.quotation && <button type="button" className="button soft" disabled={busy} onClick={() => void act('return_quote', { quotation_id: deal.quotation!.id })}>Devolver la misma cotización para confirmar<Send size={15}/></button>}
+          {supplier && deal.status === 'adjustment' && deal.quotation && hasDraft && <small className="deal-draft-warning">Si devuelves la misma cotización, se descartará el borrador en curso.</small>}
           {!supplier && deal.status === 'quoted' && deal.quotation && <div className="deal-client-decisions">
             {confirming ? <div className="notice deal-confirmation"><strong>¿Confirmar este acuerdo por {money(deal.quotation.total, deal.quotation.currency)}?</strong><p>Aceptas las cantidades y condiciones de la cotización v{deal.quotation.revision}. El proveedor ya las confirmó.</p><div><button type="button" className="button primary" disabled={busy} onClick={() => void act('accept', { quotation_id: deal.quotation!.id })}>{busy ? <LoaderCircle size={15} className="spin"/> : <Handshake size={15}/>}Sí, confirmar acuerdo</button><button type="button" className="button soft" disabled={busy} onClick={() => setConfirming(false)}>Volver</button></div></div> : <button type="button" className="button primary" disabled={busy} onClick={() => { setConfirming(true); setAdjusting(false); }}>Confirmar cotización<Handshake size={16}/></button>}
             {!confirming && <button type="button" className="button soft" disabled={busy} onClick={() => setAdjusting(value => !value)}>Solicitar ajuste</button>}

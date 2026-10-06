@@ -15,3 +15,8 @@ export type Deal = (ClientRequestDetail | SupplierRequestDetail) & {
   version: number; client: { id: string; name: string }; supplier: { id: string; name: string };
   quotations: Quotation[]; quotation: Quotation | null; events: DealEvent[]; handshaked_at: string | null;
 };
+export type QuotePayload = {
+  currency: 'USD' | 'PAB'; terms: string; lines: { order_line_id: string; quantity: number; unit_price: string }[];
+  // Binds publishing to the reviewed server draft; absent only when the draft could not be loaded.
+  draft_version?: number;
+};
