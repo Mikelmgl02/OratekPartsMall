@@ -104,3 +104,27 @@ test('the price import route is session-bound, same-origin for writes and only f
   expect((await request.put(job, { headers: foreign, data: {} })).status()).toBe(405);
   expect((await request.delete(job, { headers: foreign })).status()).toBe(405);
 });
+
+test('client profiles, commercial rules and the simulator are session-bound, with same-origin writes only', async ({ request }) => {
+  const base = `/api/market/accounts/${account}`;
+  for (const path of [`${base}/clients`, `${base}/clients/${account}/profile`, `${base}/pricing-rules`, `${base}/pricing-rules?client=${account}&scope=all`]) {
+    const anonymous = await request.get(path);
+    expect(anonymous.status()).toBe(401);
+    expect(await anonymous.json()).toEqual({ detail: 'Inicia sesión para continuar.' });
+  }
+  for (const path of [`${base}/clients/${account}/profile`, `${base}/pricing-rules`, `${base}/pricing-rules/${account}`, `${base}/pricing-rules/${account}/archive`, `${base}/pricing/simulate`]) {
+    expect((await request.post(path, { data: {} })).status()).toBe(401);
+    const denied = await request.post(path, { headers: foreign, data: { expected_version: 1 } });
+    expect(denied.status()).toBe(403);
+    expect(await denied.json()).toEqual({ detail: 'El origen de la solicitud no es válido.' });
+  }
+  // The client list and single rules are not writable, the simulator and archive are not readable, and neighbours stay unknown.
+  for (const path of [`${base}/clients`, `${base}/clients/${account}`, `${base}/clients/not-a-uuid/profile`, `${base}/pricing-rules/${account}/delete`]) {
+    expect((await request.post(path, { headers: foreign, data: {} })).status(), path).toBe(404);
+  }
+  for (const path of [`${base}/pricing/simulate`, `${base}/pricing-rules/${account}`, `${base}/pricing-rules/${account}/archive`, `${base}/clients/${account}`]) {
+    expect((await request.get(path, { headers: foreign })).status(), path).toBe(404);
+  }
+  expect((await request.delete(`${base}/pricing-rules/${account}`, { headers: foreign })).status()).toBe(404);
+  expect((await request.put(`${base}/clients/${account}/profile`, { headers: foreign, data: {} })).status()).toBe(404);
+});

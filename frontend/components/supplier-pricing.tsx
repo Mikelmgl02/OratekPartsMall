@@ -1,21 +1,38 @@
 'use client';
 import { useCallback, useEffect, useId, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { Download, FileSpreadsheet, History, ListPlus, LoaderCircle, LockKeyhole, Pencil, RefreshCw, Search, Star, Tags, Upload, X } from 'lucide-react';
+import { Calculator, Download, FileSpreadsheet, History, ListPlus, LoaderCircle, LockKeyhole, Pencil, RefreshCw, Scale, Search, Star, Tags, Upload, Users, X } from 'lucide-react';
 import Modal from './modal';
 import SupplierPriceImport from './supplier-price-import';
 import { UppercaseInput } from './uppercase-field';
 import { Account, ApiError, Page, request } from '@/lib/types';
 import type { Currency, PriceList, PriceListsEnvelope, PricingAuditEntry } from '@/lib/pricing-types';
+import { type PricingTab, pricingTabs } from '@/lib/supplier-navigation';
 
 const PriceGrid = dynamic(() => import('./supplier-price-grid'), { ssr: false, loading: () => <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando precios…</div> });
+const panelLoading = () => <div className="loading"><LoaderCircle className="spin"/>Cargando…</div>;
+const SupplierClients = dynamic(() => import('./supplier-clients'), { ssr: false, loading: panelLoading });
+const ClientPricingProfile = dynamic(() => import('./client-pricing-profile'), { ssr: false, loading: panelLoading });
+const PricingRules = dynamic(() => import('./pricing-rules'), { ssr: false, loading: panelLoading });
+const PricingSimulator = dynamic(() => import('./pricing-simulator'), { ssr: false, loading: panelLoading });
 const date = (value: string) => new Date(value).toLocaleString('es-PA', { timeZone: 'America/Panama', dateStyle: 'medium', timeStyle: 'short' });
-const tabs = [['lists', 'Listas de precios', Tags], ['history', 'Historial', History]] as const;
+const tabs = [['lists', 'Listas de precios', Tags], ['clients', 'Clientes', Users], ['rules', 'Reglas', Scale], ['simulator', 'Simulador', Calculator],
+  ['history', 'Historial', History]] as const;
+const uuid = /^[a-f0-9-]{36}$/;
+// Deep links (?pestana=clientes&cliente=<id>) open a sub-section or a client's profile, like ?seccion= opens Precios.
+function initialView(): { tab: PricingTab; client: string | null } {
+  if (typeof window === 'undefined') return { tab: 'lists', client: null };
+  const params = new URL(window.location.href).searchParams, match = tabs.find(([key]) => pricingTabs[key] === params.get('pestana'));
+  const client = params.get('cliente');
+  return { tab: match ? match[0] : 'lists', client: match?.[0] === 'clients' && client && uuid.test(client) ? client : null };
+}
 const failure = (error: unknown, fallback: string) => error instanceof TypeError ? 'Se perdió la conexión. Inténtalo de nuevo.' : error instanceof Error ? error.message : fallback;
 
 // Supplier-only: the whole section reads the account's private pricing endpoints and never renders on client screens.
 export default function SupplierPricing({ account }: { account: Account }) {
-  const [tab, setTab] = useState<'lists' | 'history'>('lists');
+  const [view] = useState(initialView);
+  const [tab, setTab] = useState<PricingTab>(view.tab);
+  const [client, setClient] = useState<string | null>(view.client);
   const [lists, setLists] = useState<PriceListsEnvelope | null>(null);
   const [error, setError] = useState('');
   const [editing, setEditing] = useState<PriceList | 'new' | null>(null);
@@ -35,12 +52,20 @@ export default function SupplierPricing({ account }: { account: Account }) {
     catch (caught) { setError(failure(caught, 'No se pudieron cargar tus listas de precios.')); }
   }, [account.id]);
   useEffect(() => { void load(); }, [load]);
+  // A deep link opens its view once: leaving it drops ?pestana and &cliente, so coming back to Precios later starts on the lists again.
+  useEffect(() => {
+    if (tab === view.tab && client === view.client) return;
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has('pestana') && !url.searchParams.has('cliente')) return;
+    url.searchParams.delete('pestana'); url.searchParams.delete('cliente');
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+  }, [tab, client, view]);
   const active = lists?.results.filter(list => list.active) || [];
   return <section className="supplier-pricing" aria-label="Precios del proveedor">
     <div className="supplier-pricing-private" role="note"><LockKeyhole size={17}/><p>Estos precios son privados: nunca se muestran en el catálogo, a otros clientes ni a otros proveedores. Cada cliente solo ve los precios de las cotizaciones que le envías.</p></div>
     <div className="supplier-pricing-tabs" role="tablist" aria-label="Secciones de precios">
       {tabs.map(([key, label, Icon]) => <button type="button" role="tab" key={key} id={`${tabId}-${key}-tab`} aria-controls={`${tabId}-${key}-panel`} aria-selected={tab === key}
-        tabIndex={tab === key ? 0 : -1} className={tab === key ? 'selected' : ''} onClick={() => setTab(key)} onKeyDown={tabKey}><Icon size={15}/>{label}</button>)}
+        tabIndex={tab === key ? 0 : -1} className={tab === key ? 'selected' : ''} onClick={() => { setTab(key); if (key === 'clients') setClient(null); }} onKeyDown={tabKey}><Icon size={15}/>{label}</button>)}
     </div>
     {tab === 'lists' && <div role="tabpanel" id={`${tabId}-lists-panel`} aria-labelledby={`${tabId}-lists-tab`} className="supplier-pricing-panel">
       <div className="supplier-pricing-heading"><div><h2>Listas de precios</h2><p>Precios base de tu inventario. La lista predeterminada prepara el precio sugerido de cada cotización.</p></div>
@@ -62,6 +87,10 @@ export default function SupplierPricing({ account }: { account: Account }) {
         <PriceGrid account={account} lists={lists.results} canConfigure={lists.can_configure} reload={gridReload} onSaved={() => void load()}/>
       </>}
     </div>}
+    {tab === 'clients' && <div role="tabpanel" id={`${tabId}-clients-panel`} aria-labelledby={`${tabId}-clients-tab`} className="supplier-pricing-panel">
+      {client ? <ClientPricingProfile key={client} account={account} clientId={client} onBack={() => setClient(null)}/> : <SupplierClients account={account} onOpen={setClient}/>}</div>}
+    {tab === 'rules' && <div role="tabpanel" id={`${tabId}-rules-panel`} aria-labelledby={`${tabId}-rules-tab`} className="supplier-pricing-panel"><PricingRules account={account}/></div>}
+    {tab === 'simulator' && <div role="tabpanel" id={`${tabId}-simulator-panel`} aria-labelledby={`${tabId}-simulator-tab`} className="supplier-pricing-panel"><PricingSimulator account={account}/></div>}
     {tab === 'history' && <div role="tabpanel" id={`${tabId}-history-panel`} aria-labelledby={`${tabId}-history-tab`} className="supplier-pricing-panel"><PricingHistory account={account}/></div>}
     {importing && <SupplierPriceImport key={account.id} account={account} onClose={() => { setImporting(false); void load(); setGridReload(value => value + 1); }}
       onSaved={result => { void load(); setGridReload(value => value + 1); setNotice(`Importación de precios completada: ${result.applied_summary.created} nuevos, ${result.applied_summary.updated} actualizados y ${result.applied_summary.removed} eliminados.${result.summary.rejected_rows ? ` ${result.summary.rejected_rows} filas pendientes; abre Importar precios para descargar el archivo de correcciones.` : ''}`); }}/>}
@@ -121,6 +150,8 @@ function auditDetail(entry: PricingAuditEntry) {
   }
   if (entry.kind === 'price_list_changed') return `${payload.action === 'created' ? 'Creada' : 'Actualizada'} · ${payload.code}`;
   if (entry.kind === 'quotation_published') return `Versión ${payload.revision}`;
+  if (entry.kind === 'profile_changed') return payload.action === 'created' ? 'Perfil creado' : `Versión ${payload.version}`;
+  if (entry.kind.startsWith('rule_')) return String((entry.payload.new as Record<string, unknown> | undefined)?.name ?? payload.name ?? '');
   return '';
 }
 

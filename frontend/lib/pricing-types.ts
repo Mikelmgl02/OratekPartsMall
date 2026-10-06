@@ -12,20 +12,23 @@ export type DraftAcknowledgement = { code: string; context: string };
 export type DraftStock = { reported_quantity: number; reserved_quantity: number; available_quantity: number; shortfall: number; updated_at: string };
 export type Currency = 'USD' | 'PAB';
 export type PriceListRef = { id: string; code: string; name: string; currency: Currency };
-// How the engine reached a suggestion (supplier-only). Rule steps, discarded rules and volume breaks arrive with client rules.
+// How the engine reached a suggestion (supplier-only): the list price, the single rule applied (client agreement first, then the most
+// specific target), parity, the rules it discarded and the next volume breaks.
 export type PriceStep = { kind: 'parity'; from: Currency; to: Currency; rate: string }
   | { kind: 'rule'; rule_id: string; rule_revision: number; name: string; scope: string; target: string; target_value: string; min_quantity: number;
       action: 'discount' | 'net_price'; value: string; before: string | null; after: string };
 export type PriceExplanation = {
   engine: string; evaluated_on: string; quantity_basis: number; currency: Currency; unit_price: string | null;
   status: 'priced' | 'missing' | 'no_price_list' | 'identity_changed' | 'currency_mismatch' | 'out_of_range';
-  profile: { id: string; version: number } | null; price_list: PriceListRef | null;
+  profile: { id: string; version: number; discount_percent: string; archived_list: string | null } | null; price_list: PriceListRef | null;
   base: { price_list_id: string; price_list_code: string; fallback: boolean; entry_revision: number; unit_price: string; currency: Currency; updated_at: string | null } | null;
   steps: PriceStep[]; discarded: { rule_id: string; name: string; reason: string }[]; next_breaks: { min_quantity: number; unit_price: string; rule_name: string }[];
   floor_price: string | null; codes: string[]; rounding: string; fingerprint: string;
 };
 export type DraftSuggestion = { unit_price: string | null; fingerprint: string; explanation: PriceExplanation };
-export type DraftPricing = { engine: string; configured: boolean; price_list: PriceListRef | null; stale: number; fillable: number };
+// The client's private commercial profile as the draft sees it (supplier-only).
+export type DraftProfile = { exists: boolean; version: number; discount_percent: string; customer_code: string; internal_notes: string };
+export type DraftPricing = { engine: string; configured: boolean; price_list: PriceListRef | null; profile?: DraftProfile; stale: number; fillable: number };
 export type RepriceScope = 'blank' | 'engine' | 'lines';
 export type RepricedLine = { order_line_id: string; previous_unit_price: string | null; unit_price: string | null; reason: 'quantity' | RepriceScope };
 export type QuoteDraftLine = {
@@ -36,7 +39,7 @@ export type QuoteDraftLine = {
 };
 export type QuoteDraft = {
   persisted: boolean; draft_version: number; status: 'editing' | 'review_requested'; base_quotation_id: string | null;
-  currency: Currency; terms: string; terms_origin: 'saved' | 'previous' | 'none'; updated_at: string | null; updated_by: { name: string } | null;
+  currency: Currency; terms: string; terms_origin: 'saved' | 'previous' | 'profile' | 'none'; updated_at: string | null; updated_by: { name: string } | null;
   permissions: { can_publish: boolean; publish_requires: MembershipPermission }; pricing: DraftPricing; lines: QuoteDraftLine[]; order_exceptions: DraftException[];
   summary: { blocking: number; to_confirm: number; info: number; total: string; line_count: number };
   // Prices the save that returned this draft recalculated from the supplier's list; empty on reads.
@@ -97,3 +100,31 @@ export type PriceImportResult = {
   requires: { acknowledge_big_changes: boolean; confirm_new_lists: boolean };
   progress: { batch_size: number; total_batches: number; completed_batches: number; total_rows: number; processed_rows: number; next_batch: number | null };
 };
+
+// Pair profiles, commercial rules and the simulator (supplier-only; clients never see any of it).
+export type PriceListSummary = PriceListRef & { active: boolean };
+export type AccountRef = { id: string; name: string };
+export type PricingClient = { id: string; name: string; order_count: number; last_order_at: string; profile: { exists: boolean; version: number; customer_code: string;
+  price_list: PriceListSummary | null; discount_percent: string; preferred_currency: '' | Currency; rule_count: number } };
+export type PricingClientPage = { count: number; next: string | null; previous: string | null; results: PricingClient[]; default_list: PriceListSummary | null };
+export type ClientProfile = { client: AccountRef; exists: boolean; id: string | null; version: number; price_list_id: string | null; price_list: PriceListSummary | null;
+  fallback_to_default: boolean; discount_percent: string; preferred_currency: '' | Currency; default_terms: string; internal_notes: string; customer_code: string;
+  effective_list: PriceListSummary | null; effective_currency: Currency; order_count: number; last_order_at: string; updated_at: string | null;
+  updated_by: { name: string } | null; can_configure: boolean };
+export type ClientProfileUpdate = { operation_id: string; expected_version: number; price_list_id?: string | null; fallback_to_default?: boolean; discount_percent?: string;
+  preferred_currency?: '' | Currency; default_terms?: string; internal_notes?: string; customer_code?: string };
+export type RuleScope = 'all' | 'client';
+export type RuleTarget = 'all' | 'line' | 'brand' | 'item';
+export type RuleKind = 'discount' | 'net_price';
+export type RuleItem = { id: string; supplier_invent_id: string; codigo: string; brand: string; description: string };
+export type PricingRule = { id: string; name: string; scope: RuleScope; client: AccountRef | null; target: RuleTarget; target_value: string; item: RuleItem | null;
+  kind: RuleKind; value: string; currency: '' | Currency; min_quantity: number; valid_from: string | null; valid_until: string | null; active: boolean;
+  validity: 'active' | 'scheduled' | 'expired' | 'archived'; note: string; revision: number; created_by: { name: string }; updated_by: { name: string };
+  created_at: string; updated_at: string };
+export type PricingRulePage = { count: number; next: string | null; previous: string | null; results: PricingRule[]; can_configure: boolean };
+export type PricingRuleInput = { name: string; scope: RuleScope; client_id: string | null; target: RuleTarget; target_value: string; item_id: string | null; kind: RuleKind;
+  value: string; currency: '' | Currency; min_quantity: number; valid_from: string | null; valid_until: string | null; note: string };
+export type SimulatedLine = { supplier_item_id: string; supplier_invent_id: string; codigo: string; brand: string; description: string; discount_group: string;
+  quantity: number; unit_price: string | null; line_total: string | null; status: PriceExplanation['status']; explanation: PriceExplanation };
+export type SimulationResult = { client: AccountRef | null; profile: { exists: boolean; version: number; discount_percent: string } | null;
+  price_list: PriceListSummary | null; currency: Currency; on_date: string; engine: string; lines: SimulatedLine[] };

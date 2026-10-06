@@ -80,7 +80,7 @@ SPECTACULAR_SETTINGS = {"TITLE": "MotionPartes API", "VERSION": "0.1.0", "COMPON
     "ExceptionSeverityEnum": ["block", "confirm", "info"], "QuoteDraftStatusEnum": ["editing", "review_requested"],
     "QuoteExceptionCodeEnum": ["quantity_missing", "price_missing", "all_zero", "draft_outdated", "offered_gt_available", "offered_gt_requested",
                                "identity_changed", "zero_price", "below_floor", "stale_price", "reduced_to_stock", "zero_offered", "manual_price",
-                               "differs_from_list", "no_list_price", "currency_parity", "currency_mismatch"],
+                               "differs_from_list", "no_list_price", "currency_parity", "currency_mismatch", "fallback_list", "rule_conflict", "no_profile"],
     "AcknowledgeableExceptionEnum": ["offered_gt_available", "offered_gt_requested", "identity_changed", "zero_price", "below_floor", "stale_price"],
     "AuditPriceSourceEnum": ["engine", "previous", "manual", "none", "unspecified"], "AcceptCheckResultEnum": ["ok", "blocked", "accepted_with_shortfall"],
     "PriceChangeKindEnum": ["list_price", "floor_price", "discount_group"], "PriceImportActionEnum": ["create", "update", "delete"],

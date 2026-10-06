@@ -19,8 +19,8 @@ from . import test_requests as request_tests
 from .management import ManagedInventorySerializer
 from .models import Membership, SupplierItem, User
 from .price_import_models import PriceImportBatch, PriceImportJob
-from .pricing_models import (PriceChange, PriceList, PriceListEntry, PricingAuditEvent, SupplierItemPricing, SupplierPricingSettings,
-                             record_pricing_event)
+from .pricing_models import (ClientPricingProfile, PriceChange, PriceList, PriceListEntry, PricingAuditEvent, PricingRule, SupplierItemPricing,
+                             SupplierPricingSettings, record_pricing_event)
 from .pricing_services import set_prices
 from .quote_draft_models import DealQuotationAudit, DealQuotationDraft, DealQuotationDraftLine, DealQuotationLineAudit
 from .request_models import DealCommand, SupplierRequest
@@ -36,7 +36,7 @@ EVENT_KEYS = {'id', 'kind', 'description', 'account_name', 'actor_name', 'create
 CLIENT_LINE_KEYS = {'id', 'part_id', 'sku', 'name', 'codigo', 'brand', 'description', 'quantity'}
 SUPPLIER_LINE_KEYS = CLIENT_LINE_KEYS | {'supplier_item_id', 'supplier_invent_id', 'stock'}
 MARKERS = ['777.77', '666.66', '555.55', 'SECRETO-REGLA', 'SECRETO-PERFIL', 'SECRETO-BORRADOR', 'SECRETO-IA', 'SECRETO-AUDITORIA',
-           'SECRETO-LINEA', 'LISTA-SECRETA', 'SECRETA_X']
+           'SECRETO-LINEA', 'LISTA-SECRETA', 'SECRETA_X', 'SECRETO-ERP', 'SECRETO-NOTA']
 XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 
 
@@ -72,8 +72,9 @@ class PricingPrivacyTests(APITestCase):
         return response
 
     def seed_private_markers(self, order):
-        """Real private rows: price lists, entries, LINEA, floors and their history (S3); net rules and profiles arrive with S5 and
-        assistant output with S7. Drafts only exist while the supplier prepares a revision, so seed_private_draft() adds one later."""
+        """Real private rows: price lists, entries, LINEA, floors and their history (S3); the pair profile (internal notes, ERP code) and
+        commercial rules with a net price (S5); assistant output arrives with S7. Drafts only exist while the supplier prepares a revision, so
+        seed_private_draft() adds one later."""
         SupplierPricingSettings.objects.create(supplier=self.supplier_a, default_currency='PAB', config_min_permission='manager',
                                                accept_shortfall_policy='allow', assistant_enabled=True, updated_by=self.seller_a)
         Membership.objects.filter(user=self.seller_a, account=self.supplier_a).update(permission='manager')
@@ -86,11 +87,30 @@ class PricingPrivacyTests(APITestCase):
         record_pricing_event(self.supplier_a, self.seller_a, 'prices_edited', client=self.client_account, order=order, object_id='SECRETO-AUDITORIA',
                              payload={'list_price': '777.77', 'floor_price': '666.66', 'net_price': '555.55', 'rule': 'SECRETO-REGLA',
                                       'profile_note': 'SECRETO-PERFIL', 'draft_note': 'SECRETO-BORRADOR', 'assistant': 'SECRETO-IA'})
+        self.seed_private_profile()
         stored = json.dumps([list(PricingAuditEvent.objects.values('object_id', 'payload')), list(PriceList.objects.values('code', 'name')),
-                             list(PriceChange.objects.values('new_value', 'new_text')), list(SupplierItemPricing.objects.values('discount_group', 'floor_price'))],
+                             list(PriceChange.objects.values('new_value', 'new_text')), list(SupplierItemPricing.objects.values('discount_group', 'floor_price')),
+                             list(ClientPricingProfile.objects.values('internal_notes', 'customer_code')), list(PricingRule.objects.values('name', 'value', 'note'))],
                             default=str)
         self.assertTrue(all(marker in stored for marker in MARKERS), 'The canary must seed every marker it looks for.')
         self.seed_private_import()
+
+    def seed_private_profile(self):
+        """The pair profile and the supplier's rules (S5), saved through the supplier's own endpoints: an internal note, an ERP client code,
+        a client net price and a general rule, all private."""
+        self.client.force_authenticate(self.seller_a)
+        base, client = f'/api/v1/accounts/{self.supplier_a.pk}', str(self.client_account.pk)
+        profile = self.client.post(f'{base}/clients/{client}/profile/', {'operation_id': str(uuid.uuid4()), 'expected_version': 0, 'internal_notes': 'SECRETO-PERFIL',
+                                                                         'customer_code': 'SECRETO-ERP', 'discount_percent': '3.00'}, format='json')
+        self.assertEqual(profile.status_code, 200)
+        for body in [{'name': 'SECRETO-REGLA', 'scope': 'client', 'client_id': client, 'target': 'item', 'item_id': str(self.item_a.pk), 'kind': 'net_price',
+                      'value': '555.55', 'currency': 'USD', 'note': 'SECRETO-NOTA'},
+                     {'name': 'SECRETO-REGLA GENERAL', 'scope': 'all', 'target': 'line', 'target_value': 'SECRETO-LINEA', 'kind': 'discount', 'value': '12.00'}]:
+            self.assertEqual(self.client.post(f'{base}/pricing-rules/', {'operation_id': str(uuid.uuid4()), **body}, format='json').status_code, 201)
+        self.rule = PricingRule.objects.get(name='SECRETO-REGLA')
+        simulated = self.client.post(f'{base}/pricing/simulate/', {'client_id': client, 'items': [{'supplier_item_id': str(self.item_a.pk), 'quantity': 2}]}, format='json')
+        self.assertEqual(simulated.status_code, 200)
+        self.assertTrue(all(marker in simulated.content.decode() for marker in ['555.55', 'SECRETO-REGLA', '777.77']))
 
     def price_file(self, rows):
         book = Workbook()
@@ -134,7 +154,10 @@ class PricingPrivacyTests(APITestCase):
                 f'{private}/prices/{self.item_a.pk}/history/', f'{private}/prices/export/', f'{private}/pricing/history/',
                 f'{own}/price-lists/', f'{own}/prices/', f'{own}/prices/{self.item_a.pk}/history/', f'{own}/prices/export/', f'{own}/pricing/history/',
                 f'{private}/prices/import/template/', f'{private}/prices/import/jobs/{self.import_job}/', f'{private}/prices/import/jobs/{self.import_job}/errors/',
-                f'{own}/prices/import/template/', f'{own}/prices/import/jobs/{self.import_job}/', f'{own}/prices/import/jobs/{self.import_job}/errors/']
+                f'{own}/prices/import/template/', f'{own}/prices/import/jobs/{self.import_job}/', f'{own}/prices/import/jobs/{self.import_job}/errors/',
+                f'{private}/clients/', f'{private}/clients/?search=SECRETO', f'{private}/clients/{self.client_account.pk}/profile/', f'{private}/pricing-rules/',
+                f'{private}/pricing-rules/?client={self.client_account.pk}', f'{own}/clients/', f'{own}/clients/{self.client_account.pk}/profile/',
+                f'{own}/pricing-rules/', f'{own}/pricing-rules/?client={self.client_account.pk}']
 
     def calls(self, user, account, order, *, writes=()):
         self.client.force_authenticate(user)
@@ -156,6 +179,15 @@ class PricingPrivacyTests(APITestCase):
         responses['POST prices/import'] = self.client.post(f'{private}/prices/import/', {'file': self.price_file([['A-001', 'ROBADA', '', '1.00']])}, format='multipart')
         responses['POST prices/import (propia)'] = self.client.post(f'{account_url}/prices/import/', {'file': self.price_file([['A-001', '', '', '1.00']])}, format='multipart')
         responses['POST import commit'] = self.client.post(f'{private}/prices/import/jobs/{self.import_job}/', {'batch_index': 0}, format='json')
+        client, item = str(self.client_account.pk), [{'supplier_item_id': str(self.item_a.pk), 'quantity': 2}]
+        responses['POST profile'] = self.client.post(f'{private}/clients/{client}/profile/', {'operation_id': str(uuid.uuid4()), 'expected_version': 1,
+                                                                                             'internal_notes': 'ROBADA'}, format='json')
+        responses['POST pricing-rules'] = self.client.post(f'{private}/pricing-rules/', {'operation_id': str(uuid.uuid4()), 'name': 'ROBADA', 'scope': 'all',
+                                                                                        'target': 'all', 'kind': 'discount', 'value': '90'}, format='json')
+        responses['POST rule update'] = self.client.post(f'{private}/pricing-rules/{self.rule.pk}/', {'expected_version': 1, 'value': '1.00'}, format='json')
+        responses['POST rule archive'] = self.client.post(f'{private}/pricing-rules/{self.rule.pk}/archive/', {'expected_version': 1}, format='json')
+        responses['POST simulate'] = self.client.post(f'{private}/pricing/simulate/', {'client_id': client, 'items': item}, format='json')
+        responses['POST simulate (propio)'] = self.client.post(f'{account_url}/pricing/simulate/', {'client_id': client, 'items': item}, format='json')
         for name, call in writes:
             responses[name] = call()
         return responses
@@ -197,6 +229,8 @@ class PricingPrivacyTests(APITestCase):
         self.client.force_authenticate(self.seller_a)
         own = {path: self.client.get(path).content.decode() for path in self.pricing_paths(self.supplier_a)[1:4]}
         self.assertTrue(all(marker in ''.join(own.values()) for marker in ['777.77', '666.66', 'SECRETO-LINEA', 'SECRETA_X']))
+        own = ''.join(self.client.get(path).content.decode() for path in self.pricing_paths(self.supplier_a) if '/clients/' in path or '/pricing-rules/' in path)
+        self.assertTrue(all(marker in own for marker in ['555.55', 'SECRETO-REGLA', 'SECRETO-PERFIL', 'SECRETO-ERP', 'SECRETO-NOTA']))
         self.review(order)
         quote = self.quote(order).data['quotation']
         self.seed_private_trace(quote)
@@ -243,6 +277,11 @@ class PricingPrivacyTests(APITestCase):
             for marker in MARKERS:
                 self.assertNotIn(marker, json.dumps(command.result))
         self.assertEqual((PriceListEntry.objects.get(item=self.item_a).unit_price, PriceList.objects.count()), (Decimal('777.77'), 1))
+        # Nobody else edits the pair profile or the supplier's rules.
+        self.assertEqual(list(ClientPricingProfile.objects.filter(supplier=self.supplier_a).values_list('internal_notes', 'version')), [('SECRETO-PERFIL', 1)])
+        self.assertEqual(sorted(PricingRule.objects.filter(supplier=self.supplier_a).values_list('name', 'revision', 'active')),
+                         [('SECRETO-REGLA', 1, True), ('SECRETO-REGLA GENERAL', 1, True)])
+        self.assertFalse(PricingRule.objects.filter(name='ROBADA').exists())
         # Nobody else uploads into or applies the supplier's import; the competitor's own uploads stay in its own account.
         self.assertEqual(list(PriceImportJob.objects.filter(supplier=self.supplier_a).values_list('owner', 'completed_batches')), [(self.seller_a.pk, 0)])
         self.assertEqual(set(PriceImportJob.objects.values_list('supplier', flat=True)), {self.supplier_a.pk, self.supplier_b.pk})
@@ -292,7 +331,7 @@ class PricingPrivacyTests(APITestCase):
 
     def test_pricing_models_stay_out_of_admin_and_management_serializers(self):
         for model in [SupplierPricingSettings, PricingAuditEvent, DealQuotationDraft, DealQuotationDraftLine, DealQuotationAudit, DealQuotationLineAudit,
-                      PriceList, PriceListEntry, SupplierItemPricing, PriceChange, PriceImportJob, PriceImportBatch]:
+                      PriceList, PriceListEntry, SupplierItemPricing, PriceChange, PriceImportJob, PriceImportBatch, ClientPricingProfile, PricingRule]:
             self.assertNotIn(model, admin.site._registry)
         self.assertEqual(SupplierItemSerializer.Meta.fields, ['id', 'supplier_invent_id', 'part', 'codigo', 'brand', 'description', 'references',
                                                               'matching_status', 'source', 'reported_quantity', 'reserved_quantity',

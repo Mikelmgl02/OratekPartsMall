@@ -22,8 +22,8 @@ from mall.catalog_grouping_suggestions import CatalogGroupingList, CatalogGroupi
 from mall.supplier_import import SupplierInventoryImport, SupplierInventoryImportTemplate, SupplierInventoryImportJobView, SupplierInventoryImportErrors
 from mall.request_views import AccountRequests, ClientSentRequests, ClientSentRequestDetail, ClientPartRequestState, SupplierRequestDetail, SupplierRequestReview
 from mall.deal_views import DealActions, DealMessages
-from mall.pricing_views import (PriceHistory, PriceListDetail, PriceListsView, PricesExport, PricesView, PricingHistory,
-                               PricingSettingsView)
+from mall.pricing_views import (ClientProfileView, PriceHistory, PriceListDetail, PriceListsView, PricesExport, PricesView, PricingClients, PricingHistory,
+                               PricingRuleArchiveView, PricingRuleDetail, PricingRulesView, PricingSettingsView, PricingSimulate)
 from mall.quote_drafts import QuotationTrace, QuoteDraftDiscard, QuoteDraftReprice, QuoteDraftView
 from mall.price_import import PriceImport, PriceImportErrors, PriceImportJobView, PriceImportTemplate
 from .health import health
@@ -104,6 +104,12 @@ urlpatterns = [
     path('api/v1/accounts/<uuid:account_id>/prices/import/jobs/<uuid:pk>/', PriceImportJobView.as_view()),
     path('api/v1/accounts/<uuid:account_id>/prices/import/jobs/<uuid:pk>/errors/', PriceImportErrors.as_view()),
     path('api/v1/accounts/<uuid:account_id>/prices/<uuid:item_id>/history/', PriceHistory.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/clients/', PricingClients.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/clients/<uuid:client_id>/profile/', ClientProfileView.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/pricing-rules/', PricingRulesView.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/pricing-rules/<uuid:pk>/', PricingRuleDetail.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/pricing-rules/<uuid:pk>/archive/', PricingRuleArchiveView.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/pricing/simulate/', PricingSimulate.as_view()),
     path('api/v1/catalog/', views.CatalogList.as_view()),
     path('api/v1/catalog/<uuid:pk>/technical/', CatalogTechnicalDetail.as_view()),
     path('api/v1/catalog/<uuid:part_id>/suppliers/', views.OffersView.as_view()),

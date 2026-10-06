@@ -12,7 +12,7 @@ import hashlib
 # Keep in sync with QuoteExceptionCodeEnum / AcknowledgeableExceptionEnum (config/settings.py) and the frontend label map.
 ACKNOWLEDGEABLE = ('offered_gt_available', 'offered_gt_requested', 'identity_changed', 'zero_price', 'below_floor', 'stale_price')
 EXCEPTION_CODES = ('quantity_missing', 'price_missing', 'all_zero', 'draft_outdated', *ACKNOWLEDGEABLE, 'reduced_to_stock', 'zero_offered',
-                   'manual_price', 'differs_from_list', 'no_list_price', 'currency_parity', 'currency_mismatch')
+                   'manual_price', 'differs_from_list', 'no_list_price', 'currency_parity', 'currency_mismatch', 'fallback_list', 'rule_conflict', 'no_profile')
 SEVERITIES = ('block', 'confirm', 'info')
 
 
@@ -68,6 +68,12 @@ def line_findings(line, value, entry, settings_row, suggestion=None):
             else f'La versión anterior usó {es_money(price)}; tu lista sugiere hoy {es_money(suggested)}.')
     if suggestion and suggestion.status == 'missing' and quantity != 0:
         add('no_list_price', 'info', 'Sin precio en tu lista.')
+    if suggestion and 'fallback_list' in suggestion.codes and quantity != 0:
+        base, assigned = suggestion.explanation['base'], suggestion.explanation['profile'] or {}
+        add('fallback_list', 'info', f'Precio de la lista {base["price_list_code"]} (respaldo).' if base and base['fallback'] else
+            f'La lista {assigned.get("archived_list")} del cliente está archivada; se usa tu lista {(suggestion.explanation["price_list"] or {}).get("code", "predeterminada")}.')
+    if suggestion and 'rule_conflict' in suggestion.codes and quantity != 0:
+        add('rule_conflict', 'info', 'Dos reglas igual de específicas; se usó la de precio mayor.')
     return found
 
 
@@ -81,11 +87,12 @@ def acknowledge(found, acknowledgements):
     return found
 
 
-def compute_exceptions(lines, values, stock, settings_row, *, pricing=None, acknowledgements=None, order_acknowledgements=(), outdated=False):
+def compute_exceptions(lines, values, stock, settings_row, *, pricing=None, acknowledgements=None, order_acknowledgements=(), outdated=False,
+                       no_profile=False):
     """-> {lines: {order_line_pk: [finding]}, order: [finding], summary: {blocking, to_confirm, info}}.
 
     values, stock and pricing (live pricing_engine results) are keyed by order line pk; acknowledgements maps an order line pk to its
-    stored [{code, context, user_id, at}].
+    stored [{code, context, user_id, at}]; no_profile: the client has no private profile with this supplier yet.
     """
     acknowledgements, pricing = acknowledgements or {}, pricing or {}
     per_line = {line.pk: acknowledge(line_findings(line, values[line.pk], stock[line.pk], settings_row, pricing.get(line.pk)), acknowledgements.get(line.pk))
@@ -96,6 +103,10 @@ def compute_exceptions(lines, values, stock, settings_row, *, pricing=None, ackn
     if lines and all(values[line.pk]['quantity'] == 0 for line in lines):
         order.append({'code': 'all_zero', 'severity': 'block', 'message': 'Ofrece al menos una unidad.', 'context': ''})
     results = [result for result in pricing.values() if result]
+    listed = next((result.explanation['price_list'] for result in results if result.explanation['price_list']), None)
+    if no_profile and listed:
+        order.append({'code': 'no_profile', 'severity': 'info', 'context': '',
+                      'message': f'Cliente sin perfil comercial; se usa tu lista predeterminada {listed["code"]}.'})
     parity = next((result for result in results if result.parity_applied), None)
     if parity:
         step = next(step for step in parity.explanation['steps'] if step['kind'] == 'parity')

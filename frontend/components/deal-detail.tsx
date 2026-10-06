@@ -1,16 +1,19 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { Check, FileText, Handshake, History, LoaderCircle, LockKeyhole, MessageSquare, RefreshCw, Send } from 'lucide-react';
+import { Check, FileText, Handshake, History, LoaderCircle, LockKeyhole, MessageSquare, Pencil, RefreshCw, Send, UserRoundCog } from 'lucide-react';
 import Modal from './modal';
+import { percent } from './price-explanation';
 import DealStatusBadge from './deal-status';
 import { UppercaseTextarea } from './uppercase-field';
 import { Account, ApiError, request } from '@/lib/types';
 import type { SupplierRequestLine } from '@/lib/request-types';
 import type { Deal, DealMessage, Quotation } from '@/lib/deal-types';
 import type { QuotationTrace, QuoteDraft, QuoteDraftEnvelope, QuoteDraftLine } from '@/lib/pricing-types';
+import { supplierPricingHref } from '@/lib/supplier-navigation';
 
 const QuoteEditor = dynamic(() => import('./quotation-editor'), { ssr: false, loading: () => <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando editor de cotización…</div> });
+const ClientPricingProfile = dynamic(() => import('./client-pricing-profile'), { ssr: false, loading: () => <div className="loading"><LoaderCircle className="spin"/>Cargando perfil comercial…</div> });
 
 const date = (value: string) => new Date(value).toLocaleString('es-PA', { timeZone: 'America/Panama', dateStyle: 'medium', timeStyle: 'short' });
 const money = (value: string | number, currency = 'USD') => new Intl.NumberFormat('es-PA', { style: 'currency', currency }).format(Number(value));
@@ -51,6 +54,9 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   const [hasDraft, setHasDraft] = useState(false);
   // The editor's last confirmed draft keeps the Artículos suggestions current after saves and reprices.
   const [liveDraft, setLiveDraft] = useState<{ key: string; draft: QuoteDraft } | null>(null);
+  // The client's private commercial profile opens over the order; saving it reloads the draft's suggestions.
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [pricingRevision, setPricingRevision] = useState(0);
   const draftPath = `${base}/requests/${orderId}/draft`;
   const acceptDetail = useCallback((value: Deal) => {
     if (!mounted.current) return;
@@ -115,6 +121,14 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   // Supplier-only "Precio sugerido": the live suggestion of the private draft, shown once the supplier has price lists.
   const loaded = liveDraft?.key === draftKey ? liveDraft.draft : draftLoad?.key === draftKey ? draftLoad.draft : null;
   const priced = supplier && loaded?.pricing.configured ? loaded : null;
+  // An account ordering from itself has no pair profile (the server refuses self-profiles).
+  const pairProfile = supplier && deal?.client.id !== account.id ? loaded?.pricing.profile : undefined;
+  const editorMounted = editable && (tab === 'quote' || quoteVisited);
+  function profileSaved() {
+    // A mounted editor reloads its own suggestions (keeping unsaved cells); otherwise the next opening reads the new draft.
+    if (editorMounted) { setPricingRevision(value => value + 1); return; }
+    request<QuoteDraftEnvelope>(draftPath).then(value => { if (mounted.current && value.draft) { setDraftLoad({ key: draftKey, draft: value.draft }); setLiveDraft(null); } }).catch(() => undefined);
+  }
   const suggestions = new Map((priced?.lines || []).map(line => [line.order_line_id, line]));
   const activeStep = !deal ? 0 : deal.status === 'pending' ? 0 : deal.status === 'reviewed' ? 1 : deal.status === 'handshaked' ? 3 : 2;
   const content = <>
@@ -123,6 +137,13 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
       {!deal && !error && <div className="supplier-request-detail-loading" role="status"><span className="sr-only">Cargando orden…</span><div className="skeleton-block"/><div className="skeleton-block"/></div>}
       {deal && <>
         <div className="supplier-request-detail-header"><div><span>{supplier ? 'Cliente' : 'Proveedor'}</span><h3>{supplier ? deal.client.name : deal.supplier.name}</h3><p>{date(deal.created_at)}</p></div><DealStatusBadge status={deal.status}/></div>
+        {pairProfile && <div className="deal-pair-profile" role="group" aria-label="Perfil comercial del cliente">
+          <p><UserRoundCog size={15}/>{pairProfile.exists ? [loaded?.pricing.price_list && `Lista ${loaded.pricing.price_list.code}`, Number(pairProfile.discount_percent) > 0 && `Desc. ${percent(pairProfile.discount_percent)}`,
+            pairProfile.customer_code && `Código ${pairProfile.customer_code}`].filter(Boolean).join(' · ') || 'Perfil comercial sin condiciones especiales'
+            : `Sin perfil comercial${loaded?.pricing.price_list ? ` · se usa la lista ${loaded.pricing.price_list.code}` : ''}`}
+            <button type="button" className="button text small" onClick={() => setProfileOpen(true)}><Pencil size={13}/>{pairProfile.exists ? 'Editar perfil' : 'Configurar cliente'}</button></p>
+          {pairProfile.internal_notes && <small title="Solo tu equipo ve estas notas">Notas internas: {pairProfile.internal_notes}</small>}
+        </div>}
         <ol className="deal-progress" aria-label="Seguimiento del acuerdo">{['Enviada', 'En revisión', 'Cotización', 'Acuerdo'].map((label, index) => <li key={label} className={index <= activeStep ? 'reached' : ''} aria-current={index === activeStep ? 'step' : undefined}><span>{index < activeStep ? <Check size={12}/> : index + 1}</span>{label}</li>)}</ol>
         <div className={`deal-state-note ${deal.status}`}><LockKeyhole size={16}/><p>{stateDescription[deal.status]}{deal.handshaked_at && <strong> {date(deal.handshaked_at)}</strong>}</p></div>
         <nav className="deal-tabs" aria-label="Secciones del acuerdo">{([
@@ -144,7 +165,8 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
           {!deal.quotation && !supplier && <div className="notice">El proveedor preparará tu cotización. Te aparecerán aquí las cantidades, precios y condiciones.</div>}
           {editable && (tab === 'quote' || quoteVisited) && (draftLoad?.key === draftKey
             ? <QuoteEditor key={`${draftKey}:${draftLoad.draft ? draftLoad.draft.persisted ? 'saved' : 'virtual' : 'fallback'}`} deal={deal} draft={draftLoad.draft} draftPath={draftPath}
-                disabled={busy} onSend={values => act('quote', values)} onDraftChange={(persisted, next) => { setHasDraft(persisted); setLiveDraft({ key: draftKey, draft: next }); }}/>
+                disabled={busy} onSend={values => act('quote', values)} pricingRevision={pricingRevision}
+                onDraftChange={(persisted, next) => { setHasDraft(persisted); setLiveDraft({ key: draftKey, draft: next }); }}/>
             : <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando borrador de cotización…</div>)}
           {supplier && deal.status === 'adjustment' && deal.quotation && <button type="button" className="button soft" disabled={busy} onClick={() => void act('return_quote', { quotation_id: deal.quotation!.id })}>Devolver la misma cotización para confirmar<Send size={15}/></button>}
           {supplier && deal.status === 'adjustment' && deal.quotation && hasDraft && <small className="deal-draft-warning">Si devuelves la misma cotización, se descartará el borrador en curso.</small>}
@@ -167,6 +189,10 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   return supplier ? <section className="deal-order-content" aria-label={`Orden ${deal?.reference || reference || 'del cliente'}`}>
     <div className="deal-page-heading"><span className="eyebrow">ORDEN DE CLIENTE</span><h1>{deal ? `Orden ${deal.reference}` : 'Detalle de la orden'}</h1></div>
     {content}
+    {profileOpen && deal && <Modal wide title={`Perfil comercial · ${deal.client.name}`} className="client-profile-modal" onClose={() => setProfileOpen(false)}>
+      <ClientPricingProfile account={account} clientId={deal.client.id} embedded onSaved={profileSaved}/>
+      <p className="form-footnote">Este perfil también está en <a href={supplierPricingHref(account.id, 'clients', deal.client.id)}>Precios › Clientes</a>.</p>
+    </Modal>}
   </section> : <Modal title={`Orden ${reference}`} wide className="deal-modal supplier-request-modal" onClose={() => { if (!inFlight.current) onClose?.(); }}>{content}</Modal>;
 }
 
@@ -180,7 +206,8 @@ const alertNames: Record<string, string> = { offered_gt_available: 'Más que las
   identity_changed: 'Artículo cambiado', zero_price: 'Precio 0,00', below_floor: 'Bajo tu precio mínimo', stale_price: 'Precio sugerido cambió',
   quantity_missing: 'Falta la cantidad', price_missing: 'Falta el precio', all_zero: 'Sin unidades', draft_outdated: 'Borrador desactualizado',
   reduced_to_stock: 'Ajustado a existencias', zero_offered: 'No ofrecido', manual_price: 'Precio manual', differs_from_list: 'Distinto de tu lista',
-  no_list_price: 'Sin precio en tu lista', currency_parity: 'Paridad USD/PAB', currency_mismatch: 'Moneda distinta' };
+  no_list_price: 'Sin precio en tu lista', currency_parity: 'Paridad USD/PAB', currency_mismatch: 'Moneda distinta', fallback_list: 'Lista de respaldo',
+  rule_conflict: 'Reglas igual de específicas', no_profile: 'Cliente sin perfil comercial' };
 const suggestionStates: Record<string, string> = { missing: 'Sin precio en tu lista', identity_changed: 'Artículo cambiado', currency_mismatch: 'Moneda distinta',
   out_of_range: 'Fuera de rango', no_price_list: 'Sin lista de precios' };
 
@@ -189,7 +216,9 @@ function SuggestedPrice({ line, currency }: { line?: QuoteDraftLine; currency: s
   if (!suggestion) return <>—</>;
   const explanation = suggestion.explanation, base = explanation.base;
   if (suggestion.unit_price === null) return <small>{suggestionStates[explanation.status] || 'Sin precio sugerido'}</small>;
-  return <><strong>{money(suggestion.unit_price, currency)}</strong><small>{base ? `Lista ${base.price_list_code}${base.fallback ? ' (respaldo)' : ''}` : 'Lista'}{explanation.steps.some(step => step.kind === 'parity') ? ' · paridad USD/PAB' : ''}</small></>;
+  const rule = explanation.steps.find(step => step.kind === 'rule');
+  const origin = rule?.kind === 'rule' ? rule.action === 'net_price' ? 'Neto especial' : rule.rule_id === 'synthetic:client_discount' ? 'Descuento del cliente' : `Regla ${rule.name}` : '';
+  return <><strong>{money(suggestion.unit_price, currency)}</strong><small>{[base && `Lista ${base.price_list_code}${base.fallback ? ' (respaldo)' : ''}`, origin].filter(Boolean).join(' · ') || 'Lista'}{explanation.steps.some(step => step.kind === 'parity') ? ' · paridad USD/PAB' : ''}</small></>;
 }
 const acceptResults = { ok: 'Existencias verificadas al confirmar', blocked: 'Confirmación bloqueada por existencias', accepted_with_shortfall: 'Confirmado con faltante' };
 

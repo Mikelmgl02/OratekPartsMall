@@ -292,6 +292,7 @@ from .request_models import (ClientRequestSubmission, SupplierRequest, SupplierR
 from .analytics_models import UsageEvent, UsageVisit
 from .matching_models import MatchingQueue, MatchingCase, SupplierCodeMapping, MatchingDecision
 from .technical_models import PartType, TechnicalTemplate, TechnicalField, PartSpecification, Application, ItemApplication
-from .pricing_models import SupplierPricingSettings, PricingAuditEvent, PriceList, PriceListEntry, SupplierItemPricing, PriceChange
+from .pricing_models import (SupplierPricingSettings, PricingAuditEvent, PriceList, PriceListEntry, SupplierItemPricing, PriceChange,
+                             ClientPricingProfile, PricingRule)
 from .quote_draft_models import DealQuotationDraft, DealQuotationDraftLine, DealQuotationAudit, DealQuotationLineAudit
 from .price_import_models import PriceImportJob, PriceImportBatch

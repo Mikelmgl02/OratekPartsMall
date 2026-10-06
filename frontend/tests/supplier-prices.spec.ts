@@ -119,7 +119,8 @@ test('suppliers edit and paste private prices, save them with expected revisions
     actor: { name: 'EMPLEADO' }, client: null, order: null, object_id: 'op:1', payload: { created: 3, updated: 0, removed: 0, floor_updates: 1, line_updates: 0 }, created_at: stamp }] } }));
   const listsTab = section.getByRole('tab', { name: 'Listas de precios', exact: true });
   await listsTab.focus();
-  await listsTab.press('ArrowRight');
+  // Arrows cycle through the N sub-sections: left from the first one wraps to Historial, the last.
+  await listsTab.press('ArrowLeft');
   await expect(section.getByRole('tab', { name: 'Historial', exact: true })).toBeFocused();
   await expect(section.getByRole('tabpanel', { name: 'Historial', exact: true })).toContainText('3 nuevos · 1 mínimos');
   await page.keyboard.press('Home');

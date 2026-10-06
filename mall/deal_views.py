@@ -16,7 +16,7 @@ from rest_framework.views import APIView
 
 from .availability import record_accept_check, shortfall_since_quote
 from .models import Membership
-from .pricing_engine import ENGINE_VERSION, price_lines
+from .pricing_engine import ENGINE_VERSION, client_profile, price_lines
 from .pricing_models import pricing_settings, record_pricing_event
 from .quotation_exceptions import audit_findings, compute_exceptions, publish_blockers
 from .quote_draft_models import DealQuotationAudit, DealQuotationDraft, DealQuotationLineAudit
@@ -143,12 +143,13 @@ def quote_exceptions(row, account, data, draft):
     offered = {line['order_line_id']: line for line in data['lines']}
     values = {pk: {field: getattr(drafted[pk], field) for field in ('quantity', 'unit_price', 'quantity_source', 'price_source', 'engine_fingerprint')}
               if pk in drafted else {'quantity': offered[pk]['quantity'], 'unit_price': offered[pk]['unit_price']} for pk in lines}
-    stock = stock_by_line(lines.values())
-    pricing = price_lines(account, row.client_id, data['currency'], [(line, values[pk]['quantity']) for pk, line in lines.items()], settings_row=settings_row)
+    stock, profile = stock_by_line(lines.values()), client_profile(account, row.client_id)
+    pricing = price_lines(account, row.client_id, data['currency'], [(line, values[pk]['quantity']) for pk, line in lines.items()], settings_row=settings_row,
+                          profile=profile)
     result = compute_exceptions(list(lines.values()), values, stock, settings_row, pricing=pricing,
                                 acknowledgements={pk: line.acknowledgements for pk, line in drafted.items()},
-                                order_acknowledgements=draft.order_acknowledgements if draft else ())
-    return {'settings': settings_row, 'stock': stock, 'drafted': drafted, 'result': result, 'pricing': pricing}
+                                order_acknowledgements=draft.order_acknowledgements if draft else (), no_profile=profile is None and row.client_id != account.pk)
+    return {'settings': settings_row, 'stock': stock, 'drafted': drafted, 'result': result, 'pricing': pricing, 'profile': profile}
 
 
 def write_quote_audit(quotation, prior, request, account, draft, context):
@@ -157,8 +158,10 @@ def write_quote_audit(quotation, prior, request, account, draft, context):
     previous = {line.order_line_id: line for line in prior.lines.all()} if prior else {}
     permission = Membership.objects.filter(account=account, user=request.user).values_list('permission', flat=True).first()
     configured = any(suggestion.configured for suggestion in pricing.values())
+    profile = context['profile']
     DealQuotationAudit.objects.create(quotation=quotation, draft_version=draft.draft_version if draft else None, publisher=request.user,
                                       publisher_permission=permission, engine_version=ENGINE_VERSION if configured else '',
+                                      profile_id=profile.pk if profile else None, profile_version=profile.version if profile else None,
                                       settings_snapshot={field: getattr(settings_row, field) for field in SETTINGS_SNAPSHOT},
                                       order_exceptions=audit_findings(result['order']))
     def sources(line):

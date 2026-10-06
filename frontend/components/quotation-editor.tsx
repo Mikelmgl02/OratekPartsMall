@@ -12,6 +12,7 @@ import type { SupplierRequestLine } from '@/lib/request-types';
 import { ApiError, request } from '@/lib/types';
 import { decimal, moneyFormatter, priceCents, quantityValue } from '@/lib/money';
 import Modal from './modal';
+import { PriceCalculation, money } from './price-explanation';
 import { UppercaseTextarea } from './uppercase-field';
 
 type QuoteRow = { order_line_id: string; codigo: string; description: string; requested: number; quantity: string; unit_price: string };
@@ -102,10 +103,12 @@ function PartCell({ data }: CustomCellRendererProps<QuoteRow>) {
   return data ? <div className="quotation-part-cell"><strong>{data.codigo}</strong>{data.description && <small title={data.description}>{data.description}</small>}</div> : null;
 }
 
-export default function QuotationEditor({ deal, draft, draftPath, disabled, onSend, onDraftChange }: {
+export default function QuotationEditor({ deal, draft, draftPath, disabled, onSend, onDraftChange, pricingRevision = 0 }: {
   deal: Deal; draft: QuoteDraft | null; draftPath: string; disabled: boolean;
   // Resolves true once published, or with the refused request's error so its alerts can be shown.
   onSend: (values: QuotePayload) => Promise<true | ApiError | false>; onDraftChange?: (persisted: boolean, draft: QuoteDraft) => void;
+  // Bumped when the client's profile or rules changed elsewhere: the editor reloads its suggestions (stored prices never move by themselves).
+  pricingRevision?: number;
 }) {
   // Without a loaded draft the editor falls back to the previous revision and nothing is saved automatically.
   const autosave = draft !== null;
@@ -117,6 +120,7 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
   const host = useRef<HTMLDivElement>(null);
   const [currency, setCurrency] = useState<Currency>(draft?.currency || deal.quotation?.currency || 'USD');
   const [terms, setTerms] = useState(draft ? draft.terms : deal.quotation?.terms || '');
+  const [termsOrigin, setTermsOrigin] = useState(draft?.terms_origin);
   const header = useRef({ currency, terms });
   const base = useRef<Base | null>(draft ? baseFrom(draft) : null);
   const [saved, setSaved] = useState(base.current);
@@ -198,7 +202,7 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
     showAlerts(alertsFrom(next));
   }
   function adopt(next: QuoteDraft) {
-    base.current = baseFrom(next); setSaved(base.current); refreshStock(next);
+    base.current = baseFrom(next); setSaved(base.current); refreshStock(next); setTermsOrigin(next.terms_origin);
     props.current.onDraftChange?.(next.persisted, next);
   }
   function replaceWith(next: QuoteDraft) {
@@ -229,7 +233,12 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
   function announce(repriced: RepricedLine[], scope?: RepriceScope) {
     if (!repriced.length) { if (scope) setPriceNotice(scope === 'engine' ? 'Tus precios sugeridos ya estaban al día.' : 'No había precios por aplicar.'); return; }
     const [one, many] = repriceNotices[repriced[0].reason];
-    const codes = repriced.map(item => rowsRef.current.find(row => row.order_line_id === item.order_line_id)?.codigo).filter(Boolean);
+    // A quantity reprice names the rule that now wins (a volume break): "KSM-123 (FILTROS VOLUMEN 10+)".
+    const codes = repriced.map(item => {
+      const code = rowsRef.current.find(row => row.order_line_id === item.order_line_id)?.codigo;
+      const rule = pricingRef.current.lines[item.order_line_id]?.suggestion?.explanation.steps.find(step => step.kind === 'rule');
+      return code && rule?.kind === 'rule' ? `${code} (${rule.name})` : code;
+    }).filter(Boolean);
     setPriceNotice(`${repriced.length} ${repriced.length === 1 ? one : many}${repriced[0].reason === 'quantity' ? `: ${codes.join(', ')}` : ''}.`);
     for (const item of repriced) flashed.current.add(item.order_line_id);
     grid.current?.api?.refreshCells({ columns: ['unit_price'], force: true });
@@ -334,6 +343,17 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
     await task;
     inFlight.current = null;
     if (mounted.current) setConfirmDiscard(false);
+  }
+  // The client's profile or rules changed: reload the live suggestions and alerts. Cells still showing what the server had are updated
+  // (a virtual draft follows the new prefill), local edits are kept, and saved engine prices only raise stale_price.
+  async function refreshPricing() {
+    if (!autosave || conflictRef.current) return;
+    while (inFlight.current) await inFlight.current;
+    try {
+      const envelope = await request<QuoteDraftEnvelope>(props.current.draftPath);
+      if (!mounted.current || !envelope.draft || !base.current || conflictRef.current) return;
+      if (rebase(envelope.draft) && pendingChanges().dirty) schedule();
+    } catch { /* The next save brings the new suggestions. */ }
   }
   // After a refused publish, compare with the server: a newer draft means another member saved in between; the same version
   // still brings alerts recomputed with live stock.
@@ -468,6 +488,12 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
   ], [disabled, formatMoney, edited, invalidTooltip, autosave]);
   const defaultColumn = useMemo<ColDef<QuoteRow>>(() => ({ sortable: true, resizable: true, cellDataType: false, wrapHeaderText: true, autoHeaderHeight: true }), []);
   useEffect(() => { if (disabled) grid.current?.api?.stopEditing(true); }, [disabled]);
+  const pricingSeen = useRef(pricingRevision);
+  useEffect(() => {
+    if (pricingSeen.current === pricingRevision) return;
+    pricingSeen.current = pricingRevision; void refreshPricing();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pricingRevision]);
   useEffect(() => {
     mounted.current = true;
     const tick = setInterval(() => setNow(Date.now()), 30000);
@@ -595,7 +621,8 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
     </details>}
     {error && <div className="notice error" role="alert">{error}</div>}
     <div className="deal-editor-total"><label>Moneda<select aria-label="Moneda de la cotización" disabled={disabled} value={currency} onChange={event => { header.current = { ...header.current, currency: event.target.value as Currency }; setCurrency(event.target.value as Currency); schedule(); }}><option value="USD">USD</option><option value="PAB">PAB</option></select></label><strong>Total: {formatMoney(total)}</strong></div>
-    <label>Condiciones de entrega y cotización<UppercaseTextarea disabled={disabled} maxLength={5000} value={terms} onChange={event => { header.current = { ...header.current, terms: event.target.value }; setTerms(event.target.value); schedule(); }} placeholder="PLAZO DE ENTREGA, RETIRO Y OTRAS CONDICIONES…"/></label>
+    <label>Condiciones de entrega y cotización<UppercaseTextarea disabled={disabled} maxLength={5000} value={terms} onChange={event => { header.current = { ...header.current, terms: event.target.value }; setTerms(event.target.value); schedule(); }} placeholder="PLAZO DE ENTREGA, RETIRO Y OTRAS CONDICIONES…"/>
+      {autosave && termsOrigin === 'profile' && normalTerms(terms) === saved?.terms && <small className="quotation-terms-origin">Condiciones predeterminadas del perfil del cliente. Revísalas antes de enviar.</small>}</label>
     <button type="submit" className="button primary" disabled={busy}>{busy ? <LoaderCircle size={16} className="spin"/> : <Send size={16}/>}Confirmar y enviar cotización</button>
   </form>
   {/* Outside the form: the drawer's buttons must never submit the quotation. */}
@@ -605,22 +632,11 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
   </>;
 }
 
-function money(value: string | null, currency: string) {
-  const cents = value === null ? null : priceCents(value);
-  return cents === null ? '—' : moneyFormatter(currency)(cents);
-}
-const panama = (value: string) => new Date(value).toLocaleDateString('es-PA', { timeZone: 'America/Panama', dateStyle: 'medium' });
-const discardReasons: Record<string, string> = { menos_especifica: 'menos específica', moneda_distinta: 'moneda distinta', precio_menor: 'precio menor' };
-
 // "¿De dónde sale este precio?": the supplier-only explanation of the live suggestion, step by step, as the engine computed it.
 function PriceDrawer({ row, info, currency, origin, busy, onClose, onUse }: { row: QuoteRow; info: Pricing['lines'][string]; currency: string; origin: string; busy: boolean;
   onClose: () => void; onUse: () => void }) {
-  const suggestion = info.suggestion, explanation = suggestion?.explanation, base = explanation?.base;
+  const suggestion = info.suggestion, explanation = suggestion?.explanation;
   const current = cellPrice(row.unit_price) ?? null, usable = !!suggestion?.unit_price && (current !== suggestion.unit_price || info.source !== 'engine');
-  const status = explanation && {
-    missing: `Sin precio en la lista ${explanation.price_list?.code}.`, identity_changed: 'El artículo de tu inventario cambió desde la solicitud: no hay precio sugerido.',
-    currency_mismatch: `Tu lista está en ${explanation.price_list?.currency} y la cotización en ${explanation.currency}: sin precio sugerido. Activa la paridad USD/PAB o cambia la moneda.`,
-    out_of_range: 'El precio calculado supera el máximo permitido.', priced: '', no_price_list: '' }[explanation.status];
   return <Modal drawer title="¿De dónde sale este precio?" onClose={onClose} className="price-drawer-modal">
     <div className="price-drawer">
       <p className="price-drawer-item"><strong>{row.codigo}</strong>{row.description && <small>{row.description}</small>}</p>
@@ -630,16 +646,7 @@ function PriceDrawer({ row, info, currency, origin, busy, onClose, onUse }: { ro
       </dl>
       {!suggestion ? <p className="price-drawer-note">Todavía no tienes listas de precios. Créalas en Precios › Listas de precios para recibir un precio sugerido en cada cotización.</p> : <>
         <h4>Cómo se calculó</h4>
-        <ol className="price-drawer-steps">
-          {base && <li>Lista {base.price_list_code}{base.fallback ? ' (respaldo)' : ''}: <strong>{money(base.unit_price, base.currency)}</strong><small>Revisión {base.entry_revision}{base.updated_at ? ` · actualizada el ${panama(base.updated_at)}` : ''}</small></li>}
-          {status && <li>{status}</li>}
-          {explanation!.steps.map((step, index) => <li key={index}>{step.kind === 'parity' ? `Paridad ${step.from}/${step.to} 1:1` :
-            `${step.action === 'net_price' ? 'Precio neto especial' : 'Regla'} ${step.name}: ${step.action === 'discount' ? `−${step.value.replace('.', ',')} %` : money(step.value, currency)} → ${money(step.after, currency)}`}</li>)}
-          {explanation!.unit_price && <li>Redondeo a centavos: <strong>{money(explanation!.unit_price, currency)}</strong></li>}
-        </ol>
-        {!!explanation!.discarded.length && <p className="price-drawer-note">No aplicadas: {explanation!.discarded.map(item => `${item.name} (${discardReasons[item.reason] || item.reason})`).join(' · ')}</p>}
-        {explanation!.next_breaks.map(item => <p key={item.min_quantity} className="price-drawer-note">A partir de {item.min_quantity} unidades: {money(item.unit_price, currency)}</p>)}
-        {explanation!.floor_price && <p className="price-drawer-note">Tu precio mínimo: {money(explanation!.floor_price, currency)}</p>}
+        <PriceCalculation explanation={explanation!} currency={currency}/>
         {info.source === 'previous' && <p className="price-drawer-note">El precio del borrador viene de la versión anterior de la cotización.</p>}
       </>}
       {usable && <button type="button" className="button primary" disabled={busy} onClick={onUse}><Sparkles size={15}/>Usar precio sugerido</button>}

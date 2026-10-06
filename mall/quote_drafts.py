@@ -17,7 +17,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .availability import check_lines
-from .pricing_engine import ENGINE_VERSION, price_lines
+from .pricing_engine import ENGINE_VERSION, client_profile, price_lines
 from .pricing_models import CURRENCY_CHOICES, PERMISSION_CHOICES, choice_values, pricing_settings, record_pricing_event
 from .quotation_exceptions import ACKNOWLEDGEABLE, EXCEPTION_CODES, SEVERITIES, compute_exceptions
 from .models import User
@@ -97,10 +97,19 @@ class DraftPriceList(serializers.Serializer):
     currency = serializers.ChoiceField(choices=choice_values(CURRENCY_CHOICES))
 
 
+class DraftProfile(serializers.Serializer):
+    exists = serializers.BooleanField(help_text='False si el cliente aún no tiene perfil comercial: se usa tu lista predeterminada.')
+    version = serializers.IntegerField()
+    discount_percent = serializers.DecimalField(max_digits=5, decimal_places=2)
+    customer_code = serializers.CharField(allow_blank=True)
+    internal_notes = serializers.CharField(allow_blank=True, help_text='Notas internas de tu equipo; nunca se muestran al cliente.')
+
+
 class DraftPricing(serializers.Serializer):
     engine = serializers.CharField()
-    configured = serializers.BooleanField(help_text='False si no tienes listas de precios: no hay precios sugeridos.')
-    price_list = DraftPriceList(allow_null=True)
+    configured = serializers.BooleanField(help_text='False si no tienes listas de precios ni reglas que den precio: no hay precios sugeridos.')
+    price_list = DraftPriceList(allow_null=True, help_text='La lista que usa este cliente: la de su perfil o tu lista predeterminada.')
+    profile = DraftProfile(help_text='Perfil comercial privado del cliente.')
     stale = serializers.IntegerField(help_text='Artículos cuyo precio sugerido cambió desde que se calculó.')
     fillable = serializers.IntegerField(help_text='Artículos sin precio que tienen un precio sugerido.')
 
@@ -119,7 +128,7 @@ class QuoteDraftSerializer(serializers.Serializer):
     base_quotation_id = serializers.UUIDField(allow_null=True)
     currency = serializers.ChoiceField(choices=choice_values(CURRENCY_CHOICES))
     terms = serializers.CharField(allow_blank=True)
-    terms_origin = serializers.ChoiceField(choices=['saved', 'previous', 'none'])
+    terms_origin = serializers.ChoiceField(choices=['saved', 'previous', 'profile', 'none'])
     updated_at = serializers.DateTimeField(allow_null=True)
     updated_by = DraftAuthor(allow_null=True)
     permissions = DraftPermissions()
@@ -219,10 +228,15 @@ def stock_by_line(lines):
     return {entry['order_line_id']: entry for entry in check_lines((line, line.quantity) for line in lines)}
 
 
-def initial_header(latest, settings_row):
+def initial_header(latest, settings_row, profile):
+    """Currency: previous revision, then the client's preferred currency, then the supplier default. Terms: previous revision, then the
+    profile's default terms (first quotation only)."""
     if latest:
         return {'currency': latest.currency, 'terms': latest.terms, 'terms_origin': 'previous'}
-    return {'currency': settings_row.default_currency, 'terms': '', 'terms_origin': 'none'}
+    currency = profile.preferred_currency if profile and profile.preferred_currency else settings_row.default_currency
+    if profile and profile.default_terms:
+        return {'currency': currency, 'terms': profile.default_terms, 'terms_origin': 'profile'}
+    return {'currency': currency, 'terms': '', 'terms_origin': 'none'}
 
 
 def initial_quantities(lines, latest, settings_row, stock):
@@ -257,25 +271,30 @@ def initial_values(lines, latest, quantities, pricing):
     return values
 
 
-def priced(row, account, currency, values, lines, settings_row):
-    """Live suggestions for the draft's currency and offered quantities (the requested quantity while none is set)."""
-    return price_lines(account, row.client_id, currency, [(line, values[line.pk]['quantity']) for line in lines], settings_row=settings_row)
+def priced(row, account, currency, values, lines, settings_row, profile):
+    """Live suggestions for the draft's currency and offered quantities (the requested quantity while none is set), with the pair's profile."""
+    return price_lines(account, row.client_id, currency, [(line, values[line.pk]['quantity']) for line in lines], settings_row=settings_row, profile=profile)
+
+
+def profile_block(profile):
+    return {'exists': profile is not None, 'version': profile.version if profile else 0, 'discount_percent': profile.discount_percent if profile else Decimal('0'),
+            'customer_code': profile.customer_code if profile else '', 'internal_notes': profile.internal_notes if profile else ''}
 
 
 def draft_payload(row, account, membership, repriced=()):
-    settings_row, latest = pricing_settings(account), latest_quotation(row)
+    settings_row, latest, profile = pricing_settings(account), latest_quotation(row), client_profile(account, row.client_id)
     draft, lines = current_draft(row, latest), list(order_lines(row).values())
     stock = stock_by_line(lines)
     stored = {line.order_line_id: line for line in draft.lines.all()} if draft else {}
     saved = {pk: {field: getattr(line, field) for field in VALUE_FIELDS} for pk, line in stored.items()}
-    header = {'currency': draft.currency, 'terms': draft.terms, 'terms_origin': 'saved'} if draft else initial_header(latest, settings_row)
+    header = {'currency': draft.currency, 'terms': draft.terms, 'terms_origin': 'saved'} if draft else initial_header(latest, settings_row, profile)
     unsaved = [line for line in lines if line.pk not in saved]
     quantities = {**saved, **initial_quantities(unsaved, latest, settings_row, stock)}
-    pricing = priced(row, account, header['currency'], quantities, lines, settings_row)
+    pricing = priced(row, account, header['currency'], quantities, lines, settings_row, profile)
     initial = initial_values(unsaved, latest, quantities, pricing)
     current = {line.pk: saved.get(line.pk) or initial[line.pk] for line in lines}
     exceptions = compute_exceptions(lines, current, stock, settings_row, pricing=pricing, acknowledgements={pk: line.acknowledgements for pk, line in stored.items()},
-                                    order_acknowledgements=draft.order_acknowledgements if draft else ())
+                                    order_acknowledgements=draft.order_acknowledgements if draft else (), no_profile=profile is None and row.client_id != account.pk)
     total, values = Decimal('0'), []
     for line in lines:
         value, entry, result = current[line.pk], stock[line.pk], pricing[line.pk]
@@ -295,34 +314,36 @@ def draft_payload(row, account, membership, repriced=()):
         'updated_by': {'name': user.get_full_name() or user.username} if user else None,
         'permissions': {'can_publish': PERMISSION_RANK.get(membership.permission, -1) >= PERMISSION_RANK[settings_row.publish_min_permission],
                         'publish_requires': settings_row.publish_min_permission},
-        'pricing': {'engine': ENGINE_VERSION, 'configured': configured is not None, 'price_list': configured.explanation['price_list'] if configured else None,
+        'pricing': {'engine': ENGINE_VERSION, 'configured': configured is not None, 'profile': profile_block(profile),
+                    'price_list': next((result.explanation['price_list'] for result in pricing.values() if result.explanation['price_list']), None),
                     'stale': sum(any(item['code'] == 'stale_price' for item in found) for found in exceptions['lines'].values()),
                     'fillable': sum(current[line.pk]['unit_price'] is None and pricing[line.pk].unit_price is not None for line in lines)},
         'lines': values, 'order_exceptions': exceptions['order'], 'repriced': list(repriced),
         'summary': {**exceptions['summary'], 'total': total.quantize(Decimal('0.01')), 'line_count': len(values)}}).data
 
 
-def ensure_draft(row, account, user, latest, draft, lines, settings_row, now):
+def ensure_draft(row, account, user, latest, draft, lines, settings_row, profile, now):
     """Materializes the virtual draft (replacing any row prepared on an older revision) and lines missing from it -> (draft, {pk: line})."""
     saved = {}
     if draft is None:
         DealQuotationDraft.objects.filter(order=row).delete()
-        header = initial_header(latest, settings_row)
+        header = initial_header(latest, settings_row, profile)
         draft = DealQuotationDraft.objects.create(order=row, supplier=account, base_quotation=latest, currency=header['currency'], terms=header['terms'],
-                                                  draft_version=0, created_by=user, updated_by=user, pricing_context=pricing_context(settings_row, now))
+                                                  draft_version=0, created_by=user, updated_by=user, pricing_context=pricing_context(settings_row, profile, now))
     else:
         saved = {line.order_line_id: line for line in draft.lines.all()}
     missing = [line for pk, line in lines.items() if pk not in saved]
     if missing:
         quantities = initial_quantities(missing, latest, settings_row, stock_by_line(missing))
-        initial = initial_values(missing, latest, quantities, priced(row, account, draft.currency, quantities, missing, settings_row))
+        initial = initial_values(missing, latest, quantities, priced(row, account, draft.currency, quantities, missing, settings_row, profile))
         DealQuotationDraftLine.objects.bulk_create([DealQuotationDraftLine(draft=draft, order_line=line, **initial[line.pk]) for line in missing])
         saved = {line.order_line_id: line for line in DealQuotationDraftLine.objects.filter(draft=draft)}
     return draft, saved
 
 
-def pricing_context(settings_row, now):
-    return {'engine': ENGINE_VERSION, 'settings_version': settings_row.version, 'priced_at': now.isoformat()}
+def pricing_context(settings_row, profile, now):
+    return {'engine': ENGINE_VERSION, 'settings_version': settings_row.version, 'profile_id': str(profile.pk) if profile else None,
+            'profile_version': profile.version if profile else None, 'priced_at': now.isoformat()}
 
 
 def apply_engine(line, result):
@@ -384,8 +405,8 @@ class QuoteDraftView(APIView):
             return Response(draft_payload(row, account, membership))
         if data['expected_draft_version'] != (draft.draft_version if draft else 0):
             return draft_conflict(row, account, membership)
-        now, settings_row = timezone.now(), pricing_settings(account)
-        draft, saved = ensure_draft(row, account, request.user, latest, draft, lines, settings_row, now)
+        now, settings_row, profile = timezone.now(), pricing_settings(account), client_profile(account, row.client_id)
+        draft, saved = ensure_draft(row, account, request.user, latest, draft, lines, settings_row, profile, now)
         changes, changed, repriced, requantified = data.get('lines', []), {}, [], {}
         for change in changes:
             line = saved[change['order_line_id']]
@@ -395,12 +416,12 @@ class QuoteDraftView(APIView):
         currency = data.get('currency', draft.currency)
         # Typed prices are compared with the live suggestion; engine prices follow a quantity change (a volume rule may apply).
         pricing = priced(row, account, currency, {pk: {'quantity': line.quantity} for pk, line in saved.items()},
-                         [lines[pk] for pk in saved], settings_row) if requantified or any('unit_price' in change for change in changes) else {}
+                         [lines[pk] for pk in saved], settings_row, profile) if requantified or any('unit_price' in change for change in changes) else {}
         # Only an engine price that was still current before the quantity change follows it: a stale one (the list moved since it was
         # calculated) keeps its value and raises stale_price, so a quantity edit never adopts a list change unnoticed.
         followers = [pk for pk in requantified if saved[pk].price_source == 'engine']
         current = {pk for pk, result in priced(row, account, draft.currency, {pk: {'quantity': requantified[pk]} for pk in followers},
-                                               [lines[pk] for pk in followers], settings_row).items()
+                                               [lines[pk] for pk in followers], settings_row, profile).items()
                    if result.fingerprint == saved[pk].engine_fingerprint} if followers else set()
         for change in changes:
             line, result = saved[change['order_line_id']], pricing.get(change['order_line_id'])
@@ -460,9 +481,9 @@ class QuoteDraftReprice(APIView):
             return Response(draft_payload(row, account, membership))
         if data['expected_draft_version'] != (draft.draft_version if draft else 0):
             return draft_conflict(row, account, membership)
-        now, settings_row = timezone.now(), pricing_settings(account)
-        draft, saved = ensure_draft(row, account, request.user, latest, draft, lines, settings_row, now)
-        pricing = priced(row, account, draft.currency, {pk: {'quantity': line.quantity} for pk, line in saved.items()}, [lines[pk] for pk in saved], settings_row)
+        now, settings_row, profile = timezone.now(), pricing_settings(account), client_profile(account, row.client_id)
+        draft, saved = ensure_draft(row, account, request.user, latest, draft, lines, settings_row, profile, now)
+        pricing = priced(row, account, draft.currency, {pk: {'quantity': line.quantity} for pk, line in saved.items()}, [lines[pk] for pk in saved], settings_row, profile)
         changed, repriced = [], []
         for pk, line in saved.items():
             result, before = pricing[pk], (line.unit_price, line.price_source, line.engine_fingerprint)
@@ -482,7 +503,7 @@ class QuoteDraftReprice(APIView):
         DealQuotationDraftLine.objects.bulk_update(changed, LINE_UPDATE_FIELDS)
         draft.draft_version += 1
         draft.last_save_id, draft.last_save_hash, draft.updated_by = data['save_id'], fingerprint, request.user
-        draft.pricing_context = pricing_context(settings_row, now)
+        draft.pricing_context = pricing_context(settings_row, profile, now)
         draft.save()
         return Response(draft_payload(row, account, membership, repriced))
 

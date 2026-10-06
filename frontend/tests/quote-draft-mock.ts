@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
 import type { Deal } from '../lib/deal-types';
-import type { DraftAcknowledgement, DraftException, DraftSuggestion, PublishException, QuoteDraft, QuoteDraftLine, QuoteDraftReprice, QuoteDraftSave, RepricedLine } from '../lib/pricing-types';
+import type { DraftAcknowledgement, DraftException, DraftProfile, DraftSuggestion, PublishException, QuoteDraft, QuoteDraftLine, QuoteDraftReprice, QuoteDraftSave, RepricedLine } from '../lib/pricing-types';
 import type { SupplierRequestLine } from '../lib/request-types';
 
 type DraftSource = Pick<Deal, 'lines' | 'status'> & { quotation?: Deal['quotation'] };
@@ -14,16 +14,18 @@ function summary(lines: QuoteDraftLine[]) {
 export const generalList = { id: '99999999-0000-4000-8000-000000000001', code: 'GENERAL', name: 'LISTA GENERAL', currency: 'USD' as const };
 export function suggestion(price: string | null, { floor = null, revision = 3 }: { floor?: string | null; revision?: number } = {}): DraftSuggestion {
   const fingerprint = `fp-${price ?? 'none'}-${revision}`;
-  return { unit_price: price, fingerprint, explanation: { engine: 'pricing-v1', evaluated_on: '2026-10-05', quantity_basis: 1, currency: 'USD', unit_price: price,
+  return { unit_price: price, fingerprint, explanation: { engine: 'pricing-v2', evaluated_on: '2026-10-05', quantity_basis: 1, currency: 'USD', unit_price: price,
     status: price ? 'priced' : 'missing', profile: null, price_list: generalList, steps: [], discarded: [], next_breaks: [], floor_price: floor, codes: price ? [] : ['no_list_price'],
     rounding: 'ROUND_HALF_UP_0.01', fingerprint, base: price ? { price_list_id: generalList.id, price_list_code: 'GENERAL', fallback: false, entry_revision: revision,
       unit_price: price, currency: 'USD', updated_at: '2026-10-01T17:00:00Z' } : null } };
 }
 type Suggestions = Record<string, DraftSuggestion>;
-function withPricing(draft: QuoteDraft, suggestions: Suggestions | null): QuoteDraft {
+// Saved engine prices never follow a moved suggestion: like the server, they count as stale until the supplier recalculates.
+function withPricing(draft: QuoteDraft, suggestions: Suggestions | null, profile?: DraftProfile): QuoteDraft {
   if (!suggestions) return draft;
   const lines = draft.lines.map(line => ({ ...line, suggestion: suggestions[line.order_line_id] ?? null }));
-  return { ...draft, lines, pricing: { engine: 'pricing-v1', configured: true, price_list: generalList, stale: 0,
+  return { ...draft, lines, pricing: { engine: 'pricing-v2', configured: true, price_list: generalList, ...(profile ? { profile } : {}),
+    stale: draft.persisted ? lines.filter(line => line.price_source === 'engine' && line.suggestion && line.unit_price !== line.suggestion.unit_price).length : 0,
     fillable: lines.filter(line => line.unit_price === null && line.suggestion?.unit_price).length } };
 }
 
@@ -38,7 +40,7 @@ export function virtualDraft(order: DraftSource, suggestions: Suggestions | null
   });
   return withPricing({ persisted: false, draft_version: 0, status: 'editing', base_quotation_id: prior?.id ?? null, currency: prior?.currency ?? 'USD',
     terms: prior?.terms ?? '', terms_origin: prior ? 'previous' : 'none', updated_at: null, updated_by: null,
-    permissions: { can_publish: true, publish_requires: 'staff' }, pricing: { engine: 'pricing-v1', configured: false, price_list: null, stale: 0, fillable: 0 },
+    permissions: { can_publish: true, publish_requires: 'staff' }, pricing: { engine: 'pricing-v2', configured: false, price_list: null, stale: 0, fillable: 0 },
     lines, order_exceptions: [], summary: summary(lines), repriced: [] }, suggestions);
 }
 
@@ -100,13 +102,13 @@ export function applyReprice(draft: QuoteDraft, payload: QuoteDraftReprice, auth
 // A server-like draft store: version checks return the current draft with 409, and a new revision makes old rows stale.
 // With exceptions on, drafts carry the server's alerts and saves apply acknowledge/revoke; with suggestions, lines carry the
 // supplier's list prices and the reprice endpoint applies them.
-export async function mockQuoteDrafts(page: Page, getOrder: () => DraftSource, { exceptions = false, suggestions = null as Suggestions | null } = {}) {
+export async function mockQuoteDrafts(page: Page, getOrder: () => DraftSource, { exceptions = false, suggestions = null as Suggestions | null, profile = undefined as DraftProfile | undefined } = {}) {
   let saved: QuoteDraft | null = null, acks: Acks = {};
   const saves: QuoteDraftSave[] = [], discards: QuoteDraftSave[] = [], reprices: QuoteDraftReprice[] = [], requests: string[] = [];
   // hold() keeps draft saves waiting until the returned release() is called, to act while a save is in flight.
   let gate: Promise<void> | null = null, held = 0;
   const editable = () => ['reviewed', 'adjustment'].includes(getOrder().status);
-  const stored = () => withPricing(saved && saved.base_quotation_id === (getOrder().quotation?.id ?? null) ? saved : virtualDraft(getOrder(), suggestions), suggestions);
+  const stored = () => withPricing(saved && saved.base_quotation_id === (getOrder().quotation?.id ?? null) ? saved : virtualDraft(getOrder(), suggestions), suggestions, profile);
   const current = () => exceptions ? withExceptions(stored(), saved ? acks : {}) : stored();
   await page.route(/\/api\/market\/accounts\/[^/]+\/requests\/[^/]+\/draft(?:\/discard|\/reprice)?$/, async route => {
     requests.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`);
@@ -135,5 +137,6 @@ export async function mockQuoteDrafts(page: Page, getOrder: () => DraftSource, {
   });
   const hold = () => { let release = () => {}; gate = new Promise<void>(resolve => { release = () => { gate = null; resolve(); }; }); return release; };
   return { saves, discards, reprices, requests, current, hold, held: () => held, clear: () => { saved = null; acks = {}; }, set: (draft: QuoteDraft) => { saved = draft; },
-    suggest: (lineId: string, value: DraftSuggestion) => { suggestions = { ...(suggestions || {}), [lineId]: value }; } };
+    suggest: (lineId: string, value: DraftSuggestion) => { suggestions = { ...(suggestions || {}), [lineId]: value }; },
+    setProfile: (value: DraftProfile) => { profile = value; } };
 }

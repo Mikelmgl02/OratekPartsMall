@@ -97,6 +97,11 @@ const fieldLabel: Record<string, string> = {
   is_OEM: 'El SKU principal es OEM', sku: 'SKU interno', codes: 'Alternos', code: 'Código alterno', matching_status: 'Estado de coincidencia',
   file: 'Archivo Excel', mode: 'Acción', preview_token: 'Vista previa',
   category: 'Categoría', subcategory: 'Subcategoría',
+  // Private pricing: client profiles, commercial rules and the simulator.
+  price_list_id: 'Lista de precios', fallback_to_default: 'Lista de respaldo', discount_percent: 'Descuento general', preferred_currency: 'Moneda preferida',
+  customer_code: 'Código del cliente', default_terms: 'Condiciones predeterminadas', internal_notes: 'Notas internas', client_id: 'Cliente', scope: 'Aplica a',
+  target: 'Artículos', target_value: 'Línea o marca', item_id: 'Artículo', kind: 'Tipo', value: 'Valor', currency: 'Moneda', min_quantity: 'Desde',
+  valid_from: 'Vigente desde', valid_until: 'Vigente hasta', note: 'Nota interna', items: 'Artículos', on_date: 'Fecha',
 };
 function validationMessage(value: unknown): string {
   if (typeof value === 'string') return value;

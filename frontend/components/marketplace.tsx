@@ -229,7 +229,7 @@ export default function Catálogo() {
   function setClientPage(destination: 'cesta' | 'solicitudes' | 'favoritos' | 'compras' | null, replace = false) {
     const url = new URL(window.location.href);
     if (destination) url.searchParams.set('vista', destination); else url.searchParams.delete('vista');
-    url.searchParams.delete('seccion'); url.searchParams.delete('cuenta');
+    for (const key of ['seccion', 'cuenta', 'pestana', 'cliente']) url.searchParams.delete(key);
     const next = `${url.pathname}${url.search}${url.hash}`;
     if (next !== `${window.location.pathname}${window.location.search}${window.location.hash}`) window.history[replace ? 'replaceState' : 'pushState'](window.history.state, '', next);
     setBasketOpen(destination === 'cesta'); setSentOpen(destination === 'solicitudes'); setWishlistOpen(destination === 'favoritos');
@@ -246,7 +246,7 @@ export default function Catálogo() {
     setAccountId(id); setView('catalog'); setDetail(null); setPage(1);
     const url = new URL(window.location.href);
     if (url.searchParams.get('vista') === 'proveedor') url.searchParams.delete('vista');
-    url.searchParams.delete('seccion'); url.searchParams.delete('cuenta');
+    for (const key of ['seccion', 'cuenta', 'pestana', 'cliente']) url.searchParams.delete(key);
     window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
     try { if (user) localStorage.setItem(`motionpartes:active-account:${user.id}`, id); } catch { /* The active account remains usable for this visit. */ }
   }

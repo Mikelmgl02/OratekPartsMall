@@ -14,7 +14,7 @@ const sections = [{ key: 'inventory', label: 'Inventario', detail: 'Existencias 
   { key: 'requests', label: 'Solicitudes', detail: 'Órdenes y cotizaciones', Icon: ClipboardList }] as const;
 const headings: Record<SupplierSection, [string, (name: string) => string]> = {
   inventory: ['Tu inventario, en un solo lugar.', name => `Administra el inventario de ${name} y revisa cada ajuste.`],
-  pricing: ['Tus precios privados, en un solo lugar.', name => `Mantén las listas de precios de ${name} para cotizar más rápido.`],
+  pricing: ['Tus precios privados, en un solo lugar.', name => `Mantén las listas de precios, los perfiles de tus clientes y las reglas comerciales de ${name} para cotizar más rápido.`],
   requests: ['Tus solicitudes, en un solo lugar.', name => `Consulta lo que los clientes solicitan a ${name}.`],
 };
 function initialSection(): SupplierSection {
