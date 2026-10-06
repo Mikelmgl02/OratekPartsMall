@@ -37,6 +37,17 @@ export type QuoteDraftLine = {
   // Null when the supplier has no price list yet.
   suggestion: DraftSuggestion | null; note: string; exceptions: DraftException[];
 };
+// The AI quotation assistant (supplier-only). Proposals quote the client's own words and never carry a price: only quantity changes, internal
+// notes and terms items change the draft, and only when the supplier applies them. Price requests, mentions outside the order and questions
+// are dismissed (questions can be copied to the chat composer).
+export type AssistantProposalKind = 'quantity_change' | 'remove_line' | 'line_note' | 'terms' | 'price_request' | 'unmatched' | 'question';
+export type AssistantProposal = { id: string; kind: AssistantProposalKind; detail: string; order_line_id: string | null; codigo: string; quantity: number | null;
+  text: string; evidence: string; decision: 'applied' | 'dismissed' | null; can_apply: boolean };
+export type AssistantRun = { id: string; status: 'claimed' | 'completed' | 'failed'; cached: boolean; stale: boolean; draft_version: number; created_at: string;
+  finished_at: string | null; created_by: { name: string }; summary: string; rejected_items: number; proposals: AssistantProposal[] };
+// Hidden unless configured (platform key and budget) and enabled (the owner opted in); unavailable explains why it cannot run now.
+export type AssistantState = { configured: boolean; enabled: boolean; runs_left: number; unavailable: string; latest_run: AssistantRun | null };
+export type AssistantDecisionInput = { proposal_id: string; action: 'apply' | 'dismiss' };
 export type QuoteDraft = {
   persisted: boolean; draft_version: number; status: 'editing' | 'review_requested'; base_quotation_id: string | null;
   currency: Currency; terms: string; terms_origin: 'saved' | 'previous' | 'profile' | 'none'; updated_at: string | null; updated_by: { name: string } | null;
@@ -47,6 +58,8 @@ export type QuoteDraft = {
   summary: { blocking: number; to_confirm: number; info: number; total: string; line_count: number };
   // Prices the save that returned this draft recalculated from the supplier's list; empty on reads.
   repriced: RepricedLine[];
+  // Absent from servers or mocks without the assistant: the panel stays hidden.
+  assistant?: AssistantState;
 };
 export type QuoteDraftReprice = { save_id: string; expected_draft_version: number; scope: RepriceScope; order_line_ids?: string[] };
 export type QuoteDraftEnvelope = { editable: boolean; draft: QuoteDraft | null };
@@ -66,7 +79,7 @@ export type QuotationTrace = { available: false } | {
   lines: { order_line_id: string; codigo: string; brand: string; description: string; quantity: number; unit_price: string;
     available_at_quote: number | null; identity_ok_at_quote: boolean; available_at_accept: number | null; suggested_price: string | null;
     price_source: AuditPriceSource; quantity_source: QuantitySource; engine_fingerprint: string; explanation: Record<string, unknown>;
-    exceptions: TraceException[] }[];
+    exceptions: TraceException[]; assistant_run_id?: string | null }[];
 };
 
 // "Precios › Configuración": the supplier's private settings. Permission fields and the assistant change only by the owner; writes send only changed fields.

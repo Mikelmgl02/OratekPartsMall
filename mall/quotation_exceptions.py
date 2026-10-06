@@ -11,8 +11,10 @@ import hashlib
 # Codes a supplier may confirm. A block policy turns a confirmable code into a block that no acknowledgement lifts.
 # Keep in sync with QuoteExceptionCodeEnum / AcknowledgeableExceptionEnum (config/settings.py) and the frontend label map.
 ACKNOWLEDGEABLE = ('offered_gt_available', 'offered_gt_requested', 'identity_changed', 'zero_price', 'below_floor', 'stale_price')
+# client_price_request and assistant_unmatched are info alerts from the AI assistant's latest run (quote_assistant.assistant_findings).
 EXCEPTION_CODES = ('quantity_missing', 'price_missing', 'all_zero', 'draft_outdated', *ACKNOWLEDGEABLE, 'reduced_to_stock', 'zero_offered',
-                   'manual_price', 'differs_from_list', 'no_list_price', 'currency_parity', 'currency_mismatch', 'fallback_list', 'rule_conflict', 'no_profile')
+                   'manual_price', 'differs_from_list', 'no_list_price', 'currency_parity', 'currency_mismatch', 'fallback_list', 'rule_conflict', 'no_profile',
+                   'client_price_request', 'assistant_unmatched')
 SEVERITIES = ('block', 'confirm', 'info')
 
 
@@ -88,15 +90,16 @@ def acknowledge(found, acknowledgements):
 
 
 def compute_exceptions(lines, values, stock, settings_row, *, pricing=None, acknowledgements=None, order_acknowledgements=(), outdated=False,
-                       no_profile=False):
+                       no_profile=False, extra=None):
     """-> {lines: {order_line_pk: [finding]}, order: [finding], summary: {blocking, to_confirm, info}}.
 
     values, stock and pricing (live pricing_engine results) are keyed by order line pk; acknowledgements maps an order line pk to its
-    stored [{code, context, user_id, at}]; no_profile: the client has no private profile with this supplier yet.
+    stored [{code, context, user_id, at}]; no_profile: the client has no private profile with this supplier yet; extra: info findings
+    built elsewhere ({lines: {pk: [finding]}, order: [finding]}), such as the assistant's.
     """
-    acknowledgements, pricing = acknowledgements or {}, pricing or {}
-    per_line = {line.pk: acknowledge(line_findings(line, values[line.pk], stock[line.pk], settings_row, pricing.get(line.pk)), acknowledgements.get(line.pk))
-                for line in lines}
+    acknowledgements, pricing, extra = acknowledgements or {}, pricing or {}, extra or {'lines': {}, 'order': []}
+    per_line = {line.pk: acknowledge(line_findings(line, values[line.pk], stock[line.pk], settings_row, pricing.get(line.pk))
+                                     + [dict(item) for item in extra['lines'].get(line.pk, [])], acknowledgements.get(line.pk)) for line in lines}
     order = []
     if outdated:
         order.append({'code': 'draft_outdated', 'severity': 'block', 'message': 'El borrador se preparó sobre una versión anterior; recárgalo.', 'context': ''})
@@ -117,6 +120,7 @@ def compute_exceptions(lines, values, stock, settings_row, *, pricing=None, ackn
         order.append({'code': 'currency_mismatch', 'severity': 'info', 'context': '', 'message': (
             f'Moneda distinta: tu lista está en {mismatch.explanation["price_list"]["currency"]} y la cotización en {mismatch.explanation["currency"]}; '
             'sin precio sugerido.')})
+    order += [dict(item) for item in extra['order']]
     acknowledge(order, order_acknowledgements)
     every = order + [item for found in per_line.values() for item in found]
     return {'lines': per_line, 'order': order, 'summary': {

@@ -101,8 +101,19 @@ export default function PricingSettingsPanel({ account }: { account: Account }) 
       </fieldset>
       <fieldset>
         <legend><Bot size={15}/>Asistente de IA</legend>
+        {/* Privacy disclosure (decision D3), shown before the owner can enable it. */}
+        <div className="pricing-settings-disclosure" role="note" aria-label="Aviso de privacidad del asistente de IA">
+          <p><strong>Antes de activarlo:</strong> El texto de la orden y de la conversación se envía a Google Gemini para interpretarlo. Nunca se envían precios ni existencias.</p>
+          <ul>
+            <li>Solo se envía cuando un miembro de tu equipo pulsa «Interpretar solicitud del cliente» en una orden.</li>
+            <li>Se envían las notas de la orden, el motivo del ajuste y los mensajes de la conversación desde la última versión de la cotización, con un límite de texto. Los nombres de las cuentas y de sus usuarios y los correos se reemplazan, los importes escritos se ocultan y también las cifras que escribe tu equipo.</li>
+            <li>Nunca se envían precios, listas, reglas, perfiles de clientes, existencias ni otras órdenes.</li>
+            <li>Las interpretaciones se guardan 30 días para tu equipo; después se borra su texto.</li>
+            <li>Tus clientes verán en la conversación un aviso de que usas un asistente de IA.</li>
+          </ul>
+        </div>
         <label className="admin-checkbox"><input type="checkbox" checked={form.assistant_enabled} disabled={locked('assistant_enabled')} onChange={event => set('assistant_enabled', event.target.checked)}/>Usar el asistente de cotización</label>
-        <p className="form-footnote">El texto de la orden y de la conversación se envía a Google Gemini para interpretarlo. Nunca se envían precios ni existencias. El asistente aparece en tus órdenes cuando la plataforma lo tenga disponible.</p>
+        <p className="form-footnote">El asistente propone cantidades, notas y condiciones que revisas una por una; nunca propone precios. Aparece en tus órdenes cuando la plataforma lo tenga disponible.</p>
       </fieldset>
       {settings.updated_by && settings.updated_at && <p className="form-footnote">Última actualización por {settings.updated_by.name} el {date(settings.updated_at)}.</p>}
       {settings.can_configure && <button className="button primary" disabled={busy}>{busy ? <LoaderCircle className="spin" size={16}/> : <Save size={16}/>}{changed.length ? `Guardar configuración (${changed.length})` : 'Guardar configuración'}</button>}

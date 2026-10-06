@@ -8,9 +8,11 @@ import json
 import logging
 import uuid
 from decimal import Decimal
+from unittest import mock
 
 from django.contrib import admin
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import override_settings
 from openpyxl import Workbook, load_workbook
 from rest_framework.test import APITestCase
 
@@ -22,6 +24,7 @@ from .price_import_models import PriceImportBatch, PriceImportJob
 from .pricing_models import (ClientPricingProfile, PriceChange, PriceList, PriceListEntry, PricingAuditEvent, PricingRule, SupplierItemPricing,
                              SupplierPricingSettings, record_pricing_event)
 from .pricing_services import set_prices
+from .quote_assistant_models import AIUsageRecord, QuoteAssistantRun
 from .quote_draft_models import DealQuotationAudit, DealQuotationDraft, DealQuotationDraftLine, DealQuotationLineAudit
 from .request_models import DealCommand, SupplierRequest
 from .serializers import SupplierItemSerializer
@@ -62,6 +65,7 @@ class PricingPrivacyTests(APITestCase):
     action = deal_tests.DealWorkflowTests.action
     messages = deal_tests.DealWorkflowTests.messages
     trace_paths = ()
+    assistant_paths = ()
     import_job = uuid.UUID(int=0)
 
     def quote(self, order, price='13.00'):
@@ -146,6 +150,29 @@ class PricingPrivacyTests(APITestCase):
         self.assertEqual({row['id']: row['draft_state'] for row in listed}[str(order.pk)], 'review_requested')
         self.assertTrue(PricingAuditEvent.objects.filter(kind='draft_review_requested', order=order).exists())
 
+    def seed_private_assistant(self, order):
+        """A real assistant run (S7) on the supplier's draft, with the provider patched: its output carries SECRETO-IA and the supplier applies
+        its line note to the draft. Runs, decisions and usage exist only for the supplier's members."""
+        line = order.lines.order_by('sku', 'codigo', 'id').first()
+        output = {'summary': 'SECRETO-IA RESUMEN', 'proposals': [{'i': 0, 'kind': 'line_note', 'evidence': 'MENOS UNIDADES', 'note': 'SECRETO-IA NOTA'}],
+                  'terms_items': [], 'price_requests': [{'kind': 'descuento', 'evidence': 'MENOS UNIDADES'}], 'unmatched': [], 'questions': ['¿SECRETO-IA?']}
+        self.client.force_authenticate(self.seller_a)
+        base = f'/api/v1/accounts/{self.supplier_a.pk}/requests/{order.pk}/draft/assistant/'
+        with override_settings(GEMINI_API_KEY='canary-key-not-real', QUOTE_ASSISTANT_MONTHLY_USD=Decimal('40')), \
+                mock.patch('mall.quote_assistant.generate_json', return_value=(output, {'input_tokens': 10, 'output_tokens': 10})) as provider:
+            response = self.client.post(base, {'run_id': str(uuid.uuid4()), 'expected_draft_version': 1}, format='json')
+            self.assertEqual(response.status_code, 200, response.data)
+            self.assertNotIn('777.77', json.dumps(provider.call_args.args[0]))
+            run = response.data['latest_run']
+            applied = self.client.post(f'{base}{run["id"]}/decisions/', {'save_id': str(uuid.uuid4()), 'expected_draft_version': 1,
+                                                                        'decisions': [{'proposal_id': 'p1', 'action': 'apply'}]}, format='json')
+        self.assertEqual(applied.status_code, 200)
+        self.assertIn('SECRETO-IA', response.content.decode())
+        self.assertEqual({value['order_line_id']: value['note'] for value in applied.data['lines']}[str(line.pk)], 'SECRETO-BORRADOR · SECRETO-IA NOTA')
+        self.assertTrue(QuoteAssistantRun.objects.filter(output__summary='SECRETO-IA RESUMEN').exists())
+        self.assertTrue(AIUsageRecord.objects.filter(account=self.supplier_a, calls=1).exists())
+        self.assistant_paths = [f'/api/v1/accounts/{account.pk}/requests/{order.pk}/draft/assistant/' for account in (self.supplier_a, self.client_account, self.supplier_b)]
+
     def seed_private_trace(self, quotation):
         """The publication trace (S2) is supplier-only: stock at quote time, sources and acknowledgements."""
         DealQuotationAudit.objects.filter(quotation_id=quotation['id']).update(settings_snapshot={'note': 'SECRETO-AUDITORIA'})
@@ -171,7 +198,8 @@ class PricingPrivacyTests(APITestCase):
             '/api/v1/accounts/', '/api/v1/catalog/?include_facets=1', f'/api/v1/catalog/?search={self.part.sku}&include_facets=1',
             f'/api/v1/catalog/{part}/technical/', f'/api/v1/catalog/{part}/suppliers/', '/api/v1/wishlist/', '/api/v1/wishlist/state/',
             f'{account_url}/catalog/{part}/request-state/', f'{account_url}/sent-requests/', f'{account_url}/sent-requests/{order.pk}/',
-            f'{account_url}/requests/', f'{account_url}/requests/{order.pk}/', self.messages(order, account), *self.pricing_paths(account), *self.trace_paths]}
+            f'{account_url}/requests/', f'{account_url}/requests/{order.pk}/', self.messages(order, account), *self.pricing_paths(account), *self.trace_paths,
+            *self.assistant_paths]}
         responses[f'PUT /api/v1/wishlist/{part}/'] = self.client.put(f'/api/v1/wishlist/{part}/')
         responses['POST messages'] = self.client.post(self.messages(order, account), {'message_id': str(uuid.uuid4()), 'body': 'HOLA'}, format='json')
         responses['POST analytics'] = self.client.post('/api/v1/analytics/events/', {
@@ -193,6 +221,10 @@ class PricingPrivacyTests(APITestCase):
         responses['POST rule archive'] = self.client.post(f'{private}/pricing-rules/{self.rule.pk}/archive/', {'expected_version': 1}, format='json')
         responses['POST simulate'] = self.client.post(f'{private}/pricing/simulate/', {'client_id': client, 'items': item}, format='json')
         responses['POST simulate (propio)'] = self.client.post(f'{account_url}/pricing/simulate/', {'client_id': client, 'items': item}, format='json')
+        for path in self.assistant_paths:
+            responses[f'POST {path}'] = self.client.post(path, {'run_id': str(uuid.uuid4()), 'expected_draft_version': 0}, format='json')
+            responses[f'POST {path} decisions'] = self.client.post(f'{path}{QuoteAssistantRun.objects.get().pk}/decisions/', {
+                'save_id': str(uuid.uuid4()), 'expected_draft_version': 0, 'decisions': [{'proposal_id': 'p1', 'action': 'dismiss'}]}, format='json')
         for name, call in writes:
             responses[name] = call()
         return responses
@@ -202,7 +234,8 @@ class PricingPrivacyTests(APITestCase):
         self.client.force_authenticate(self.root)
         return {path: self.client.get(path) for path in [
             '/api/v1/management/inventory/', '/api/v1/management/catalog/', '/api/v1/management/analytics/', f'/api/v1/management/accounts/{self.supplier_a.pk}/',
-            f'/api/v1/management/inventory/{self.item_a.pk}/', f'/api/v1/accounts/{self.supplier_a.pk}/requests/', *self.pricing_paths(self.supplier_a)]}
+            f'/api/v1/management/inventory/{self.item_a.pk}/', f'/api/v1/accounts/{self.supplier_a.pk}/requests/', *self.pricing_paths(self.supplier_a),
+            *self.assistant_paths]}
 
     def assert_no_markers(self, label, responses):
         for path, response in responses.items():
@@ -245,6 +278,7 @@ class PricingPrivacyTests(APITestCase):
             ('POST request_adjustment', lambda: self.action(order, 'request_adjustment', quotation_id=quote['id'], reason='MENOS UNIDADES'))])
         self.assertIn('"unit_price":"13.00"', responses[f'/api/v1/accounts/{self.client_account.pk}/sent-requests/{order.pk}/'].content.decode())
         self.seed_private_draft(order)
+        self.seed_private_assistant(order)
         draft_path = f'/requests/{order.pk}/draft/'
         drafting = self.calls(self.buyer, self.client_account, order, writes=[
             ('GET borrador del proveedor', lambda: self.client.get(f'/api/v1/accounts/{self.supplier_a.pk}{draft_path}')),
@@ -330,6 +364,10 @@ class PricingPrivacyTests(APITestCase):
             'quoted_quantity', 'adjustment_quantity', 'handshaked_quantity'}))
         message = self.client.post(self.messages(order), {'message_id': str(uuid.uuid4()), 'body': 'GRACIAS'}, format='json').data
         self.assertEqual(set(message), {'id', 'message_id', 'body', 'account_id', 'account_name', 'actor_name', 'created_at'})
+        # The only assistant datum a client receives is the D3 disclosure flag on the conversation.
+        listed = self.client.get(self.messages(order)).data
+        self.assertEqual((set(listed), set(listed['results'][0]), listed['assistant_notice']),
+                         ({'results', 'cursor', 'has_more', 'has_earlier', 'assistant_notice'}, set(message), False))
         self.assertEqual(set(self.client.get('/api/v1/accounts/').data['results'][0]), {'id', 'name', 'roles', 'capabilities', 'permission'})
         part = self.client.get('/api/v1/catalog/').data['results'][0]
         self.assertEqual(set(part), {'id', 'sku', 'is_OEM', 'name', 'description', 'category', 'subcategory', 'part_type', 'codes', 'availability', 'images'})
@@ -340,7 +378,8 @@ class PricingPrivacyTests(APITestCase):
 
     def test_pricing_models_stay_out_of_admin_and_management_serializers(self):
         for model in [SupplierPricingSettings, PricingAuditEvent, DealQuotationDraft, DealQuotationDraftLine, DealQuotationAudit, DealQuotationLineAudit,
-                      PriceList, PriceListEntry, SupplierItemPricing, PriceChange, PriceImportJob, PriceImportBatch, ClientPricingProfile, PricingRule]:
+                      PriceList, PriceListEntry, SupplierItemPricing, PriceChange, PriceImportJob, PriceImportBatch, ClientPricingProfile, PricingRule,
+                      QuoteAssistantRun, AIUsageRecord]:
             self.assertNotIn(model, admin.site._registry)
         self.assertEqual(SupplierItemSerializer.Meta.fields, ['id', 'supplier_invent_id', 'part', 'codigo', 'brand', 'description', 'references',
                                                               'matching_status', 'source', 'reported_quantity', 'reserved_quantity',

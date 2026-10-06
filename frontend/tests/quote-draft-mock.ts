@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test';
 import type { Deal } from '../lib/deal-types';
-import type { DraftAcknowledgement, DraftException, DraftProfile, DraftSuggestion, PublishException, QuoteDraft, QuoteDraftLine, QuoteDraftReprice, QuoteDraftSave, RepricedLine } from '../lib/pricing-types';
+import type { AssistantState, DraftAcknowledgement, DraftException, DraftProfile, DraftSuggestion, PublishException, QuoteDraft, QuoteDraftLine, QuoteDraftReprice, QuoteDraftSave,
+  RepricedLine } from '../lib/pricing-types';
 import type { SupplierRequestLine } from '../lib/request-types';
 
 type DraftSource = Pick<Deal, 'lines' | 'status'> & { quotation?: Deal['quotation'] };
@@ -109,16 +110,16 @@ export function applyReprice(draft: QuoteDraft, payload: QuoteDraftReprice, auth
 
 // A server-like draft store: version checks return the current draft with 409, and a new revision makes old rows stale.
 // With exceptions on, drafts carry the server's alerts and saves apply acknowledge/revoke; with suggestions, lines carry the
-// supplier's list prices and the reprice endpoint applies them.
+// supplier's list prices and the reprice endpoint applies them. With assistant, every draft carries that AI assistant state, like the server.
 export async function mockQuoteDrafts(page: Page, getOrder: () => DraftSource, { exceptions = false, suggestions = null as Suggestions | null, profile = undefined as DraftProfile | undefined,
-  permissions = undefined as QuoteDraft['permissions'] | undefined } = {}) {
+  permissions = undefined as QuoteDraft['permissions'] | undefined, assistant = undefined as (() => AssistantState) | undefined } = {}) {
   let saved: QuoteDraft | null = null, acks: Acks = {};
   const saves: QuoteDraftSave[] = [], discards: QuoteDraftSave[] = [], reprices: QuoteDraftReprice[] = [], requests: string[] = [];
   // hold() keeps draft saves waiting until the returned release() is called, to act while a save is in flight.
   let gate: Promise<void> | null = null, held = 0;
   const editable = () => ['reviewed', 'adjustment'].includes(getOrder().status);
   const stored = () => ({ ...withPricing(saved && saved.base_quotation_id === (getOrder().quotation?.id ?? null) ? saved : virtualDraft(getOrder(), suggestions), suggestions, profile),
-    ...(permissions ? { permissions } : {}) });
+    ...(permissions ? { permissions } : {}), ...(assistant ? { assistant: assistant() } : {}) });
   const current = () => exceptions ? withExceptions(stored(), saved ? acks : {}) : stored();
   await page.route(/\/api\/market\/accounts\/[^/]+\/requests\/[^/]+\/draft(?:\/discard|\/reprice)?$/, async route => {
     requests.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`);

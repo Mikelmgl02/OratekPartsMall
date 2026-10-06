@@ -2,18 +2,22 @@
 
 No draft operation changes SupplierRequest.version or updated_at, writes a DealEvent, or appears in request_summary,
 deal_data or request_detail. Writes hold the same order row lock as DealActions, so saves and publishing serialize.
+The AI assistant's runs and decisions live here too: running never changes the draft, and applying a proposal is a draft save.
 """
 import hashlib
 import json
+import uuid
+from collections import Counter
 from decimal import Decimal
 
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import serializers
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import Throttled, ValidationError
 from rest_framework.response import Response
+from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
 
 from .availability import check_lines
@@ -21,6 +25,10 @@ from .pricing_engine import ENGINE_VERSION, client_profile, price_lines
 from .pricing_models import CURRENCY_CHOICES, PERMISSION_CHOICES, choice_values, pricing_settings, record_pricing_event
 from .quotation_exceptions import ACKNOWLEDGEABLE, EXCEPTION_CODES, SEVERITIES, compute_exceptions
 from .models import User
+from .quote_assistant import (APPLICABLE, DECISION_STATES, IN_PROGRESS, MAX_LINES, NO_CLIENT_TEXT, NOT_APPLICABLE, PROPOSAL_KINDS, TOO_MANY_LINES,
+                              QuoteAssistantProviderError, assistant_block, assistant_findings, build_input, ensure_enabled, execute_run,
+                              has_client_text, start_run)
+from .quote_assistant_models import RUN_STATUS_CHOICES, QuoteAssistantRun
 from .quote_draft_models import (AUDIT_PRICE_SOURCE_CHOICES, DRAFT_STATUS_CHOICES, PRICE_SOURCE_CHOICES, QUANTITY_SOURCE_CHOICES, DealQuotationAudit,
                                  DealQuotationDraft, DealQuotationDraftLine)
 from .request_models import DealQuotation, SupplierRequest
@@ -121,6 +129,42 @@ class RepricedLine(serializers.Serializer):
     reason = serializers.ChoiceField(choices=['quantity', *REPRICE_SCOPES])
 
 
+class QuoteAssistantProposalSerializer(serializers.Serializer):
+    id = serializers.CharField()
+    kind = serializers.ChoiceField(choices=PROPOSAL_KINDS, help_text='quantity_change, remove_line, line_note y terms se aplican al borrador; price_request, '
+                                                                     'unmatched y question solo se descartan (las preguntas se copian a la conversación).')
+    detail = serializers.CharField(allow_blank=True, help_text='terms: entrega, retiro, factura u otro. price_request: descuento, igualar_precio o pregunta_precio.')
+    order_line_id = serializers.UUIDField(allow_null=True)
+    codigo = serializers.CharField(allow_blank=True)
+    quantity = serializers.IntegerField(allow_null=True, help_text='Unidades propuestas (quantity_change, remove_line). El asistente nunca propone precios.')
+    text = serializers.CharField(allow_blank=True)
+    evidence = serializers.CharField(allow_blank=True, help_text='Cita literal de lo que escribió el cliente.')
+    decision = serializers.ChoiceField(choices=list(DECISION_STATES.values()), allow_null=True)
+    can_apply = serializers.BooleanField()
+
+
+class QuoteAssistantRunSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    status = serializers.ChoiceField(choices=choice_values(RUN_STATUS_CHOICES))
+    cached = serializers.BooleanField(help_text='Servida desde una interpretación igual de los últimos 30 días, sin costo.')
+    stale = serializers.BooleanField(help_text='Hay mensajes nuevos desde esta interpretación.')
+    draft_version = serializers.IntegerField()
+    created_at = serializers.DateTimeField()
+    finished_at = serializers.DateTimeField(allow_null=True)
+    created_by = DraftAuthor()
+    summary = serializers.CharField(allow_blank=True)
+    rejected_items = serializers.IntegerField(help_text='Propuestas descartadas por mencionar importes.')
+    proposals = QuoteAssistantProposalSerializer(many=True)
+
+
+class QuoteAssistantStateSerializer(serializers.Serializer):
+    configured = serializers.BooleanField(help_text='La plataforma tiene el asistente disponible.')
+    enabled = serializers.BooleanField(help_text='El propietario de la cuenta activó el asistente en Precios › Configuración.')
+    runs_left = serializers.IntegerField(help_text='Interpretaciones que quedan para esta versión.')
+    unavailable = serializers.CharField(allow_blank=True, help_text='Por qué no se puede interpretar ahora; vacío si se puede.')
+    latest_run = QuoteAssistantRunSerializer(allow_null=True)
+
+
 class QuoteDraftSerializer(serializers.Serializer):
     persisted = serializers.BooleanField(help_text='False mientras el borrador es virtual: se crea con el primer guardado.')
     draft_version = serializers.IntegerField()
@@ -139,6 +183,7 @@ class QuoteDraftSerializer(serializers.Serializer):
     order_exceptions = DraftException(many=True)
     summary = DraftSummary()
     repriced = RepricedLine(many=True, help_text='Precios que este guardado recalculó con tu lista; vacío en lecturas.')
+    assistant = QuoteAssistantStateSerializer(help_text='Asistente de cotización con IA; oculto mientras configured o enabled sea false.')
 
 
 class QuoteDraftEnvelope(serializers.Serializer):
@@ -196,6 +241,26 @@ class QuoteDraftSave(serializers.Serializer):
 class DraftDiscard(serializers.Serializer):
     save_id = serializers.UUIDField()
     expected_draft_version = serializers.IntegerField(min_value=0)
+
+
+class QuoteAssistantRunRequest(serializers.Serializer):
+    run_id = serializers.UUIDField(help_text='Generado por el cliente: repetirlo devuelve la misma interpretación sin volver a llamar a la IA.')
+    expected_draft_version = serializers.IntegerField(min_value=0)
+
+
+class QuoteAssistantDecision(serializers.Serializer):
+    proposal_id = serializers.RegexField(r'^p[0-9]{1,3}$', max_length=4)
+    action = serializers.ChoiceField(choices=list(DECISION_STATES))
+
+
+class QuoteAssistantDecisionsRequest(DraftDiscard):
+    decisions = QuoteAssistantDecision(many=True, min_length=1, max_length=100)
+
+    def validate_decisions(self, decisions):
+        identifiers = [decision['proposal_id'] for decision in decisions]
+        if len(identifiers) != len(set(identifiers)):
+            raise serializers.ValidationError('Decide cada propuesta una sola vez.')
+        return decisions
 
 
 class QuoteDraftRepriceRequest(DraftDiscard):
@@ -287,7 +352,8 @@ def profile_block(profile):
 
 def draft_payload(row, account, membership, repriced=()):
     settings_row, latest, profile = pricing_settings(account), latest_quotation(row), client_profile(account, row.client_id)
-    draft, lines = current_draft(row, latest), list(order_lines(row).values())
+    draft, by_pk = current_draft(row, latest), order_lines(row)
+    lines = list(by_pk.values())
     stock = stock_by_line(lines)
     stored = {line.order_line_id: line for line in draft.lines.all()} if draft else {}
     saved = {pk: {field: getattr(line, field) for field in VALUE_FIELDS} for pk, line in stored.items()}
@@ -297,8 +363,10 @@ def draft_payload(row, account, membership, repriced=()):
     pricing = priced(row, account, header['currency'], quantities, lines, settings_row, profile)
     initial = initial_values(unsaved, latest, quantities, pricing)
     current = {line.pk: saved.get(line.pk) or initial[line.pk] for line in lines}
+    assistant = assistant_block(row, settings_row, latest, by_pk)
     exceptions = compute_exceptions(lines, current, stock, settings_row, pricing=pricing, acknowledgements={pk: line.acknowledgements for pk, line in stored.items()},
-                                    order_acknowledgements=draft.order_acknowledgements if draft else (), no_profile=profile is None and row.client_id != account.pk)
+                                    order_acknowledgements=draft.order_acknowledgements if draft else (), no_profile=profile is None and row.client_id != account.pk,
+                                    extra=assistant_findings(assistant))
     total, values = Decimal('0'), []
     for line in lines:
         value, entry, result = current[line.pk], stock[line.pk], pricing[line.pk]
@@ -324,7 +392,7 @@ def draft_payload(row, account, membership, repriced=()):
                     'price_list': next((result.explanation['price_list'] for result in pricing.values() if result.explanation['price_list']), None),
                     'stale': sum(any(item['code'] == 'stale_price' for item in found) for found in exceptions['lines'].values()),
                     'fillable': sum(current[line.pk]['unit_price'] is None and pricing[line.pk].unit_price is not None for line in lines)},
-        'lines': values, 'order_exceptions': exceptions['order'], 'repriced': list(repriced),
+        'lines': values, 'order_exceptions': exceptions['order'], 'repriced': list(repriced), 'assistant': assistant,
         'summary': {**exceptions['summary'], 'total': total.quantize(Decimal('0.01')), 'line_count': len(values)}}).data
 
 
@@ -364,6 +432,14 @@ def apply_price(line, price, result):
     line.unit_price, line.price_source = price, 'none' if price is None else 'manual'
     for field, value in NO_ENGINE.items():
         setattr(line, field, value)
+
+
+def engine_followers(row, account, currency, saved, lines, requantified, settings_row, profile):
+    """Lines whose engine price follows their quantity change: only one still current before the change. A stale engine price (the list
+    moved since it was calculated) keeps its value and raises stale_price, so a quantity edit never adopts a list change unnoticed."""
+    followers = [pk for pk in requantified if saved[pk].price_source == 'engine']
+    return {pk for pk, result in priced(row, account, currency, {pk: {'quantity': requantified[pk]} for pk in followers}, [lines[pk] for pk in followers],
+                                        settings_row, profile).items() if result.fingerprint == saved[pk].engine_fingerprint} if followers else set()
 
 
 def repriced_line(line, before, reason):
@@ -434,12 +510,7 @@ class QuoteDraftView(APIView):
         # Typed prices are compared with the live suggestion; engine prices follow a quantity change (a volume rule may apply).
         pricing = priced(row, account, currency, {pk: {'quantity': line.quantity} for pk, line in saved.items()},
                          [lines[pk] for pk in saved], settings_row, profile) if requantified or any('unit_price' in change for change in changes) else {}
-        # Only an engine price that was still current before the quantity change follows it: a stale one (the list moved since it was
-        # calculated) keeps its value and raises stale_price, so a quantity edit never adopts a list change unnoticed.
-        followers = [pk for pk in requantified if saved[pk].price_source == 'engine']
-        current = {pk for pk, result in priced(row, account, draft.currency, {pk: {'quantity': requantified[pk]} for pk in followers},
-                                               [lines[pk] for pk in followers], settings_row, profile).items()
-                   if result.fingerprint == saved[pk].engine_fingerprint} if followers else set()
+        current = engine_followers(row, account, draft.currency, saved, lines, requantified, settings_row, profile)
         for change in changes:
             line, result = saved[change['order_line_id']], pricing.get(change['order_line_id'])
             if 'unit_price' in change and change['unit_price'] != line.unit_price:
@@ -546,9 +617,172 @@ class QuoteDraftDiscard(APIView):
             return draft_conflict(row, account, membership)
         DealQuotationDraft.objects.filter(order=row).delete()
         if draft:
+            # The virtual draft has none of the applied proposals, so the assistant's decisions on this revision start over.
+            QuoteAssistantRun.objects.filter(order=row, base_quotation=draft.base_quotation).update(decisions={})
             record_pricing_event(account, request.user, 'draft_discarded', client_id=row.client_id, order=row, object_id=str(row.pk),
                                  payload={'draft_version': draft.draft_version, 'save_id': str(data['save_id'])})
         return Response(draft_payload(row, account, membership))
+
+
+class QuoteAssistantThrottle(UserRateThrottle):
+    scope, rate = 'quote_assistant', '10/min'
+
+
+ASSISTANT_ERRORS = {403: OpenApiResponse(description='El asistente no está activado para la cuenta o su presupuesto es 0.'),
+                    429: OpenApiResponse(description='Se alcanzó un límite de uso del asistente.'),
+                    502: OpenApiResponse(description='La IA falló o devolvió algo que no se pudo verificar; el borrador no cambió.'),
+                    503: OpenApiResponse(description='El asistente de IA no está configurado en el servidor.')}
+
+
+def assistant_state(row, account, *, run=None):
+    return QuoteAssistantStateSerializer(assistant_block(row, pricing_settings(account), latest_quotation(row), order_lines(row), run=run)).data
+
+
+class QuoteAssistantView(APIView):
+    def get_throttles(self):
+        # A soft per-worker limit on starting runs; the database caps are the real budget.
+        return [*super().get_throttles(), QuoteAssistantThrottle()] if self.request.method == 'POST' else super().get_throttles()
+
+    def throttled(self, request, wait):
+        raise Throttled(wait, 'Demasiadas solicitudes al asistente. Espera un momento y vuelve a intentarlo.')
+
+    @extend_schema(operation_id='v1_accounts_requests_draft_assistant_retrieve', responses=QuoteAssistantStateSerializer,
+                   description='Estado del asistente de cotización con IA y su última interpretación para esta versión. No escribe nada.')
+    def get(self, request, account_id, pk):
+        account, _, row = supplier_order(request.user, account_id, pk)
+        return Response(assistant_state(row, account))
+
+    @extend_schema(operation_id='v1_accounts_requests_draft_assistant_create', request=QuoteAssistantRunRequest,
+                   responses={200: QuoteAssistantStateSerializer, 409: QuoteDraftConflict, **ASSISTANT_ERRORS},
+                   description='Interpreta las notas, el motivo del ajuste y la conversación del cliente en propuestas revisables. Nunca cambia el '
+                               'borrador ni propone precios. Repetir run_id devuelve la misma interpretación; una igual de los últimos 30 días no tiene costo.')
+    def post(self, request, account_id, pk):
+        now = timezone.now()
+        # First transaction: the order lock, the checks and the claim. The provider is then called with no lock held.
+        with transaction.atomic():
+            account, membership, row = supplier_order(request.user, account_id, pk, lock=True)
+            serializer = QuoteAssistantRunRequest(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            data = serializer.validated_data
+            existing = QuoteAssistantRun.objects.select_related('created_by').filter(pk=data['run_id']).first()
+            if existing:
+                if existing.order_id != row.pk:
+                    raise RequestConflict('Este identificador ya se usó para otra interpretación.')
+                if existing.status == 'claimed':
+                    raise RequestConflict(IN_PROGRESS)
+                if existing.status == 'failed':
+                    raise QuoteAssistantProviderError(existing.error or None)
+                return Response(assistant_state(row, account, run=existing))
+            if row.status not in EDITABLE_STATUSES:
+                raise RequestConflict(NOT_EDITABLE_DETAIL)
+            model = ensure_enabled(pricing_settings(account))
+            latest = latest_quotation(row)
+            draft = current_draft(row, latest)
+            if data['expected_draft_version'] != (draft.draft_version if draft else 0):
+                return draft_conflict(row, account, membership)
+            lines = list(order_lines(row).values())
+            if len(lines) > MAX_LINES:
+                raise RequestConflict(TOO_MANY_LINES)
+            payload = build_input(row, latest, lines)
+            if not has_client_text(payload):
+                raise RequestConflict(NO_CLIENT_TEXT)
+            run, provider_request = start_run(row, account, request.user, data['run_id'], latest, draft.draft_version if draft else 0, lines, payload, model, now)
+        if provider_request is not None:
+            run = execute_run(run, request.user, row, provider_request, lines, payload['texts'])
+        return Response(assistant_state(row, account, run=run))
+
+
+class QuoteAssistantDecisions(APIView):
+    @extend_schema(operation_id='v1_accounts_requests_draft_assistant_decisions', request=QuoteAssistantDecisionsRequest,
+                   responses={200: QuoteDraftSerializer, 409: QuoteDraftConflict},
+                   description='Aplica o descarta propuestas del asistente. Aplicar es un guardado del borrador: cambia solo cantidades (origen assistant, '
+                               'con el precio de tu lista recalculado), la nota interna o las condiciones. Las solicitudes de precio solo se descartan.')
+    @transaction.atomic
+    def post(self, request, account_id, pk, run_id):
+        account, membership, row = supplier_order(request.user, account_id, pk, lock=True)
+        serializer = QuoteAssistantDecisionsRequest(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        if row.status not in EDITABLE_STATUSES:
+            raise RequestConflict(NOT_EDITABLE_DETAIL)
+        run = get_object_or_404(QuoteAssistantRun.objects.select_for_update().filter(order=row, status='completed'), pk=run_id)
+        latest = latest_quotation(row)
+        if run.base_quotation_id != (latest.pk if latest else None):
+            raise RequestConflict('Esta interpretación corresponde a una versión anterior de la cotización. Vuelve a interpretar la solicitud.')
+        proposals = {proposal['id']: proposal for proposal in run.output.get('proposals', [])}
+        for decision in data['decisions']:
+            proposal = proposals.get(decision['proposal_id'])
+            if proposal is None:
+                raise ValidationError({'decisions': 'Una de las propuestas no existe en esta interpretación.'})
+            if decision['action'] == 'apply' and proposal['kind'] not in APPLICABLE:
+                raise ValidationError({'decisions': NOT_APPLICABLE[proposal['kind']]})
+        fingerprint = hashlib.sha256(json.dumps({'assistant': str(run.pk), 'decisions': data['decisions']}, sort_keys=True).encode()).hexdigest()
+        draft = current_draft(row, latest)
+        if draft and draft.last_save_id == data['save_id']:
+            if draft.last_save_hash != fingerprint:
+                raise RequestConflict('Este identificador ya se usó para otro cambio del borrador.')
+            return Response(draft_payload(row, account, membership))
+        # A proposal is decided once; repeating the same decision is a no-op.
+        pending = []
+        for decision in data['decisions']:
+            taken = run.decisions.get(decision['proposal_id'])
+            if taken and taken['action'] != DECISION_STATES[decision['action']]:
+                raise RequestConflict('Una de las propuestas ya se aplicó o se descartó.')
+            if not taken:
+                pending.append(decision)
+        applies, now, repriced = [proposals[decision['proposal_id']] for decision in pending if decision['action'] == 'apply'], timezone.now(), []
+        # Dismissing never touches the draft; applying is a draft save, versioned and retry-safe like any other.
+        if applies:
+            if data['expected_draft_version'] != (draft.draft_version if draft else 0):
+                return draft_conflict(row, account, membership)
+            settings_row, profile, lines = pricing_settings(account), client_profile(account, row.client_id), order_lines(row)
+            draft, saved = ensure_draft(row, account, request.user, latest, draft, lines, settings_row, profile, now)
+            changed, requantified, terms, edited = {}, {}, draft.terms, False
+            for proposal in applies:
+                line = saved.get(uuid.UUID(proposal['order_line_id'])) if proposal['order_line_id'] else None
+                if proposal['kind'] in ('quantity_change', 'remove_line') and proposal['quantity'] != line.quantity:
+                    requantified.setdefault(line.order_line_id, line.quantity)
+                    line.quantity, line.quantity_source, changed[line.order_line_id], edited = proposal['quantity'], 'assistant', line, True
+                elif proposal['kind'] == 'line_note':
+                    line.note, changed[line.order_line_id] = ' · '.join(filter(None, [line.note, proposal['text']])), line
+                    if len(line.note) > 500:
+                        raise ValidationError({'decisions': f'La nota interna de {lines[line.order_line_id].codigo} superaría 500 caracteres.'})
+                elif proposal['kind'] == 'terms':
+                    terms = '\n'.join(filter(None, [terms, proposal['text']]))
+            if len(terms) > 5000:
+                raise ValidationError({'decisions': 'Las condiciones superarían 5.000 caracteres.'})
+            # The assistant's quantity is priced like a typed one: the deterministic engine reprices a current engine price (a volume
+            # rule may apply). The assistant itself never produces or changes a price.
+            if requantified:
+                current = engine_followers(row, account, draft.currency, saved, lines, requantified, settings_row, profile)
+                pricing = priced(row, account, draft.currency, {pk: {'quantity': line.quantity} for pk, line in saved.items()}, [lines[pk] for pk in saved],
+                                 settings_row, profile)
+                for pk in current:
+                    line, before = saved[pk], saved[pk].unit_price
+                    if pricing[pk].unit_price is not None:
+                        apply_engine(line, pricing[pk])
+                        if before != line.unit_price:
+                            repriced.append(repriced_line(line, before, 'quantity'))
+            for line in changed.values():
+                line.updated_at = now
+            DealQuotationDraftLine.objects.bulk_update(list(changed.values()), LINE_UPDATE_FIELDS)
+            if terms != draft.terms:
+                draft.terms, edited = terms, True
+            draft.draft_version += 1
+            review_state(draft, row, latest, account, request.user, None, edited, now)
+            draft.last_save_id, draft.last_save_hash, draft.updated_by = data['save_id'], fingerprint, request.user
+            draft.save()
+        for decision in pending:
+            run.decisions[decision['proposal_id']] = {'action': DECISION_STATES[decision['action']], 'user_id': request.user.pk, 'at': now.isoformat(),
+                                                      'draft_version': draft.draft_version if applies else None}
+        if pending:
+            run.save(update_fields=['decisions'])
+        if applies:
+            record_pricing_event(account, request.user, 'assistant_applied', client_id=row.client_id, order=row, object_id=str(run.pk), payload={
+                'run_id': str(run.pk), 'draft_version': draft.draft_version, 'kinds': dict(Counter(proposal['kind'] for proposal in applies)),
+                'applied': [decision['proposal_id'] for decision in pending if decision['action'] == 'apply'],
+                'dismissed': [decision['proposal_id'] for decision in pending if decision['action'] == 'dismiss']})
+        return Response(draft_payload(row, account, membership, repriced))
 
 
 class TraceException(serializers.Serializer):
@@ -575,6 +809,7 @@ class TraceLine(serializers.Serializer):
     engine_fingerprint = serializers.CharField(allow_blank=True)
     explanation = serializers.DictField()
     exceptions = TraceException(many=True)
+    assistant_run_id = serializers.UUIDField(allow_null=True, help_text='Interpretación del asistente aplicada a este artículo; null si ninguna.')
 
 
 class TraceAcceptLine(serializers.Serializer):
@@ -631,5 +866,5 @@ class QuotationTrace(APIView):
             'lines': [{'order_line_id': line.order_line_id, 'codigo': line.order_line.codigo, 'brand': line.order_line.brand,
                        'description': line.order_line.description or line.order_line.name, 'quantity': line.quantity, 'unit_price': line.unit_price,
                        **{field: getattr(line.audit, field) for field in ('available_at_quote', 'identity_ok_at_quote', 'available_at_accept', 'suggested_price',
-                                                                         'price_source', 'quantity_source', 'engine_fingerprint', 'explanation')},
+                                                                         'price_source', 'quantity_source', 'engine_fingerprint', 'explanation', 'assistant_run_id')},
                        'exceptions': trace(line.audit.exceptions)} for line in lines]}).data)

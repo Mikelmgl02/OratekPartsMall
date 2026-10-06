@@ -19,6 +19,8 @@ from .models import Membership
 from .pricing_engine import ENGINE_VERSION, client_profile, price_lines
 from .pricing_models import pricing_settings, record_pricing_event
 from .quotation_exceptions import audit_findings, compute_exceptions, publish_blockers
+from .quote_assistant import applied_runs
+from .quote_assistant_models import QuoteAssistantRun
 from .quote_draft_models import DealQuotationAudit, DealQuotationDraft, DealQuotationLineAudit
 from .quote_drafts import stock_by_line
 from .request_models import (SupplierRequest, DealQuotation, DealQuotationLine, DealEvent,
@@ -158,7 +160,7 @@ def write_quote_audit(quotation, prior, request, account, draft, context, permis
     settings_row, stock, drafted, result, pricing = context['settings'], context['stock'], context['drafted'], context['result'], context['pricing']
     previous = {line.order_line_id: line for line in prior.lines.all()} if prior else {}
     configured = any(suggestion.configured for suggestion in pricing.values())
-    profile = context['profile']
+    profile, assisted = context['profile'], applied_runs(quotation.order, prior) if draft else {}
     DealQuotationAudit.objects.create(quotation=quotation, draft_version=draft.draft_version if draft else None, publisher=request.user,
                                       publisher_permission=permission, engine_version=ENGINE_VERSION if configured else '',
                                       profile_id=profile.pk if profile else None, profile_version=profile.version if profile else None,
@@ -179,7 +181,7 @@ def write_quote_audit(quotation, prior, request, account, draft, context, permis
                                              price_source=price_source, quantity_source=quantity_source, suggested_price=suggestion.unit_price,
                                              engine_fingerprint=suggestion.fingerprint if suggestion.configured else '',
                                              explanation=suggestion.explanation if suggestion.configured else {},
-                                             exceptions=audit_findings(result['lines'][line.order_line_id])))
+                                             exceptions=audit_findings(result['lines'][line.order_line_id]), assistant_run_id=assisted.get(line.order_line_id)))
     DealQuotationLineAudit.objects.bulk_create(audits)
     found = [item for items in [result['order'], *result['lines'].values()] for item in items if item['severity'] == 'confirm']
     record_pricing_event(account, request.user, 'quotation_published', client_id=quotation.order.client_id, order=quotation.order, object_id=str(quotation.pk),
@@ -297,6 +299,8 @@ class DealActions(APIView):
             row.status = 'quoted'
             description = data['reason'] or 'EL PROVEEDOR DEVOLVIÓ LA MISMA COTIZACIÓN PARA CONFIRMACIÓN.'
             DealQuotationDraft.objects.filter(order=row).delete()
+            # The discarded draft took the applied assistant proposals with it; a later adjustment of this revision starts over.
+            QuoteAssistantRun.objects.filter(order=row, base_quotation=latest).update(decisions={})
         row.version += 1
         row.save(update_fields=['status', 'version', 'handshaked_at', 'updated_at'])
         DealEvent.objects.create(order=row, account=account, actor=request.user, kind=action,
@@ -348,9 +352,12 @@ class DealMessages(APIView):
         else:
             page = list(messages.filter(id__gt=after).order_by('id')[:100])
         cursor = page[-1].pk if page else (after or 0)
+        # Privacy disclosure (decision D3): both parties learn that the supplier's AI assistant may read this conversation. Only the flag
+        # travels; nothing about the assistant's runs or proposals ever does.
         return Response({'results': [message_data(message) for message in page], 'cursor': cursor,
                          'has_more': messages.filter(id__gt=cursor).exists(),
-                         'has_earlier': bool(page) and messages.filter(id__lt=page[0].pk).exists()})
+                         'has_earlier': bool(page) and messages.filter(id__lt=page[0].pk).exists(),
+                         'assistant_notice': pricing_settings(row.supplier).assistant_enabled})
 
     @extend_schema(request=MessageSerializer, responses=OpenApiTypes.OBJECT)
     @transaction.atomic

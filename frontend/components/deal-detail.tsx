@@ -1,7 +1,7 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { Check, FileText, Handshake, History, LoaderCircle, LockKeyhole, MessageSquare, Pencil, RefreshCw, Send, UserRoundCog } from 'lucide-react';
+import { Bot, Check, FileText, Handshake, History, LoaderCircle, LockKeyhole, MessageSquare, Pencil, RefreshCw, Send, UserRoundCog } from 'lucide-react';
 import Modal from './modal';
 import { percent } from './price-explanation';
 import DealStatusBadge from './deal-status';
@@ -57,6 +57,8 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   // The client's private commercial profile opens over the order; saving it reloads the draft's suggestions.
   const [profileOpen, setProfileOpen] = useState(false);
   const [pricingRevision, setPricingRevision] = useState(0);
+  // A question suggested by the AI assistant, copied into the chat composer (never sent by itself).
+  const [chatInsert, setChatInsert] = useState<{ text: string; id: number } | null>(null);
   const draftPath = `${base}/requests/${orderId}/draft`;
   const acceptDetail = useCallback((value: Deal) => {
     if (!mounted.current) return;
@@ -167,7 +169,8 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
           {!deal.quotation && !supplier && <div className="notice">El proveedor preparará tu cotización. Te aparecerán aquí las cantidades, precios y condiciones.</div>}
           {editable && (tab === 'quote' || quoteVisited) && (draftLoad?.key === draftKey
             ? <QuoteEditor key={`${draftKey}:${draftLoad.draft ? draftLoad.draft.persisted ? 'saved' : 'virtual' : 'fallback'}`} deal={deal} draft={draftLoad.draft} draftPath={draftPath}
-                disabled={busy} onSend={values => act('quote', values)} pricingRevision={pricingRevision}
+                disabled={busy} onSend={values => act('quote', values)} pricingRevision={pricingRevision} simulatorHref={supplierPricingHref(account.id, 'simulator')}
+                onCopyToChat={text => { setChatInsert({ text, id: Date.now() }); setTab('chat'); }}
                 onDraftChange={(persisted, next) => { setHasDraft(persisted); setLiveDraft({ key: draftKey, draft: next }); }}/>
             : <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando borrador de cotización…</div>)}
           {supplier && deal.status === 'adjustment' && deal.quotation && <button type="button" className="button soft" disabled={busy || publishBlocked} onClick={() => void act('return_quote', { quotation_id: deal.quotation!.id })}>Devolver la misma cotización para confirmar<Send size={15}/></button>}
@@ -183,7 +186,7 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
           {(deal.quotations?.length || 0) > 1 && <details className="deal-quote-history"><summary>Versiones anteriores ({deal.quotations.length - 1})</summary>{deal.quotations.slice(0, -1).map(quote => <QuoteView key={quote.id} quote={quote} historical/>)}</details>}
         </div>
         {/* Keep conversation mounted so refreshes and draft messages survive tab changes. */}
-        <div hidden={tab !== 'chat'}><DealChat account={account} orderId={orderId} active={tab === 'chat'}/></div>
+        <div hidden={tab !== 'chat'}><DealChat account={account} orderId={orderId} active={tab === 'chat'} supplier={supplier} insert={chatInsert}/></div>
         {tab === 'history' && <ol className="deal-events">{deal.events?.length ? deal.events.map(event => <li key={event.id}><span>{date(event.created_at)} · {event.account_name} · {event.actor_name}</span><p>{event.description}</p></li>) : <li>Esta orden se creó antes de habilitar el registro de actividad.</li>}</ol>}
         <div className="deal-footer"><small>Orden {deal.reference} · La entrega se coordina con el proveedor.</small><button type="button" className="button soft small" disabled={busy} onClick={() => { setError(''); void load(); }}><RefreshCw size={14}/>Actualizar</button></div>
       </>}
@@ -210,7 +213,8 @@ const alertNames: Record<string, string> = { offered_gt_available: 'Más que las
   quantity_missing: 'Falta la cantidad', price_missing: 'Falta el precio', all_zero: 'Sin unidades', draft_outdated: 'Borrador desactualizado',
   reduced_to_stock: 'Ajustado a existencias', zero_offered: 'No ofrecido', manual_price: 'Precio manual', differs_from_list: 'Distinto de tu lista',
   no_list_price: 'Sin precio en tu lista', currency_parity: 'Paridad USD/PAB', currency_mismatch: 'Moneda distinta', fallback_list: 'Lista de respaldo',
-  rule_conflict: 'Reglas igual de específicas', no_profile: 'Cliente sin perfil comercial' };
+  rule_conflict: 'Reglas igual de específicas', no_profile: 'Cliente sin perfil comercial', client_price_request: 'El cliente pide precio',
+  assistant_unmatched: 'Mencionado fuera de la orden' };
 const suggestionStates: Record<string, string> = { missing: 'Sin precio en tu lista', identity_changed: 'Artículo cambiado', currency_mismatch: 'Moneda distinta',
   out_of_range: 'Fuera de rango', no_price_list: 'Sin lista de precios' };
 
@@ -249,10 +253,14 @@ function QuoteTrace({ path, currency }: { path: string; currency: string }) {
   </details>;
 }
 
-function DealChat({ account, orderId, active }: { account: Account; orderId: string; active: boolean }) {
+function DealChat({ account, orderId, active, supplier, insert }: { account: Account; orderId: string; active: boolean; supplier: boolean; insert: { text: string; id: number } | null }) {
   const path = `/api/market/accounts/${account.id}/deals/${orderId}/messages`;
   const [messages, setMessages] = useState<DealMessage[]>([]);
   const [body, setBody] = useState('');
+  // Privacy disclosure (D3): the supplier enabled its AI assistant, which may read this conversation.
+  const [assistantNotice, setAssistantNotice] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const composer = useRef<HTMLTextAreaElement>(null);
   const [error, setError] = useState('');
   const [ready, setReady] = useState(false);
   const [sending, setSending] = useState(false);
@@ -271,9 +279,10 @@ function DealChat({ account, orderId, active }: { account: Account; orderId: str
     try {
       let more = true;
       while (more && mounted.current) {
-        const data = await request<{ results: DealMessage[]; cursor: number; has_more: boolean; has_earlier: boolean }>(`${path}${cursor.current === null ? '' : `?after=${cursor.current}`}`);
+        const data = await request<{ results: DealMessage[]; cursor: number; has_more: boolean; has_earlier: boolean; assistant_notice?: boolean }>(`${path}${cursor.current === null ? '' : `?after=${cursor.current}`}`);
         if (!mounted.current) return;
         if (cursor.current === null) setHasEarlier(data.has_earlier);
+        setAssistantNotice(data.assistant_notice === true);
         const wasAtBottom = !log.current || log.current.scrollHeight - log.current.scrollTop - log.current.clientHeight < 70;
         merge(data.results);
         if (wasAtBottom && data.results.length) requestAnimationFrame(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; });
@@ -284,6 +293,11 @@ function DealChat({ account, orderId, active }: { account: Account; orderId: str
   }, [path]);
   useEffect(() => { mounted.current = true; void fetchMessages(); const timer = setInterval(() => { if (document.visibilityState === 'visible') void fetchMessages(); }, 5000); return () => { mounted.current = false; clearInterval(timer); }; }, [fetchMessages]);
   useEffect(() => { if (active) void fetchMessages(); }, [active, fetchMessages]);
+  useEffect(() => {
+    if (!insert) return;
+    setBody(value => (value.trim() ? `${value.trimEnd()}\n${insert.text}` : insert.text).toUpperCase().slice(0, 4000)); setCopied(true);
+    requestAnimationFrame(() => composer.current?.focus());
+  }, [insert]);
   async function earlier() {
     if (!messages.length || loadingEarlier) return;
     setLoadingEarlier(true);
@@ -303,14 +317,18 @@ function DealChat({ account, orderId, active }: { account: Account; orderId: str
     try {
       const message = await request<DealMessage>(path, { method: 'POST', body: JSON.stringify({ body: text, message_id: pending.current.id }) });
       if (!mounted.current) return;
-      merge([message]); setBody(''); pending.current = null; void fetchMessages();
+      merge([message]); setBody(''); setCopied(false); pending.current = null; void fetchMessages();
     } catch (caught) { if (mounted.current) setError(failure(caught)); }
     finally { sendLock.current = false; if (mounted.current) setSending(false); }
   }
   return <section className="deal-chat" aria-label="Conversación del acuerdo"><h3>Conversación privada</h3><p>Cliente y proveedor pueden conversar durante todo el acuerdo. Las decisiones sobre la cotización se realizan en la pestaña Cotización.</p>
+    {assistantNotice && <p className="deal-chat-ai-notice" role="note" aria-label="Aviso de asistente de IA"><Bot size={15}/>{supplier
+      ? 'Tu cuenta tiene activado el asistente de IA: cuando lo usas, las notas de la orden y esta conversación desde la última versión se envían a Google Gemini para interpretarlas, sin precios ni existencias. Tu cliente ve este aviso.'
+      : 'El proveedor usa un asistente de IA (Google Gemini) que puede leer las notas de tu orden y esta conversación para preparar tu cotización. No recibe precios ni existencias.'}</p>}
     {error && <div className="notice error" role="alert">{error}<button type="button" onClick={() => void fetchMessages()}>Actualizar mensajes</button></div>}
     {hasEarlier && <button type="button" className="button soft small" disabled={loadingEarlier} onClick={() => void earlier()}>Cargar mensajes anteriores</button>}
     <div ref={log} className="deal-chat-messages" role="log" aria-label="Mensajes del acuerdo" aria-live="polite">{!ready && !error ? <p>Cargando mensajes…</p> : !messages.length ? <p className="deal-chat-empty">Inicia la conversación sobre esta orden.</p> : messages.map(message => <article key={message.id} className={message.account_id === account.id ? 'own' : ''}><header><strong>{message.account_name}</strong><span>{message.actor_name} · {date(message.created_at)}</span></header><p>{message.body}</p></article>)}</div>
-    <form onSubmit={event => { event.preventDefault(); void send(); }}><label>Mensaje<UppercaseTextarea aria-label="Mensaje del acuerdo" required maxLength={4000} disabled={sending} value={body} onChange={event => setBody(event.target.value)} placeholder="ESCRIBE A LA OTRA PARTE…"/></label><button type="submit" className="button primary" disabled={sending || !body.trim()}>{sending ? <LoaderCircle size={15} className="spin"/> : <Send size={15}/>}Enviar mensaje</button></form>
+    <form onSubmit={event => { event.preventDefault(); void send(); }}><label>Mensaje<UppercaseTextarea ref={composer} aria-label="Mensaje del acuerdo" required maxLength={4000} disabled={sending} value={body} onChange={event => { setBody(event.target.value); setCopied(false); }} placeholder="ESCRIBE A LA OTRA PARTE…"/></label>
+      {copied && <small className="deal-chat-copied" role="status">Pregunta del asistente copiada. Revísala y envíala cuando quieras.</small>}<button type="submit" className="button primary" disabled={sending || !body.trim()}>{sending ? <LoaderCircle size={15} className="spin"/> : <Send size={15}/>}Enviar mensaje</button></form>
   </section>;
 }

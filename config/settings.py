@@ -80,13 +80,41 @@ SPECTACULAR_SETTINGS = {"TITLE": "MotionPartes API", "VERSION": "0.1.0", "COMPON
     "ExceptionSeverityEnum": ["block", "confirm", "info"], "QuoteDraftStatusEnum": ["editing", "review_requested"],
     "QuoteExceptionCodeEnum": ["quantity_missing", "price_missing", "all_zero", "draft_outdated", "offered_gt_available", "offered_gt_requested",
                                "identity_changed", "zero_price", "below_floor", "stale_price", "reduced_to_stock", "zero_offered", "manual_price",
-                               "differs_from_list", "no_list_price", "currency_parity", "currency_mismatch", "fallback_list", "rule_conflict", "no_profile"],
+                               "differs_from_list", "no_list_price", "currency_parity", "currency_mismatch", "fallback_list", "rule_conflict", "no_profile",
+                               "client_price_request", "assistant_unmatched"],
     "AcknowledgeableExceptionEnum": ["offered_gt_available", "offered_gt_requested", "identity_changed", "zero_price", "below_floor", "stale_price"],
     "AuditPriceSourceEnum": ["engine", "previous", "manual", "none", "unspecified"], "AcceptCheckResultEnum": ["ok", "blocked", "accepted_with_shortfall"],
     "PriceChangeKindEnum": ["list_price", "floor_price", "discount_group"], "PriceImportActionEnum": ["create", "update", "delete"],
-    "PriceImportStatusEnum": ["ready", "review", "importing", "completed"]}}
+    "PriceImportStatusEnum": ["ready", "review", "importing", "completed"],
+    # Quotation assistant (supplier-only). Proposal kinds never include a price.
+    "AssistantRunStatusEnum": ["claimed", "completed", "failed"],
+    "AssistantProposalKindEnum": ["quantity_change", "remove_line", "line_note", "terms", "price_request", "unmatched", "question"],
+    "AssistantDecisionEnum": ["applied", "dismissed"], "AssistantActionEnum": ["apply", "dismiss"]}}
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY') or os.getenv('GEM_API_KEY', '')
 GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-3.5-flash-lite')
+
+
+def env_usd(name, default):
+    from decimal import Decimal, InvalidOperation
+    try:
+        value = Decimal(os.getenv(name, default))
+    except InvalidOperation:
+        raise ImproperlyConfigured(f'{name} must be a decimal amount in USD.')
+    if not value.is_finite() or value < 0:
+        raise ImproperlyConfigured(f'{name} must be zero or a positive amount in USD.')
+    return value
+
+
+# AI quotation assistant (supplier opt-in). Ships dark: with QUOTE_ASSISTANT_MONTHLY_USD at 0 it never calls the provider
+# (40 of the 200 platform budget is the recommended cap). AI_MONTHLY_BUDGET_USD caps every feature that records AI usage.
+QUOTE_ASSISTANT_MONTHLY_USD = env_usd('QUOTE_ASSISTANT_MONTHLY_USD', '0')
+AI_MONTHLY_BUDGET_USD = env_usd('AI_MONTHLY_BUDGET_USD', '200')
+QUOTE_ASSISTANT_RUNS_PER_REVISION = max(1, int(os.getenv('QUOTE_ASSISTANT_RUNS_PER_REVISION', '5')))
+QUOTE_ASSISTANT_DAILY_RUNS_PER_ACCOUNT = max(1, int(os.getenv('QUOTE_ASSISTANT_DAILY_RUNS_PER_ACCOUNT', '30')))
+# PLACEHOLDER token prices in USD per million tokens, used only to estimate and record AI spend against the caps above. They are NOT
+# Google's prices: set both from Google's current Gemini price sheet for GEMINI_MODEL. Thinking tokens are counted at the output rate.
+GEMINI_INPUT_USD_PER_MTOK = env_usd('GEMINI_INPUT_USD_PER_MTOK', '1.00')
+GEMINI_OUTPUT_USD_PER_MTOK = env_usd('GEMINI_OUTPUT_USD_PER_MTOK', '5.00')
 CATALOG_LOW_STOCK_THRESHOLD = max(1, int(os.getenv('CATALOG_LOW_STOCK_THRESHOLD', '5')))
 CATALOG_HIGH_STOCK_THRESHOLD = int(os.getenv('CATALOG_HIGH_STOCK_THRESHOLD', '20'))
 if CATALOG_HIGH_STOCK_THRESHOLD <= CATALOG_LOW_STOCK_THRESHOLD:

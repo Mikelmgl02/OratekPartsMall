@@ -6,13 +6,14 @@ import { AgGridReact, type CustomCellEditorProps, type CustomCellRendererProps }
 import type { CellClickedEvent, ColDef, GetRowIdParams, GridReadyEvent, ValueSetterParams } from 'ag-grid-community';
 import { gridLocale, motionGridTheme } from '@/lib/ag-grid';
 import type { Deal, QuotePayload } from '@/lib/deal-types';
-import type { DraftException, DraftPricing, DraftStock, DraftSuggestion, PriceExplanation, PriceSource, PublishException, QuoteDraft, QuoteDraftEnvelope,
-  QuoteDraftLineChange, QuoteDraftSave, RepricedLine, RepriceScope } from '@/lib/pricing-types';
+import type { AssistantProposal, AssistantState, DraftException, DraftPricing, DraftStock, DraftSuggestion, PriceExplanation, PriceSource, PublishException, QuoteDraft,
+  QuoteDraftEnvelope, QuoteDraftLineChange, QuoteDraftSave, RepricedLine, RepriceScope } from '@/lib/pricing-types';
 import type { SupplierRequestLine } from '@/lib/request-types';
 import { ApiError, request } from '@/lib/types';
 import { decimal, moneyFormatter, priceCents, quantityValue } from '@/lib/money';
 import Modal from './modal';
 import { PriceCalculation, money } from './price-explanation';
+import QuoteAssistantPanel from './quote-assistant-panel';
 import { UppercaseTextarea } from './uppercase-field';
 
 type QuoteRow = { order_line_id: string; codigo: string; description: string; requested: number; quantity: string; unit_price: string };
@@ -86,6 +87,9 @@ function dealRows(deal: Deal): QuoteRow[] {
   });
 }
 const draftStock = (draft: QuoteDraft) => Object.fromEntries(draft.lines.map(line => [line.order_line_id, line.stock]));
+const draftNotes = (draft: QuoteDraft) => Object.fromEntries(draft.lines.map(line => [line.order_line_id, line.note]));
+// Internal line notes (supplier-only, for example one applied from the assistant) are read by the part cell from the grid context.
+type GridContext = { notes: React.RefObject<Record<string, string>> };
 function ago(value: string | null, now: number) {
   if (!value) return '';
   const minutes = Math.floor((now - new Date(value).getTime()) / 60000);
@@ -105,16 +109,20 @@ function NumericEditor({ value, onValueChange, data, colDef, stopEditing, api, n
     onKeyDownCapture={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); api.stopEditing(true); if (node.rowIndex !== null) api.setFocusedCell(node.rowIndex, column, node.rowPinned); } }}
     onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); stopEditing(); } }}/>;
 }
-function PartCell({ data }: CustomCellRendererProps<QuoteRow>) {
-  return data ? <div className="quotation-part-cell"><strong>{data.codigo}</strong>{data.description && <small title={data.description}>{data.description}</small>}</div> : null;
+function PartCell({ data, context }: CustomCellRendererProps<QuoteRow>) {
+  const note = data ? (context as GridContext | undefined)?.notes.current[data.order_line_id] : '';
+  return data ? <div className="quotation-part-cell"><strong>{data.codigo}</strong>{data.description && <small title={data.description}>{data.description}</small>}
+    {note && <small className="quotation-line-note" title={`Nota interna: ${note}`}>Nota interna: {note}</small>}</div> : null;
 }
 
-export default function QuotationEditor({ deal, draft, draftPath, disabled, onSend, onDraftChange, pricingRevision = 0 }: {
+export default function QuotationEditor({ deal, draft, draftPath, disabled, onSend, onDraftChange, pricingRevision = 0, onCopyToChat, simulatorHref }: {
   deal: Deal; draft: QuoteDraft | null; draftPath: string; disabled: boolean;
   // Resolves true once published, or with the refused request's error so its alerts can be shown.
   onSend: (values: QuotePayload) => Promise<true | ApiError | false>; onDraftChange?: (persisted: boolean, draft: QuoteDraft) => void;
   // Bumped when the client's profile or rules changed elsewhere: the editor reloads its suggestions (stored prices never move by themselves).
   pricingRevision?: number;
+  // The assistant's suggested questions go to the chat composer, never sent by themselves.
+  onCopyToChat?: (text: string) => void; simulatorHref?: string;
 }) {
   // Without a loaded draft the editor falls back to the previous revision and nothing is saved automatically.
   const autosave = draft !== null;
@@ -122,6 +130,8 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
   const rowsRef = useRef(rows);
   // Live stock is read by the Disponibles column from a ref, so refreshing it never rebuilds row state.
   const stock = useRef<Record<string, DraftStock | null>>(draft ? draftStock(draft) : Object.fromEntries((deal.lines as SupplierRequestLine[]).map(line => [line.id, line.stock ?? null])));
+  const notes = useRef<Record<string, string>>(draft ? draftNotes(draft) : {});
+  const gridContext = useMemo<GridContext>(() => ({ notes }), []);
   const grid = useRef<AgGridReact<QuoteRow>>(null);
   const host = useRef<HTMLDivElement>(null);
   const [currency, setCurrency] = useState<Currency>(draft?.currency || deal.quotation?.currency || 'USD');
@@ -156,6 +166,11 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
   const [reviewing, setReviewing] = useState(false);
   const lastFailure = useRef('');
   const [priceNotice, setPriceNotice] = useState('');
+  // The AI assistant's state comes with every draft; running never changes the draft, applying a proposal is a draft save.
+  const [assistant, setAssistant] = useState<AssistantState | null>(draft?.assistant ?? null);
+  const [assistantBusy, setAssistantBusy] = useState('');
+  const [assistantError, setAssistantError] = useState('');
+  const runId = useRef<string | null>(null);
   // Lines whose price the server just recalculated flash briefly in the grid.
   const flashed = useRef(new Set<string>());
   const openDrawer = useRef((lineId: string) => setDrawerLine(lineId));
@@ -206,13 +221,14 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
     grid.current?.api?.refreshCells({ columns: ['alerts'], force: true });
   }
   function refreshStock(next: QuoteDraft) {
-    stock.current = draftStock(next);
+    stock.current = draftStock(next); notes.current = draftNotes(next);
     pricingRef.current = pricingFrom(next); setPricing(pricingRef.current.summary);
-    grid.current?.api?.refreshCells({ columns: ['available', 'price_source'], force: true });
+    grid.current?.api?.refreshCells({ columns: ['codigo', 'available', 'price_source'], force: true });
     showAlerts(alertsFrom(next));
   }
   function adopt(next: QuoteDraft) {
     base.current = baseFrom(next); setSaved(base.current); refreshStock(next); setTermsOrigin(next.terms_origin); setPermissions(next.permissions);
+    if (next.assistant) setAssistant(next.assistant);
     props.current.onDraftChange?.(next.persisted, next);
   }
   function replaceWith(next: QuoteDraft) {
@@ -237,6 +253,8 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
       return { ...row, quantity, unit_price: unitPrice };
     });
     if (touched) { rowsRef.current = values; setRows(values); }
+    // Terms the server appended (an applied assistant proposal) replace the field while it still shows what the server had.
+    if (normalTerms(header.current.terms) === old.terms && next.terms !== old.terms) { header.current = { ...header.current, terms: next.terms }; setTerms(next.terms); }
     adopt(server);
     announce(server.repriced || []);
   }
@@ -449,6 +467,71 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
       }
     } finally { if (mounted.current) setReviewing(false); }
   }
+  // "Interpretar solicitud del cliente": flush every edit, then ask the server on the version that flush confirmed. Running never changes the
+  // draft; a lost response is retried with the same run_id, so it never costs a second interpretation.
+  async function runAssistant() {
+    if (!autosave || disabled || publishing || assistantBusy || conflictRef.current) return;
+    grid.current?.api?.stopEditing();
+    setAssistantBusy('run'); setAssistantError('');
+    try {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (!await save()) { if (mounted.current && !conflictRef.current) setAssistantError('No se pudo guardar el borrador. Reintenta antes de usar el asistente.'); return; }
+        while (inFlight.current) await inFlight.current;
+        if (!base.current || conflictRef.current || !mounted.current) return;
+        runId.current ||= crypto.randomUUID();
+        try {
+          const next = await request<AssistantState>(`${props.current.draftPath}/assistant`, { method: 'POST',
+            body: JSON.stringify({ run_id: runId.current, expected_draft_version: base.current.version }) });
+          runId.current = null;
+          if (!mounted.current) return;
+          setAssistant(next);
+          // The client's price requests and mentions outside the order arrive as alerts with the draft.
+          await verify();
+          return;
+        } catch (caught) {
+          if (!mounted.current) return;
+          if (caught instanceof ApiError) runId.current = null;
+          const server = caught instanceof ApiError && caught.status === 409 ? (caught.body as { draft?: QuoteDraft } | null)?.draft : undefined;
+          // Another member saved in between: merge their changes under the local cells and ask again on the new version.
+          if (server) { if (rebase(server)) continue; return; }
+          setAssistantError(caught instanceof ApiError ? caught.detail : 'No se pudo conectar con el asistente. Inténtalo de nuevo; no se repetirá la interpretación.');
+          return;
+        }
+      }
+    } finally { if (mounted.current) setAssistantBusy(''); }
+  }
+  // Applying a proposal is a draft save on the confirmed version: quantity (origin assistant, priced again by the supplier's list), internal note
+  // or terms. Dismissing records the decision only. Price requests can never be applied.
+  async function decide(proposal: AssistantProposal, action: 'apply' | 'dismiss') {
+    const run = assistant?.latest_run;
+    if (!autosave || !run || disabled || publishing || assistantBusy || conflictRef.current) return;
+    grid.current?.api?.stopEditing();
+    setAssistantBusy(proposal.id); setAssistantError(''); setPriceNotice('');
+    try {
+      if (!await save()) { if (mounted.current && !conflictRef.current) setAssistantError('No se pudo guardar el borrador. Reintenta antes de aplicar la propuesta.'); return; }
+      while (inFlight.current) await inFlight.current;
+      if (!base.current || conflictRef.current || !mounted.current) return;
+      const body = JSON.stringify({ save_id: crypto.randomUUID(), expected_draft_version: base.current.version, decisions: [{ proposal_id: proposal.id, action }] });
+      const task = (async (): Promise<Outcome> => {
+        try {
+          const next = await request<QuoteDraft>(`${props.current.draftPath}/assistant/${run.id}/decisions`, { method: 'POST', body });
+          if (!mounted.current) return 'failed';
+          absorb(next);
+          return 'saved';
+        } catch (caught) {
+          if (!mounted.current) return 'failed';
+          const server = caught instanceof ApiError && caught.status === 409 ? (caught.body as { draft?: QuoteDraft } | null)?.draft : undefined;
+          if (server && rebase(server)) setAssistantError('Otro miembro de tu equipo modificó el borrador. Revisa la propuesta y vuelve a intentarlo.');
+          else if (!server) setAssistantError(caught instanceof ApiError ? caught.detail : 'No se pudo guardar la decisión. Inténtalo de nuevo.');
+          return 'failed';
+        }
+      })();
+      inFlight.current = task;
+      await task;
+      inFlight.current = null;
+      if (mounted.current && pendingChanges().dirty) schedule();
+    } finally { if (mounted.current) setAssistantBusy(''); }
+  }
   function originLabel(row: QuoteRow) {
     const info = pricingRef.current.lines[row.order_line_id], saved = base.current?.lines[row.order_line_id];
     if (!info) return '—';
@@ -602,7 +685,7 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
     requestAnimationFrame(() => panel.current?.scrollIntoView({ block: 'nearest' }));
     return items;
   }
-  const busy = disabled || publishing || repricing || reviewing;
+  const busy = disabled || publishing || repricing || reviewing || !!assistantBusy;
   const overStock = rows.filter(row => {
     const quantity = quantityValue(row.quantity), available = stock.current[row.order_line_id]?.available_quantity;
     return quantity !== null && available !== undefined && quantity > available;
@@ -633,6 +716,9 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
         : `Por aprobar · ${saved.reviewer} solicitó aprobación ${ago(saved.reviewAt, now)}. Revisa la cotización y envíala al cliente.`}</span>
       {approval && <button type="button" className="button soft small" disabled={busy || !!conflict} onClick={() => void review(false)}><Undo2 size={14}/>Retirar solicitud</button>}</div>}
     {conflict && <div className="notice error quotation-draft-conflict" role="alert"><span>Otro miembro de tu equipo modificó este borrador</span><button type="button" onClick={() => replaceWith(conflict)}>Cargar la versión más reciente</button></div>}
+    {autosave && assistant?.configured && assistant.enabled && <QuoteAssistantPanel state={assistant} busy={busy || !!conflict} running={assistantBusy === 'run'}
+      pending={assistantBusy} error={assistantError} simulatorHref={simulatorHref} onRun={() => void runAssistant()} onDecide={(proposal, action) => void decide(proposal, action)}
+      onCopy={onCopyToChat}/>}
     <div className="quotation-grid-guide"><span>Haz clic en una celda para editar · Tab para avanzar</span>
       {autosave && !!pricing?.fillable && <button type="button" className="button soft small" disabled={busy || !!conflict} onClick={() => void reprice('blank')}><Sparkles size={14}/>Aplicar precios sugeridos ({pricing.fillable})</button>}
       {autosave && !!pricing?.stale && <button type="button" className="button soft small" disabled={busy || !!conflict} title="Tu lista cambió desde que se calcularon estos precios" onClick={() => void reprice('engine')}><RefreshCcw size={14}/>Recalcular precios sugeridos ({pricing.stale})</button>}
@@ -644,7 +730,7 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
     {priceNotice && <div className="notice success quotation-price-notice" role="status">{priceNotice}</div>}
     <div ref={host} className="quotation-grid" aria-label="Artículos de la cotización" style={{ height: Math.min(450, Math.max(170, rows.length * 56 + 60)) }}>
       <AgGridReact<QuoteRow> ref={grid} theme={motionGridTheme} localeText={gridLocale} rowData={rows} columnDefs={columns} defaultColDef={defaultColumn}
-        getRowId={rowId} singleClickEdit stopEditingWhenCellsLoseFocus
+        getRowId={rowId} singleClickEdit stopEditingWhenCellsLoseFocus context={gridContext}
         onGridReady={ready} cellSelection={!disabled} suppressClipboardPaste={disabled}
         ensureDomOrder suppressColumnVirtualisation enableBrowserTooltips loadThemeGoogleFonts={false}/>
     </div>

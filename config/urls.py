@@ -24,7 +24,7 @@ from mall.request_views import AccountRequests, ClientSentRequests, ClientSentRe
 from mall.deal_views import DealActions, DealMessages
 from mall.pricing_views import (ClientProfileView, PriceHistory, PriceListDetail, PriceListsView, PricesExport, PricesView, PricingClients, PricingHistory,
                                PricingRuleArchiveView, PricingRuleDetail, PricingRulesView, PricingSettingsView, PricingSimulate)
-from mall.quote_drafts import QuotationTrace, QuoteDraftDiscard, QuoteDraftReprice, QuoteDraftView
+from mall.quote_drafts import QuotationTrace, QuoteAssistantDecisions, QuoteAssistantView, QuoteDraftDiscard, QuoteDraftReprice, QuoteDraftView
 from mall.price_import import PriceImport, PriceImportErrors, PriceImportJobView, PriceImportTemplate
 from .health import health
 
@@ -90,6 +90,8 @@ urlpatterns = [
     path('api/v1/accounts/<uuid:account_id>/requests/<uuid:pk>/draft/', QuoteDraftView.as_view()),
     path('api/v1/accounts/<uuid:account_id>/requests/<uuid:pk>/draft/discard/', QuoteDraftDiscard.as_view()),
     path('api/v1/accounts/<uuid:account_id>/requests/<uuid:pk>/draft/reprice/', QuoteDraftReprice.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/requests/<uuid:pk>/draft/assistant/', QuoteAssistantView.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/requests/<uuid:pk>/draft/assistant/<uuid:run_id>/decisions/', QuoteAssistantDecisions.as_view()),
     path('api/v1/accounts/<uuid:account_id>/requests/<uuid:pk>/quotations/<uuid:quotation_id>/trace/', QuotationTrace.as_view()),
     path('api/v1/accounts/<uuid:account_id>/deals/<uuid:pk>/actions/', DealActions.as_view()),
     path('api/v1/accounts/<uuid:account_id>/deals/<uuid:pk>/messages/', DealMessages.as_view()),

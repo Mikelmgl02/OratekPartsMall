@@ -22,21 +22,24 @@ test('pricing settings proxy requires a session and same-origin writes', async (
 
 test('quotation draft proxy routes require a session and same-origin writes', async ({ request }) => {
   const draft = `/api/market/accounts/${account}/requests/${account}/draft`;
+  const decisions = `${draft}/assistant/${account}/decisions`;
   for (const response of [await request.get(draft), await request.post(draft, { data: {} }), await request.post(`${draft}/discard`, { data: {} }),
-    await request.post(`${draft}/reprice`, { data: {} })]) {
+    await request.post(`${draft}/reprice`, { data: {} }), await request.get(`${draft}/assistant`), await request.post(`${draft}/assistant`, { data: {} }),
+    await request.post(decisions, { data: {} })]) {
     expect(response.status()).toBe(401);
   }
-  for (const path of [draft, `${draft}/discard`, `${draft}/reprice`]) {
+  for (const path of [draft, `${draft}/discard`, `${draft}/reprice`, `${draft}/assistant`, decisions]) {
     const denied = await request.post(path, { headers: foreign, data: { save_id: account, expected_draft_version: 0 } });
     expect(denied.status()).toBe(403);
     expect(await denied.json()).toEqual({ detail: 'El origen de la solicitud no es válido.' });
   }
-  // The assistant arrives later; until then it, GET on discard or reprice and other methods stay unknown.
-  for (const route of [`${draft}/assistant`, `${draft}/discard/extra`, `${draft}/reprice/extra`]) {
+  // GET on discard, reprice or decisions, neighbouring paths and other methods stay unknown.
+  for (const route of [`${draft}/discard/extra`, `${draft}/reprice/extra`, `${draft}/assistant/extra`, `${draft}/assistant/${account}`, `${decisions}/extra`,
+    `${draft}/assistant/not-a-uuid/decisions`]) {
     expect((await request.post(route, { headers: foreign, data: {} })).status()).toBe(404);
   }
-  expect((await request.get(`${draft}/discard`, { headers: foreign })).status()).toBe(404);
-  expect((await request.get(`${draft}/reprice`, { headers: foreign })).status()).toBe(404);
+  for (const route of [`${draft}/discard`, `${draft}/reprice`, decisions]) expect((await request.get(route, { headers: foreign })).status()).toBe(404);
+  expect((await request.put(`${draft}/assistant`, { headers: foreign, data: {} })).status()).toBe(404);
   expect((await request.put(draft, { headers: foreign, data: {} })).status()).toBe(404);
   expect((await request.delete(draft, { headers: foreign })).status()).toBe(404);
 });

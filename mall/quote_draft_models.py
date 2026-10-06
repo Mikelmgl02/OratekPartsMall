@@ -98,6 +98,8 @@ class DealQuotationLineAudit(models.Model):
     explanation = models.JSONField(default=dict, blank=True)
     # [{code, severity, context, acknowledged_by, acknowledged_at}] as they stood when the revision was published.
     exceptions = models.JSONField(default=list, blank=True)
+    # The assistant run whose proposal the supplier applied to this line in the published revision (null: none).
+    assistant_run = models.ForeignKey('mall.QuoteAssistantRun', on_delete=models.PROTECT, null=True, blank=True, related_name='+')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
