@@ -25,6 +25,7 @@ from mall.deal_views import DealActions, DealMessages
 from mall.pricing_views import (PriceHistory, PriceListDetail, PriceListsView, PricesExport, PricesView, PricingHistory,
                                PricingSettingsView)
 from mall.quote_drafts import QuotationTrace, QuoteDraftDiscard, QuoteDraftReprice, QuoteDraftView
+from mall.price_import import PriceImport, PriceImportErrors, PriceImportJobView, PriceImportTemplate
 from .health import health
 
 class LoginView(ObtainAuthToken):
@@ -98,6 +99,10 @@ urlpatterns = [
     path('api/v1/accounts/<uuid:account_id>/price-lists/<uuid:pk>/', PriceListDetail.as_view()),
     path('api/v1/accounts/<uuid:account_id>/prices/', PricesView.as_view()),
     path('api/v1/accounts/<uuid:account_id>/prices/export/', PricesExport.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/prices/import/', PriceImport.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/prices/import/template/', PriceImportTemplate.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/prices/import/jobs/<uuid:pk>/', PriceImportJobView.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/prices/import/jobs/<uuid:pk>/errors/', PriceImportErrors.as_view()),
     path('api/v1/accounts/<uuid:account_id>/prices/<uuid:item_id>/history/', PriceHistory.as_view()),
     path('api/v1/catalog/', views.CatalogList.as_view()),
     path('api/v1/catalog/<uuid:pk>/technical/', CatalogTechnicalDetail.as_view()),

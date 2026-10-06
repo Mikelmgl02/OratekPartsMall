@@ -1,36 +1,30 @@
 """Preview and import absolute supplier balances without altering stock identity."""
 import hashlib
-import io
 import json
 import math
 import re
 from datetime import timedelta
 from decimal import Decimal
-from xml.etree.ElementTree import ParseError
-from zipfile import BadZipFile, ZipFile
 
-from defusedxml.common import DefusedXmlException
 from django.db import IntegrityError, transaction
-from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
-from openpyxl import Workbook, load_workbook
-from openpyxl.utils.exceptions import InvalidFileException
 from rest_framework import serializers
 from rest_framework.exceptions import APIException, ValidationError
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .catalog_import import header, identifier_text
 from .models import Account, Part, PartCode, SupplierItem
 from .serializers import InventorySerializer
 from .services import ingest_inventory, initial_match
 from .supplier_import_models import SupplierInventoryImportBatch, SupplierInventoryImportJob
 from .views import account_for
 from .part_references import parse_reference_cell, format_references
+from .workbook_reader import (XLSX_TYPE, batches, cell_original, cell_value, header, identifier_text, job_progress, reject_date_or_boolean,
+                              reject_formula, reject_repeated, workbook_response, workbook_rows)
 
 MAX_BYTES = 5 * 1024 * 1024
 BATCH_SIZE = 500
@@ -48,7 +42,6 @@ HEADERS = {
     'BALANCE': 'quantity', 'ERRORES': 'ignored', 'ERRORS': 'ignored',
     'REFERENCIAS': 'references', 'REFERENCES': 'references', 'ALTERNOS': 'references', 'CODIGOS_ALTERNOS': 'references',
 }
-XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 
 
 class SupplierImportRequest(serializers.Serializer):
@@ -62,11 +55,6 @@ class SupplierBatchRequest(serializers.Serializer):
 class StaleSupplierPreview(APIException):
     status_code = 409
     default_detail = 'Las existencias o su vínculo cambiaron desde la vista previa. Revisa el archivo otra vez antes de importar.'
-
-
-def _cell_value(cell):
-    value = cell.value
-    return value.isoformat() if hasattr(value, 'isoformat') else str(value) if value is not None else ''
 
 
 def _quantity(cell):
@@ -85,19 +73,8 @@ def _quantity(cell):
 
 
 def read_supplier_excel(raw):
-    try:
-        with ZipFile(io.BytesIO(raw)) as archive:
-            if sum(info.file_size for info in archive.infolist()) > 30 * 1024 * 1024:
-                raise ValidationError('El contenido del archivo Excel es demasiado grande.')
-        workbook = load_workbook(io.BytesIO(raw), read_only=True, data_only=False, keep_links=False)
-    except (BadZipFile, ValueError, KeyError, OSError, ParseError, DefusedXmlException, InvalidFileException):
-        raise ValidationError('No pudimos leer el archivo. Usa un libro Excel .xlsx válido.')
-    try:
-        sheet = next((sheet for sheet in workbook.worksheets if header(sheet.title) in ['EXISTENCIAS', 'INVENTARIO']), workbook.worksheets[0])
-        if (sheet.max_column or 0) > 20:
-            raise ValidationError('Usa únicamente las columnas de la plantilla de existencias.')
-        sheet.reset_dimensions()
-        rows = sheet.iter_rows(max_col=20)
+    with workbook_rows(raw, sheets=['EXISTENCIAS', 'INVENTARIO'], max_columns=20,
+                       too_wide='Usa únicamente las columnas de la plantilla de existencias.') as rows:
         first = next(rows, None)
         if not first:
             raise ValidationError('El archivo no contiene encabezados de existencias.')
@@ -121,14 +98,10 @@ def read_supplier_excel(raw):
                 if field == 'ignored':
                     continue
                 cell = cells[index]
-                record['values'][field] = _cell_value(cell)
-                record['original'][field] = {'value': _cell_value(cell), 'number_format': cell.number_format,
-                                             'kind': 'formula' if cell.data_type == 'f' else 'error' if cell.data_type == 'e' else
-                                             'date' if cell.is_date else 'boolean' if isinstance(cell.value, bool) else
-                                             'text' if isinstance(cell.value, str) else 'number' if cell.value is not None else 'blank'}
+                record['values'][field] = cell_value(cell)
+                record['original'][field] = cell_original(cell)
                 try:
-                    if cell.data_type in ['f', 'e']:
-                        raise ValueError('Usa valores, sin fórmulas ni errores de Excel.')
+                    reject_formula(cell)
                     if field == 'quantity':
                         value = _quantity(cell)
                     elif field in ['supplier_invent_id', 'codigo']:
@@ -142,8 +115,7 @@ def read_supplier_excel(raw):
                         if not isinstance(cell.value, str):
                             warnings.append({'row': row_number, 'column': COLUMNS[field], 'message': f'Identificador numérico convertido a texto: {value}.'})
                     else:
-                        if cell.is_date or isinstance(cell.value, bool):
-                            raise ValueError('Usa texto, sin fechas ni valores SI/NO.')
+                        reject_date_or_boolean(cell)
                         value = str(cell.value if cell.value is not None else '').strip().upper()
                         if len(value) > (120 if field == 'brand' else 10000):
                             raise ValueError('El valor supera la longitud permitida.')
@@ -159,23 +131,10 @@ def read_supplier_excel(raw):
             records.append(record)
         if not records:
             raise ValidationError('El archivo no contiene filas de existencias.')
-        # Reject every occurrence of a repeated stable ID. Never add balances
-        # or choose one row arbitrarily, even when two copies look identical.
-        seen = {}
-        for record in records:
-            identifier = record['data'].get('supplier_invent_id')
-            if identifier:
-                seen.setdefault(identifier, []).append(record)
-        for identifier, occurrences in seen.items():
-            if len(occurrences) > 1:
-                for record in occurrences:
-                    record['errors'].append({'row': record['row'], 'column': COLUMNS['supplier_invent_id'],
-                                             'message': f'El ID {identifier} está repetido en el archivo. Conserva una sola fila por artículo del proveedor.'})
+        # Never add balances or choose one row arbitrarily, even when two copies look identical.
+        reject_repeated(records, 'supplier_invent_id', COLUMNS['supplier_invent_id'],
+                        'El ID {identifier} está repetido en el archivo. Conserva una sola fila por artículo del proveedor.')
         return records, warnings
-    except (ValueError, KeyError, OSError, IndexError, ParseError, DefusedXmlException, BadZipFile):
-        raise ValidationError('No pudimos leer las filas del archivo Excel.')
-    finally:
-        workbook.close()
 
 
 def stock_plan(supplier, rows, *, lock=False):
@@ -276,40 +235,13 @@ def job_result(job):
     return {**job.preview, 'job_id': str(job.pk), 'supplier_id': str(job.supplier_id), 'filename': job.filename,
             'status': job.status, 'expires_at': job.expires_at.isoformat(), 'valid': job.total_rows > 0,
             'imported': job.status == 'completed', 'summary': job.summary, 'applied_summary': job.applied_summary,
-            'progress': {'batch_size': BATCH_SIZE, 'total_batches': job.total_batches,
-                         'completed_batches': job.completed_batches, 'total_rows': job.total_rows,
-                         'processed_rows': job.processed_rows,
-                         'next_batch': job.completed_batches if job.completed_batches < job.total_batches else None}}
+            'progress': job_progress(job, BATCH_SIZE)}
 
 
 def _workbook_response(rows, filename, *, errors=False):
-    book = Workbook()
-    sheet = book.active
-    sheet.title = 'EXISTENCIAS'
-    sheet.append([COLUMNS[field] for field in FIELDS] + (['ERRORES'] if errors else []))
-    for number, row in enumerate(rows, 2):
-        values = row.get('values', row)
-        for column, field in enumerate(FIELDS, 1):
-            cell = sheet.cell(number, column)
-            value = values.get(field, '')
-            cell.value = format_references(value) if field == 'references' and isinstance(value, list) else value
-            if field != 'quantity' or errors:
-                # Explicit text keeps initial zeros and prevents a rejected
-                # formula from executing when its repair workbook is opened.
-                cell.data_type = 's'
-                cell.number_format = '@'
-        if errors:
-            cell = sheet.cell(number, len(FIELDS) + 1, '; '.join(f'{error["column"]}: {error["message"]}' for error in row['errors']))
-            cell.data_type = 's'
-    sheet.freeze_panes = 'A2'
-    for key, width in [('A', 30), ('B', 26), ('C', 22), ('D', 60), ('E', 18), ('F', 65), ('G', 80)]:
-        sheet.column_dimensions[key].width = width
-    output = io.BytesIO()
-    book.save(output)
-    response = HttpResponse(output.getvalue(), content_type=XLSX_TYPE)
-    response['Content-Disposition'] = f'attachment; filename="{filename}"'
-    response['Cache-Control'] = 'private, no-store'
-    return response
+    return workbook_response('EXISTENCIAS', [(field, COLUMNS[field]) for field in FIELDS], rows, filename, errors=errors,
+                             numeric=['quantity'], widths=[30, 26, 22, 60, 18, 65, 80],
+                             render=lambda field, value: format_references(value) if field == 'references' and isinstance(value, list) else value)
 
 
 class SupplierInventoryImportTemplate(APIView):
@@ -360,15 +292,14 @@ class SupplierInventoryImport(APIView):
                 rejected_rows=[{key: record[key] for key in ['row', 'values', 'original', 'errors']} for record in rejected],
                 total_rows=len(accepted), total_batches=(len(accepted) + BATCH_SIZE - 1) // BATCH_SIZE,
                 applied_summary={key: 0 for key in plan['summary']})
-            batches = []
-            for offset in range(0, len(accepted), BATCH_SIZE):
-                data = [{'row': record['row'], 'data': record['data']} for record in accepted[offset:offset + BATCH_SIZE]]
+            staged = []
+            for index, chunk in batches(accepted, BATCH_SIZE):
+                data = [{'row': record['row'], 'data': record['data']} for record in chunk]
                 batch_plan, fingerprint = stock_plan(supplier, data)
                 if batch_plan['errors']:
                     raise StaleSupplierPreview()
-                batches.append(SupplierInventoryImportBatch(job=job, index=offset // BATCH_SIZE,
-                                                           data=data, fingerprint=fingerprint))
-            SupplierInventoryImportBatch.objects.bulk_create(batches, batch_size=500)
+                staged.append(SupplierInventoryImportBatch(job=job, index=index, data=data, fingerprint=fingerprint))
+            SupplierInventoryImportBatch.objects.bulk_create(staged, batch_size=500)
             # New code aliases can appear between independent reads. Do not
             # stage a newer snapshot behind an older displayed preview.
             if stock_plan(supplier, rows)[1] != initial_fingerprint:

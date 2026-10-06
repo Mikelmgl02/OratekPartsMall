@@ -294,3 +294,4 @@ from .matching_models import MatchingQueue, MatchingCase, SupplierCodeMapping, M
 from .technical_models import PartType, TechnicalTemplate, TechnicalField, PartSpecification, Application, ItemApplication
 from .pricing_models import SupplierPricingSettings, PricingAuditEvent, PriceList, PriceListEntry, SupplierItemPricing, PriceChange
 from .quote_draft_models import DealQuotationDraft, DealQuotationDraftLine, DealQuotationAudit, DealQuotationLineAudit
+from .price_import_models import PriceImportJob, PriceImportBatch

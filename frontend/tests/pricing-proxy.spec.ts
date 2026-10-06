@@ -81,3 +81,26 @@ test('price lists, the price grid and their history are session-bound, with same
   expect((await request.get(`${base}/prices/export?list=1;drop`)).status()).toBe(404);
   expect((await request.post(`${base}/prices/export`, { headers: foreign, data: {} })).status()).toBe(405);
 });
+
+test('the price import route is session-bound, same-origin for writes and only forwards its own paths', async ({ request }) => {
+  const imports = `/api/market/accounts/${account}/prices/import`, job = `${imports}/jobs/${account}`;
+  for (const response of [await request.get(`${imports}/template`), await request.get(job), await request.get(`${job}/errors`),
+    await request.post(imports, { multipart: { file: { name: 'precios.xlsx', mimeType: 'application/octet-stream', buffer: Buffer.from('x') } } }),
+    await request.post(job, { data: { batch_index: 0 } })]) {
+    expect(response.status()).toBe(401);
+    expect(await response.json()).toEqual({ detail: 'Inicia sesión para continuar.' });
+  }
+  for (const path of [imports, job]) {
+    const denied = await request.post(path, { headers: foreign, data: { batch_index: 0, confirm_new_lists: true } });
+    expect(denied.status()).toBe(403);
+    expect(await denied.json()).toEqual({ detail: 'El origen de la solicitud no es válido.' });
+  }
+  // Reads of the upload path, writes to downloads and unknown neighbours stay unknown before any session or origin check.
+  for (const [method, path] of [['GET', imports], ['POST', `${imports}/template`], ['POST', `${job}/errors`], ['GET', `${imports}/jobs/not-a-uuid`],
+    ['GET', `${job}/extra`], ['GET', `${imports}/other`], ['GET', `/api/market/accounts/not-a-uuid/prices/import/template`]] as const) {
+    const response = method === 'GET' ? await request.get(path, { headers: foreign }) : await request.post(path, { headers: foreign, data: {} });
+    expect(response.status(), `${method} ${path}`).toBe(404);
+  }
+  expect((await request.put(job, { headers: foreign, data: {} })).status()).toBe(405);
+  expect((await request.delete(job, { headers: foreign })).status()).toBe(405);
+});

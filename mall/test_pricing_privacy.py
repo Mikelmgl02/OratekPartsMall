@@ -10,13 +10,15 @@ import uuid
 from decimal import Decimal
 
 from django.contrib import admin
-from openpyxl import load_workbook
+from django.core.files.uploadedfile import SimpleUploadedFile
+from openpyxl import Workbook, load_workbook
 from rest_framework.test import APITestCase
 
 from . import test_deals as deal_tests
 from . import test_requests as request_tests
 from .management import ManagedInventorySerializer
 from .models import Membership, SupplierItem, User
+from .price_import_models import PriceImportBatch, PriceImportJob
 from .pricing_models import (PriceChange, PriceList, PriceListEntry, PricingAuditEvent, SupplierItemPricing, SupplierPricingSettings,
                              record_pricing_event)
 from .pricing_services import set_prices
@@ -60,6 +62,7 @@ class PricingPrivacyTests(APITestCase):
     action = deal_tests.DealWorkflowTests.action
     messages = deal_tests.DealWorkflowTests.messages
     trace_paths = ()
+    import_job = uuid.UUID(int=0)
 
     def quote(self, order, price='13.00'):
         self.client.force_authenticate(self.seller_a)
@@ -87,6 +90,26 @@ class PricingPrivacyTests(APITestCase):
                              list(PriceChange.objects.values('new_value', 'new_text')), list(SupplierItemPricing.objects.values('discount_group', 'floor_price'))],
                             default=str)
         self.assertTrue(all(marker in stored for marker in MARKERS), 'The canary must seed every marker it looks for.')
+        self.seed_private_import()
+
+    def price_file(self, rows):
+        book = Workbook()
+        book.active.title = 'PRECIOS'
+        for row in [['ID_INVENTARIO_PROVEEDOR', 'LINEA', 'PRECIO_MINIMO', 'PRECIO'], *rows]:
+            book.active.append(row)
+        output = io.BytesIO()
+        book.save(output)
+        return SimpleUploadedFile('PRECIOS.xlsx', output.getvalue())
+
+    def seed_private_import(self):
+        """A real price import preview (S4): its job keeps a price change and a rejected row with the private values; nothing is applied."""
+        self.client.force_authenticate(self.seller_a)
+        response = self.client.post(f'/api/v1/accounts/{self.supplier_a.pk}/prices/import/', {'file': self.price_file([
+            ['A-001', 'SECRETO-LINEA', '666.66', '777.77'], ['A-002', '', '', '555.55'], ['NO-EXISTE', 'SECRETO-LINEA', '666.66', '777.77']])}, format='multipart')
+        self.assertEqual((response.status_code, response.data['summary']['decreases'], response.data['summary']['rejected_rows']), (200, 1, 1))
+        self.import_job = response.data['job_id']
+        stored = json.dumps(list(PriceImportJob.objects.values('preview', 'rejected_rows')) + list(PriceImportBatch.objects.values('data')), default=str)
+        self.assertTrue(all(marker in stored for marker in ['777.77', '666.66', '555.55', 'SECRETO-LINEA']))
 
     def seed_private_draft(self, order):
         """A real server draft (S1) with a private price and internal note, saved through the supplier's own endpoint."""
@@ -109,7 +132,9 @@ class PricingPrivacyTests(APITestCase):
         private, own = f'/api/v1/accounts/{self.supplier_a.pk}', f'/api/v1/accounts/{account.pk}'
         return [f'{private}/pricing/settings/', f'{private}/price-lists/', f'{private}/prices/', f'{private}/prices/?status=below_floor',
                 f'{private}/prices/{self.item_a.pk}/history/', f'{private}/prices/export/', f'{private}/pricing/history/',
-                f'{own}/price-lists/', f'{own}/prices/', f'{own}/prices/{self.item_a.pk}/history/', f'{own}/prices/export/', f'{own}/pricing/history/']
+                f'{own}/price-lists/', f'{own}/prices/', f'{own}/prices/{self.item_a.pk}/history/', f'{own}/prices/export/', f'{own}/pricing/history/',
+                f'{private}/prices/import/template/', f'{private}/prices/import/jobs/{self.import_job}/', f'{private}/prices/import/jobs/{self.import_job}/errors/',
+                f'{own}/prices/import/template/', f'{own}/prices/import/jobs/{self.import_job}/', f'{own}/prices/import/jobs/{self.import_job}/errors/']
 
     def calls(self, user, account, order, *, writes=()):
         self.client.force_authenticate(user)
@@ -128,6 +153,9 @@ class PricingPrivacyTests(APITestCase):
         responses['POST prices'] = self.client.post(f'{private}/prices/', {'changes': [{'list_id': str(PriceList.objects.get().pk), 'supplier_item_id': str(self.item_a.pk),
                                                                                          'unit_price': '1.00', 'expected_revision': 1}]}, format='json')
         responses['POST price-lists'] = self.client.post(f'{private}/price-lists/', {'code': 'ROBADA', 'name': 'ROBADA'}, format='json')
+        responses['POST prices/import'] = self.client.post(f'{private}/prices/import/', {'file': self.price_file([['A-001', 'ROBADA', '', '1.00']])}, format='multipart')
+        responses['POST prices/import (propia)'] = self.client.post(f'{account_url}/prices/import/', {'file': self.price_file([['A-001', '', '', '1.00']])}, format='multipart')
+        responses['POST import commit'] = self.client.post(f'{private}/prices/import/jobs/{self.import_job}/', {'batch_index': 0}, format='json')
         for name, call in writes:
             responses[name] = call()
         return responses
@@ -215,6 +243,9 @@ class PricingPrivacyTests(APITestCase):
             for marker in MARKERS:
                 self.assertNotIn(marker, json.dumps(command.result))
         self.assertEqual((PriceListEntry.objects.get(item=self.item_a).unit_price, PriceList.objects.count()), (Decimal('777.77'), 1))
+        # Nobody else uploads into or applies the supplier's import; the competitor's own uploads stay in its own account.
+        self.assertEqual(list(PriceImportJob.objects.filter(supplier=self.supplier_a).values_list('owner', 'completed_batches')), [(self.seller_a.pk, 0)])
+        self.assertEqual(set(PriceImportJob.objects.values_list('supplier', flat=True)), {self.supplier_a.pk, self.supplier_b.pk})
 
     def test_client_facing_payload_key_sets_are_pinned(self):
         receipt = self.submit(self.payload([(self.item_a, 3), (self.item_a2, 2)]))
@@ -261,7 +292,7 @@ class PricingPrivacyTests(APITestCase):
 
     def test_pricing_models_stay_out_of_admin_and_management_serializers(self):
         for model in [SupplierPricingSettings, PricingAuditEvent, DealQuotationDraft, DealQuotationDraftLine, DealQuotationAudit, DealQuotationLineAudit,
-                      PriceList, PriceListEntry, SupplierItemPricing, PriceChange]:
+                      PriceList, PriceListEntry, SupplierItemPricing, PriceChange, PriceImportJob, PriceImportBatch]:
             self.assertNotIn(model, admin.site._registry)
         self.assertEqual(SupplierItemSerializer.Meta.fields, ['id', 'supplier_invent_id', 'part', 'codigo', 'brand', 'description', 'references',
                                                               'matching_status', 'source', 'reported_quantity', 'reserved_quantity',

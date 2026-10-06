@@ -1,8 +1,9 @@
 'use client';
 import { useCallback, useEffect, useId, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { Download, History, ListPlus, LoaderCircle, LockKeyhole, Pencil, RefreshCw, Search, Star, Tags, X } from 'lucide-react';
+import { Download, FileSpreadsheet, History, ListPlus, LoaderCircle, LockKeyhole, Pencil, RefreshCw, Search, Star, Tags, Upload, X } from 'lucide-react';
 import Modal from './modal';
+import SupplierPriceImport from './supplier-price-import';
 import { UppercaseInput } from './uppercase-field';
 import { Account, ApiError, Page, request } from '@/lib/types';
 import type { Currency, PriceList, PriceListsEnvelope, PricingAuditEntry } from '@/lib/pricing-types';
@@ -19,6 +20,8 @@ export default function SupplierPricing({ account }: { account: Account }) {
   const [error, setError] = useState('');
   const [editing, setEditing] = useState<PriceList | 'new' | null>(null);
   const [notice, setNotice] = useState('');
+  const [importing, setImporting] = useState(false);
+  const [gridReload, setGridReload] = useState(0);
   const tabId = useId();
   // Horizontal tabs: arrows move between them, Home and End jump to the first and the last.
   function tabKey(event: React.KeyboardEvent<HTMLButtonElement>) {
@@ -43,7 +46,9 @@ export default function SupplierPricing({ account }: { account: Account }) {
       <div className="supplier-pricing-heading"><div><h2>Listas de precios</h2><p>Precios base de tu inventario. La lista predeterminada prepara el precio sugerido de cada cotización.</p></div>
         <div className="supplier-workspace-actions">
           {lists?.can_configure && <button type="button" className="button soft small" onClick={() => setEditing('new')}><ListPlus size={15}/>Nueva lista</button>}
+          {lists?.can_configure && <button type="button" className="button soft small" onClick={() => setImporting(true)}><Upload size={15}/>Importar precios</button>}
           {!!active.length && <a className="button soft small" href={`/api/market/accounts/${account.id}/prices/export`} download><Download size={15}/>Descargar precios</a>}
+          <a className="button soft small" href={`/api/market/accounts/${account.id}/prices/import/template`} download><FileSpreadsheet size={15}/>Descargar plantilla</a>
         </div></div>
       {notice && <div className="notice success" role="status">{notice}</div>}
       {error && <div className="notice error" role="alert"><span>{error}</span><button type="button" onClick={() => void load()}>Intentar de nuevo</button></div>}
@@ -54,10 +59,12 @@ export default function SupplierPricing({ account }: { account: Account }) {
             <tbody>{lists.results.map(list => <tr key={list.id} className={list.active ? '' : 'archived'}><td><strong>{list.code}</strong>{!list.active && <small>Archivada</small>}</td><td>{list.name}</td><td>{list.currency}</td>
               <td>{list.is_default ? <span className="price-list-default"><Star size={13}/>Predeterminada</span> : '—'}</td><td className="number-cell">{list.priced_count}</td><td className="number-cell">{list.missing_count}</td><td>{date(list.updated_at)}</td>
               {lists.can_configure && <td><button type="button" className="icon-button" aria-label={`Editar lista ${list.code}`} onClick={() => setEditing(list)}><Pencil size={16}/></button></td>}</tr>)}</tbody></table></div>}
-        <PriceGrid account={account} lists={lists.results} canConfigure={lists.can_configure} onSaved={() => void load()}/>
+        <PriceGrid account={account} lists={lists.results} canConfigure={lists.can_configure} reload={gridReload} onSaved={() => void load()}/>
       </>}
     </div>}
     {tab === 'history' && <div role="tabpanel" id={`${tabId}-history-panel`} aria-labelledby={`${tabId}-history-tab`} className="supplier-pricing-panel"><PricingHistory account={account}/></div>}
+    {importing && <SupplierPriceImport key={account.id} account={account} onClose={() => { setImporting(false); void load(); setGridReload(value => value + 1); }}
+      onSaved={result => { void load(); setGridReload(value => value + 1); setNotice(`Importación de precios completada: ${result.applied_summary.created} nuevos, ${result.applied_summary.updated} actualizados y ${result.applied_summary.removed} eliminados.${result.summary.rejected_rows ? ` ${result.summary.rejected_rows} filas pendientes; abre Importar precios para descargar el archivo de correcciones.` : ''}`); }}/>}
     {editing && <PriceListForm account={account} list={editing === 'new' ? null : editing} first={!lists?.results.length}
       onClose={() => setEditing(null)} onSaved={(saved, created) => { setEditing(null); setNotice(created ? `Lista ${saved.code} creada.` : `Lista ${saved.code} actualizada.`); void load(); }}/>}
   </section>;

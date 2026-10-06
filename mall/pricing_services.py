@@ -35,13 +35,14 @@ def item_values(row):
 
 
 @transaction.atomic
-def set_prices(supplier, actor, *, changes=(), items=(), source='manual', reference='', audit_kind='prices_edited'):
+def set_prices(supplier, actor, *, changes=(), items=(), source='manual', reference='', audit_kind='prices_edited', audit=None):
     """changes: [{list_id, supplier_item_id, unit_price: Decimal|None (None removes), expected_revision: int|None}];
     items: [{supplier_item_id, discount_group?, floor_price?, expected_revision: int|None}] with validated, normalized values.
 
     A row already at its target is a no-op, so a retry after a lost response is safe without an operation table. Any other revision
     mismatch raises PriceConflict and nothing is written. Each real change bumps that row's revision and appends a PriceChange; each
     touched list's version moves once per call, and one PricingAuditEvent summarises the call. Returns {summary, item_ids}.
+    A change or item may carry its own `reference` (an import row: import:<job>:<row>); `audit` adds object_id/payload to the event.
     """
     Account.objects.select_for_update().get(pk=supplier.pk)
     list_ids = sorted({change['list_id'] for change in changes}, key=str)
@@ -80,7 +81,7 @@ def set_prices(supplier, actor, *, changes=(), items=(), source='manual', refere
     if conflicts:
         raise PriceConflict(conflicts)
     now, history, summary = timezone.now(), [], Counter(unchanged=unchanged)
-    stamp = {'source': source, 'reference': reference[:120], 'updated_by': actor, 'updated_at': now}
+    stamp = {'source': source, 'updated_by': actor, 'updated_at': now}
     created_keys = [(change['list_id'], change['supplier_item_id']) for change, entry in price_plan if entry is None and change['unit_price'] is not None]
     # A re-created entry continues the pair's revision count, so a stale expected_revision can never match a row deleted meanwhile.
     previous = {(row['price_list_id'], row['item_id']): row['total'] for row in PriceChange.objects.filter(
@@ -89,27 +90,28 @@ def set_prices(supplier, actor, *, changes=(), items=(), source='manual', refere
     creates, updates, removals = [], [], []
     for change, entry in price_plan:
         key, new, old = (change['list_id'], change['supplier_item_id']), change['unit_price'], entry.unit_price if entry else None
+        row_reference = change.get('reference', reference)[:120]
         if entry is None:
-            creates.append(PriceListEntry(price_list_id=key[0], item_id=key[1], unit_price=new, revision=previous.get(key, 0) + 1, **stamp))
+            creates.append(PriceListEntry(price_list_id=key[0], item_id=key[1], unit_price=new, revision=previous.get(key, 0) + 1, reference=row_reference, **stamp))
             summary['created'] += 1
         elif new is None:
             removals.append(entry.pk)
             summary['removed'] += 1
         else:
-            entry.unit_price, entry.revision = new, entry.revision + 1
+            entry.unit_price, entry.revision, entry.reference = new, entry.revision + 1, row_reference
             for field, value in stamp.items():
                 setattr(entry, field, value)
             updates.append(entry)
             summary['updated'] += 1
         summary[f'list:{lists[key[0]].code}'] += 1
         history.append(PriceChange(supplier=supplier, item_id=key[1], price_list_id=key[0], kind='list_price', old_value=old, new_value=new,
-                                   source=source, reference=reference[:120], actor=actor))
+                                   source=source, reference=row_reference, actor=actor))
     PriceListEntry.objects.bulk_create(creates)
     PriceListEntry.objects.bulk_update(updates, ['unit_price', 'revision', 'source', 'reference', 'updated_by', 'updated_at'])
     PriceListEntry.objects.filter(pk__in=removals).delete()
     item_creates, item_updates = [], []
     for row, current, diff in item_plan:
-        before = item_values(current)
+        before, row_reference = item_values(current), row.get('reference', reference)[:120]
         if current is None:
             current = SupplierItemPricing(item_id=row['supplier_item_id'], supplier=supplier, revision=1, updated_by=actor, updated_at=now)
             item_creates.append(current)
@@ -121,11 +123,11 @@ def set_prices(supplier, actor, *, changes=(), items=(), source='manual', refere
         if 'floor_price' in diff:
             summary['floor_updates'] += 1
             history.append(PriceChange(supplier=supplier, item_id=row['supplier_item_id'], kind='floor_price', old_value=before['floor_price'],
-                                       new_value=diff['floor_price'], source=source, reference=reference[:120], actor=actor))
+                                       new_value=diff['floor_price'], source=source, reference=row_reference, actor=actor))
         if 'discount_group' in diff:
             summary['line_updates'] += 1
             history.append(PriceChange(supplier=supplier, item_id=row['supplier_item_id'], kind='discount_group', old_text=before['discount_group'],
-                                       new_text=diff['discount_group'], source=source, reference=reference[:120], actor=actor))
+                                       new_text=diff['discount_group'], source=source, reference=row_reference, actor=actor))
     SupplierItemPricing.objects.bulk_create(item_creates)
     SupplierItemPricing.objects.bulk_update(item_updates, ['discount_group', 'floor_price', 'revision', 'updated_by', 'updated_at'])
     PriceChange.objects.bulk_create(history)
@@ -133,6 +135,7 @@ def set_prices(supplier, actor, *, changes=(), items=(), source='manual', refere
     PriceList.objects.filter(pk__in=touched).update(version=F('version') + 1, updated_at=now)
     result = {key: summary[key] for key in ('created', 'updated', 'removed', 'unchanged', 'floor_updates', 'line_updates')}
     if history:
-        record_pricing_event(supplier, actor, audit_kind, object_id=reference[:40], payload={
-            **result, 'reference': reference, 'lists': {key[5:]: value for key, value in summary.items() if key.startswith('list:')}})
+        audit = audit or {}
+        record_pricing_event(supplier, actor, audit_kind, object_id=audit.get('object_id', reference)[:40], payload={
+            **result, 'reference': reference, 'lists': {key[5:]: value for key, value in summary.items() if key.startswith('list:')}, **audit.get('payload', {})})
     return {'summary': result, 'item_ids': item_ids}

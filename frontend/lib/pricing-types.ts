@@ -80,3 +80,20 @@ export type PriceHistoryEntry = { id: number; kind: 'list_price' | 'floor_price'
   actor: { name: string }; created_at: string };
 export type PricingAuditEntry = { id: number; kind: string; actor: { name: string }; client: { id: string; name: string } | null;
   order: { id: string; reference: string } | null; object_id: string; payload: Record<string, unknown>; created_at: string };
+
+// Price import from Excel (supplier-only): the preview and progress of an owner-bound job.
+export type PriceImportCounts = { new_prices: number; increases: number; decreases: number; unchanged: number; removed: number };
+export type PriceImportIssue = { row: number; column: string; message: string };
+export type PriceImportChange = { row: number; supplier_invent_id: string; codigo: string; description: string; kind: PriceHistoryEntry['kind'];
+  list: string | null; current: string | null; new: string | null; change_percent: string | null; action: 'create' | 'update' | 'delete'; big_change: boolean };
+export type PriceImportResult = {
+  job_id: string; supplier_id: string; filename: string; status: 'ready' | 'review' | 'importing' | 'completed'; expires_at: string; valid: boolean; imported: boolean;
+  summary: PriceImportCounts & { source_rows: number; valid_rows: number; rejected_rows: number; big_changes: number; line_updates: number; floor_updates: number;
+    lists: Record<string, PriceImportCounts> };
+  applied_summary: PriceWriteSummary; id_column: string; code_column: string; columns: string[];
+  lists: { header: string; code: string; new: boolean; archived: boolean; skipped: boolean }[];
+  lists_to_create: { code: string; name: string; currency: Currency; is_default: boolean; header: string }[]; ignored_columns: string[];
+  preview: PriceImportChange[]; preview_count: number; errors: PriceImportIssue[]; error_count: number; warnings: PriceImportIssue[]; warning_count: number;
+  requires: { acknowledge_big_changes: boolean; confirm_new_lists: boolean };
+  progress: { batch_size: number; total_batches: number; completed_batches: number; total_rows: number; processed_rows: number; next_batch: number | null };
+};

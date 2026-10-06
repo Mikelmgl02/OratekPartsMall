@@ -2,11 +2,7 @@
 import hashlib
 import io
 import json
-import math
-import re
-import unicodedata
 from datetime import timedelta
-from decimal import Decimal
 from zipfile import BadZipFile, ZipFile
 from xml.etree.ElementTree import ParseError
 
@@ -27,6 +23,7 @@ from drf_spectacular.utils import extend_schema
 from .management import IsSuperuser
 from .models import CatalogClassificationState, CatalogImportBatch, CatalogImportIssue, CatalogImportJob, Part, PartCode
 from .catalog_recovery import date_identifier, date_recovery, description_text, recovery_evidence
+from .workbook_reader import header, identifier_text
 
 MAX_BYTES = 5 * 1024 * 1024
 BATCH_SIZE = 500
@@ -126,41 +123,6 @@ class ImportResponse(serializers.Serializer):
 class StalePreview(APIException):
     status_code = 409
     default_detail = 'El archivo o el catálogo cambió desde la vista previa. Revisa el archivo otra vez antes de importar.'
-
-
-def header(value):
-    text = ''.join(c for c in unicodedata.normalize('NFD', str(value or '').strip().upper()) if not unicodedata.combining(c))
-    return '_'.join(text.split())
-
-
-def identifier_text(cell):
-    """Read numeric codes without rounding or applying non-identifier formats."""
-    value = cell.value
-    if isinstance(value, str):
-        return value
-    if cell.is_date:
-        raise ValueError('Excel convirtió este identificador en una fecha. Recupera el código original y guárdalo como texto.')
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or (isinstance(value, float) and not math.isfinite(value)):
-        raise ValueError('Usa un código de texto o un número válido, sin fechas ni valores SI/NO.')
-    number = Decimal(str(value))
-    if abs(number) >= Decimal('1e15') or len(number.normalize().as_tuple().digits) > 15:
-        raise ValueError('Este código numérico puede haber perdido precisión en Excel. Recupera el código original y guárdalo como texto.')
-    plain = format(number, 'f')
-    integer, dot, fraction = plain.partition('.')
-    fraction = fraction.rstrip('0')
-    plain = integer + ('.' + fraction if fraction else '')
-    mask = cell.number_format or 'General'
-    if mask.lower() in ['general', '@']:
-        return plain
-    match = re.fullmatch(r'(0+)(?:\.(0+#*|#+))?', mask)
-    if not match:
-        raise ValueError('El formato numérico de este código no es compatible. Guarda el código original como texto.')
-    decimal_mask = match.group(2) or ''
-    if len(fraction) > len(decimal_mask):
-        raise ValueError('El formato de Excel redondea este código. Recupera su valor original y guárdalo como texto.')
-    integer = integer.zfill(len(match.group(1)) + (1 if integer.startswith('-') else 0))
-    fraction = fraction.ljust(decimal_mask.count('0'), '0')
-    return integer + ('.' + fraction if fraction else '')
 
 
 def read_excel(raw, *, include_warnings=False, include_recovery=False, include_records=False, corrections=None, skip_rows=None):

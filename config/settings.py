@@ -82,7 +82,9 @@ SPECTACULAR_SETTINGS = {"TITLE": "MotionPartes API", "VERSION": "0.1.0", "COMPON
                                "identity_changed", "zero_price", "below_floor", "stale_price", "reduced_to_stock", "zero_offered", "manual_price",
                                "differs_from_list", "no_list_price", "currency_parity", "currency_mismatch"],
     "AcknowledgeableExceptionEnum": ["offered_gt_available", "offered_gt_requested", "identity_changed", "zero_price", "below_floor", "stale_price"],
-    "AuditPriceSourceEnum": ["engine", "previous", "manual", "none", "unspecified"], "AcceptCheckResultEnum": ["ok", "blocked", "accepted_with_shortfall"]}}
+    "AuditPriceSourceEnum": ["engine", "previous", "manual", "none", "unspecified"], "AcceptCheckResultEnum": ["ok", "blocked", "accepted_with_shortfall"],
+    "PriceChangeKindEnum": ["list_price", "floor_price", "discount_group"], "PriceImportActionEnum": ["create", "update", "delete"],
+    "PriceImportStatusEnum": ["ready", "review", "importing", "completed"]}}
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY') or os.getenv('GEM_API_KEY', '')
 GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-3.5-flash-lite')
 CATALOG_LOW_STOCK_THRESHOLD = max(1, int(os.getenv('CATALOG_LOW_STOCK_THRESHOLD', '5')))

@@ -41,7 +41,8 @@ function PartCell({ data }: CustomCellRendererProps<PriceRow>) {
   return data ? <div className="quotation-part-cell"><strong>{data.codigo}</strong>{data.description && <small title={data.description}>{data.description}</small>}</div> : null;
 }
 
-export default function SupplierPriceGrid({ account, lists, canConfigure, onSaved }: { account: Account; lists: PriceList[]; canConfigure: boolean; onSaved: () => void }) {
+// `reload` changes after an Excel import: the grid reads current prices again and keeps unsaved edits, like "Actualizar".
+export default function SupplierPriceGrid({ account, lists, canConfigure, reload = 0, onSaved }: { account: Account; lists: PriceList[]; canConfigure: boolean; reload?: number; onSaved: () => void }) {
   const active = useMemo(() => lists.filter(list => list.active), [lists]);
   const fallbackList = active.find(list => list.is_default) || active[0];
   const [search, setSearch] = useState('');
@@ -75,7 +76,7 @@ export default function SupplierPriceGrid({ account, lists, canConfigure, onSave
       setData(value);
     }).catch(caught => { if (!cancelled) setError(failure(caught, 'No se pudieron cargar tus precios.')); });
     return () => { cancelled = true; };
-  }, [account.id, applied, status, filterList, page, revision]);
+  }, [account.id, applied, status, filterList, page, revision, reload]);
   const pending = [...edits.current.values()].reduce((sum, edit) => sum + Object.keys(edit).length, 0);
   const wrong = [...edits.current.values()].reduce((sum, edit) => sum + Object.entries(edit).filter(([key, value]) => invalid(key, value)).length, 0);
   useEffect(() => {
