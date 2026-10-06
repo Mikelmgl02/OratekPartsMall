@@ -1,0 +1,90 @@
+import { test, expect } from '@playwright/test';
+
+test('preview search, part details, and basket persist on reload', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('html')).toHaveAttribute('lang', 'es');
+  await expect(page.getByRole('heading', { name: /El repuesto indicado/ })).toBeVisible();
+  await page.getByLabel('Buscar repuestos, marcas o códigos').fill('bujía');
+  await expect(page.locator('#catalog').getByRole('heading', { name: 'Bujía de iridio' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Disco de freno delantero' })).not.toBeVisible();
+  await page.getByRole('button', { name: 'Ver Bujía de iridio', exact: true }).click();
+  await expect(page.getByText('Proveedores de ejemplo para esta vista.')).toBeVisible();
+  await page.getByRole('button', { name: 'Agregar a la cesta' }).first().click();
+  await expect(page.getByRole('button', { name: 'Agregado', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Cerrar ventana' }).click();
+  await page.getByRole('button', { name: 'Abrir cesta, 1 artículo' }).click();
+  await expect(page.getByRole('button', { name: 'Enviar solicitud de ejemplo', exact: true })).toBeDisabled();
+  await expect(page.getByRole('heading', { name: 'Repuestos Central' })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('main', { name: 'Cesta de solicitudes', exact: true }).getByRole('heading', { name: 'Bujía de iridio' })).toBeVisible();
+});
+
+test('mobile layout fits and invitation registration is available', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: /El repuesto indicado/ })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
+  await page.getByRole('button', { name: 'Cuenta y listas', exact: true }).click();
+  await page.getByRole('button', { name: 'Iniciar sesión', exact: true }).first().click();
+  await page.getByRole('button', { name: 'Tengo una invitación' }).click();
+  await expect(page.getByLabel('Código de invitación')).toBeVisible();
+  await expect(page.getByLabel('Correo electrónico')).toBeVisible();
+  await page.getByLabel('Código de invitación').fill('codigo-no-valido');
+  await page.getByLabel('Correo electrónico').fill('prueba@example.com');
+  await page.getByLabel('Usuario', { exact: true }).fill('prueba-idioma');
+  await page.getByLabel('Contraseña', { exact: true }).fill('PruebaIdioma938#');
+  await page.getByRole('button', { name: 'Crear cuenta', exact: true }).click();
+  await expect(page.getByRole('dialog').getByRole('alert')).toContainText('Código de invitación');
+  await expect(page.getByRole('dialog').getByRole('alert')).toContainText('válido');
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).not.toBeVisible();
+});
+
+test('session proxy rejects cross-origin writes and unauthenticated access', async ({ request }) => {
+  const denied = await request.post('/api/session', { headers: { Origin: 'https://unrelated.example' }, data: { username: 'someone', password: 'invalid' } });
+  expect(denied.status()).toBe(403);
+  expect(await denied.json()).toEqual({ detail: 'El origen de la solicitud no es válido.' });
+  expect((await request.get('/api/market/catalog')).status()).toBe(401);
+  expect(await (await request.get('/api/session')).json()).toEqual({ authenticated: false });
+});
+
+test('live sign-in, catalog, supplier update, and ledger', async ({ page }) => {
+  test.skip(!process.env.E2E_USERNAME || !process.env.E2E_PASSWORD, 'Set credentials for an account with supplier and client roles.');
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Cuenta y listas', exact: true }).click();
+  await page.getByRole('button', { name: 'Iniciar sesión', exact: true }).first().click();
+  await page.getByLabel('Usuario', { exact: true }).fill(process.env.E2E_USERNAME!);
+  await page.getByLabel('Contraseña', { exact: true }).fill(process.env.E2E_PASSWORD!);
+  await page.getByRole('dialog').getByRole('button', { name: 'Iniciar sesión', exact: true }).last().click();
+  await expect(page.getByText('Cuenta conectada', { exact: true })).toBeVisible();
+  await expect(page.getByText('Catálogo real', { exact: true })).toBeVisible();
+  await page.getByLabel('Buscar repuestos, marcas o códigos', { exact: true }).fill(process.env.E2E_USERNAME!);
+  await expect(page.getByRole('heading', { name: process.env.E2E_USERNAME!, exact: true })).toBeVisible();
+  expect((await page.context().cookies()).find(cookie => cookie.name === 'partsmall_session')?.httpOnly).toBe(true);
+  expect(await page.evaluate(() => Object.keys(localStorage).some(key => key.includes('token')))).toBe(false);
+  await page.getByRole('button', { name: 'Para proveedores' }).click();
+  await page.getByRole('button', { name: 'Actualizar existencias', exact: true }).click();
+  const invent = `browser-qa-${Date.now()}`;
+  await page.getByLabel('ID de inventario del proveedor', { exact: true }).fill(invent);
+  await page.getByLabel('Código del repuesto', { exact: true }).fill('FE-QA-001');
+  await page.getByLabel('Marca', { exact: true }).fill('FE-QA');
+  await page.getByLabel('Cantidad de existencias reportadas', { exact: true }).fill('12');
+  await page.getByRole('button', { name: 'Guardar saldo de existencias' }).click();
+  await expect(page.getByRole('cell', { name: invent, exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Ver movimientos de FE-QA-001', exact: true }).last().click();
+  await expect(page.getByRole('heading', { name: 'Movimientos de existencias · FE-QA-001' })).toBeVisible();
+  await expect(page.getByText('Ajuste de existencias', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Cerrar ventana' }).click();
+  await page.getByRole('navigation').getByRole('button', { name: 'Catálogo', exact: true }).click();
+  await page.getByLabel('Buscar repuestos, marcas o códigos', { exact: true }).fill(process.env.E2E_USERNAME!);
+  await page.getByRole('button', { name: `Ver ${process.env.E2E_USERNAME}`, exact: true }).click();
+  await expect(page.getByRole('dialog').getByText('Artículos disponibles que corresponden a este SKU, con sus códigos y marcas.')).toBeVisible();
+  await page.getByRole('button', { name: /^Agregar FE-QA-001 de .* a la cesta$/ }).click();
+  await page.getByRole('button', { name: 'Cerrar ventana' }).click();
+  await page.getByRole('button', { name: 'Abrir cesta, 1 artículo' }).click();
+  await expect(page.getByText('BORRADOR DE SOLICITUD', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Volver al catálogo', exact: true }).click();
+  await page.getByRole('button', { name: 'Cuenta y listas', exact: true }).click();
+  await page.getByRole('button', { name: 'Cerrar sesión', exact: true }).click();
+  await expect(page.getByText('Catálogo de ejemplo', { exact: true })).toBeVisible();
+});

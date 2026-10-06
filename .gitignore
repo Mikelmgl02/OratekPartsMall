@@ -1,0 +1,24 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example
+db.sqlite3
+.coverage
+staticfiles/
+media/
+docker_backups/
+node_modules/
+.next/
+*.tsbuildinfo
+playwright-report/
+test-results/
+# Local working material: database dumps (contain tokens and password hashes),
+# logo drafts and UI screenshots. Business-model docs stay tracked.
+output/*
+!output/modelo-negocio/
+*.log
+.DS_Store
+.idea/
+.vscode/

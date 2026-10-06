@@ -1,0 +1,102 @@
+MOTION PARTS — TO-DO DE REQUISITOS PARA PRODUCCIÓN
+
+Lista basada en el modelo de negocio acordado. Todas las casillas están sin marcar: no se ha comprobado si cada función está implementada. Otro agente podrá revisar el estado posteriormente.
+
+ACCESO Y PARTICIPANTES
+[ ] Acceso por invitación para retails conocidos; objetivo inicial de 300–500 comercios.
+[ ] Formulario para completar datos y validar que el comercio sea un retail de autorepuestos.
+[ ] Administración y actualización de perfiles de retails.
+[ ] Incorporación y administración de proveedores.
+[ ] Directorio actualizado de comercios accesible a proveedores autorizados.
+[ ] Usuarios autorizados del retail y administrador con permisos de revisión/aprobación.
+[ ] Aislamiento de datos entre empresas y proveedores.
+
+CATÁLOGO Y PRESENTACIÓN
+[ ] Catálogo maestro administrado por Motion Parts, alimentado por importaciones de proveedores.
+[ ] Vínculos entre SKU maestro y artículos individuales de cada proveedor.
+[ ] Fichas originales de proveedores con códigos, descripciones, medidas/detalles e imágenes según datos.
+[ ] Preparación y mejora de arte, imágenes, descripciones y códigos alternos con información verificada.
+[ ] Identificación clara del proveedor asociado a cada artículo.
+[ ] Filtro y algoritmo de agrupación por SKU con apoyo de IA y automatización progresiva.
+[ ] Revisión de excepciones por el fundador, historial de cambios y posibilidad de deshacer.
+[ ] Buscador por SKU maestro y códigos alternos.
+[ ] Listado de proveedores que ofrecen cada SKU, con sus códigos y fichas.
+[ ] Disponibilidad por rangos alto/medio/bajo, sin cantidades exactas públicas.
+[ ] Ocultar ofertas sin stock del listado de artículos disponibles.
+[ ] Catálogo sin precios públicos.
+
+CANASTA Y SOLICITUDES
+[ ] Canasta compartida para que usuarios del retail registren faltantes y agreguen artículos.
+[ ] Selección de proveedor para cada artículo.
+[ ] Revisión del administrador: cantidades, posibles duplicados y proveedores.
+[ ] Aprobación/confirmación de la canasta por el usuario autorizado.
+[ ] División automática en órdenes/solicitudes independientes por proveedor.
+[ ] Conservación de la relación entre canasta y solicitudes enviadas.
+[ ] Preparación de pedidos entre visitas del vendedor.
+[ ] Seguimiento centralizado de solicitudes, cotizaciones, negociaciones y acuerdos.
+
+PRECIOS PRIVADOS Y COTIZACIÓN ASISTIDA POR IA — ESENCIAL
+[ ] Carga y actualización de precios internos por proveedor, sin publicación en catálogo.
+[ ] Perfil privado para cada pareja retail–proveedor.
+[ ] Configuración de precios y reglas comerciales por cliente a cargo del proveedor.
+[ ] Cálculo de precios/descuentos conforme a reglas del proveedor; sin precios inventados por IA.
+[ ] Asistente de IA para interpretar solicitudes y preparar cotizaciones privadas.
+[ ] Borrador de cotización bajo control y revisión del proveedor.
+[ ] Gestión de datos incompletos y excepciones antes de emitir una cotización.
+[ ] Comunicación directa y negociación entre retail y responsables del proveedor.
+[ ] Versiones e historial de cotizaciones y cambios del acuerdo.
+[ ] Confirmación mutua de la misma versión del acuerdo y comprobación de disponibilidad.
+[ ] Acceso a precios, condiciones y acuerdos solo para las partes autorizadas.
+
+INVENTARIO, LEDGER Y CONCILIACIÓN
+[ ] Copia propia del inventario en Motion Parts, independiente del ERP.
+[ ] Un solo saldo visible llamado stock total por proveedor/artículo en su gestión privada.
+[ ] Ledger de stock por proveedor con historial de movimientos y ajustes.
+[ ] Descuento de stock al confirmar el acuerdo; sin segundo descuento al registrar cumplimiento.
+[ ] Registro de compromisos y acuerdos confirmados pendientes de cumplimiento.
+[ ] Cargas parciales actualizan solo artículos incluidos y admiten cero explícito.
+[ ] Cargas conservan historial, compromisos y reservas activas.
+[ ] Conciliación interna de acuerdos ya reflejados y pendientes en las cargas de inventario.
+[ ] Detección de contradicciones por artículo/cantidad.
+[ ] Actualizaciones conflictivas pendientes por artículo y bloqueo de nuevos cierres hasta aclaración.
+[ ] Mantener consultas y resto del catálogo durante la resolución del conflicto.
+[ ] Decisión del proveedor sobre conflictos con acuerdos confirmados aún no cumplidos.
+[ ] Cambios al acuerdo propuestos al retail para aceptación, sin restitución automática por faltante físico.
+[ ] Integración opcional con APIAG Cloud para actualización automática desde proveedores que usan el ERP.
+[ ] Carga manual de listados para proveedores sin APIAG Cloud.
+[ ] Soportar, cuando corresponda, stock separado en sucursal exclusiva Motion Parts de proveedores APIAG Cloud, sin venta retail y con transferencias de unidades no comprometidas; no exigirlo universalmente.
+
+CAPACIDADES ADICIONALES PROPUESTAS
+[ ] Asistente de búsqueda para ayudar al retail a encontrar repuestos y preparar solicitudes.
+[ ] Registro de búsquedas por término, consultas y sugerencias.
+[ ] Detección de búsquedas sin resultados y solicitudes de artículos ausentes.
+[ ] Análisis agregado para priorizar incorporación de artículos y mejoras de fichas.
+[ ] Información agregada de demanda para mejorar conjuntamente catálogo y oferta.
+[ ] Protección frente a identificación de clientes en resultados agregados y grupos pequeños.
+[ ] Exclusión de cotizaciones/acuerdos privados de la información compartida.
+
+PILOTO, INGRESOS Y OPERACIÓN
+[ ] Acceso gratuito inicial para retails.
+[ ] Mensualidad inicial propuesta de US$250 por empresa proveedora, sujeta a validación.
+[ ] Definir administración/cobro de la mensualidad de la plataforma, separado de pagos de repuestos.
+[ ] Preparación del catálogo como inversión propia de Motion Parts, sin cobro separado al proveedor.
+[ ] Medir retails activos y recurrencia de consultas al catálogo.
+[ ] Medir consultas, solicitudes de cotización y acuerdos, incluidos los generados entre visitas.
+[ ] Recoger opinión de proveedores y revisar tarifa tras el piloto, sin aumento automático.
+[ ] Evaluar crecimiento de compras de la cartera como métrica complementaria, sin garantía de ventas.
+[ ] Soporte inicial de acceso y uso a cargo del fundador.
+[ ] Configurar invitaciones/notificaciones y canal de soporte.
+[ ] Mantener presupuesto de servicios: IA US$200/mes, alojamiento/respaldos/imágenes hasta US$80/mes, dominio US$15/año; techo operativo preliminar US$1,000/mes.
+
+PREPARACIÓN PARA PRODUCCIÓN
+[ ] Configurar alojamiento, dominio y HTTPS.
+[ ] Configurar PostgreSQL y probar concurrencia de stock y confirmaciones.
+[ ] Configurar acceso seguro, secretos y permisos de producción.
+[ ] Configurar respaldos y comprobar restauración.
+[ ] Probar carga con catálogo, importaciones y uso realista.
+[ ] Verificar flujo completo desde invitación hasta cotización y confirmación, con aislamiento entre cuentas.
+[ ] Verificar errores, reintentos y prevención de envíos o descuentos duplicados.
+[ ] Configurar supervisión de errores y operación.
+
+FUERA DEL ALCANCE ACORDADO
+Puntos o premios; cobros de repuestos; entregas/logística; administración de vendedores, rutas o comisiones del supplier. No se presupone reposición automática por ventas del retail ni integración ERP obligatoria.

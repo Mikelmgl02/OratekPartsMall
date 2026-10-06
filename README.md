@@ -1,0 +1,432 @@
+# MotionPartes
+
+Brand: **MotionPartes by Oratek**. Domain: `motionpartes.com`. The local development site remains at http://localhost:8080/; public domain hosting and HTTPS are not configured yet.
+
+Django REST Framework foundation for an invitation-only auto-parts quotation marketplace. Catalog and inventory expose no public prices. Prices belong to private, versioned deal quotations.
+
+## Run with Docker Compose
+
+The Compose setup follows APIAG-CLOUD's structure, with `db`, `app`, `frontend`, and `nginx`: PostgreSQL 15, Django/Gunicorn, Next.js, and Nginx. Ports default to 8080 for the website/API and 5433 for PostgreSQL so it can run alongside APIAG-CLOUD.
+
+```sh
+cp .env.example .env
+# Set your own DJANGO_SECRET_KEY and POSTGRES_PASSWORD in .env.
+docker compose up -d --build --wait
+docker compose exec app python manage.py createsuperuser
+```
+
+Open http://localhost:8080/ for the marketplace, http://localhost:8080/administracion for the MotionPartes admin panel, and http://localhost:8080/api/docs/ for API documentation. The `/health/` endpoint checks database connectivity. The database must pass its health check before the app starts; the app applies migrations, collects static files, and starts Gunicorn. Nginx waits for both the app and frontend to be healthy.
+
+Compose automatically reads `.env`. Host-side Python does not. `POSTGRES_HOST=db` and `POSTGRES_PORT=5432` are always supplied inside the app container; host-side database tools use `localhost:5433`. Change `API_PORT` or `POSTGRES_PUBLISHED_PORT` to adjust the published ports. Both ports bind to the local machine only.
+
+Source code is mounted into the app for development. After editing Python files, restart the app with `docker compose restart app`; rebuild with `docker compose up -d --build --wait` after dependency or Dockerfile changes. No APIAG database or services are shared.
+
+```sh
+docker compose logs -f app
+docker compose exec app python manage.py test
+docker compose exec app python manage.py check
+docker compose down
+```
+
+`db_data` persists the database when containers stop or are recreated. `docker compose down` preserves it; `docker compose down -v` deletes it. Changing PostgreSQL credentials in `.env` does not update an already initialized database; alter its credentials deliberately before changing the configuration. This setup is for local development; public deployment still needs domain/HTTPS configuration and removal of the source bind mount.
+
+## Frontend
+
+All customer-facing website text must be in Spanish, including navigation, forms, accessibility labels, and error messages. Django uses Spanish for validation and administration; dates use the Spanish Panama locale and the America/Panama time zone. Keep API identifiers and supplier-provided catalog data unchanged.
+
+Catalog entry fields use uppercase for internal SKUs, optional part names, descriptions, alterno codes and optional code brands. The frontend converts typed or pasted text while preserving the cursor, and the management API normalizes it before validation and storage. Admin forms and search fields disable browser autocomplete; catalog fields use neutral names to avoid personal-contact autofill heuristics. Authentication credentials, email addresses and supplier inventory IDs retain their functional format.
+
+`frontend/` contains the Next.js App Router application using TypeScript, React, custom responsive CSS, bundled fonts, and Lucide icons. Its initial features are:
+
+- Clearly labeled sample catalog for signed-out visitors, with illustrated parts, search, category shortcuts, grid/list views, and sample supplier selection.
+- Invitation signup and sign-in connected to Django. Users without an assigned account see a setup-pending message.
+- Account switching with explicitly assigned client/supplier capabilities. The live catalog uses Django's search and pagination; selecting an internal SKU shows its available supplier items with their individual codes and brands.
+- Catalog filter sidebar with collapsible grupo, subgrupo, existencias and proveedor sections, full-catalog counts, removable selections and a mobile drawer. `catalog/` accepts repeated `category`, `subcategory` and `supplier` parameters (OR within a dimension, AND between dimensions); `category=` or `subcategory=` selects unclassified values. `availability` accepts `in_stock`, `low`, `high`, `sold_out` or `unknown`. `include_facets=1` adds filter option counts before pagination, scoped to the search and other filters. Groups remain browsable independently of the chosen subgroups; subgroups follow selected groups. Stock bands aggregate all active eligible suppliers for each canonical SKU; supplier filters match linked supplier inventory, including sold-out records. Prices and exact stock quantities remain private.
+- Catalog cards include description, **Grupo / Subgrupo** (stored as `category` / `subcategory`), alternate codes, the number of suppliers with available stock, and the most recent stock update. `availability` in the catalog API contains only `status`, `supplier_count`, and `updated_at`; exact quantities remain private. Bands aggregate `max(0, reported_quantity - reserved_quantity)` across matched items from active supplier accounts: `sold_out` for zero, `low` for 1–5 units by default, and `high` above that. `unknown` means no eligible supplier stock records exist. Configure the low-stock cutoff with `CATALOG_LOW_STOCK_THRESHOLD`. Summaries use one stock query for the current page, without multiplying quantities for alternate codes or multiple supplier roles. Group and subgroup are also searchable; missing classifications display **SIN CLASIFICAR**.
+- Supplier workspace with stock records, matching statuses, manual stock updates, resumable Excel balance imports, paginated credit/debit ledger history, and private client requests in **Solicitudes**.
+- Draft request basket grouped by supplier, retaining the selected supplier item for each SKU. Different supplier items under one SKU have separate basket lines. Drafts are saved in local browser storage, separately for each active account and for preview mode. Client accounts submit the basket as separate requests per supplier; successful sends move their items from **Borrador** to database-backed **Enviadas**. Orders and private quotations continue in the deal workflow; delivery and payments remain separate.
+
+The supplier quotation editor uses **AG Grid Enterprise 33.3.2**, matching Essamobileapp's installed version. Supplier quantities and prices are editable; item identities and requested quantities are read-only. It supports sorting, column resizing, range copy/paste from Excel, Spanish menus and exact calculations in cents. Blank prices are allowed only for unavailable items (offered quantity zero). The editor validates all rows and commits the current cell before sending the quotation.
+
+Set `NEXT_PUBLIC_AG_GRID_LICENSE_KEY` in the root `.env` before building with Compose, or in `frontend/.env.local` for local frontend development. The license is registered before the grid is created. Compose provides the environment file through a BuildKit secret for the build step; only the AG Grid license is passed to the frontend build. AG Grid's browser-side license is included in the browser bundle as required by the library; other application credentials remain server-side. Environment files are ignored by Git. After changing only the license, run `docker compose build --no-cache frontend` before recreating the frontend, because build secrets do not invalidate Docker's cache.
+
+**Cesta** opens a full-page cart with supplier item cards on the left and a sticky request summary on the right. Quantities and removal update the saved draft and summary immediately. On mobile, the summary stacks below the items. The `?vista=cesta` URL restores the cart after reload and supports browser back/forward navigation; the last selected account is remembered separately for each signed-in user. Product prices remain private. **Enviar solicitud** sends the selected supplier items and quantities; sample baskets cannot be submitted. The browser stores a submission ID before sending so retries after a lost response or reload recover the original request instead of duplicating it. After confirmation, submitted draft items are cleared and **Enviadas** opens with supplier references. New draft items receive a new submission ID, even when they repeat an earlier request.
+
+Part details derive **Agregado** and **En cesta** quantities from the account's saved draft instead of temporary modal state. Closing/reopening, reload, quantity edits and removal retain the correct item state. **Agregado** opens the basket; **Agregar más** adds the selected quantity. The SKU summary and supplier item badges show draft units and successfully sent units split into **Enviadas · Por revisar** and **En revisión**, **Por confirmar**, **En ajuste** and **En acuerdos**, without repeating a sent total as an additional state. `GET /api/v1/accounts/<client_id>/catalog/<part_id>/request-state/` aggregates all of that client's saved request lines for the SKU, including historical snapshots of merged SKUs, without depending on history pagination. Supplier item badges match the item's supplier, ID, captured code and brand; changed codes are not mistaken for previously requested items. Errors loading sent quantities show an independent retry and preserve basket operations. This endpoint exposes the client's own requested quantities, without supplier stock or internal inventory IDs. Sending a request does not imply supplier acceptance or reservation.
+
+The API token is stored in an HttpOnly, SameSite cookie by Next.js. Browser requests use a restricted Next.js API proxy; tokens are never returned to frontend JavaScript or saved in local storage. Mutating frontend routes check request origin. Set `COOKIE_SECURE=1` when deploying over HTTPS. The direct Django API remains available under `/api/v1/`, its documentation under `/api/docs/`, and the admin under `/admin/`.
+
+For frontend development with the Docker API running:
+
+```sh
+cd frontend
+npm ci
+cp .env.example .env.local
+npm run dev
+```
+
+Open http://localhost:3000/. The local frontend connects through http://127.0.0.1:8080/ to Django; in Docker it connects to `app:8000`. After frontend changes, rebuild the container with `docker compose up -d --build --wait frontend`. The frontend production container does not mount source files.
+
+```sh
+cd frontend
+npm run typecheck
+npm run build
+npx playwright install chromium
+npm run test:e2e
+```
+
+Browser tests cover preview search and basket persistence, mobile layout and invitation form, API-proxy access restrictions, supplier request search/detail/review, account switching, submission retries, and stale basket item recovery. Management tests check anonymous/ordinary-user denial and the superuser account, membership, user, and invitation workflow. Supply disposable `E2E_ADMIN_USERNAME` / `E2E_ADMIN_PASSWORD` credentials for the management workflow; this superuser may have no business memberships. The workflow creates a temporary account named `<admin username>-empresa` and an invitation for `<admin username>@invited.example.invalid`, and assigns/edits the ordinary user fixture, so clean up those fixtures after testing. The live supplier test additionally runs when `E2E_USERNAME` and `E2E_PASSWORD` are supplied. Its fixture needs a disposable account with both supplier and client roles, plus a catalog SKU equal to the uppercased username, a name equal to the username, and the equivalent code `FE-QA-001` with optional code brand `FE-QA`. It creates a stock record and tests its catalog mapping, ledger, and supplier offer, so use a dedicated test account. `E2E_BASE_URL` can override the default http://localhost:8080/.
+
+The native catalog workflow creates a SKU derived from `<admin username>-catálogo`, checks multiple codes and duplicate rejection, edits and deactivates the SKU, reviews a supplier item named `<admin username>-stable`, and verifies that its ledger is unchanged. It creates/edits/retires an alterno code from **Alternos**, verifies that both editors show the same code library, and ingests a supplier item that matches through that alterno. A separate workflow creates `<admin username>-GRUPO` without a name or brand, ingests three equivalent supplier codes from different brands, and verifies their display and separate basket choices after reloading. For cleanup, remove the disposable supplier's stock updates and ledger entries before removing the test SKUs and their codes. These workflows also check the SKU editor, alterno editor and supplier choices at a 390px mobile viewport.
+
+## Run locally
+
+Requires Python 3.12–3.14. From the project directory:
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+export DJANGO_DEBUG=1
+python manage.py migrate
+python manage.py createsuperuser
+python manage.py runserver
+```
+
+Open http://127.0.0.1:8000/admin/ for account and catalog setup, and http://127.0.0.1:8000/api/docs/ for interactive API documentation. The documentation and schema are readable without signing in; protected API endpoints require a token or an authenticated session. `.env.example` documents configuration; environment files are not loaded automatically by Python. Export values in your shell or configure them in your deployment environment.
+
+SQLite is for local development. Set the `POSTGRES_*` variables in `.env.example` for PostgreSQL, which is required for concurrent production inventory writes. Use a strong secret, DEBUG disabled, explicit allowed hosts, and HTTPS in deployment. Production hosting and background ERP scheduling are not configured yet.
+
+## Accounts and invitation signup
+
+An administrator creates an invitation with recipient email and expiration in the admin. Share its token privately with the recipient. Signup creates a user only. Then an administrator creates or selects an account, assigns its explicitly enabled roles, and adds employee memberships. Users can belong to multiple accounts, and accounts can carry several roles.
+
+Seeded roles: `supplier_retail`, `supplier_wholesale`, `client_business`, `client_walkin`. Additional roles can be added in the admin. Membership owner/manager/staff values establish the structure; this initial inventory API allows all members of a supplier account to ingest its inventory. Employee management is admin-only for now.
+
+## Supplier stock imports
+
+Supplier account members can open **Para proveedores → Importar Excel**, download the template, upload an `.xlsx`, and select **Revisar archivo**. The preview compares current stock with the uploaded absolute balance. A change from 5 to 10 creates a movement of **5 Crédito**; a change from 5 to 0 creates **5 Débito**. Unchanged balances create no movement. Neither preview nor template download writes inventory.
+
+The required headers are `ID_INVENTARIO_PROVEEDOR`, `CODIGO`, and `EXISTENCIAS`; optional headers are `MARCA` and `DESCRIPCION`. Header order is flexible, and English aliases are accepted. Use the supplier's permanent inventory ID, with one row per item. IDs retain their case and initial zeros, while product codes, brands and descriptions are uppercase. Stock must be a nonnegative whole number. A blank stock cell is an error; an explicit zero clears that item's reported stock. Items missing from the file retain their balances. When optional metadata columns are absent, existing metadata is preserved; a blank cell in a supplied metadata column clears that value.
+
+Valid rows import in atomic batches of 500, without an application row-count limit. Files may be up to 5 MB, with a 30 MB decompressed-workbook limit. Progress can be paused and resumed after reload, and repeating a committed batch does not duplicate ledger movements. Rejected rows are retained in an account- and owner-bound job and can be downloaded as a correction workbook, corrected, then reuploaded. Those reports remain available after the seven-day commit window. Duplicate inventory IDs reject all occurrences; formulas, date-converted identifiers, invalid balances and items managed by apiag-cloud are excluded. Unknown product codes retain pending matching status and do not create catalog SKUs.
+
+Imports preserve supplier item UUIDs, mappings, reservations and stock history. Every batch checks the stock and catalog mappings against its preview before committing; a changed snapshot requires a new preview while earlier completed batches remain saved. Existing apiag-cloud stock must continue to be updated through its ERP source. Reservations are retained even when reported stock becomes lower than reserved stock; available stock is floored at zero.
+
+## Supplier orders and deals
+
+**Borrador** (`?vista=cesta`) contains editable browser-local cart items. Sending removes the submitted items from the draft and opens database-backed **Enviadas** (`?vista=solicitudes`). One private order is created per supplier and client account. Later submissions append to the oldest `pending` order for that pair, accumulating quantities for the same supplier item, capped at 9,999. Once review starts, later sends create or append to another pending order. Existing orders and their item identities are preserved. Contribution records retain each cart addition and its original submission receipt; replaying the same UUID returns the exact saved receipt even if the order has grown or progressed.
+
+The supplier opens an order using `POST /api/v1/accounts/<supplier_id>/requests/<order_id>/review/`. This idempotent transition records the reviewing employee, locks the order's items and moves it to `reviewed` (**En revisión**). GET remains a read-only operation. Supplier-only stock details are advisory and are never exposed to clients.
+
+The following transitions are enforced by the API as well as the interface:
+
+| State | Allowed decision | Next state |
+| --- | --- | --- |
+| `pending` | Supplier opens the order | `reviewed` |
+| `reviewed` | Supplier confirms and sends a quotation | `quoted` |
+| `quoted` | Client requests an adjustment with a reason | `adjustment` |
+| `adjustment` | Supplier publishes a new revision or returns the unchanged quotation | `quoted` |
+| `quoted` | Client accepts the exact current quotation | `handshaked` |
+
+`POST /api/v1/accounts/<account_id>/deals/<order_id>/actions/` accepts `action=quote|accept|request_adjustment|return_quote`, UUID `operation_id`, and `expected_version`. Quote decisions include `quotation_id`. Publishing includes all original `order_line_id` values exactly once, offered whole `quantity` (0 for unavailable lines), nonnegative `unit_price` with two decimals, `currency=USD|PAB` and optional uppercase `terms`. At least one offered unit is required. Prices/totals are computed with Decimal on the server. Publication constitutes supplier confirmation; client acceptance records the other confirmation and closes the agreement as **HANDSHAKED**. Published line prices and terms remain immutable, and adjustments create new revisions. Confirmed agreements appear in **Historial de compras** (`?vista=compras`), with agreed units, without implying delivery completion.
+
+Account membership, participant identity and supplier/client capability are checked on every operation. Order row locks serialize review, additions and quotation decisions; stale versions and previous quotations return 409. Durable operation keys make lost responses safely retryable. An event history records decisions and the responsible account employee. Quotes remain private between the two accounts. Sending, quoting and handshaking do not change stock balances or create ledger entries; stock allocation, delivery and payment need their own workflow.
+
+Each deal also has a persistent private conversation: `GET/POST .../deals/<order_id>/messages/`. Posting includes UUID `message_id` and uppercase `body` (up to 4,000 characters). Retry keys prevent duplicate messages. GET returns up to 100 messages with `cursor`, `has_more` and `has_earlier`; use `after` for new messages or `before` for earlier history. The interface refreshes chat every five seconds and deal/list state every fifteen seconds while the tab is visible. Chat is also available after handshake for delivery coordination; chat messages never change agreement terms. Older messages can be loaded without losing newer ones.
+
+Order lists retain the existing `/requests/` and `/sent-requests/` routes, with account-scoped search, pagination and all five status filters. `GET .../catalog/<part_id>/request-state/` reports requested units in mutually exclusive lifecycle states, including historical merged-SKU snapshots. Requested units can differ from offered units in a quotation. Stock figures remain supplier-only, including reported/reserved/available quantities and shortfalls.
+
+## Administration
+
+Superusers can open `/administracion` from the marketplace's **Administración** link. A persistent sidebar provides **Inventario**, **Alternos**, **Cuentas**, **Usuarios**, and **Invitaciones**. It collapses behind **Menú administrativo** on mobile. Each section has a shareable URL, for example `/administracion?seccion=alternos`, and reloads retain the selected section. All management workflows use the Spanish MotionPartes panel and the current sign-in session.
+
+In **Inventario → Inventario interno**, use **Crear SKU** to enter the internal SKU, optional name and description, and **Alternos (códigos equivalentes)** in one form. The internal SKU has no brand. An alterno with a blank brand matches supplier items from any brand; an optional code brand narrows the match when necessary. Conflicting codes assigned to other SKUs and duplicate SKUs are rejected, and the entire save is atomic. **Editar** manages details, multiple codes and active status while preserving the part ID. Removing a code does not reassign supplier records. SKUs can be deactivated rather than deleted. In **Existencias por proveedor**, use **Revisar** to select a catalog SKU and approve its matching status; supplier IDs, quantities and stock ledger entries are preserved. Creating a catalog code does not automatically approve pending stock.
+
+The **Alternos** section manages that same library one code at a time: select the **SKU interno**, enter the **Código alterno**, and optionally its brand. Codes added here immediately appear in the SKU editor and in customer catalog searches; codes added in the SKU editor appear here. An alterno is a code suppliers use for the same physical part, not a second SKU or a relationship between different SKUs. The actual supplier, code and brand choices come from matched supplier stock records.
+
+### Import internal inventory from Excel
+
+Superusers can use **Inventario → Inventario interno → Importar Excel**. Download the template, replace its example rows, choose the completed `.xlsx`, and select **Revisar archivo**. The preview shows SKU names/descriptions, categories, active status, new alternos, and create/update counts. **Importar filas válidas** proceeds when some rows have errors: only accepted rows are staged in the catalog batches, while every rejected row is saved in **Errores de importación** with its original cells, description, suggestions and validation messages. Files with no row errors use **Confirmar importación**. Both actions save up to 500 grouped SKUs per atomic batch, with progress and **Pausar importación / Reanudar importación** controls.
+
+The first row contains these headers (order is flexible):
+
+| Column | Behavior |
+| --- | --- |
+| `SKU` | Required, stored as text. Repeated rows belong to the same internal SKU. |
+| `NOMBRE` | Optional. Nonblank values update the SKU name. |
+| `DESCRIPCION` | Optional. Nonblank values update its description. |
+| `CODIGO_ALTERNO` | Optional verified equivalent reference for that SKU, stored as text. Use one row per reference. |
+| `MARCA_ALTERNO` | Optional code brand; blank means all brands. Requires a code on that row. |
+| `ACTIVO` | Optional `SI` or `NO`. Blank preserves an existing SKU's status; new SKUs default to active. |
+| `CATEGORIA` | Optional uppercase product category. Blank preserves the current value. |
+| `SUBCATEGORIA` | Optional uppercase product subcategory. Blank preserves the current value. |
+
+Blank metadata cells preserve existing values. Existing SKUs keep their IDs, existing alternos are retained, and identical repeated codes are added only once. Repeated SKU rows must agree on supplied metadata and status. Text is normalized to uppercase. Numeric SKU/alterno cells are converted to text and listed as preview notices. Plain `General`, text, zero-padded integer, and decimal zero/optional-digit formats preserve their values; rounding, currency, percentage, scientific, and other display formats require the original code as text. Numeric values with more than 15 meaningful digits are rejected because Excel may already have lost precision. Existing text identifiers keep their initial zeros. SKU/code conflicts, formulas and invalid status values are rejected. The importer accepts `.xlsx` files up to 5 MB with no application row-count limit, reading the `Inventario` sheet or otherwise the first worksheet. A 30 MB decompressed-workbook limit bounds parsing memory.
+
+The reader reconstructs date-converted identifiers when a complete code in the description or multiple distinct intact numeric code patterns provide evidence. It does not treat incidental vehicle year ranges as part-code evidence. Ambiguous dates show editable uppercase suggestions and alternative formats in **Códigos que Excel convirtió en fechas**; administrators can apply all reviewed corrections together or explicitly exclude individual affected rows, without editing the workbook. Automatically recovered rows are collapsed for review, and copied date values in `NOMBRE` become the recovered SKU. The preview, resumed job, AI review and completion message retain the original Excel row, recovery decisions and exclusion counts. Multipart previews accept `corrections` as a JSON array of `{row, column, value}` and `skip_rows` as a JSON array of row numbers. These decisions are permitted only for date-converted SKU/alterno cells and still pass normal catalog conflict checks. Recovery uses workbook evidence locally and requires no AI provider key. Format identifier columns as text before exporting when possible; a date value alone cannot distinguish every original code or its padding.
+
+This imports the internal catalog only. Supplier inventory IDs, stock quantities, mappings, pending approvals and stock ledgers are preserved. Validated rows are staged in owner-only import jobs for seven days; the workbook itself is not stored. Upload once, then create successive batches using the job endpoint. The browser remembers the pending job and recovers server progress after reload or a lost response. Repeating an already committed batch index returns its saved checkpoint without committing the following batch. Each batch validates the relevant catalog snapshot again. If a later batch fails, that batch rolls back while previous batches remain saved; a changed catalog requires a new preview. Closing a paused dialog refreshes the catalog without reporting full completion.
+
+Rejected rows remain in the current superuser's persistent **Errores de importación** queue beyond that draft window. Correct them after the accepted-row import finishes, then use **Guardar y reintentar** to validate and save a single row against the current catalog. Repairs are atomic and idempotent; conflicting codes remain pending with the latest edits. A file containing only invalid rows creates a review-only job, allowing immediate correction without catalog batch commits. Explicitly excluded date rows are also retained for later correction. When repeated rows for a readable SKU disagree or one is invalid, all rows of that SKU are held out together to avoid importing inconsistent metadata or partial alias assignments. Global workbook errors such as invalid headers still reject the file. Re-previewing the same uploaded file with its `job_id` replaces that unstarted draft's pending rows instead of creating duplicate queue entries.
+
+Before importing, **Clasificar con IA** proposes Spanish categories/subcategories and equivalent-code groupings in 50-SKU batches. Proposals include reasons, confidence and source part-number evidence; administrators explicitly review, edit and select proposals before applying them to the staged preview. A complete base SKU followed by supplier letters can support a review proposal when the full nonblank descriptions match. Overlapping trailing application-year ranges may differ, with an explicit review warning; position, size, specification and numeric suffix variants remain separate. When at least two compatible supplier variants share a base that is absent, the system proposes that base as a new parent instead of requiring an existing parent. Only reviewed decisions create it, and code ownership conflicts prevent creation. Uncertain equivalences remain separate. Grouping adds the original source SKU and its codes as alternos of the chosen SKU. Applying proposals does not write the catalog until import is confirmed. Classification progress and reviewed decisions survive reloads; malformed provider output never becomes catalog data. The import action explicitly says **Importar sin IA** when classification has not run, or **Importar con revisión parcial** while proposals remain unreviewed.
+
+**Inventario → Inventario interno → Asistente IA** classifies existing catalog items without uploading Excel. Select items missing a group/subgroup or the entire active canonical catalog, optionally filter by SKU/description/alterno and provide classification instructions. Analyses save their selected IDs and run sequential 50-SKU batches with no overall item-count limit. Pause after the current batch and reopen **Análisis guardados** to resume. Candidates are retrieved across the entire catalog even when the source filter is narrow; only bounded source/candidate context reaches Gemini. Each proposal shows source description, existing classification, suggested group/subgroup, candidate destination, reason and confidence. Proposals remain pending until an administrator edits and explicitly confirms individual rows, applies them, or discards them. Edits clear the review checkbox. Blank classification fields preserve existing metadata. Reviewed grouping uses the same atomic merge service and preserves supplier IDs, stock counters, ledgers and historical request lines. Changed descriptions, identifiers, removed aliases or conflicting category edits require a fresh analysis. Creating jobs, classifying batches and applying the same reviewed decisions are retry-safe. Jobs and their audit of reviewed decisions are owner-only and superuser-only; merely opening the assistant makes no provider request or catalog write.
+
+For items already imported, **Inventario → Agrupar SKU** lists conservative supplier-suffix families. Review their descriptions and codes, optionally ask AI to examine just that family, select confirmed equivalent sources, and save one canonical SKU. Existing source rows become inactive merged records pointing to the canonical row; their UUIDs remain traceable, their codes become canonical alternos, and supplier inventory IDs, quantities and stock entries are preserved. Existing canonical UUIDs remain unchanged. A proposed missing parent is labeled **CREAR SKU PADRE** and is created only on confirmed review (`create_target: true`); all selected child codes become its alternos. Merges are atomic, auditable and idempotent; conflicting third-party code ownership blocks a merge. Reimporting a retired source SKU does not reactivate it: use its canonical SKU with the source code as an alterno. Similar names or prefixes alone never trigger automatic catalog merges.
+
+Configure `GEMINI_API_KEY` (or the existing `GEM_API_KEY` environment variable) and optionally `GEMINI_MODEL`, then recreate the app service. The default model is `gemini-3.5-flash-lite`. The key remains server-side; starting classification sends codes and descriptions to Gemini and consumes the provider's usage. Without a key the panel explains that AI is unavailable, while ordinary batch import still works. AI request tests use mocked provider replies; a configured live provider is needed to validate its deployment credentials and quota.
+
+Provider requests use header-based key authentication and `responseMimeType`/`responseJsonSchema` for structured JSON, matching the output settings used by apiag-cloud's Gemini SDK. Editing `.env` requires recreating the API container; a page refresh alone does not load a new key. The apiag-cloud settings `GEMINI_DAILY_TOKEN_LIMIT` and `GEMINI_DAILY_REQUEST_LIMIT` are not enforced by this classifier.
+
+The provider response schema stays small and independent of batch size; fixed-length 50-item arrays cause Gemini to reject the request. The server still checks the exact source count, unique source IDs, allowed destinations, field types and grouping evidence. In the existing-inventory assistant, an unverified grouping is converted to a separate-SKU classification proposal with a review explanation and reduced confidence, so it cannot block unrelated classifications. Provider failures leave the current batch pending, and server diagnostics record only model, HTTP status and source count, never keys or inventory cells.
+
+The panel also supports creating and editing accounts, assigning multiple client/supplier types, adding employee memberships, changing membership permissions, removing account access, editing user names and email addresses, activating/deactivating users, and creating or revoking invitations. New users still register by invitation; administrators then assign their accounts.
+
+Access is checked against Django's current `is_superuser` flag on every management request and when rendering the page. Staff status, account ownership, and membership permissions do not grant administrative access. The existing Django admin at `/admin/` is also restricted to active superusers. Management endpoints use `/api/v1/management/`; the frontend forwards only permitted routes and checks the origin of every write. `/api/v1/auth/me/` supplies the signed-in user's identity and superuser status without exposing tokens.
+
+Deactivation preserves account and inventory history. Deactivating a user revokes existing API tokens; superusers cannot be deactivated through this panel. Passwords and administrative privileges are managed separately in the superuser-only Django admin. Invitations show a code to share manually; no email is sent automatically.
+
+## Internal analytics
+
+Superusers can open **Administración → Estadísticas** to see 7-, 30- or 90-day activity in Panama time: visits, returning users, completed searches, searches without results, part-detail views, basket additions, requested units and supplier review times. Rankings highlight catalog gaps, popular SKUs, frequent visitors and suppliers with pending requests over 24 hours. The existing workflow records review, not order confirmation; confirmation and fulfillment metrics can be added when those transitions exist.
+
+`POST /api/v1/analytics/events/` accepts authenticated visit activity, completed searches, part views and basket additions for an active member account. The server validates event references, calculates search result counts itself and deduplicates event UUIDs. A visit ends after 30 minutes of inactivity; its browser key is shared across tabs and stored in local storage. Hidden tabs do not produce activity heartbeats. Superuser and demo browsing are excluded, and telemetry failure does not block shopping. Basket-added quantities are cumulative additions during the period, not current basket balances. SKU merges retain historical demand metrics.
+
+`GET /api/v1/management/analytics/?days=30` is restricted to superusers in both the frontend proxy and Django. Usage records stay in the application's PostgreSQL database and are linked to the authenticated user; no IP addresses, device fingerprints or external trackers are collected by this feature. The **Cómo funciona** dialog explains the collection to signed-in users. Searches and visits begin recording after deployment, while request counts and review durations use existing transaction history. These records currently have no scheduled retention cleanup.
+
+## Endpoints
+
+All routes use `/api/v1/` unless noted.
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| POST | `auth/signup/` | Accept an unexpired, single-use invitation |
+| POST | `auth/login/` | Username/password to API token |
+| POST | `auth/logout/` | Revoke token and end session |
+| GET | `auth/me/` | Current identity and superuser status |
+| POST | `analytics/events/` | Authenticated internal usage event, validated and retry-safe |
+| GET | `management/analytics/` | Superuser demand and supplier review statistics; `days` accepts 7, 30 or 90 |
+| GET / POST | `management/catalog/` | Superuser SKU directory and atomic creation with equivalent codes |
+| GET / POST | `management/catalog/assistant/` | Owner-only saved analyses, eligible counts (`scope`, `search`) and retry-safe creation using a client UUID |
+| GET / POST | `management/catalog/assistant/{job_id}/` | Paged proposals (`offset`), resumable `classify` batches, explicit `apply` decisions or `dismiss` IDs for existing inventory |
+| POST | `management/catalog/import/` | Multipart `.xlsx` validation and staging; legacy signed confirmation commits only the first 500-SKU batch |
+| GET / POST | `management/catalog/import/jobs/{job_id}/` | Owner-only progress and atomic next batch using `batch_index`; retries are idempotent |
+| GET | `management/catalog/import/issues/` | Owner-only paginated pending or resolved import rows; filters `status`, `job`, `search` |
+| GET / POST | `management/catalog/import/issues/{issue_id}/` | Inspect a source row or atomically validate and save its corrected `values` |
+| GET / POST | `management/catalog/import/jobs/{job_id}/classification/` | Owner-only paged AI proposals, resumable 50-SKU classification, and explicitly reviewed decisions |
+| GET | `management/catalog/grouping/` | Superuser-only paged candidate families; optional search |
+| POST | `management/catalog/grouping/classify/` | Review one selected family with AI; no catalog writes |
+| POST | `management/catalog/grouping/merge/` | Merge explicitly reviewed sources into a canonical SKU, preserving supplier stock identities |
+| GET / PATCH | `management/catalog/{part_id}/` | Edit SKU details, equivalent codes and active status |
+| GET | `management/inventory/` | Superuser stock directory across suppliers |
+| GET / PATCH | `management/inventory/{item_id}/` | Review catalog mapping and matching status only |
+| GET / POST | `management/alternates/` | Superuser alterno code library and creation under an internal SKU |
+| GET / PATCH / DELETE | `management/alternates/{id}/` | Inspect, edit or retire an alterno code |
+| GET / POST | `management/accounts/` | Superuser account management |
+| GET / PATCH | `management/accounts/{id}/` | Account details, roles, and activation |
+| GET | `management/users/` | Superuser user directory |
+| GET / PATCH | `management/users/{id}/` | User profile and activation |
+| GET | `management/roles/` | Available account types |
+| POST | `management/memberships/` | Assign user to account |
+| PATCH / DELETE | `management/memberships/{id}/` | Change permission or remove account access |
+| GET / POST | `management/invitations/` | List or create invitations |
+| PATCH | `management/invitations/{id}/revoke/` | Revoke unused invitation |
+| GET | `accounts/` | Current user's active accounts and roles |
+| GET | `catalog/?search=ABC` | Internal SKUs and their alterno codes |
+| GET | `catalog/{part_id}/suppliers/` | Available supplier groups with matching item IDs, codes, brands and descriptions |
+| GET | `wishlist/?search=ABC&page=1` | Personal saved SKUs, newest first, with current stock bands and catalog availability |
+| GET | `wishlist/state/` | Current user's saved part IDs and count for persistent hearts |
+| PUT / DELETE | `wishlist/{part_id}/` | Idempotently save or remove a canonical SKU; never reserves stock or creates a request |
+| GET | `accounts/{account_id}/inventory/` | Supplier's own stock and matching status |
+| POST | `accounts/{account_id}/inventory/ingest/` | Apply one inventory balance update |
+| GET | `accounts/{account_id}/inventory/import/template/` | Supplier-only Excel stock template |
+| POST | `accounts/{account_id}/inventory/import/` | Multipart Excel validation and staging; no stock writes |
+| GET / POST | `accounts/{account_id}/inventory/import/jobs/{job_id}/` | Owner- and supplier-bound progress or atomic `batch_index` commit |
+| GET | `accounts/{account_id}/inventory/import/jobs/{job_id}/errors/` | Download retained rejected rows for correction and reupload |
+| GET | `accounts/{account_id}/inventory/{item_id}/ledger/` | Supplier's stock history |
+| GET | `/api/schema/` | OpenAPI schema |
+| GET | `/api/docs/` | Interactive API docs |
+
+The Spanish **Favoritos** view is personal to the signed-in user and persists in PostgreSQL across devices and account switches. Hearts on catalog cards and part details share the same state. Catalog merges transfer and deduplicate favorites while preserving their original save date. Inactive saved parts stay visible as **FUERA DEL CATÁLOGO** and can be removed; choose supplier options from an active favorite to add it to the request basket.
+
+Authenticate using `Authorization: Token <token>` or a Django session with CSRF protection. The supplier account in the path is checked against the authenticated user's membership and supplier role.
+
+Alterno creation example (`POST management/alternates/`, superusers only):
+
+```json
+{
+  "part": "<internal SKU UUID>",
+  "code": "58-1R0",
+  "brand": ""
+}
+```
+
+This creates a `PartCode` under the selected SKU. The response contains `id`, `part`, `part_sku`, `part_name`, `code` and `brand`. The customer catalog keeps these codes in its `codes` list; it no longer exposes the previous relationships between different SKUs.
+
+Inventory update example:
+
+```json
+{
+  "update_id": "erp-event-2026-001",
+  "supplier_invent_id": "12345",
+  "codigo": "ABC-123",
+  "brand": "ACME",
+  "description": "Oil filter",
+  "source": "apiag",
+  "quantity": 12
+}
+```
+
+`quantity` is an absolute nonnegative whole-unit stock balance, not a delta. `update_id` must be unique within the supplier account. Retrying an identical normalized payload does not create another ledger adjustment; reusing its ID with different content fails. The response represents the current item state. Events must arrive in order; versioned ERP events remain future work. Missing items in an upload are not implicitly zeroed.
+
+Ledger responses expose nonnegative `quantity` and `direction` (`credit` or `debit`), replacing the signed `stock_delta` field. `balance_type` identifies stock or reservation movements. Historical reservation changes also retain their positive `reserved_delta` and `reserved_direction` (blank for no reservation change). Migration `0010_positive_stock_ledger` converts existing history without changing record IDs, references, timestamps or resulting balances.
+
+## Catalog identity and stock rules
+
+- MotionPartes owns the stable catalog `Part.id` (our invent ID) and the unique, visible `Part.sku`. The internal SKU is brand-neutral; its name and description are optional.
+- Identical parts with different codes or brands share one SKU. Those supplier codes are the SKU's **alternos**, stored as `PartCode` entries. For example, SKU `58411-1R000` can contain alternos `58411-1R000-G`, `58-1R0` and `D-HYU-1R`. Customers can search any of those codes, select the same SKU, and choose its actual supplier items by code and brand.
+- The supplier owns `supplier_invent_id`, which must be stable and never reused for a different product. No remesa is tracked.
+- Each supplier item has a permanent internal UUID. Ledger entries reference it, not its changeable codigo.
+- SKUs and equivalent codes are normalized by trimming and uppercasing. Punctuation is retained to avoid unsafe matches. Equivalent codes may be brand-neutral or have an optional brand scope; there is no internal SKU brand.
+- A supplier code matches the internal SKU itself or one of its equivalent codes. Brand-neutral codes match any supplier brand; scoped codes require the same brand. A unique active match is assigned automatically. The background matching pipeline also resolves normalized codes and full base-code families with identical detailed applications. A consistent family of at least two distinct supplier codes can create its missing parent automatically. Unknown single codes and ambiguous matches stay in the review queue.
+- A code/brand change that still resolves uniquely to the current SKU stays matched, preserving the supplier item ID and ledger. A change that no longer resolves to that SKU requires review. The old mapping is retained internally but the item is excluded from client offers until approved.
+- Both the SKU editor and **Alternos** manage the same `PartCode` rows. Each alterno identifies the same physical part under its internal SKU. Supplier stock IDs and ledger histories are independent of these changeable codes.
+- Inventory source ownership is fixed on first ingestion (`upload` or `apiag`). Switching sources requires a future explicit reconciliation workflow.
+- Every stock balance change records a positive movement quantity with a credit/debit direction, resulting balances, actor, timestamp, and update reference in an atomic transaction. Ledger records are read-only in the API and admin.
+- Availability is reported stock minus reservations, floored at zero. Client offers reveal available supplier item IDs, codes, brands and descriptions, without quantities or prices; suppliers can inspect their own quantities. Several matching lines appear under one supplier group, and the basket retains each selected supplier item separately.
+
+Migration `0005_brand_neutral_skus` derives initial SKUs from existing uppercased names, adding an ID suffix where needed for uniqueness. Existing part IDs, names, descriptions, code mappings, supplier items and stock ledgers are retained. The former part brand is preserved only as non-editable historical data (`legacy_brand`) and is not used for matching or exposed in the SKU API.
+
+The earlier `Alternate` table represented compatibility links between different SKUs. It is retained solely for historical data, without active management or public API exposure; those links are not converted into supplier codes or used to combine SKUs.
+
+Excel browser tests create `<admin username>-EXCEL-NEW` and `<admin username>-EXCEL-EXISTING`, check validation errors, template download, no writes during preview, repeated-code grouping, preservation of existing details/IDs, and importing the same file again. Remove these disposable SKUs and their alternos with the other management fixtures after testing.
+
+## Validation
+
+```sh
+DJANGO_DEBUG=1 python manage.py test
+DJANGO_DEBUG=1 python manage.py check
+DJANGO_DEBUG=1 python manage.py spectacular --file /tmp/partsmall-schema.yml --validate
+```
+
+Tests cover invitation expiration/reuse, account setup requirements, supplier isolation, idempotency, ledger balance differences, source ownership, matching conflicts, brand-neutral SKU/code matching, SKU uniqueness, shared alterno editing, preservation of legacy records, and grouped supplier offers without prices or quantities. PostgreSQL concurrency tests remain necessary before production deployment.
+
+## Catalog images
+
+Superusers manage a SKU gallery at **Administración → Inventario → Imágenes**. Upload multiple JPEG, PNG or WebP files (10 MB per image), choose the cover, reorder, describe and remove images. The first image is the cover; deleting it promotes the next image. Catalog cards, favorites, basket and part details use these images. SKU merges transfer the gallery while preserving its file URLs.
+
+`PartImage` belongs to the shared `Part`, with full image, thumbnail, position, description, dimensions, size, uploader and creation date. Django decodes and validates uploads, applies EXIF orientation, strips metadata, and creates a WebP image up to 2000 px and a 480 px thumbnail. API permissions restrict all gallery mutations to active superusers.
+
+Configure `DO_SPACES_KEY`, `DO_SPACES_SECRET`, `DO_SPACES_BUCKET`, `DO_SPACES_REGION` and `DO_SPACES_ENDPOINT` in the root `.env`. Compose passes these only to Django. `DO_SPACES_CDN_ENABLED=true` serves public product images using the bucket CDN; `DO_SPACES_CDN_ENDPOINT` optionally sets a custom HTTPS origin. The CDN must be enabled for the bucket. `DO_SPACES_MEDIA_PREFIX` defaults to `motionpartes/media`, isolating this app's UUID-based objects from other apps sharing the bucket. Credentials never enter the frontend bundle. Recreate the API service after changing these settings.
+
+Media uses Django's separate `catalog_media` storage alias. With no Spaces configuration, local development uses `media/` (served only with `DJANGO_DEBUG=1`). Images are deleted from storage after the database deletion commits; failed cleanup is logged for operator retry. CDN caches may retain an old URL until its cache expires. Replacement uploads always receive fresh URLs.
+
+Management endpoints under `/api/v1/management/catalog/{part_id}/images/`: GET gallery, POST multipart `file` and optional `alt_text`; PATCH `{image_id}/` to edit `alt_text`; DELETE `{image_id}/`; POST `order/` with the complete ordered `image_ids` array. Catalog and management serializers return `images` ordered with the cover first, including `url` and `thumbnail_url`.
+
+## Next development stage
+
+Private supplier quotations, reservations, partial deliveries, ratings, vehicle fitment, CSV imports, and the apiag-cloud transport adapter are not implemented yet.
+
+Agreed workflow: clients prepare draft items from multiple suppliers and send them into a separate request history. Each supplier sees only its own request lines and creates private quotations. Clients reserve quotations. Suppliers fulfill deliveries; sent request history remains available through the later stages.
+
+Before implementing reservations, settle expiration, supplier confirmation, partial fulfillment, and whether business drafts are personal or shared. Stock deduction must also be coordinated with ERP fulfillment events to prevent decrementing a delivered quantity twice. The ledger already includes movement types for this next stage, but only ingestion adjustments are currently written.
+
+
+### Automatic supplier matching
+
+`docker compose up -d` now includes the `matching` worker. Excel uploads and APIAG ingestion notify a durable database queue; stock remains an absolute snapshot with credit/debit ledger deltas. A completed catalog import or edited catalog code also schedules reconciliation of previously unresolved supplier items. No open browser is required. To run one pass manually: `docker compose exec app python -m mall.matching_runner --once --force` (add `--no-ai` to use deterministic rules only).
+
+The engine builds shared code, base-family, description and token indexes over the full active catalog, independent of supplier or Excel batch boundaries. It preserves leading zeros and does not interchange O/0. Known unique codes, scoped reviewed mappings, full base codes plus identical detailed descriptions, and explicit OEM references with matching specifications can link automatically. Position, numerical suffixes, dimensions and disjoint years are not discarded to manufacture a match. Description similarity alone only retrieves candidates.
+
+Existing canonical duplicates with identical detailed descriptions and full base-code evidence are merged through the audited catalog merge service, preserving images, supplier inventory IDs, reservations and ledger entries. Consistent unmatched supplier families can create a base parent. A changed code on an already linked supplier item cannot automatically transfer it to a different parent. Reviewed supplier-local codes are learned within that supplier. A reviewed branded code can also match another supplier when both the brand and detailed specifications are identical; unbranded local codes are not treated as universal alternos.
+
+**Administración → Inventario → Agrupación inteligente** shows pending reviews, unmatched rows, applied decisions and dismissed proposals. Review writes validate the source and target snapshots. Rejected suggestions stay rejected while their evidence is unchanged. Approved mappings are reused for later uploads. Stock quantities do not invalidate a classification decision.
+
+Gemini receives at most 20 ambiguous supplier cases per run with at most eight catalog candidates per case. Responses are cached with the evidence, cannot introduce arbitrary destinations, and never trigger a merge themselves. A provider outage leaves deterministic matches and stock intact. The analysis button schedules another pass and retries failed AI responses; each pass analyzes the next uncached cases. Existing catalog category/subcategory classification remains available in **Asistente IA**.
+
+API: superuser-only `GET/POST /api/v1/management/matching/` and `POST /api/v1/management/matching/{case_id}/` with `action` (`approve` or `dismiss`), `fingerprint`, and optional `target_sku`. Decisions retain evidence and reviewer/automatic attribution in `MatchingDecision`; catalog merges retain their existing audit. The worker uses a PostgreSQL advisory lock plus a visibility lease to prevent overlapping runs, and retries failures without duplicating committed matches.
+
+
+### Master references and supplier items
+
+`Part` is the brand-neutral master SKU. `PartCode` is its approved equivalence library, independent of stock: `code`, optional reference manufacturer `brand`, `ref_type` (`unknown`, `oem`, `company`), and optional `reference_source` (catalog citation or URL). Manage this in **Inventario interno → Editar → Biblioteca de equivalencias** or **Alternos**. Existing entries retain their current associations; the migration maps legacy `alias` to `unknown` and `manufacturer` to `company`. The deprecated API `kind` is mapped to the same stored field for compatibility. Register verified equivalent references; variants, kits and shared vehicle fitment alone do not prove equivalence. If a reference is already another master SKU, review and merge the masters with **Agrupar SKU** first.
+
+`SupplierItem` still owns the supplier's stable inventory ID, its changeable `codigo`, product brand and stock ledger. Its optional `references` array contains declarations such as `[{"code":"51712-1R000","brand":"HYUNDAI"},{"code":"51712-0U000","brand":"KIA"}]`. The reference manufacturer is independent of the supplier product brand. API omission preserves references; an explicit empty array clears them. References are uppercased and deduplicated without losing leading zeros. They never create new supplier items or publish new universal catalog codes.
+
+Supplier Excel imports accept optional **REFERENCIAS** (also **ALTERNOS** / **CODIGOS_ALTERNOS**). Separate entries with semicolons, e.g. `HYUNDAI:51712-1R000; KIA:51712-0U000; RN11002V`. Manufacturer prefixes are optional. Omitting the column preserves prior references; a blank cell in that column clears them. The downloaded template and repair workbooks include it.
+
+The matching worker resolves declared references against the master library, even when the master and supplier codes are unrelated. Unique references with no explicit specification contradictions can link automatically. Contradictory references, measurements, positions, kit status, or historical links require review. Complete reference bases with supplier suffixes additionally require identical detailed specifications. Existing catalog variants can likewise merge through a master's reference library; ambiguous or chained links require review. AI sees both supplier declarations and master references and only proposes ambiguous matches. Library evidence is included in review snapshots, so editing a reference invalidates a stale approval. No automatic match publishes a supplier-local code as a universal alterno.
+
+## Technical templates and vehicle applications
+
+Each **subgrupo is a `PartType`**, with a permanent UUID and a parent grupo (`category`). Subgrupo names are unique within their grupo. `Part.part_type` selects the template; the existing `category` and `subcategory` strings remain compatible projections for catalog filters, Excel imports and AI classification. Existing complete classifications are backfilled. Imports create/reuse types in batches, and incomplete classifications remain untyped. Renaming a type through the management API updates its items without changing IDs, values or template ownership.
+
+In **Administración → Plantillas técnicas**, create a subgroup and configure its `TechnicalTemplate`. `TechnicalField` defines a stable key, Spanish label, display section/order, type, canonical unit, selection options and whether the field is needed for completeness. The SKU's **Ficha técnica** action renders these fields dynamically. Supported types are decimal measurement, integer, boolean, selection and text. A missing value remains unknown; `false` and zero are real values. Required fields report an incomplete sheet without preventing an administrator from saving partial work.
+
+`PartSpecification` holds one typed value per SKU and template field, plus an internal source reference. Measurements are stored as decimals, not arbitrary strings. Supported same-dimension input units are converted to the template's unit (for example, 25.6 cm → 256 mm); incompatible units, nonfinite values, fractional integers and values requiring more than six decimal places are rejected. Numeric values are indexed by field for future range filtering. Customer measurement search/filter controls are not enabled in this version.
+
+Templates and item sheets use revision checks to reject stale writes. An in-use field cannot be removed or change its key, type or unit; in-use selection options must be retained. An item with specification values cannot move to another subgroup until its sheet is explicitly cleared. SKU merges that would retire a source with specifications or applications are held for review, rather than dropping its sheet or extending vehicle compatibility without evidence. These master-SKU values must apply to its equivalent products; product-specific variations still need their own future product/variant records.
+
+`Application` is a reusable vehicle configuration: make, model, generation/chassis, year range, engine, trim, transmission and market. Empty optional fields mean unspecified, not universal fitment. `ItemApplication` is the explicit many-to-many join from `Part` to `Application`; each link has installation position, fitment notes, source and verification state. The same application can be linked to many items, and one item can link to many applications. Repeating an application/position pair is rejected. Application identities already used by items cannot be edited or deleted; create a new configuration and change the intended links instead. Only verified links appear in the customer's **Ficha técnica y aplicaciones** section, and internal sources are omitted.
+
+All writes and management reads below require a superuser. Catalog sheets require authentication and an active account membership, matching catalog access. URLs below are Django paths; the frontend proxies use `/api/management/...` and `/api/market/...` respectively, without trailing slashes.
+
+| Query or operation | Endpoint |
+| --- | --- |
+| Find/create subgrupos | `GET/POST /api/v1/management/part-types/` (`search`, `page`) |
+| Rename a subgrupo/group | `GET/PATCH /api/v1/management/part-types/<type_id>/` |
+| Fetch/configure its template | `GET/PATCH /api/v1/management/part-types/<type_id>/template/` |
+| Resolve a SKU's template and edit its values/applications | `GET/PATCH /api/v1/management/catalog/<part_id>/technical/` |
+| Find/create vehicle configurations | `GET/POST /api/v1/management/applications/` (`search`, `page`) |
+| Edit/delete an unused configuration | `GET/PATCH/DELETE /api/v1/management/applications/<application_id>/` |
+| Customer sheet and verified vehicle applications | `GET /api/v1/catalog/<part_id>/technical/` |
+
+The catalog management API also accepts a `part_type` UUID when creating/editing a SKU and fills its grupo/subgrupo. Templates are queried through that relationship, never selected by an item's measurements. A sheet GET returns `part_type`, `template` (including its revision and fields), `revision`, `values`, `applications` and `missing_required`. For example:
+
+```json
+{
+  "revision": 0,
+  "part_type": "<subgrupo UUID from GET>",
+  "template_revision": 2,
+  "values": {
+    "diameter": {"value": "25.6", "unit": "cm", "source": "Manufacturer technical sheet"},
+    "abs": {"value": false}
+  },
+  "applications": [
+    {"application": "<application UUID>", "position": "DELANTERO", "notes": "SOLO CON ABS", "source": "Fitment catalog", "verified": true}
+  ]
+}
+```
+
+A supplied `values` object replaces the specification set; a supplied `applications` list replaces the linked applications. Omitted sections remain unchanged. Send `{}` or `[]` explicitly to clear a section. Template PATCH submits its current `revision` and complete ordered `fields` array. Definitions are returned by the template endpoint and documented in `/api/docs/`.
+
+Validation coverage lives in `mall/test_technical_data.py`. `frontend/tests/technical-data.spec.ts` exercises subgroup creation, template configuration, reusable application creation, typed values, verification, reload persistence and mobile layout using disposable `E2E_TECHNICAL_TOKEN` and `E2E_TECHNICAL_RUN` fixtures.
+
+### Fast category suggestions
+
+The inventory assistant defaults to **Categorías · rápido y económico**. It processes 200 source items per saved batch and reads only those items. The existing **Categorías y equivalencias** mode and saved jobs keep their original 50-item batches and merge-evidence checks.
+
+Category-only suggestions use anchored Spanish/ERP description rules (for example `TACO HYU` → `FRENOS / PASTILLAS DE FRENO`, while `CLIP TACO` is an accessory). Ambiguous terms, conflicting existing classifications, and non-brake `PASTILLAS` descriptions are not handled by broad keyword matching. Remaining descriptions are deduplicated exactly after case/accent/whitespace normalization, retaining vehicle, position, dimensions and current classifications. Gemini receives indexed descriptions and a controlled taxonomy, and returns only category indices/confidence. No SKU equivalence context is sent. Unknown types remain for individual review.
+
+Validated AI suggestions with confidence >=85% can be reused for 30 days. Cache identity includes description, existing classification, instructions, model, taxonomy and rules version. Correcting or dismissing a proposal invalidates its cached result. Custom instructions bypass local rules, so they may use more tokens. Local suggestions work without an API key. Usage counters report rules, cache reuse, AI descriptions and provider-reported tokens for successfully saved batches; they are not a billing ledger for failed/abandoned requests.
+
+`POST /api/v1/management/catalog/assistant/` accepts `task: "categories"` (API omission retains legacy `grouping`). An explicit `apply_category` action with `category` and `subcategory` applies up to 200 pending proposals of that type with confidence >=85%, preserving optimistic source checks and updating PartType/template links in bulk. Repeat until the category has no pending eligible proposals. Lower-confidence proposals require individual review. Classification alone never changes catalog items, stock, vehicle fitments or equivalence links.
+
+
+### OEM-preferred MAIN and company references
+
+Reference type and manufacturer are separate: `{"code":"0110-GSU45A48","ref_type":"company","brand":"FEBEST"}` is a company code; `ref_type: "oem"` identifies an original-equipment reference and `brand` identifies its manufacturer. A supplier is not the reference manufacturer. Unknown codes remain `unknown`; stripping a supplier suffix never proves an OEM identity.
+
+`Part.is_OEM` is a persisted boolean on the **main SKU**, exposed by catalog APIs and editable in **Editar SKU → EL SKU PRINCIPAL ES OEM**. It defaults to `false` (internal/company/unverified); `true` explicitly identifies that main code as OEM. It is independent of each alterno's `ref_type`. Migration `0026` only marks existing mains that match an OEM reference with manufacturer and source; it does not guess from code patterns. Verified OEM promotions set the flag automatically. An already marked main is retained unless a different verified OEM is explicitly selected. Catalog PATCH resets the flag on a changed SKU unless `is_OEM` is supplied for the new code. Admin catalog lists support `?is_OEM=true` or `false`, with the corresponding inventory filter. OEM flags participate in matching/review snapshots and prevent suffix-based stripping of an approved OEM.
+
+The matching worker and catalog editor prefer an approved OEM that has both a manufacturer and a nonempty source citation. They retain an existing verified OEM MAIN; otherwise a sole OEM can become MAIN automatically. Multiple OEM codes require selection in **Inventario interno → Editar → OEM para el MAIN** (`main_reference: {code, brand}` on catalog POST/PATCH). The operation keeps the same Part UUID, specifications, fitments, images, supplier inventory identities and ledger, retains the old SKU as an alterno, and records `CatalogIdentityChange`. Conflicting catalog ownership requires grouping review. When the verified OEM already has a master, reference reconciliation prefers that master. Ordinary unknown SKU renames are not evidence of OEM equivalence.
+
+An explicit deployment-level `CATALOG_COMPANY_SUFFIXES` registry identifies known company suffixes; the initial mappings are `FEB`/`FEBEST` → `FEBEST`. These rules preserve the full supplier code and the manufacturer code as company references, without manufacturing OEM mappings. The worker applies them across uploads, rather than maintaining a special case for one item.
+
+**Buscar referencias OEM con IA** calls superuser-only `POST /api/v1/management/catalog/{part_id}/oem-lookup/`, optionally with `company` and `code`. One grounded Google Search call researches the exact code and one compact extraction call structures the results. Cached results (model/code/company/description/classification/version) are reused for 30 days. No whole-catalog web research is launched. An ungrounded response is rejected and remains retryable. Results show source links and distinguish possible identical-part references from containing assemblies and uncertain references. Only reviewed possible equivalences can be added to the editor; saving approves them. Research alone never changes Parts, PartCodes, matches or stock. An OEM number for a complete assembly must not be used as an interchangeable code for its individual component.
+
+Supplier `references` also accept optional `ref_type`, with company references requiring `brand`. Typed matching respects the reference namespace. Excel's existing **REFERENCIAS** column accepts `OEM:TOYOTA:43460-EXAMPLE; COMPANY:FEBEST:0110-GSU45A48`; legacy `BRAND:CODE` and plain codes continue to work. Supplier declarations remain matching evidence, not automatically approved universal equivalences.
+
+**Analizar catálogo y proveedores** reconciles the existing reference library, catalog families and unresolved supplier items. It does not launch web research or category classification. Its panel shows queued/running/completed/retry states, the current phase, catalog size, already-linked supplier items, examined pending items, changes and AI usage. No eligible ambiguous cases means no AI call. The final summary distinguishes an unused AI from an unavailable or failed provider and shows marked/unmarked OEM main counts. Applied/dismissed tabs are cumulative history, not changes from the last run. OEM web research remains the separate per-item action above, with cached results and reviewed equivalences.
