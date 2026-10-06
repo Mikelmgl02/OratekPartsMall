@@ -54,8 +54,14 @@ export function applySave(draft: QuoteDraft, payload: Omit<QuoteDraftSave, 'save
       price_source: change.unit_price === null ? 'none' : change.unit_price === line.suggestion?.unit_price ? 'engine' : 'manual' });
     return next;
   });
+  // Like the server: editing what the client receives withdraws an approval request unless the same save asks for it again.
+  const edited = lines.some((line, index) => line.quantity !== draft.lines[index].quantity || line.unit_price !== draft.lines[index].unit_price)
+    || (payload.currency !== undefined && payload.currency !== draft.currency) || (payload.terms !== undefined && payload.terms !== draft.terms);
+  const review = payload.request_review && (draft.status !== 'review_requested' || edited) ? { status: 'review_requested' as const, review_requested_by: { name: author },
+    review_requested_at: new Date().toISOString() } : payload.request_review === false || (payload.request_review === undefined && edited)
+    ? { status: 'editing' as const, review_requested_by: null, review_requested_at: null } : {};
   return { ...draft, persisted: true, draft_version: draft.draft_version + 1, currency: payload.currency ?? draft.currency, terms: payload.terms ?? draft.terms,
-    terms_origin: 'saved', updated_at: new Date().toISOString(), updated_by: { name: author }, lines, summary: summary(lines) };
+    terms_origin: 'saved', updated_at: new Date().toISOString(), updated_by: { name: author }, lines, summary: summary(lines), ...review };
 }
 
 // Mirrors the server's non-price exception catalog: confirmations count only while their context is unchanged.
@@ -96,19 +102,23 @@ export function applyReprice(draft: QuoteDraft, payload: QuoteDraftReprice, auth
     if (line.unit_price !== price) repriced.push({ order_line_id: line.order_line_id, previous_unit_price: line.unit_price, unit_price: price, reason: payload.scope });
     return { ...line, unit_price: price, price_source: 'engine' as const };
   });
-  return { ...draft, persisted: true, draft_version: draft.draft_version + 1, updated_at: new Date().toISOString(), updated_by: { name: author }, lines, summary: summary(lines), repriced };
+  // Like the server: a reprice that moved a price withdraws a pending approval request.
+  return { ...draft, persisted: true, draft_version: draft.draft_version + 1, updated_at: new Date().toISOString(), updated_by: { name: author }, lines, summary: summary(lines), repriced,
+    ...(repriced.length ? { status: 'editing' as const, review_requested_by: null, review_requested_at: null } : {}) };
 }
 
 // A server-like draft store: version checks return the current draft with 409, and a new revision makes old rows stale.
 // With exceptions on, drafts carry the server's alerts and saves apply acknowledge/revoke; with suggestions, lines carry the
 // supplier's list prices and the reprice endpoint applies them.
-export async function mockQuoteDrafts(page: Page, getOrder: () => DraftSource, { exceptions = false, suggestions = null as Suggestions | null, profile = undefined as DraftProfile | undefined } = {}) {
+export async function mockQuoteDrafts(page: Page, getOrder: () => DraftSource, { exceptions = false, suggestions = null as Suggestions | null, profile = undefined as DraftProfile | undefined,
+  permissions = undefined as QuoteDraft['permissions'] | undefined } = {}) {
   let saved: QuoteDraft | null = null, acks: Acks = {};
   const saves: QuoteDraftSave[] = [], discards: QuoteDraftSave[] = [], reprices: QuoteDraftReprice[] = [], requests: string[] = [];
   // hold() keeps draft saves waiting until the returned release() is called, to act while a save is in flight.
   let gate: Promise<void> | null = null, held = 0;
   const editable = () => ['reviewed', 'adjustment'].includes(getOrder().status);
-  const stored = () => withPricing(saved && saved.base_quotation_id === (getOrder().quotation?.id ?? null) ? saved : virtualDraft(getOrder(), suggestions), suggestions, profile);
+  const stored = () => ({ ...withPricing(saved && saved.base_quotation_id === (getOrder().quotation?.id ?? null) ? saved : virtualDraft(getOrder(), suggestions), suggestions, profile),
+    ...(permissions ? { permissions } : {}) });
   const current = () => exceptions ? withExceptions(stored(), saved ? acks : {}) : stored();
   await page.route(/\/api\/market\/accounts\/[^/]+\/requests\/[^/]+\/draft(?:\/discard|\/reprice)?$/, async route => {
     requests.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`);

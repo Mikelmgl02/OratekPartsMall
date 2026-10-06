@@ -4,7 +4,7 @@ import json
 import uuid
 
 from django.db import IntegrityError, transaction
-from django.db.models import Case, CharField, Count, Prefetch, Q, Sum, OuterRef, Subquery, Value, When
+from django.db.models import Case, CharField, Count, Exists, Prefetch, Q, Sum, OuterRef, Subquery, Value, When
 from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -18,6 +18,7 @@ from rest_framework.views import APIView
 
 from .availability import line_item_identity_ok
 from .models import Account, Part, SupplierItem
+from .quote_draft_models import DealQuotationDraft
 from .request_models import ClientRequestSubmission, SupplierRequest, SupplierRequestLine, RequestContribution, DealEvent, DealQuotation, DealQuotationLine
 from .views import account_for
 
@@ -100,6 +101,14 @@ def availability_alert():
     latest = DealQuotation.objects.filter(order_id=OuterRef('pk')).order_by('-revision').annotate(alert=Case(
         *[When(audit__accept_check__result=value, then=Value(value)) for value in alerts], default=None, output_field=CharField()))
     return Subquery(latest.values('alert')[:1])
+
+
+def draft_state():
+    """Supplier list only: the status of the private draft prepared on the latest revision of an order still open to quoting."""
+    quotations = DealQuotation.objects.filter(order_id=OuterRef('order_id'))
+    latest = Q(base_quotation=Subquery(quotations.order_by('-revision').values('pk')[:1])) | Q(base_quotation__isnull=True, has_quotation=False)
+    drafts = DealQuotationDraft.objects.filter(order_id=OuterRef('pk')).annotate(has_quotation=Exists(quotations)).filter(latest)
+    return Case(When(status__in=['reviewed', 'adjustment'], then=Subquery(drafts.values('status')[:1])), default=None, output_field=CharField())
 
 
 def supplier_request_summary(row):
@@ -330,7 +339,7 @@ class AccountRequests(APIView):
         filters = RequestFilters(data=request.query_params)
         filters.is_valid(raise_exception=True)
         data = filters.validated_data
-        rows = request_queryset(supplier).annotate(availability_alert=availability_alert())
+        rows = request_queryset(supplier).annotate(availability_alert=availability_alert(), draft_state=draft_state())
         if data.get('status'):
             rows = rows.filter(status=data['status'])
         if data.get('search'):

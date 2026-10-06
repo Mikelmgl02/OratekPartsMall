@@ -1,7 +1,7 @@
 'use client';
 import { useCallback, useEffect, useId, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { Calculator, Download, FileSpreadsheet, History, ListPlus, LoaderCircle, LockKeyhole, Pencil, RefreshCw, Scale, Search, Star, Tags, Upload, Users, X } from 'lucide-react';
+import { Calculator, Download, FileSpreadsheet, History, ListPlus, LoaderCircle, LockKeyhole, Pencil, RefreshCw, Scale, Search, SlidersHorizontal, Star, Tags, Upload, Users, X } from 'lucide-react';
 import Modal from './modal';
 import SupplierPriceImport from './supplier-price-import';
 import { UppercaseInput } from './uppercase-field';
@@ -15,9 +15,10 @@ const SupplierClients = dynamic(() => import('./supplier-clients'), { ssr: false
 const ClientPricingProfile = dynamic(() => import('./client-pricing-profile'), { ssr: false, loading: panelLoading });
 const PricingRules = dynamic(() => import('./pricing-rules'), { ssr: false, loading: panelLoading });
 const PricingSimulator = dynamic(() => import('./pricing-simulator'), { ssr: false, loading: panelLoading });
+const PricingSettingsPanel = dynamic(() => import('./pricing-settings'), { ssr: false, loading: panelLoading });
 const date = (value: string) => new Date(value).toLocaleString('es-PA', { timeZone: 'America/Panama', dateStyle: 'medium', timeStyle: 'short' });
 const tabs = [['lists', 'Listas de precios', Tags], ['clients', 'Clientes', Users], ['rules', 'Reglas', Scale], ['simulator', 'Simulador', Calculator],
-  ['history', 'Historial', History]] as const;
+  ['history', 'Historial', History], ['settings', 'Configuración', SlidersHorizontal]] as const;
 const uuid = /^[a-f0-9-]{36}$/;
 // Deep links (?pestana=clientes&cliente=<id>) open a sub-section or a client's profile, like ?seccion= opens Precios.
 function initialView(): { tab: PricingTab; client: string | null } {
@@ -92,6 +93,7 @@ export default function SupplierPricing({ account }: { account: Account }) {
     {tab === 'rules' && <div role="tabpanel" id={`${tabId}-rules-panel`} aria-labelledby={`${tabId}-rules-tab`} className="supplier-pricing-panel"><PricingRules account={account}/></div>}
     {tab === 'simulator' && <div role="tabpanel" id={`${tabId}-simulator-panel`} aria-labelledby={`${tabId}-simulator-tab`} className="supplier-pricing-panel"><PricingSimulator account={account}/></div>}
     {tab === 'history' && <div role="tabpanel" id={`${tabId}-history-panel`} aria-labelledby={`${tabId}-history-tab`} className="supplier-pricing-panel"><PricingHistory account={account}/></div>}
+    {tab === 'settings' && <div role="tabpanel" id={`${tabId}-settings-panel`} aria-labelledby={`${tabId}-settings-tab`} className="supplier-pricing-panel"><PricingSettingsPanel account={account}/></div>}
     {importing && <SupplierPriceImport key={account.id} account={account} onClose={() => { setImporting(false); void load(); setGridReload(value => value + 1); }}
       onSaved={result => { void load(); setGridReload(value => value + 1); setNotice(`Importación de precios completada: ${result.applied_summary.created} nuevos, ${result.applied_summary.updated} actualizados y ${result.applied_summary.removed} eliminados.${result.summary.rejected_rows ? ` ${result.summary.rejected_rows} filas pendientes; abre Importar precios para descargar el archivo de correcciones.` : ''}`); }}/>}
     {editing && <PriceListForm account={account} list={editing === 'new' ? null : editing} first={!lists?.results.length}
@@ -138,9 +140,14 @@ function PriceListForm({ account, list, first, onClose, onSaved }: { account: Ac
 const kindLabels: Record<string, string> = {
   settings_changed: 'Configuración de precios', price_list_changed: 'Lista de precios', prices_edited: 'Precios editados', price_import_applied: 'Importación de precios',
   profile_changed: 'Perfil de cliente', rule_created: 'Regla creada', rule_updated: 'Regla actualizada', rule_archived: 'Regla archivada',
-  draft_discarded: 'Borrador descartado', draft_review_requested: 'Borrador listo para revisión', quotation_published: 'Cotización publicada',
+  draft_discarded: 'Borrador descartado', draft_review_requested: 'Aprobación solicitada', quotation_published: 'Cotización publicada',
   accept_blocked_shortfall: 'Confirmación bloqueada por existencias', accept_with_shortfall: 'Confirmado con faltante',
   assistant_run: 'Asistente de cotización', assistant_applied: 'Propuesta del asistente aplicada',
+};
+const settingLabels: Record<string, string> = {
+  default_currency: 'Moneda predeterminada', usd_pab_parity: 'Paridad USD/PAB', config_min_permission: 'Quién configura precios', publish_min_permission: 'Quién envía cotizaciones',
+  over_request_policy: 'Más de lo solicitado', over_stock_policy: 'Más de lo disponible', accept_shortfall_policy: 'Faltantes al confirmar', prefill_quantity: 'Cantidad sugerida',
+  assistant_enabled: 'Asistente de IA',
 };
 function auditDetail(entry: PricingAuditEntry) {
   const payload = entry.payload as Record<string, number | string | null>;
@@ -150,6 +157,8 @@ function auditDetail(entry: PricingAuditEntry) {
   }
   if (entry.kind === 'price_list_changed') return `${payload.action === 'created' ? 'Creada' : 'Actualizada'} · ${payload.code}`;
   if (entry.kind === 'quotation_published') return `Versión ${payload.revision}`;
+  if (entry.kind === 'draft_review_requested') return `Versión ${payload.revision} · borrador v${payload.draft_version}`;
+  if (entry.kind === 'settings_changed') return Object.keys((entry.payload.new as Record<string, unknown> | undefined) || {}).map(key => settingLabels[key] || key).join(' · ');
   if (entry.kind === 'profile_changed') return payload.action === 'created' ? 'Perfil creado' : `Versión ${payload.version}`;
   if (entry.kind.startsWith('rule_')) return String((entry.payload.new as Record<string, unknown> | undefined)?.name ?? payload.name ?? '');
   return '';

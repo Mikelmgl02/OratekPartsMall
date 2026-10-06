@@ -117,10 +117,16 @@ test('suppliers edit and paste private prices, save them with expected revisions
   // The sub-tabs follow the tabs pattern: arrows move between them and each panel is named by its tab.
   await page.route(new RegExp(`${base}/pricing/history(?:\\?.*)?$`), route => route.fulfill({ json: { ...empty, count: 1, results: [{ id: 9, kind: 'prices_edited',
     actor: { name: 'EMPLEADO' }, client: null, order: null, object_id: 'op:1', payload: { created: 3, updated: 0, removed: 0, floor_updates: 1, line_updates: 0 }, created_at: stamp }] } }));
+  await page.route(`${base}/pricing/settings`, route => route.fulfill({ json: { default_currency: 'USD', usd_pab_parity: true, config_min_permission: 'staff',
+    publish_min_permission: 'staff', over_request_policy: 'confirm', over_stock_policy: 'confirm', accept_shortfall_policy: 'block', prefill_quantity: 'requested',
+    assistant_enabled: false, version: 1, updated_at: null, updated_by: null, permission: 'staff', can_configure: true, can_manage_permissions: false } }));
   const listsTab = section.getByRole('tab', { name: 'Listas de precios', exact: true });
   await listsTab.focus();
-  // Arrows cycle through the N sub-sections: left from the first one wraps to Historial, the last.
+  // Arrows cycle through the N sub-sections: left from the first one wraps to Configuración, the last, then back to Historial.
   await listsTab.press('ArrowLeft');
+  await expect(section.getByRole('tab', { name: 'Configuración', exact: true })).toBeFocused();
+  await expect(section.getByRole('tabpanel', { name: 'Configuración', exact: true })).toContainText('Quién puede enviar cotizaciones');
+  await page.keyboard.press('ArrowLeft');
   await expect(section.getByRole('tab', { name: 'Historial', exact: true })).toBeFocused();
   await expect(section.getByRole('tabpanel', { name: 'Historial', exact: true })).toContainText('3 nuevos · 1 mínimos');
   await page.keyboard.press('Home');

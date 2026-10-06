@@ -121,6 +121,8 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   // Supplier-only "Precio sugerido": the live suggestion of the private draft, shown once the supplier has price lists.
   const loaded = liveDraft?.key === draftKey ? liveDraft.draft : draftLoad?.key === draftKey ? draftLoad.draft : null;
   const priced = supplier && loaded?.pricing.configured ? loaded : null;
+  // Returning the same quotation republishes it, so it needs the supplier's publish permission like sending a new version.
+  const publishBlocked = supplier && loaded?.permissions.can_publish === false;
   // An account ordering from itself has no pair profile (the server refuses self-profiles).
   const pairProfile = supplier && deal?.client.id !== account.id ? loaded?.pricing.profile : undefined;
   const editorMounted = editable && (tab === 'quote' || quoteVisited);
@@ -168,7 +170,8 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
                 disabled={busy} onSend={values => act('quote', values)} pricingRevision={pricingRevision}
                 onDraftChange={(persisted, next) => { setHasDraft(persisted); setLiveDraft({ key: draftKey, draft: next }); }}/>
             : <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando borrador de cotización…</div>)}
-          {supplier && deal.status === 'adjustment' && deal.quotation && <button type="button" className="button soft" disabled={busy} onClick={() => void act('return_quote', { quotation_id: deal.quotation!.id })}>Devolver la misma cotización para confirmar<Send size={15}/></button>}
+          {supplier && deal.status === 'adjustment' && deal.quotation && <button type="button" className="button soft" disabled={busy || publishBlocked} onClick={() => void act('return_quote', { quotation_id: deal.quotation!.id })}>Devolver la misma cotización para confirmar<Send size={15}/></button>}
+          {supplier && deal.status === 'adjustment' && deal.quotation && publishBlocked && <small className="deal-draft-warning">Solo un miembro con permiso para enviar cotizaciones puede devolverla.</small>}
           {supplier && deal.status === 'adjustment' && deal.quotation && hasDraft && <small className="deal-draft-warning">Si devuelves la misma cotización, se descartará el borrador en curso.</small>}
           {!supplier && deal.status === 'quoted' && deal.quotation && <div className="deal-client-decisions">
             {confirming ? <div className="notice deal-confirmation"><strong>¿Confirmar este acuerdo por {money(deal.quotation.total, deal.quotation.currency)}?</strong><p>Aceptas las cantidades y condiciones de la cotización v{deal.quotation.revision}. El proveedor ya las confirmó.</p><div><button type="button" className="button primary" disabled={busy} onClick={() => void act('accept', { quotation_id: deal.quotation!.id })}>{busy ? <LoaderCircle size={15} className="spin"/> : <Handshake size={15}/>}Sí, confirmar acuerdo</button><button type="button" className="button soft" disabled={busy} onClick={() => setConfirming(false)}>Volver</button></div></div> : <button type="button" className={`button ${suggestAdjust ? 'soft' : 'primary'}`} disabled={busy} onClick={() => { setConfirming(true); setAdjusting(false); }}>Confirmar cotización<Handshake size={16}/></button>}

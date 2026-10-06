@@ -25,13 +25,14 @@ from .request_models import (SupplierRequest, DealQuotation, DealQuotationLine, 
                              DealMessage, DealCommand)
 from .request_views import (RequestConflict, WholeRequestQuantity, request_detail_queryset,
                             request_detail, sent_request_queryset, sent_request_summary)
-from .views import account_for
+from .views import PERMISSION_RANK, account_for
 
 EXCEPTIONS_DETAIL = 'Revisa las alertas antes de enviar.'
 RETURN_SHORTFALL_DETAIL = 'Las existencias cambiaron desde esta versión. Prepara una nueva versión y confirma las alertas.'
 # Shown to the client: it must never carry quantities or any other digit.
 ACCEPT_SHORTFALL_DETAIL = ('El proveedor debe confirmar la disponibilidad de algunos artículos antes de cerrar el acuerdo. '
                            'Solicita un ajuste para que el proveedor prepare una versión actualizada.')
+PUBLISH_DENIED = 'Tu permiso en la cuenta no permite publicar cotizaciones. Solicita la aprobación de un administrador de tu cuenta.'
 SETTINGS_SNAPSHOT = ('version', 'over_stock_policy', 'over_request_policy', 'accept_shortfall_policy', 'publish_min_permission', 'prefill_quantity',
                      'usd_pab_parity')
 
@@ -135,10 +136,10 @@ def bind_draft(row, latest, data):
     return draft
 
 
-def quote_exceptions(row, account, data, draft):
+def quote_exceptions(row, account, data, draft, settings_row=None):
     """Exceptions recomputed with live stock and live suggestions: the draft's own values and acknowledgements, or the payload on the
     legacy path (which carries no price source, so it never raises stale_price)."""
-    settings_row, lines = pricing_settings(account), {line.pk: line for line in row.lines.select_related('supplier_item')}
+    settings_row, lines = settings_row or pricing_settings(account), {line.pk: line for line in row.lines.select_related('supplier_item')}
     drafted = {line.order_line_id: line for line in draft.lines.all()} if draft else {}
     offered = {line['order_line_id']: line for line in data['lines']}
     values = {pk: {field: getattr(drafted[pk], field) for field in ('quantity', 'unit_price', 'quantity_source', 'price_source', 'engine_fingerprint')}
@@ -152,11 +153,10 @@ def quote_exceptions(row, account, data, draft):
     return {'settings': settings_row, 'stock': stock, 'drafted': drafted, 'result': result, 'pricing': pricing, 'profile': profile}
 
 
-def write_quote_audit(quotation, prior, request, account, draft, context):
+def write_quote_audit(quotation, prior, request, account, draft, context, permission):
     """Supplier-only trace of a publication: live stock at quote time, server-derived sources and every alert with its confirmation."""
     settings_row, stock, drafted, result, pricing = context['settings'], context['stock'], context['drafted'], context['result'], context['pricing']
     previous = {line.order_line_id: line for line in prior.lines.all()} if prior else {}
-    permission = Membership.objects.filter(account=account, user=request.user).values_list('permission', flat=True).first()
     configured = any(suggestion.configured for suggestion in pricing.values())
     profile = context['profile']
     DealQuotationAudit.objects.create(quotation=quotation, draft_version=draft.draft_version if draft else None, publisher=request.user,
@@ -188,8 +188,19 @@ def write_quote_audit(quotation, prior, request, account, draft, context):
                                   'price_sources': dict(Counter(audit.price_source for audit in audits))})
 
 
+def publish_permission(account, user):
+    """The caller's permission and the supplier's settings, read for a supplier decision: quote and return_quote need publish_min_permission."""
+    permission = Membership.objects.filter(account=account, user=user).values_list('permission', flat=True).first()
+    settings_row = pricing_settings(account)
+    if PERMISSION_RANK.get(permission, -1) < PERMISSION_RANK[settings_row.publish_min_permission]:
+        raise PermissionDenied(PUBLISH_DENIED)
+    return permission, settings_row
+
+
 class DealActions(APIView):
-    @extend_schema(request=DealActionSerializer, responses=OpenApiTypes.OBJECT)
+    @extend_schema(request=DealActionSerializer, responses=OpenApiTypes.OBJECT,
+                   description='Decisiones del acuerdo. quote y return_quote exigen el permiso mínimo para publicar del proveedor (403 antes de comprobar '
+                               'la versión). Repetir un operation_id de la misma cuenta con el mismo contenido devuelve el resultado guardado.')
     @transaction.atomic
     def post(self, request, account_id, pk):
         account, row = participant(request.user, account_id, pk, lock=True)
@@ -197,6 +208,8 @@ class DealActions(APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
         fingerprint = command_fingerprint(data)
+        # The replay key is (order, account, unguessable operation_id) and returns before every gate, the publish permission included: a
+        # same-account retry gets the stored result of a decision already taken (readable by any member) and never repeats or re-authorizes it.
         previous = DealCommand.objects.filter(order=row, account=account, operation_id=data['operation_id']).first()
         if previous:
             if previous.payload_hash != fingerprint:
@@ -208,6 +221,8 @@ class DealActions(APIView):
         capability = 'supplier' if supplier_action else 'client'
         if account.pk != expected_account_id or not account.roles.filter(capability=capability).exists():
             raise PermissionDenied('Esta decisión corresponde a la otra parte del acuerdo.')
+        # Opt-in per supplier (staff by default): checked before the version, so a member without permission gets 403, never a 409.
+        permission, settings_row = publish_permission(account, request.user) if supplier_action else (None, None)
         if row.version != data['expected_version']:
             raise RequestConflict('El acuerdo cambió. Actualízalo para revisar su estado y cotización actuales.')
         latest = row.quotations.order_by('-revision').first()
@@ -224,7 +239,7 @@ class DealActions(APIView):
             if not any(line['quantity'] > 0 for line in data['lines']):
                 raise ValidationError('La cotización necesita al menos una unidad disponible.')
             draft = bind_draft(row, latest, data)
-            context = quote_exceptions(row, account, data, draft)
+            context = quote_exceptions(row, account, data, draft, settings_row)
             # Bound quotes need every alert reviewed; the legacy (draftless) path enforces only explicit block policies.
             blockers = publish_blockers(context['result'], legacy=draft is None)
             if blockers:
@@ -238,7 +253,7 @@ class DealActions(APIView):
                 published_by=request.user, supplier_confirmed_at=now)
             DealQuotationLine.objects.bulk_create([DealQuotationLine(quotation=latest,
                 order_line_id=line['order_line_id'], quantity=line['quantity'], unit_price=line['unit_price']) for line in data['lines']])
-            write_quote_audit(latest, prior, request, account, draft, context)
+            write_quote_audit(latest, prior, request, account, draft, context, permission)
             row.status = 'quoted'
             description = f'COTIZACIÓN V{latest.revision} CONFIRMADA POR EL PROVEEDOR Y ENVIADA AL CLIENTE.'
             # The published revision consumes the draft (and any row prepared on an older revision).

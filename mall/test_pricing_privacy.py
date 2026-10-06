@@ -36,7 +36,7 @@ EVENT_KEYS = {'id', 'kind', 'description', 'account_name', 'actor_name', 'create
 CLIENT_LINE_KEYS = {'id', 'part_id', 'sku', 'name', 'codigo', 'brand', 'description', 'quantity'}
 SUPPLIER_LINE_KEYS = CLIENT_LINE_KEYS | {'supplier_item_id', 'supplier_invent_id', 'stock'}
 MARKERS = ['777.77', '666.66', '555.55', 'SECRETO-REGLA', 'SECRETO-PERFIL', 'SECRETO-BORRADOR', 'SECRETO-IA', 'SECRETO-AUDITORIA',
-           'SECRETO-LINEA', 'LISTA-SECRETA', 'SECRETA_X', 'SECRETO-ERP', 'SECRETO-NOTA']
+           'SECRETO-LINEA', 'LISTA-SECRETA', 'SECRETA_X', 'SECRETO-ERP', 'SECRETO-NOTA', 'review_requested']
 XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 
 
@@ -86,7 +86,7 @@ class PricingPrivacyTests(APITestCase):
         self.assertEqual((PriceListEntry.objects.count(), SupplierItemPricing.objects.count(), PriceChange.objects.count()), (2, 1, 4))
         record_pricing_event(self.supplier_a, self.seller_a, 'prices_edited', client=self.client_account, order=order, object_id='SECRETO-AUDITORIA',
                              payload={'list_price': '777.77', 'floor_price': '666.66', 'net_price': '555.55', 'rule': 'SECRETO-REGLA',
-                                      'profile_note': 'SECRETO-PERFIL', 'draft_note': 'SECRETO-BORRADOR', 'assistant': 'SECRETO-IA'})
+                                      'profile_note': 'SECRETO-PERFIL', 'draft_note': 'SECRETO-BORRADOR', 'assistant': 'SECRETO-IA', 'draft_state': 'review_requested'})
         self.seed_private_profile()
         stored = json.dumps([list(PricingAuditEvent.objects.values('object_id', 'payload')), list(PriceList.objects.values('code', 'name')),
                              list(PriceChange.objects.values('new_value', 'new_text')), list(SupplierItemPricing.objects.values('discount_group', 'floor_price')),
@@ -132,14 +132,19 @@ class PricingPrivacyTests(APITestCase):
         self.assertTrue(all(marker in stored for marker in ['777.77', '666.66', '555.55', 'SECRETO-LINEA']))
 
     def seed_private_draft(self, order):
-        """A real server draft (S1) with a private price and internal note, saved through the supplier's own endpoint."""
+        """A real server draft (S1) with a private price and internal note, saved through the supplier's own endpoint, and its approval
+        request (S6): the review_requested state and its audit event exist only for the supplier's members."""
         self.client.force_authenticate(self.seller_a)
         response = self.client.post(f'/api/v1/accounts/{self.supplier_a.pk}/requests/{order.pk}/draft/', {
-            'save_id': str(uuid.uuid4()), 'expected_draft_version': 0, 'terms': 'BORRADOR 666.66',
+            'save_id': str(uuid.uuid4()), 'expected_draft_version': 0, 'terms': 'BORRADOR 666.66', 'request_review': True,
             'lines': [{'order_line_id': str(line.pk), 'unit_price': '777.77', 'note': 'SECRETO-BORRADOR'} for line in order.lines.all()]}, format='json')
         self.assertEqual(response.status_code, 200)
         self.assertIn('SECRETO-BORRADOR', response.content.decode())
         self.assertTrue(DealQuotationDraftLine.objects.filter(note='SECRETO-BORRADOR', unit_price='777.77').exists())
+        self.assertEqual(response.data['status'], 'review_requested')
+        listed = self.client.get(self.url(self.supplier_a)).data['results']
+        self.assertEqual({row['id']: row['draft_state'] for row in listed}[str(order.pk)], 'review_requested')
+        self.assertTrue(PricingAuditEvent.objects.filter(kind='draft_review_requested', order=order).exists())
 
     def seed_private_trace(self, quotation):
         """The publication trace (S2) is supplier-only: stock at quote time, sources and acknowledgements."""
@@ -197,7 +202,7 @@ class PricingPrivacyTests(APITestCase):
         self.client.force_authenticate(self.root)
         return {path: self.client.get(path) for path in [
             '/api/v1/management/inventory/', '/api/v1/management/catalog/', '/api/v1/management/analytics/', f'/api/v1/management/accounts/{self.supplier_a.pk}/',
-            f'/api/v1/management/inventory/{self.item_a.pk}/', *self.pricing_paths(self.supplier_a)]}
+            f'/api/v1/management/inventory/{self.item_a.pk}/', f'/api/v1/accounts/{self.supplier_a.pk}/requests/', *self.pricing_paths(self.supplier_a)]}
 
     def assert_no_markers(self, label, responses):
         for path, response in responses.items():
@@ -249,6 +254,10 @@ class PricingPrivacyTests(APITestCase):
         self.assert_no_markers('proveedor B con borrador', self.calls(self.seller_b, self.supplier_b, order, writes=[
             ('GET borrador ajeno', lambda: self.client.get(f'/api/v1/accounts/{self.supplier_a.pk}{draft_path}')),
             ('GET borrador desde su cuenta', lambda: self.client.get(f'/api/v1/accounts/{self.supplier_b.pk}{draft_path}'))]))
+        oratek = self.oratek_calls()
+        oratek['GET borrador'] = self.client.get(f'/api/v1/accounts/{self.supplier_a.pk}{draft_path}')
+        self.assertEqual(oratek['GET borrador'].status_code, 404)
+        self.assert_no_markers('Oratek con borrador', oratek)
         self.client.force_authenticate(self.seller_a)
         self.assertEqual(self.action(order, 'return_quote', quotation_id=quote['id']).status_code, 200)
         self.assertFalse(DealQuotationDraft.objects.exists())

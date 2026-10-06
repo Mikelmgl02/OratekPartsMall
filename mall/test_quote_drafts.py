@@ -133,7 +133,8 @@ class QuoteDraftTests(APITestCase):
         line = str(order.lines.first().pk)
         self.assertEqual(self.save(order, 0, lines=[{'order_line_id': line, 'unit_price': '9.99', 'note': 'PRIVADA'}]).status_code, 200)
         self.assertEqual(self.save(order, 1, terms='OTRAS').status_code, 200)
-        self.assertEqual(self.client.get(self.url(self.supplier_a)).data['results'][0]['draft_state'], None)
+        # Only the supplier's own list shows the private draft badge (S6); the detail and every client payload stay unchanged.
+        self.assertEqual(self.client.get(self.url(self.supplier_a)).data['results'][0]['draft_state'], 'editing')
         self.assertEqual(self.client.get(detail).data, supplier_view)
         self.assertEqual(self.discard(order, 2).status_code, 200)
         self.assertEqual((SupplierRequest.objects.values('version', 'updated_at').get(pk=order.pk), DealEvent.objects.count(), DealCommand.objects.count()), before)

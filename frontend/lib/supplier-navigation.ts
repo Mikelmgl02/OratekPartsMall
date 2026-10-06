@@ -12,8 +12,8 @@ export function supplierOrderHref(accountId: string, orderId: string) {
   return `/proveedor/${encodeURIComponent(accountId)}/ordenes/${encodeURIComponent(orderId)}`;
 }
 // Precios sub-sections; a client's private profile opens inside Clientes.
-export type PricingTab = 'lists' | 'clients' | 'rules' | 'simulator' | 'history';
-export const pricingTabs: Record<PricingTab, string> = { lists: 'listas', clients: 'clientes', rules: 'reglas', simulator: 'simulador', history: 'historial' };
+export type PricingTab = 'lists' | 'clients' | 'rules' | 'simulator' | 'history' | 'settings';
+export const pricingTabs: Record<PricingTab, string> = { lists: 'listas', clients: 'clientes', rules: 'reglas', simulator: 'simulador', history: 'historial', settings: 'configuracion' };
 export function supplierPricingHref(accountId: string, tab: PricingTab = 'lists', clientId?: string) {
   return `/?${new URLSearchParams({ vista: 'proveedor', seccion: supplierSections.pricing, cuenta: accountId, pestana: pricingTabs[tab], ...(clientId ? { cliente: clientId } : {}) })}`;
 }

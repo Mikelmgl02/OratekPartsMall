@@ -131,6 +131,8 @@ class QuoteDraftSerializer(serializers.Serializer):
     terms_origin = serializers.ChoiceField(choices=['saved', 'previous', 'profile', 'none'])
     updated_at = serializers.DateTimeField(allow_null=True)
     updated_by = DraftAuthor(allow_null=True)
+    review_requested_by = DraftAuthor(allow_null=True, help_text='Quién solicitó la aprobación; null mientras el borrador está en edición.')
+    review_requested_at = serializers.DateTimeField(allow_null=True)
     permissions = DraftPermissions()
     pricing = DraftPricing()
     lines = DraftLineSerializer(many=True)
@@ -178,6 +180,8 @@ class QuoteDraftSave(serializers.Serializer):
     currency = serializers.ChoiceField(choices=choice_values(CURRENCY_CHOICES), required=False)
     terms = serializers.CharField(max_length=5000, allow_blank=True, required=False)
     lines = DraftLineChange(many=True, required=False)
+    request_review = serializers.BooleanField(required=False, help_text='true: solicita la aprobación (status review_requested); false: la retira. '
+                                                                         'Cambiar cantidades, precios, moneda o condiciones sin enviarlo la retira.')
 
     def validate_terms(self, value):
         return value.strip().upper()
@@ -217,7 +221,7 @@ def latest_quotation(row):
 
 def current_draft(row, latest):
     """The saved draft for the latest revision; a row prepared on an older base is stale and treated as absent."""
-    return DealQuotationDraft.objects.select_related('updated_by').prefetch_related('lines').filter(order=row, base_quotation=latest).first()
+    return DealQuotationDraft.objects.select_related('updated_by', 'review_requested_by').prefetch_related('lines').filter(order=row, base_quotation=latest).first()
 
 
 def order_lines(row):
@@ -307,11 +311,13 @@ def draft_payload(row, account, membership, repriced=()):
                        **value, 'suggestion': {'unit_price': result.unit_price, 'fingerprint': result.fingerprint, 'explanation': result.explanation}
                        if result.configured else None, 'exceptions': exceptions['lines'][line.pk]})
     configured = next((result for result in pricing.values() if result.configured), None)
-    user = draft.updated_by if draft else None
+    user, reviewer = (draft.updated_by, draft.review_requested_by) if draft else (None, None)
     return QuoteDraftSerializer({
         'persisted': bool(draft), 'draft_version': draft.draft_version if draft else 0, 'status': draft.status if draft else 'editing',
         'base_quotation_id': latest.pk if latest else None, **header, 'updated_at': draft.updated_at if draft else None,
         'updated_by': {'name': user.get_full_name() or user.username} if user else None,
+        'review_requested_by': {'name': reviewer.get_full_name() or reviewer.username} if reviewer else None,
+        'review_requested_at': draft.review_requested_at if draft else None,
         'permissions': {'can_publish': PERMISSION_RANK.get(membership.permission, -1) >= PERMISSION_RANK[settings_row.publish_min_permission],
                         'publish_requires': settings_row.publish_min_permission},
         'pricing': {'engine': ENGINE_VERSION, 'configured': configured is not None, 'profile': profile_block(profile),
@@ -367,6 +373,17 @@ def repriced_line(line, before, reason):
 LINE_UPDATE_FIELDS = ['quantity', 'quantity_source', 'unit_price', 'price_source', 'note', 'acknowledgements', *ENGINE_FIELDS, 'updated_at']
 
 
+def review_state(draft, row, latest, account, user, requested, edited, now):
+    """Approval request: request_review true asks for it (again after a content edit), false withdraws it, and editing what the client would
+    receive (quantities, prices, currency, terms) without the flag withdraws it too. Notes and alert confirmations keep it."""
+    if requested and (draft.status != 'review_requested' or edited):
+        draft.status, draft.review_requested_by, draft.review_requested_at = 'review_requested', user, now
+        record_pricing_event(account, user, 'draft_review_requested', client_id=row.client_id, order=row, object_id=str(row.pk),
+                             payload={'draft_version': draft.draft_version, 'revision': latest.revision + 1 if latest else 1})
+    elif requested is False or (requested is None and edited):
+        draft.status, draft.review_requested_by, draft.review_requested_at = 'editing', None, None
+
+
 def draft_conflict(row, account, membership):
     return Response({'detail': CONFLICT_DETAIL, 'draft': draft_payload(row, account, membership)}, status=409)
 
@@ -407,12 +424,12 @@ class QuoteDraftView(APIView):
             return draft_conflict(row, account, membership)
         now, settings_row, profile = timezone.now(), pricing_settings(account), client_profile(account, row.client_id)
         draft, saved = ensure_draft(row, account, request.user, latest, draft, lines, settings_row, profile, now)
-        changes, changed, repriced, requantified = data.get('lines', []), {}, [], {}
+        changes, changed, repriced, requantified, edited = data.get('lines', []), {}, [], {}, False
         for change in changes:
             line = saved[change['order_line_id']]
             if 'quantity' in change and change['quantity'] != line.quantity:
                 requantified[line.order_line_id] = line.quantity
-                line.quantity, line.quantity_source, changed[line.order_line_id] = change['quantity'], 'manual', line
+                line.quantity, line.quantity_source, changed[line.order_line_id], edited = change['quantity'], 'manual', line, True
         currency = data.get('currency', draft.currency)
         # Typed prices are compared with the live suggestion; engine prices follow a quantity change (a volume rule may apply).
         pricing = priced(row, account, currency, {pk: {'quantity': line.quantity} for pk, line in saved.items()},
@@ -427,7 +444,7 @@ class QuoteDraftView(APIView):
             line, result = saved[change['order_line_id']], pricing.get(change['order_line_id'])
             if 'unit_price' in change and change['unit_price'] != line.unit_price:
                 apply_price(line, change['unit_price'], result)
-                changed[line.order_line_id] = line
+                changed[line.order_line_id], edited = line, True
             elif line.order_line_id in current and result and result.unit_price is not None:
                 before = line.unit_price
                 apply_engine(line, result)
@@ -447,9 +464,11 @@ class QuoteDraftView(APIView):
             line.updated_at = now
         DealQuotationDraftLine.objects.bulk_update(list(changed.values()), LINE_UPDATE_FIELDS)
         for field in ('currency', 'terms'):
-            if field in data:
+            if field in data and data[field] != getattr(draft, field):
                 setattr(draft, field, data[field])
+                edited = True
         draft.draft_version += 1
+        review_state(draft, row, latest, account, request.user, data.get('request_review'), edited, now)
         draft.last_save_id, draft.last_save_hash, draft.updated_by = data['save_id'], fingerprint, request.user
         draft.save()
         return Response(draft_payload(row, account, membership, repriced))
@@ -502,6 +521,8 @@ class QuoteDraftReprice(APIView):
                     repriced.append(repriced_line(line, before[0], scope))
         DealQuotationDraftLine.objects.bulk_update(changed, LINE_UPDATE_FIELDS)
         draft.draft_version += 1
+        # A reprice that moved a price changes what the client would receive, so it withdraws a pending approval request.
+        review_state(draft, row, latest, account, request.user, None, bool(repriced), now)
         draft.last_save_id, draft.last_save_hash, draft.updated_by = data['save_id'], fingerprint, request.user
         draft.pricing_context = pricing_context(settings_row, profile, now)
         draft.save()

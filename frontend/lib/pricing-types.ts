@@ -40,6 +40,9 @@ export type QuoteDraftLine = {
 export type QuoteDraft = {
   persisted: boolean; draft_version: number; status: 'editing' | 'review_requested'; base_quotation_id: string | null;
   currency: Currency; terms: string; terms_origin: 'saved' | 'previous' | 'profile' | 'none'; updated_at: string | null; updated_by: { name: string } | null;
+  // Approval request (status review_requested): who asked and when. Editing quantities, prices, currency or terms withdraws it.
+  review_requested_by?: { name: string } | null; review_requested_at?: string | null;
+  // can_publish false: the supplier requires a higher permission to send quotations, so the member requests approval instead.
   permissions: { can_publish: boolean; publish_requires: MembershipPermission }; pricing: DraftPricing; lines: QuoteDraftLine[]; order_exceptions: DraftException[];
   summary: { blocking: number; to_confirm: number; info: number; total: string; line_count: number };
   // Prices the save that returned this draft recalculated from the supplier's list; empty on reads.
@@ -49,7 +52,8 @@ export type QuoteDraftReprice = { save_id: string; expected_draft_version: numbe
 export type QuoteDraftEnvelope = { editable: boolean; draft: QuoteDraft | null };
 export type QuoteDraftLineChange = { order_line_id: string; quantity?: number | null; unit_price?: string | null; note?: string;
   acknowledge?: DraftAcknowledgement[]; revoke?: string[] };
-export type QuoteDraftSave = { save_id: string; expected_draft_version: number; currency?: 'USD' | 'PAB'; terms?: string; lines?: QuoteDraftLineChange[] };
+export type QuoteDraftSave = { save_id: string; expected_draft_version: number; currency?: 'USD' | 'PAB'; terms?: string; lines?: QuoteDraftLineChange[];
+  request_review?: boolean };
 export type AuditPriceSource = PriceSource | 'unspecified';
 export type TraceException = { code: string; severity: ExceptionSeverity; context: string; acknowledged_by: { name: string } | null; acknowledged_at: string | null };
 export type AcceptCheck = { result: 'ok' | 'blocked' | 'accepted_with_shortfall'; at: string; lines: {
@@ -64,6 +68,14 @@ export type QuotationTrace = { available: false } | {
     price_source: AuditPriceSource; quantity_source: QuantitySource; engine_fingerprint: string; explanation: Record<string, unknown>;
     exceptions: TraceException[] }[];
 };
+
+// "Precios › Configuración": the supplier's private settings. Permission fields and the assistant change only by the owner; writes send only changed fields.
+export type SupplierPolicy = 'confirm' | 'block';
+export type PricingSettingsValues = { default_currency: Currency; usd_pab_parity: boolean; config_min_permission: MembershipPermission; publish_min_permission: MembershipPermission;
+  over_request_policy: SupplierPolicy; over_stock_policy: SupplierPolicy; accept_shortfall_policy: 'block' | 'allow'; prefill_quantity: 'requested' | 'available'; assistant_enabled: boolean };
+export type PricingSettings = PricingSettingsValues & { version: number; updated_at: string | null; updated_by: { name: string } | null; permission: MembershipPermission;
+  can_configure: boolean; can_manage_permissions: boolean };
+export type PricingSettingsUpdate = Partial<PricingSettingsValues> & { expected_version: number };
 
 // Supplier price lists and the private price grid ("Precios › Listas de precios").
 export type PriceList = { id: string; code: string; name: string; currency: Currency; is_default: boolean; active: boolean; version: number;

@@ -460,3 +460,20 @@ test('reselecting a remapped supplier item recovers a stale submission with fres
   expect(saved).toHaveLength(0);
   expect(unexpected).toEqual([]);
 });
+
+test('the supplier list marks orders with a saved draft or a pending approval request, without loading any draft', async ({ page }) => {
+  const unexpected = await mockSession(page);
+  const rows = [{ ...summary(requestId, 'SOL-BORRADOR-001', 'TALLER CENTRAL', 'reviewed'), draft_state: 'editing', availability_alert: null },
+    { ...summary(otherRequestId, 'SOL-APROBAR-002', 'MOTOR CAR', 'reviewed'), draft_state: 'review_requested', availability_alert: null },
+    { ...summary('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'SOL-NUEVA-003', 'TALLER NORTE'), draft_state: null, availability_alert: null }];
+  const drafts: string[] = [];
+  page.on('request', request => { if (request.url().includes('/draft')) drafts.push(request.url()); });
+  await page.route(new RegExp(`${root}(?:\\?.*)?$`), route => route.fulfill({ json: { ...emptyPage, count: rows.length, results: rows } }));
+  await openSupplier(page);
+  const card = (reference: string, client: string) => requests(page).getByRole('article', { name: `Solicitud ${reference} de ${client}`, exact: true });
+  await expect(card('SOL-BORRADOR-001', 'TALLER CENTRAL').locator('.supplier-request-draft')).toHaveText('Borrador');
+  await expect(card('SOL-APROBAR-002', 'MOTOR CAR').locator('.supplier-request-draft')).toHaveText('Por aprobar');
+  await expect(card('SOL-NUEVA-003', 'TALLER NORTE').locator('.supplier-request-draft')).toHaveCount(0);
+  expect(drafts).toEqual([]);
+  expect(unexpected).toEqual([]);
+});

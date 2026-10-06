@@ -1504,3 +1504,21 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .price-import-table tr.big td { background:#fff6f0; }
 .price-import-table .price-import-big { display:flex; align-items:center; gap:4px; color:#a35f43; white-space:nowrap; }
 @media(max-width:760px) { .price-import-summary { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+/* Publication control (S6): approval requests, list badges and Precios › Configuración. */
+.supplier-request-draft { display:inline-flex; align-items:center; gap:5px; padding:3px 8px; border-radius:999px; font-size:10px; font-weight:700; background:#eef1f7; color:#3f5170; }
+.supplier-request-draft.review_requested { background:#f3ecfa; color:#5f3f86; }
+.quotation-alert-chip.info { background:#eef1f7; color:#3f5170; }
+.quotation-review-notice { display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px; padding:9px 12px; border-radius:10px; background:#f3ecfa; color:#5f3f86; font-size:12px; line-height:1.6; }
+.quotation-review-notice>svg { flex-shrink:0; }
+.quotation-review-notice>span { flex:1 1 240px; min-width:0; overflow-wrap:anywhere; }
+.quotation-approval { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; }
+.quotation-approval small { color:var(--muted); font-size:12px; }
+.pricing-settings-form fieldset { display:flex; flex-direction:column; gap:14px; min-width:0; margin:0; padding:14px 16px 16px; border:1px solid var(--line); border-radius:10px; background:#fcfdf9; }
+.pricing-settings-form legend { display:inline-flex; align-items:center; gap:6px; padding:0 6px; font-size:13px; font-weight:700; color:#415b32; }
+.pricing-settings-form select { width:100%; padding:11px 12px; border:1px solid #dbe2d1; border-radius:7px; background:#fff; color:var(--ink); font-size:12px; min-width:0; }
+.pricing-settings-form select:disabled,.pricing-settings-form input:disabled { background:#f4f5f0; color:#7c8571; }
+.pricing-settings-form label small { font-weight:400; color:#8a9a7c; font-size:10px; line-height:1.6; }
+.pricing-settings-form .form-footnote { margin:0; }
+.pricing-settings-form>.button { align-self:flex-start; }
+.pricing-settings-owner { display:flex; align-items:center; gap:6px; font-size:11px; color:#8a6a24; }
+@media(max-width:600px) { .pricing-settings-form .form-row { grid-template-columns:1fr; } .pricing-settings-form fieldset { padding:12px; } }

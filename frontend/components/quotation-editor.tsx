@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CloudOff, LoaderCircle, PackageMinus, RefreshCcw, RotateCcw, Send, Sparkles, TriangleAlert } from 'lucide-react';
+import { ClipboardCheck, CloudOff, LoaderCircle, PackageMinus, RefreshCcw, RotateCcw, Send, Sparkles, TriangleAlert, Undo2 } from 'lucide-react';
 import { AgGridReact, type CustomCellEditorProps, type CustomCellRendererProps } from 'ag-grid-react';
 import type { CellClickedEvent, ColDef, GetRowIdParams, GridReadyEvent, ValueSetterParams } from 'ag-grid-community';
 import { gridLocale, motionGridTheme } from '@/lib/ag-grid';
@@ -17,9 +17,10 @@ import { UppercaseTextarea } from './uppercase-field';
 
 type QuoteRow = { order_line_id: string; codigo: string; description: string; requested: number; quantity: string; unit_price: string };
 type Currency = 'USD' | 'PAB';
-// The last values the server confirmed; local cells are compared against it to send only what changed.
+// The last values the server confirmed; local cells are compared against it to send only what changed. status, reviewer and reviewAt carry
+// the approval request (review_requested), which edits to quantities, prices, currency or terms withdraw on the server.
 type Base = { version: number; persisted: boolean; currency: Currency; terms: string; updatedAt: string | null; updatedBy: string;
-  lines: Record<string, { quantity: number | null; unit_price: string | null }> };
+  status: QuoteDraft['status']; reviewer: string; reviewAt: string | null; lines: Record<string, { quantity: number | null; unit_price: string | null }> };
 type SaveState = 'idle' | 'pending' | 'saving' | 'error' | 'conflict';
 type Outcome = 'saved' | 'rebased' | 'failed';
 // Server-computed alerts of the last confirmed draft (live) or of a refused draftless publish (not confirmable here).
@@ -49,6 +50,11 @@ function alertsFromPublish(items: PublishException[]): Alerts {
   for (const { order_line_id: id, ...item } of items) if (id) (lines[id] ||= []).push(item);
   return { lines, order: items.filter(item => !item.order_line_id).map(({ order_line_id: _, ...item }) => item), live: false };
 }
+// The compact count beside the grid: what still needs review, else whether confirmations were reviewed, else how many notices are only informative.
+function chipLabel(toReview: number, confirmed: number, info: number) {
+  return toReview ? `${toReview} por revisar` : confirmed ? 'Alertas revisadas' : `${info} ${info === 1 ? 'aviso' : 'avisos'}`;
+}
+const approvers: Record<string, string> = { manager: 'Un administrador de tu cuenta debe publicar esta cotización.', owner: 'El propietario de tu cuenta debe publicar esta cotización.' };
 function alertLabel(items: DraftException[]) {
   const blocking = items.filter(item => item.severity === 'block').length, confirm = items.filter(item => item.severity === 'confirm');
   const pending = confirm.filter(item => !item.acknowledged).length, info = items.find(item => item.severity === 'info');
@@ -65,7 +71,7 @@ function cellPrice(value: string) { if (!value.trim()) return null; const cents 
 const normalTerms = (value: string) => value.trim().toUpperCase();
 function baseFrom(draft: QuoteDraft): Base {
   return { version: draft.draft_version, persisted: draft.persisted, currency: draft.currency, terms: draft.terms, updatedAt: draft.updated_at,
-    updatedBy: draft.updated_by?.name || '', lines: Object.fromEntries(draft.lines.map(line => [line.order_line_id,
+    updatedBy: draft.updated_by?.name || '', status: draft.status, reviewer: draft.review_requested_by?.name || '', reviewAt: draft.review_requested_at ?? null, lines: Object.fromEntries(draft.lines.map(line => [line.order_line_id,
       { quantity: line.quantity, unit_price: line.unit_price === null ? null : cellPrice(line.unit_price) ?? line.unit_price }])) };
 }
 function draftRows(draft: QuoteDraft): QuoteRow[] {
@@ -145,6 +151,10 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
   const [pricing, setPricing] = useState(pricingRef.current.summary);
   const [drawerLine, setDrawerLine] = useState<string | null>(null);
   const [repricing, setRepricing] = useState(false);
+  // Members below the supplier's publish permission request approval instead of sending (the server answers 403 to their quote).
+  const [permissions, setPermissions] = useState(draft?.permissions ?? null);
+  const [reviewing, setReviewing] = useState(false);
+  const lastFailure = useRef('');
   const [priceNotice, setPriceNotice] = useState('');
   // Lines whose price the server just recalculated flash briefly in the grid.
   const flashed = useRef(new Set<string>());
@@ -202,7 +212,7 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
     showAlerts(alertsFrom(next));
   }
   function adopt(next: QuoteDraft) {
-    base.current = baseFrom(next); setSaved(base.current); refreshStock(next); setTermsOrigin(next.terms_origin);
+    base.current = baseFrom(next); setSaved(base.current); refreshStock(next); setTermsOrigin(next.terms_origin); setPermissions(next.permissions);
     props.current.onDraftChange?.(next.persisted, next);
   }
   function replaceWith(next: QuoteDraft) {
@@ -280,7 +290,8 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
       if (!mounted.current) return 'failed';
       const server = caught instanceof ApiError && caught.status === 409 ? (caught.body as { draft?: QuoteDraft } | null)?.draft : undefined;
       if (server) { attempt.current = null; return rebase(server) ? 'rebased' : 'failed'; }
-      setSaveState('error'); setSaveError(caught instanceof ApiError ? caught.detail : '');
+      lastFailure.current = caught instanceof ApiError ? caught.detail : '';
+      setSaveState('error'); setSaveError(lastFailure.current);
       return 'failed';
     }
   }
@@ -412,6 +423,32 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
       return outcome === 'saved';
     } finally { if (mounted.current) setRepricing(false); }
   }
+  // "Solicitar aprobación" (or withdrawing it): flush every edit first, then save the request on the version that flush confirmed. Edits made
+  // afterwards are saved normally and withdraw the request on the server, so an approver never publishes values nobody asked to review.
+  async function review(requested: boolean) {
+    if (!autosave || disabled || publishing || repricing || reviewing) return;
+    if (conflictRef.current) { setError('Carga la versión más reciente del borrador antes de solicitar la aprobación.'); return; }
+    grid.current?.api?.stopEditing();
+    if (requested && !validLines()) return;
+    setReviewing(true); setError('');
+    try {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (!await save(true)) { if (mounted.current && !conflictRef.current) setError('No se pudo guardar el borrador. Reintenta antes de solicitar la aprobación.'); return; }
+        while (inFlight.current) await inFlight.current;
+        if (!base.current || conflictRef.current || !mounted.current) return;
+        const task = send(payloadFor({ request_review: requested }));
+        inFlight.current = task;
+        const outcome = await task;
+        inFlight.current = null;
+        if (outcome === 'failed' && mounted.current && !conflictRef.current) {
+          // Nothing else is unsaved: the request itself failed, so say so instead of "Cambios sin guardar".
+          setSaveState('idle'); setError(lastFailure.current || (requested ? 'No se pudo solicitar la aprobación. Inténtalo de nuevo.' : 'No se pudo retirar la solicitud. Inténtalo de nuevo.'));
+        }
+        // Another member saved in between: their changes were merged under the local cells, so ask again on the new version.
+        if (outcome !== 'rebased') { if (mounted.current && pendingChanges().dirty) schedule(); return; }
+      }
+    } finally { if (mounted.current) setReviewing(false); }
+  }
   function originLabel(row: QuoteRow) {
     const info = pricingRef.current.lines[row.order_line_id], saved = base.current?.lines[row.order_line_id];
     if (!info) return '—';
@@ -532,6 +569,7 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
   }
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (disabled || publishing) return;
+    if (autosave && permissions && !permissions.can_publish) { if (saved?.status !== 'review_requested') void review(true); return; }
     grid.current?.api?.stopEditing();
     const lines = validLines();
     if (!lines) return;
@@ -564,7 +602,7 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
     requestAnimationFrame(() => panel.current?.scrollIntoView({ block: 'nearest' }));
     return items;
   }
-  const busy = disabled || publishing || repricing;
+  const busy = disabled || publishing || repricing || reviewing;
   const overStock = rows.filter(row => {
     const quantity = quantityValue(row.quantity), available = stock.current[row.order_line_id]?.available_quantity;
     return quantity !== null && available !== undefined && quantity > available;
@@ -575,6 +613,8 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
   const confirmed = (lineId: string | null, item: DraftException) => lineId ? ackState(lineId, item) : item.acknowledged;
   const toReview = flat.filter(({ lineId, item }) => item.severity === 'block' || (item.severity === 'confirm' && !confirmed(lineId, item))).length;
   const blocking = flat.some(({ item }) => item.severity === 'block');
+  const confirmItems = flat.filter(({ item }) => item.severity === 'confirm').length, infoItems = flat.filter(({ item }) => item.severity === 'info').length;
+  const approval = autosave && !!permissions && !permissions.can_publish, requested = autosave && saved?.status === 'review_requested';
   const drawerRow = drawerLine ? rows.find(row => row.order_line_id === drawerLine) : undefined;
   const status = !autosave ? '' : saveState === 'conflict' ? 'Guardado automático en pausa' : saveState === 'saving' || saveState === 'pending' ? 'Guardando borrador…'
     : saveState === 'error' ? `Cambios sin guardar${saveError ? ` · ${saveError}` : ''}` : invalidCells ? 'Corrige las celdas marcadas para guardarlas.'
@@ -588,14 +628,18 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
       {saved?.persisted && saveState !== 'conflict' && !confirmDiscard && <button type="button" className="button soft small" disabled={busy || saveState === 'saving'} onClick={() => setConfirmDiscard(true)}><RotateCcw size={14}/>Descartar borrador</button>}
       {confirmDiscard && <span className="quotation-draft-discard">¿Descartar el borrador guardado?<button type="button" disabled={busy} onClick={() => void discard()}>Sí, descartar</button><button type="button" onClick={() => setConfirmDiscard(false)}>Cancelar</button></span>}
     </div> : <div className="notice quotation-draft-fallback" role="status"><CloudOff size={16}/>No se pudo cargar el borrador guardado; tus cambios no se guardarán automáticamente.</div>}
+    {requested && saved && <div className="quotation-review-notice" role="status" aria-label="Solicitud de aprobación"><ClipboardCheck size={15}/>
+      <span>{approval ? `Aprobación solicitada por ${saved.reviewer} ${ago(saved.reviewAt, now)}. ${approvers[permissions!.publish_requires] || ''}`
+        : `Por aprobar · ${saved.reviewer} solicitó aprobación ${ago(saved.reviewAt, now)}. Revisa la cotización y envíala al cliente.`}</span>
+      {approval && <button type="button" className="button soft small" disabled={busy || !!conflict} onClick={() => void review(false)}><Undo2 size={14}/>Retirar solicitud</button>}</div>}
     {conflict && <div className="notice error quotation-draft-conflict" role="alert"><span>Otro miembro de tu equipo modificó este borrador</span><button type="button" onClick={() => replaceWith(conflict)}>Cargar la versión más reciente</button></div>}
     <div className="quotation-grid-guide"><span>Haz clic en una celda para editar · Tab para avanzar</span>
       {autosave && !!pricing?.fillable && <button type="button" className="button soft small" disabled={busy || !!conflict} onClick={() => void reprice('blank')}><Sparkles size={14}/>Aplicar precios sugeridos ({pricing.fillable})</button>}
       {autosave && !!pricing?.stale && <button type="button" className="button soft small" disabled={busy || !!conflict} title="Tu lista cambió desde que se calcularon estos precios" onClick={() => void reprice('engine')}><RefreshCcw size={14}/>Recalcular precios sugeridos ({pricing.stale})</button>}
       {overStock > 0 && <button type="button" className="button soft small" disabled={busy}
       title={`Ofrece como máximo lo disponible en ${overStock} ${overStock === 1 ? 'artículo' : 'artículos'}`} onClick={adjustToStock}><PackageMinus size={14}/>Ajustar a disponibles</button>}
-      {flat.length > 0 && <button type="button" className={`quotation-alert-chip ${blocking ? 'block' : toReview ? 'confirm' : ''}`} aria-expanded={panelOpen} aria-controls="quotation-review-panel"
-        onClick={() => { setPanelOpen(value => !value); requestAnimationFrame(() => panel.current?.scrollIntoView({ block: 'nearest' })); }}><TriangleAlert size={13}/>{toReview ? `${toReview} por revisar` : 'Alertas revisadas'}</button>}
+      {flat.length > 0 && <button type="button" className={`quotation-alert-chip ${blocking ? 'block' : toReview ? 'confirm' : confirmItems ? '' : 'info'}`} aria-expanded={panelOpen} aria-controls="quotation-review-panel"
+        onClick={() => { setPanelOpen(value => !value); requestAnimationFrame(() => panel.current?.scrollIntoView({ block: 'nearest' })); }}><TriangleAlert size={13}/>{chipLabel(toReview, confirmItems, infoItems)}</button>}
       <strong>{completed} de {rows.length} {rows.length === 1 ? 'artículo completo' : 'artículos completos'}</strong></div>
     {priceNotice && <div className="notice success quotation-price-notice" role="status">{priceNotice}</div>}
     <div ref={host} className="quotation-grid" aria-label="Artículos de la cotización" style={{ height: Math.min(450, Math.max(170, rows.length * 56 + 60)) }}>
@@ -623,7 +667,10 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
     <div className="deal-editor-total"><label>Moneda<select aria-label="Moneda de la cotización" disabled={disabled} value={currency} onChange={event => { header.current = { ...header.current, currency: event.target.value as Currency }; setCurrency(event.target.value as Currency); schedule(); }}><option value="USD">USD</option><option value="PAB">PAB</option></select></label><strong>Total: {formatMoney(total)}</strong></div>
     <label>Condiciones de entrega y cotización<UppercaseTextarea disabled={disabled} maxLength={5000} value={terms} onChange={event => { header.current = { ...header.current, terms: event.target.value }; setTerms(event.target.value); schedule(); }} placeholder="PLAZO DE ENTREGA, RETIRO Y OTRAS CONDICIONES…"/>
       {autosave && termsOrigin === 'profile' && normalTerms(terms) === saved?.terms && <small className="quotation-terms-origin">Condiciones predeterminadas del perfil del cliente. Revísalas antes de enviar.</small>}</label>
-    <button type="submit" className="button primary" disabled={busy}>{busy ? <LoaderCircle size={16} className="spin"/> : <Send size={16}/>}Confirmar y enviar cotización</button>
+    {approval ? <div className="quotation-approval">
+      <button type="submit" className="button primary" disabled={busy || requested}>{busy ? <LoaderCircle size={16} className="spin"/> : <ClipboardCheck size={16}/>}{requested ? 'Aprobación solicitada' : 'Solicitar aprobación'}</button>
+      <small>{approvers[permissions!.publish_requires] || 'Un administrador de tu cuenta debe publicar esta cotización.'}</small></div>
+      : <button type="submit" className="button primary" disabled={busy}>{busy ? <LoaderCircle size={16} className="spin"/> : <Send size={16}/>}Confirmar y enviar cotización</button>}
   </form>
   {/* Outside the form: the drawer's buttons must never submit the quotation. */}
   {drawerRow && pricingRef.current.lines[drawerRow.order_line_id] && <PriceDrawer row={drawerRow} info={pricingRef.current.lines[drawerRow.order_line_id]} currency={currency}
