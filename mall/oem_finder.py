@@ -1553,7 +1553,7 @@ def main(argv=None, stdout=None):
     parser.add_argument('--in-stock-first', action='store_true', help='Ordena primero los SKU con existencias (la aplicación siempre lo hace).')
     parser.add_argument('--limit', type=int, help='Limita el alcance a los primeros N SKU.')
     parser.add_argument('--tier', choices=TIER_ORDER, help='Limita el alcance a un nivel.')
-    parser.add_argument('--canary', type=int, metavar='N', help='--apply-auto: canario que aplica solo N filas (obligatorio antes de los lotes).')
+    parser.add_argument('--canary', type=int, metavar='N', help='--apply-auto: canario que aplica solo N filas (obligatorio antes de los lotes de cada nivel, otra vez con cada versión de las reglas).')
     parser.add_argument('--read-only', action='store_true', help='No escribe nada (funciona sin migrar); con --apply-auto es una vista previa.')
     parser.add_argument('--json', metavar='PATH', help="Escribe los resultados del alcance en JSON ('-' = salida estándar).")
     parser.add_argument('--spot-check-dir', metavar='DIR', help='--apply-auto: también escribe la muestra de control (JSON y CSV) en DIR.')

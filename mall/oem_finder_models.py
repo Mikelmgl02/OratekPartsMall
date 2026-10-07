@@ -145,9 +145,9 @@ AUTO_STATUSES = [('pending', 'Pendiente'), ('applied', 'Aplicado'), ('sent_to_re
 class OEMAutoCandidate(models.Model):
     """One SKU the finder grades AUTO_FLAG_CURRENT or AUTO_RENAME_BASE (tier), with the apply tier mall.oem_apply would run it under,
     as of the last refresh. status: pending (the next apply run of its tier takes it), applied (an unreverted OEMFinderChange and the
-    OEM flag now), excluded (reverted before with the same OEM or an open apply conflict: never re-applied automatically, reason says
-    which), sent_to_review (a person took it out of automatic application: apply_auto skips it and its OEMReviewCase decides; a refresh
-    never undoes it), stale (it no longer grades AUTO)."""
+    OEM flag now), excluded (reverted before with the same OEM, an open apply conflict, or the same OEM dismissed in the review queue:
+    never applied automatically, reason says which), sent_to_review (a person took it out of automatic application: apply_auto skips
+    it and its OEMReviewCase decides; a refresh never undoes it), stale (it no longer grades AUTO)."""
     part = models.OneToOneField('mall.Part', on_delete=models.CASCADE, related_name='oem_auto')
     run = models.ForeignKey(OEMFinderRun, on_delete=models.SET_NULL, null=True, blank=True, related_name='auto_candidates')  # last change
     tier = models.CharField(max_length=30, db_index=True)

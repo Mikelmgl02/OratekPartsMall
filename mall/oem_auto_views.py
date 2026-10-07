@@ -146,7 +146,7 @@ class PreviewResponse(serializers.Serializer):
     would_apply = serializers.IntegerField()
     conflicts = serializers.IntegerField()
     skipped = serializers.DictField(child=serializers.IntegerField())
-    excluded = serializers.DictField(child=serializers.IntegerField(), help_text='sent_to_review, open_conflict, previously_reverted.')
+    excluded = serializers.DictField(child=serializers.IntegerField(), help_text='sent_to_review, open_conflict, previously_reverted, dismissed.')
     rows = PreviewRow(many=True)
     canary_done = serializers.BooleanField()
     halt = serializers.DictField(allow_null=True)

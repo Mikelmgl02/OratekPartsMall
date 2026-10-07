@@ -15,7 +15,7 @@ from . import oem_auto as au
 from . import oem_finder as of
 from . import oem_review as rv
 from .matching_queue import MATCHING_LOCK
-from .models import CatalogIdentityChange, Part, PartCode, User
+from .models import Account, CatalogIdentityChange, Part, PartCode, SupplierItem, User
 from .oem_finder_models import OEMAutoCandidate, OEMFinderChange, OEMFinderRun, OEMReviewCase
 from .test_oem_apply import CONFIRMED, FLAG, RENAME, Catalog
 
@@ -110,6 +110,26 @@ class RefreshTests(Pending, TestCase):
         self.assertEqual((row.status, row.reason), ('excluded', 'open_conflict'))
         of.execute()
         self.assertEqual(self.row('54830-2H000-MOBIS').status, 'excluded')
+
+    def test_a_proposal_dismissed_in_the_review_is_never_applied_automatically(self):
+        of.execute()
+        mando = self.parts['48654-0K040-MANDO']
+        case = OEMReviewCase.objects.get(part=mando)
+        self.assertEqual((case.tier, case.candidate), ('PROBABLE_BASE', '48654-0K040'))
+        rv.dismiss(case.pk, case.fingerprint, self.root, reason='keep_code')
+        for i in (1, 2):  # new evidence (two suppliers list the base; rules bumps do the same): the dismissed proposal now grades AUTO
+            SupplierItem.objects.create(supplier=Account.objects.create(name=f'PROVEEDOR {i}'), supplier_invent_id=f'base-{i}', part=mando,
+                                        codigo='48654-0K040', source='upload')
+        of.execute()
+        row, case = self.row('48654-0K040-MANDO'), OEMReviewCase.objects.get(pk=case.pk)
+        self.assertEqual((row.tier, row.candidate, row.status, row.reason, case.status), (RENAME, '48654-0K040', 'excluded', 'dismissed', 'dismissed'))
+        self.assertEqual(au.preview(RENAME, 'canary')['excluded'], {'dismissed': 1})
+        outcome = self.canary(RENAME)
+        self.assertEqual((outcome['summary']['applied'], outcome['summary']['excluded']), (1, {'dismissed': 1}))
+        self.assertEqual(self.part('48654-0K040-MANDO').sku, '48654-0K040-MANDO')
+        rv.reopen(case.pk, case.fingerprint, self.root)  # the person takes the dismissal back: automatic again
+        of.execute()
+        self.assertEqual((self.row('48654-0K040-MANDO').status, OEMReviewCase.objects.get(pk=case.pk).status), ('pending', 'resolved'))
 
     def test_a_rules_bump_refreshes_every_graded_row_and_keeps_its_status(self):
         run = self.canary(FLAG, 2)['run']

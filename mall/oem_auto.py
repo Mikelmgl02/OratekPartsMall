@@ -3,11 +3,12 @@
 Every dry run (python -m mall.oem_finder --dry-run, the worker stage) and every completed apply run refreshes the table from the finder's
 results; the first dry run after migration 0038 fills it (no data migration). A row is pending while the next apply run of its apply tier
 would take it, applied once its OEMFinderChange stands and the SKU is OEM, excluded while O3 leaves it to a human (reverted before with
-the same OEM, or an open apply conflict: a revert never puts it back as automatic), stale once it no longer grades AUTO, and
-sent_to_review when a person took it out of automatic application: mall.oem_apply.handled() skips it and an OEMReviewCase (created, or
-reopened) lets a human decide. Rows refresh on the next run after a rules bump (rules_version), keeping these statuses. Applying from
-the admin is oem_apply.apply_auto itself (canary per apply tier and rules version, halt rule, in stock first,
-batches of at most 100, per-row transactions, spot-check, undo) under the matching advisory lock, idempotent per operation id. No AI.
+the same OEM, an open apply conflict, or the same OEM dismissed in the review queue: a revert or a dismissal never puts it back as
+automatic), stale once it no longer grades AUTO, and sent_to_review when a person took it out of automatic application:
+mall.oem_apply.handled() skips it and an OEMReviewCase (created, or reopened) lets a human decide. Rows refresh on the next run after a
+rules bump (rules_version), keeping these statuses. Applying from the admin is oem_apply.apply_auto itself (canary per apply tier and
+rules version, halt rule, in stock first, batches of at most 100, per-row transactions, spot-check, undo) under the matching advisory
+lock, idempotent per operation id. No AI.
 """
 import logging
 from collections import Counter, defaultdict
@@ -29,7 +30,7 @@ ORDERINGS = ('stock', 'sku')
 FILTER_KEYS = ('status', 'tier', 'apply_tier', 'chain', 'make', 'system', 'in_stock', 'search', 'ordering')
 PAGE_SIZE, SEND_LIMIT = 25, 100
 REASONS = {'previously_reverted': 'se revirtió antes con el mismo OEM', 'open_conflict': 'tiene un conflicto de aplicación abierto',
-           'left_auto': 'ya no es automático en el último análisis'}
+           'dismissed': 'se descartó en la revisión OEM con el mismo OEM', 'left_auto': 'ya no es automático en el último análisis'}
 SEND_SKIPS = {'not_found': 'no está en los pendientes', 'applied': 'ya se aplicó', 'excluded': 'está excluido hasta una decisión humana',
               'stale': 'ya no es automático', 'case_applied': 'su caso de revisión ya se aprobó'}
 FIELDS = ['run', 'tier', 'apply_tier', 'sku', 'candidate', 'written_form', 'brand', 'makes', 'system', 'grade', 'chain', 'chain_tokens', 'owner_tags',
@@ -75,7 +76,7 @@ def refresh(run, finder, results):
         return {'status': 'not_migrated'}
     from .oem_finder_models import OEMAutoCandidate
     table, version, now = finder.table, of.table_version(finder.table), timezone.now()
-    reverted, conflicts, _ = oa.exclusions()
+    reverted, conflicts, _, dismissed = oa.exclusions()
     applied, wanted = applied_parts(), {}
     for pid, r in results.items():
         tier = oa.apply_tier(table, r)
@@ -95,6 +96,8 @@ def refresh(run, finder, results):
             row.update(status='excluded', reason='open_conflict')
         elif (pid, row['candidate']) in reverted:  # O3 never re-applies a reverted OEM: it does not come back as pending either
             row.update(status='excluded', reason='previously_reverted')
+        elif (pid, row['candidate']) in dismissed:  # nor one a person dismissed in the review queue (new rules or evidence made it AUTO)
+            row.update(status='excluded', reason='dismissed')
         else:
             row.update(status='pending', reason='')
         if cur is None:

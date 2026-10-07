@@ -73,10 +73,12 @@ export const stoppedLabels: Record<string, string> = {
 export const skipLabels: Record<string, string> = {
   snapshot_changed: 'CAMBIÓ DESDE EL ANÁLISIS', new_claimant: 'OTRO SKU RECLAMA EL NÚMERO', missing: 'YA NO EXISTE', retired: 'RETIRADO O AGRUPADO',
   canonical_differs: 'EL NÚMERO NO ES EL SKU', previously_reverted: 'REVERTIDO ANTES', open_conflict: 'CONFLICTO ABIERTO', sent_to_review: 'ENVIADO A REVISIÓN',
+  dismissed: 'DESCARTADO EN LA REVISIÓN',
 };
 export const autoTierLabels: Record<OEMAutoTier, string> = { AUTO_FLAG_CURRENT: 'SKU YA ES EL OEM', AUTO_RENAME_BASE: 'RENOMBRAR A BASE OEM' };
 // A tab's apply tiers, each with its own canary credit: renames resting on owner-confirmed tags (G, NP) apply apart from seed tags (MOBIS, HMC).
 export const applyTiersOf: Record<OEMAutoTier, OEMApplyTier[]> = { AUTO_FLAG_CURRENT: ['AUTO_FLAG_CURRENT'], AUTO_RENAME_BASE: ['STRONG_PENDING_OWNER_TAGS', 'AUTO_RENAME_BASE'] };
 export const pendingExcludedLabels: Record<string, string> = {
   sent_to_review: 'se enviaron a la revisión OEM', open_conflict: 'tienen un conflicto de aplicación abierto', previously_reverted: 'se revirtieron antes con el mismo OEM',
+  dismissed: 'se descartaron en la revisión OEM con el mismo OEM',
 };

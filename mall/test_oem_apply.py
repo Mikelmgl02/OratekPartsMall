@@ -314,6 +314,24 @@ class RunTests(Catalog, TestCase):
         self.assertEqual(sum(1 for r in after.values() if r['tier'] == FLAG), 11 - 3)
         self.assertEqual(oa.apply_auto(tier=FLAG, read_only=True)['eligible'], 8)
 
+    def test_renamed_and_flagged_rows_never_move_the_rows_left(self):
+        for sku, description in [('KYB-334001', 'AMORT TOY COROLLA'), ('48654-0K090-NAK', 'BASE AMORT TOY HILUX'),
+                                 ('48654-0K090-MANDO', 'BASE AMORT TOY HILUX'), ('54830-9Z999-NAK', 'TERM ESTAB HYU ACCENT')]:
+            self.parts[sku] = Part.objects.create(sku=sku, name=sku, description=description)
+        SupplierItem.objects.create(supplier=Account.objects.create(name='PROVEEDOR'), supplier_invent_id='kyb', part=self.parts['KYB-334001'],
+                                    codigo='48654-30030', source='upload')  # cites a SKU that gets flagged
+
+        def grade():
+            results = of.OEMFinder(of.load_snapshot(), suffix_table()).evaluate()
+            return {pid: (r['tier'], (r.get('primary') or {}).get('grade'), (r.get('primary') or {}).get('lexicon'), r.get('auto_blockers'),
+                          r.get('proposed_main'), r.get('conflict_kind'), r.get('shared_with'), r.get('family_incompatible')) for pid, r in results.items()}
+        before = grade()
+        run = self.canary(None, 50)['run']  # every AUTO row: 11 flags and 2 renames (the SKU becomes the base)
+        self.assertEqual(run.applied['tiers'], {FLAG: 11, RENAME: 1, CONFIRMED: 1})
+        after = grade()
+        self.assertEqual(set(after), set(before) - {str(p) for p in run.changes.values_list('part_id', flat=True)})
+        self.assertEqual(after, {pid: before[pid] for pid in after})
+
     def test_a_rules_bump_needs_new_canaries_and_never_re_applies_a_reverted_oem(self):
         run = self.canary(FLAG, 2)['run']
         reverted = run.changes.order_by('pk').first().part_id

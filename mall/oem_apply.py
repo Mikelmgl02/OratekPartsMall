@@ -38,6 +38,7 @@ SKIP_LABELS = {
     'previously_reverted': 'se revirtió antes con el mismo OEM', 'open_conflict': 'tiene un conflicto de aplicación abierto',
     'sku_changed': 'el SKU cambió después de aplicarse', 'old_sku_taken': 'el SKU anterior ya identifica a otro SKU',
     'codes_changed': 'se editaron los códigos que creó la aplicación', 'sent_to_review': 'se envió a la revisión OEM',
+    'dismissed': 'se descartó en la revisión OEM con el mismo OEM',
 }
 
 
@@ -133,23 +134,25 @@ def candidates(finder, results, tiers):
 
 
 def exclusions():
-    """What apply_auto leaves to a human: (part, OEM) pairs reverted before, Parts with an open apply-conflict case and Parts a person
-    sent to the review queue from the pending list (OEMAutoCandidate, migration 0038)."""
+    """What apply_auto leaves to a human: (part, OEM) pairs reverted before, Parts with an open apply-conflict case, Parts a person
+    sent to the review queue from the pending list (OEMAutoCandidate, migration 0038) and (part, OEM) pairs a person dismissed in the
+    review queue (a rules bump or new evidence can grade the same proposal AUTO later: a human 'no' is never overridden silently)."""
     from .oem_auto import auto_tables_ready
     from .oem_finder_models import OEMAutoCandidate, OEMFinderChange, OEMReviewCase
     reverted = {(str(p), c) for p, c in OEMFinderChange.objects.filter(reverted_at__isnull=False).values_list('part_id', 'code')}
     conflicts = {str(p) for p, b in OEMReviewCase.objects.filter(tier='CONFLICT', status__in=['review', 'dismissed']).values_list('part_id', 'blockers')
                  if 'apply_conflict' in (b or [])}
     sent = {str(p) for p in OEMAutoCandidate.objects.filter(status='sent_to_review').values_list('part_id', flat=True)} if auto_tables_ready() else set()
-    return reverted, conflicts, sent
+    dismissed = {(str(p), c) for p, c in OEMReviewCase.objects.filter(status='dismissed').values_list('part_id', 'candidate')}
+    return reverted, conflicts, sent, dismissed
 
 
 def handled(rows, results):
-    """Rows a human must look at first: sent to review, an open apply-conflict case, or the same OEM reverted before (never re-applied
-    silently). Before migration 0036 (read-only preview) none can exist."""
+    """Rows a human must look at first: sent to review, an open apply-conflict case, or the same OEM reverted before or dismissed in the
+    review queue (never applied silently). Before migration 0036 (read-only preview) none can exist."""
     if not apply_tables_ready():
         return rows, {}
-    reverted, conflicts, sent = exclusions()
+    reverted, conflicts, sent, dismissed = exclusions()
     keep, out = [], Counter()
     for pid, tier in rows:
         if pid in sent:
@@ -158,6 +161,8 @@ def handled(rows, results):
             out['open_conflict'] += 1
         elif (pid, results[pid]['proposed_main']) in reverted:
             out['previously_reverted'] += 1
+        elif (pid, results[pid]['proposed_main']) in dismissed:
+            out['dismissed'] += 1
         else:
             keep.append((pid, tier))
     return keep, dict(out)
