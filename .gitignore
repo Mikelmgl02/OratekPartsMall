@@ -22,3 +22,5 @@ output/*
 .DS_Store
 .idea/
 .vscode/
+# Supplier PDF catalogs: large third-party files, used locally to fill the OEM table.
+pdf_catalogues/
