@@ -18,3 +18,10 @@ class MallConfig(AppConfig):
         for model in (Part, PartCode):
             post_save.connect(enqueue_matching, sender=model, dispatch_uid=f'matching_save_{model.__name__}')
             post_delete.connect(enqueue_matching, sender=model, dispatch_uid=f'matching_delete_{model.__name__}')
+
+        # The OEM reference library mirrors every OEM alterno; the handlers never break the PartCode write.
+        from django.db.models.signals import pre_save
+        from .oem_reference import partcode_deleted, partcode_pre_save, partcode_saved
+        pre_save.connect(partcode_pre_save, sender=PartCode, dispatch_uid='oem_reference_pre_save')
+        post_save.connect(partcode_saved, sender=PartCode, dispatch_uid='oem_reference_save')
+        post_delete.connect(partcode_deleted, sender=PartCode, dispatch_uid='oem_reference_delete')

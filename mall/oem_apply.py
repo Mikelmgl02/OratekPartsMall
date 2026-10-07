@@ -548,8 +548,11 @@ def revert_link(link_id, actor):
         if edited:  # all or nothing: a kept algo OEM would let reference reconciliation rename the SKU again
             raise Skip('codes_changed', ', '.join(sorted({f'{r["brand"]} {r["code"]}'.strip() for r in edited})))
         PartCode.objects.filter(pk__in=[r['id'] for r in delete]).delete()
-        for pk, before in restore:
-            PartCode.objects.filter(pk=pk).update(**{k: before[k] for k in CODE_KEYS[1:]})
+        for pk, before in restore:  # save(), not update(): the OEM reference library follows the PartCode signals
+            code = PartCode.objects.get(pk=pk)
+            for k in CODE_KEYS[1:]:
+                setattr(code, k, before[k])
+            code.save(update_fields=list(CODE_KEYS[1:]))
         fields = ['is_OEM']
         part.is_OEM = bool(undo.get('is_OEM'))
         if rename:
