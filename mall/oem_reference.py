@@ -18,8 +18,7 @@ from django.db.models import CharField, Func, Q, Value
 from django.db.models.functions import Concat, Replace, Upper
 from django.utils import timezone
 
-from .oem_reference_models import (AUTOMATIC_KINDS, MANUAL_KINDS, OEMReference, OEMReferenceSource, compact, manufacturer_name,
-                                   spellings)
+from .oem_reference_models import AUTOMATIC_KINDS, OEMReference, OEMReferenceSource, compact, manufacturer_name, spellings
 
 log = logging.getLogger(__name__)
 VERIFIED_KINDS = {'price_list', 'manufacturer_catalog'}
@@ -31,8 +30,6 @@ ALGO_RE = re.compile(r'^algo:(?P<finder>[^:]+):(?P<version>[^:]+):(?P<rule>.+):(
 SEPARATORS = ' -/_.+()#,:;*&\'"[]{}|\\°!?@$%=<>~`^\t'
 LINKED_LIMIT = 20
 _state = {'warned': False}
-__all__ = ['compact', 'upsert_reference', 'refresh_status', 'linked_parts', 'sync_from_partcode', 'remove_partcode_source',
-           'MANUAL_KINDS', 'AUTOMATIC_KINDS']
 
 
 def tables_ready():
@@ -130,9 +127,9 @@ def resolve(defaults):
     return (defaults() if callable(defaults) else defaults) or {}
 
 
-def refresh_status(ref, actor=None, *, changed=True):
+def refresh_status(ref, actor=None, *, changed=False):
     """Re-derive the status from the sources (a disputed number stays disputed until clear_dispute) and save the reference, taking the
-    next version, when something changed. Returns the status."""
+    next version, when it changed or the caller changed something else (changed=True). Returns the status."""
     before = ref.status
     if ref.status != 'disputed':
         ref.status = derived_status(ref.sources.values_list('kind', 'detail'))
@@ -200,9 +197,9 @@ def curated(ref):
 
 
 def remove_partcode_source(partcode, number=None, keep=None):
-    """Drop one PartCode from the automatic sources of a number (its own by default) that list it, except the one keyed by keep:
-    a source goes when no alterno backs it any more and the reference when it has no sources left (unless curated); otherwise the
-    status is re-derived. Returns the references that changed."""
+    """Drop one PartCode from the automatic sources of a number (its own by default) that list it, except keep (the source it backs
+    now, whose reference the caller settles): a source goes when no alterno backs it any more and the reference when it has no
+    sources left (unless curated); otherwise the status is re-derived. Returns the references that changed."""
     number = compact(partcode.code if number is None else number)
     touched = {}
     for source_id, ref_id, kind, citation, detail in (OEMReferenceSource.objects.filter(reference__code=number, kind__in=AUTOMATIC_KINDS)
@@ -221,10 +218,12 @@ def remove_partcode_source(partcode, number=None, keep=None):
             source.delete()
         touched[ref_id] = ref
     for ref in touched.values():
+        if keep and (ref.manufacturer, ref.code) == keep[:2]:
+            continue  # the caller adds the new source next and re-derives the status then
         if not ref.sources.exists() and not curated(ref):
             ref.delete()
         else:
-            refresh_status(ref)
+            refresh_status(ref, changed=True)
     return list(touched.values())
 
 

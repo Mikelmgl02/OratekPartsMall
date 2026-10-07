@@ -237,7 +237,7 @@ def plan(ref, data, user):
 
         def remove():
             source.delete()
-            orf.refresh_status(ref, user)
+            orf.refresh_status(ref, user, changed=True)
         return remove
     if action == 'dispute':
         note = (data.get('note') or '').strip()
@@ -250,7 +250,7 @@ def plan(ref, data, user):
 
         def clear():
             ref.status, ref.dispute_note = 'inferred', ''  # refresh_status re-derives it from the sources
-            orf.refresh_status(ref, user)
+            orf.refresh_status(ref, user, changed=True)
         return clear
     if action == 'clear_superseded_by':
         return (lambda: save(ref, user, superseded_by=None)) if ref.superseded_by_id else None
