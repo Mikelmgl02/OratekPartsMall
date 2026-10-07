@@ -236,14 +236,40 @@ def sync_from_partcode(partcode, before=None, created=False):
         for number in {key[1] for key in (now, then) if key}:
             remove_partcode_source(partcode, number=number, keep=now)
     if now is None:
+        link(partcode, None)
         return None
     manufacturer, number, kind, citation = now
     detail = {**source_of(partcode.reference_source)[2], 'part_codes': [{'id': partcode.pk, 'part': str(partcode.part_id), 'code': partcode.code}]}
 
     def described():
         return part_defaults(Part.objects.filter(pk=partcode.part_id).values_list('description', flat=True).first())
-    return upsert_reference(manufacturer, partcode.code, printed=[partcode.code], source_kind=kind, citation=citation, detail=detail,
-                            defaults=described)[0]
+    ref = upsert_reference(manufacturer, partcode.code, printed=[partcode.code], source_kind=kind, citation=citation, detail=detail,
+                           defaults=described)[0]
+    link(partcode, ref)
+    return ref
+
+
+def link(partcode, ref):
+    """Point the alterno at its reference (or at none) with a queryset update, so the save signals do not run a second time."""
+    from .models import PartCode
+    ref_id = ref.pk if ref is not None else None
+    if partcode.oem_reference_id != ref_id:
+        PartCode.objects.filter(pk=partcode.pk).update(oem_reference=ref_id)
+        partcode.oem_reference_id = ref_id
+
+
+def link_partcodes(Reference, PartCode, *, using='default'):
+    """Migration 0040 backfill, idempotent and safe with historical models: every OEM alterno with a brand points at the reference
+    for (brand, compact code); any other alterno points at none. Returns how many alternos changed."""
+    refs = {(m, c): pk for pk, m, c in Reference.objects.using(using).values_list('pk', 'manufacturer', 'code')}
+    changed = []
+    for row in PartCode.objects.using(using).only('pk', 'brand', 'code', 'ref_type', 'oem_reference').iterator(chunk_size=5000):
+        target = refs.get((manufacturer_name(row.brand), compact(row.code))) if row.ref_type == 'oem' and row.brand.strip() else None
+        if row.oem_reference_id != target:
+            row.oem_reference_id = target
+            changed.append(row)
+    PartCode.objects.using(using).bulk_update(changed, ['oem_reference'], batch_size=1000)
+    return len(changed)
 
 
 def guarded(sync, *args):

@@ -138,6 +138,9 @@ class PartCode(models.Model):
     REF_TYPES = [('unknown', 'SIN CLASIFICAR'), ('oem', 'OEM'), ('company', 'EMPRESA / FABRICANTE')]
     ref_type = models.CharField(max_length=20, choices=REF_TYPES, default='unknown', db_index=True)
     reference_source = models.CharField(max_length=500, blank=True, default='', verbose_name='fuente de la equivalencia')
+    # The OEM table row an OEM alterno files under (brand as manufacturer, compact code); kept by the oem_reference signal handlers.
+    oem_reference = models.ForeignKey('mall.OEMReference', on_delete=models.SET_NULL, null=True, blank=True, related_name='alternos',
+                                      verbose_name='referencia OEM')
 
     @property
     def kind(self):

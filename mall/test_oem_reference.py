@@ -12,7 +12,7 @@ from rest_framework.test import APITestCase
 from . import oem_apply as oa
 from . import oem_reference as orf
 from .models import Part, PartCode, User
-from .oem_reference import (classify_number, compact, derived_status, linked_parts, refresh_status, seed_from_partcodes, source_of,
+from .oem_reference import (classify_number, compact, derived_status, link_partcodes, linked_parts, refresh_status, seed_from_partcodes, source_of,
                             upsert_reference)
 from .oem_reference_models import OEMReference, OEMReferenceSource
 from .test_oem_apply import FLAG, RENAME, Catalog
@@ -147,6 +147,23 @@ class SyncTests(Fresh, TestCase):
         self.assertEqual(list(OEMReference.objects.values_list('manufacturer', 'code')), [('LEXUS', '1780130080')])
         code.delete()
         self.assertFalse(OEMReference.objects.exists() or OEMReferenceSource.objects.exists())
+
+    def test_the_alterno_points_at_its_reference_through_every_change(self):
+        code = oem(self.part, '17801-30070')
+        code.refresh_from_db()
+        self.assertEqual(code.oem_reference, self.ref())
+        code.code = '17801-30080'
+        code.save()
+        code.refresh_from_db()
+        self.assertEqual(code.oem_reference, self.ref('1780130080'))
+        code.ref_type = 'company'
+        code.save()
+        code.refresh_from_db()
+        self.assertIsNone(code.oem_reference)
+        sister = oem(self.other, '17801-30070', source='LISTA TOYOTA')
+        upsert_reference('TOYOTA', '1780130070', source_kind='price_list', citation='LISTA 2026')
+        sister.delete()  # the reference outlives it (price list): nothing else changes
+        self.assertTrue(self.ref().sources.filter(kind='price_list').exists())
 
     def test_a_source_backed_by_two_alternos_stays_until_the_last_one_goes(self):
         first, second = oem(self.part, '17801-30070'), oem(self.other, '1780130070')
@@ -292,6 +309,15 @@ class SeedTests(Fresh, TestCase):
         self.assertEqual(seed_from_partcodes(OEMReference, OEMReferenceSource, PartCode), {'references': 0, 'sources': 1})
         ref = OEMReference.objects.get(code='1780130070')
         self.assertEqual((sorted(ref.sources.values_list('kind', flat=True)), ref.status), (['oem_finder', 'price_list'], 'verified'))
+
+    def test_the_link_backfill_is_idempotent_and_skips_other_alternos(self):
+        PartCode.objects.update(oem_reference=None)
+        self.assertEqual(link_partcodes(OEMReference, PartCode), 4)  # two TOYOTA spellings, HYUNDAI, MITSUBISHI
+        linked = dict(PartCode.objects.values_list('code', 'oem_reference__code'))
+        self.assertEqual((linked['17801-30070'], linked['1780130070'], linked['MR968365'], linked['ALT-1']), ('1780130070', '1780130070', None, None))
+        self.assertEqual(link_partcodes(OEMReference, PartCode), 0)
+        importlib.import_module('mall.migrations.0040_partcode_oem_reference').backfill(apps, SimpleNamespace(connection=connection))
+        self.assertEqual(dict(PartCode.objects.values_list('code', 'oem_reference__code')), linked)
 
     def test_the_migration_seed(self):
         OEMReference.objects.all().delete()
