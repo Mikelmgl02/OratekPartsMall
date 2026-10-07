@@ -129,6 +129,13 @@ class SupplierCatalogImportTests(Fresh, TestCase):
         self.assertEqual(spec.number_value, 33)
         self.assertEqual(result['catalogs'][1]['counts']['specs_conflict'], 1)
 
+    def test_a_retired_sku_neither_takes_the_codes_nor_makes_the_live_sku_a_duplicate(self):
+        retired = Part.objects.create(sku='16100-39466-G-ANULADO', description='BOMBA AGUA TOY HIACE 2KD')
+        result = self.run_import(apply=True)
+        self.assertEqual(result['catalogs'][0]['counts']['retired_skus_skipped'], 1)
+        self.assertFalse(retired.codes.exists())
+        self.assertTrue(self.pump.codes.filter(brand='GMB', code='GWT-142A').exists())
+
     def test_a_sku_matching_two_items_of_one_catalog_is_left_alone(self):
         PartCode.objects.create(part=self.pump, code='16100-80007', brand='TOYOTA')
         result = self.run_import(apply=True)
@@ -211,3 +218,50 @@ class BrakeDiscSheetTests(Fresh, TestCase):
         self.assertEqual((values['inner_diameter'].number_value, values['diameter'].number_value), (210, 354))
         self.assertNotIn('short_number', values)
         self.assertFalse(TechnicalField.objects.filter(key='short_number').exists())
+
+
+class HubAndTensionerTests(Fresh, TestCase):
+    def test_a_sku_takes_the_compatible_subgroup_its_own_description_names(self):
+        hub = Part.objects.create(sku='44300-SDA-A51', description='HUB DEL HON ACCORD 03-07', is_OEM=True)
+        bearing = Part.objects.create(sku='13505-54020-KOYO', description='BALINERA TENSOR TOY 2L 3L')
+        locking = Part.objects.create(sku='43530-60010', description='HUB LIBRE TOY LAND CRUISER')
+        data = extract([item('HNWH-CM5F', 'hub_bearing', oem=[('44300-SDA-A51', 'HONDA')], name_es='RODAMIENTO DE RUEDA',
+                             specs=[('abs_teeth', 'DIENTES ABS', '48', ''), ('outer_diameter', 'DIÁMETRO EXTERIOR', '84', 'mm')]),
+                        item('TYBP-001', 'tensioner', oem=[('13505-54020', 'TOYOTA')], name_es='TENSOR DE CORREA'),
+                        item('TYWH-FJ80F', 'wheel_hub', oem=[('43530-60010', 'TOYOTA')], name_es='CUBO DE RUEDA')],
+                       key='asva_hub', title='ASVA HUB', brand='ASVA', product_line='wheel_hub')
+        with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False, encoding='utf-8') as handle:
+            json.dump(data, handle, ensure_ascii=False)
+        try:
+            sci.run([handle.name], apply=True, stdout=io.StringIO())
+        finally:
+            os.unlink(handle.name)
+        hub.refresh_from_db()
+        self.assertEqual((hub.category, hub.subcategory), ('RODAMIENTOS', 'CUBOS DE RUEDA'))  # its description, not the item's bearing subgrupo
+        self.assertEqual(hub.specifications.get(field__key='abs_teeth').number_value, 48)
+        self.assertTrue(bearing.codes.filter(brand='ASVA', code='TYBP-001').exists())
+        self.assertFalse(locking.codes.exists())  # a free-wheel locking hub is not a wheel hub
+
+
+class MakeGroupTests(Fresh, TestCase):
+    def test_catalog_manufacturers_meet_the_finder_makes_of_the_skus(self):
+        group = sci.CatalogImport.make_group
+        self.assertEqual({group(m) for m in ['VOLKSWAGEN', 'AUDI', 'SKODA', 'SEAT', 'VAG']}, {'VAG'})
+        self.assertEqual((group('MERCEDES-BENZ'), group('MB')), ('MB', 'MB'))
+        self.assertEqual({group(m) for m in ['JEEP', 'DODGE', 'CHRYSLER', 'MOPAR']}, {'MOPAR'})
+        self.assertEqual({group(m) for m in ['CHEVROLET', 'CADILLAC', 'GM', 'DAEWOO']}, {'GM'})
+        self.assertEqual({group(m) for m in ['TOYOTA', 'LEXUS', 'DAIHATSU']}, {'TOYOTA'})
+        self.assertEqual({group(m) for m in ['PEUGEOT', 'VOLVO', 'LAND ROVER', 'OTHER']}, {''})  # no make evidence
+
+    def test_a_volkswagen_disc_links_to_a_vw_sku(self):
+        disc = Part.objects.create(sku='1K0615301AA', description='DISCO FRENO DEL VW GOLF JETTA', is_OEM=True)
+        data = extract([item('24.0125-0111.1', 'brake_disc', oem=[('1K0615301AA', 'VOLKSWAGEN'), ('1K0615301AA', 'AUDI')], name_es='DISCO DE FRENO',
+                             apps=[('VOLKSWAGEN', 'GOLF V'), ('SEAT', 'LEON')])], key='ate', title='ATE', brand='ATE', product_line='brake_disc')
+        with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False, encoding='utf-8') as handle:
+            json.dump(data, handle, ensure_ascii=False)
+        try:
+            result = sci.run([handle.name], apply=True, stdout=io.StringIO())
+        finally:
+            os.unlink(handle.name)
+        self.assertEqual(result['catalogs'][0]['counts'].get('linked_parts', 0), 1)
+        self.assertTrue(disc.codes.filter(brand='ATE', code='24.0125-0111.1').exists())

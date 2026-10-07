@@ -47,6 +47,11 @@ COMPATIBLE = {
 EXTRA_RULES = [(c, s, re.compile(pattern)) for c, s, pattern in [
     ('REFRIGERACIÓN', 'EMBRAGUES DE VENTILADOR', r'^(?:FAN CLUTCH|EMBRAGUE (?:DE )?VENT(?:ILADOR)?|ACOPLE (?:DE )?VENTILADOR)\b'),
     ('FRENOS', 'ACCESORIOS DE PASTILLAS', r'^(?:SENSOR (?:DE )?(?:DESGASTE|PASTILLAS?)|ALARMA (?:DE )?(?:PASTILLAS?|FRENO)|TESTIGO (?:DE )?PASTILLAS?|CABLE (?:DE )?(?:SENSOR|ALARMA) (?:DE )?PASTILLAS?)\b'),
+    # Wheel hubs ("HUB DEL", "HUB TOY DEL"); free-wheel locking hubs are another part.
+    ('RODAMIENTOS', 'CUBOS DE RUEDA', r'^(?:HUB|MAZA|CUBO (?:DE )?RUEDA)\b(?! (?:LIBRE|LOCK|LOCKING|MANUAL|AUTOMATIC[OA]?|AUTO)\b)'),
+    ('RODAMIENTOS', 'RODAMIENTOS DE RUEDA', r'^BALINERA (?:DE )?(?:RDA|RUEDA)\b'),
+    ('RODAMIENTOS', 'RODAMIENTOS DE TENSOR', r'^(?:BALINERA (?:TENSOR|FIJA)|TENSOR BALINERA)\b'),
+    ('MOTOR', 'TENSORES DE CORREA', r'^(?:POLEA (?:ALT|AJUST|LOCA|GUIA|TENSORA|INTERMEDIA)|TENSOR (?:ALT|HIDRA))\b'),
 ]]
 # Codes and ambiguous printed columns stay text even when they look numeric (ASVA boot codes such as 2071).
 TEXT_KEYS = {'cv_boot', 'boot_code', 'joint_type', 'design', 'type', 'splines_or_diameter', 'brake_system', 'bolt_hole_diameter'}
@@ -66,6 +71,8 @@ INTEGER_KEYS = {'holes', 'bolts', 'outer_splines', 'inner_splines', 'abs_teeth',
 BOOLEAN_KEYS = {'vented', 'wear_indicator', 'abs', 'with_abs', 'with_sensor'}
 YES, NO = {'YES', 'SI', 'SÍ', 'TRUE', 'Y', '+', 'X'}, {'NO', 'FALSE', 'N', '-'}
 SAMPLE = 40
+# Catalog manufacturers the OEM finder's make tokens do not name, mapped to the finder's canonical make.
+EXTRA_MAKES = {'SEAT': 'VAG', 'CUPRA': 'VAG', 'MINI': 'BMW', 'MERCURY': 'FORD', 'GM': 'CHEVROLET'}
 
 
 def compact(value):
@@ -134,26 +141,30 @@ class CatalogImport:
 
     # ------------------------------------------------------------------ matching
     def item_groups(self, item):
-        from .oem_finder import MAKE_GROUP
         makes = {o['manufacturer'] for o in item.get('oem', []) if o.get('manufacturer')} | {a['make'] for a in item.get('applications', []) if a.get('make')}
-        return {MAKE_GROUP.get(m.upper(), m.upper()) for m in makes}
+        return {g for g in map(self.make_group, makes) if g}
 
     def product_ok(self, pid, product_type):
+        """(agrees, why, the subgrupo the SKU's own description classifies to; None for a SKU already classified)."""
         from .category_suggestions import description, local_category
         p = self.finder.by_id[self.fid[str(pid)]]
         wanted = compatible(product_type)
         if not wanted:
-            return False, 'no_taxonomy'
+            return False, 'no_taxonomy', None
         if p.get('subcategory'):
-            return ((fold(p['category']), fold(p['subcategory'])) in wanted), 'classified'
+            return ((fold(p['category']), fold(p['subcategory'])) in wanted), 'classified', None
         row = {'sku': p['sku'], 'name': p.get('name') or '', 'description': p['description'], 'category': '', 'subcategory': ''}
         found = local_category(row)
         if not found:
             text = description(row)
             found = next(((c, s) for c, s, pattern in EXTRA_RULES if pattern.search(text)), None)
         if not found:
-            return False, 'description_unclassified'
-        return (fold(found[0]), fold(found[1])) in wanted, 'rules'
+            return False, 'description_unclassified', None
+        return (fold(found[0]), fold(found[1])) in wanted, 'rules', found
+
+    def retired(self, pid):
+        from .catalog_suffixes import LIFECYCLE_RE
+        return bool(LIFECYCLE_RE.search(self.finder.by_id[self.fid[str(pid)]]['sku']))
 
     def part_keys(self, pid):
         """Every key that can match this SKU (raw codes and OEM bases), from the shared indexes."""
@@ -166,15 +177,15 @@ class CatalogImport:
         return cache.get(str(pid), set())
 
     def make_ok(self, pid, groups):
-        from .oem_finder import MAKE_GROUP
-        makes = self.finder.parsed[self.fid[str(pid)]]['makes']
+        makes = {g for g in map(self.make_group, self.finder.parsed[self.fid[str(pid)]]['makes']) if g}
         if not makes or not groups:
             return None
-        return bool({MAKE_GROUP.get(m, m) for m in makes} & groups)
+        return bool(makes & groups)
 
     def plan(self):
         rc, ix = self.report['counts'], self.ix
         links_by_part, links_by_item, keys_by_link = defaultdict(set), defaultdict(set), {}
+        self.targets = {}  # (pid, item) -> subgrupo for an unclassified SKU: the one its description names
         for n, item in enumerate(self.items):
             if not (item.get('brand_code') or '').strip():
                 rc['oem_only_items'] += 1  # an OEM number the catalog prints without a part of its own: OEM table only
@@ -194,7 +205,10 @@ class CatalogImport:
                 continue
             groups = self.item_groups(item)
             for pid, method in candidates.items():
-                ok, why = self.product_ok(pid, item['product_type'])
+                if self.retired(pid):  # an -ANULADO / _DELETED SKU would claim the codes and turn the live SKU into a duplicate
+                    rc['retired_skus_skipped'] += 1
+                    continue
+                ok, why, found = self.product_ok(pid, item['product_type'])
                 if not ok:
                     self.report['reasons'][f'product:{why}'] += 1
                     self.note('product_mismatch', {'sku': self.finder.by_id[self.fid[str(pid)]]['sku'], 'description': self.finder.by_id[self.fid[str(pid)]]['description'][:80],
@@ -207,6 +221,8 @@ class CatalogImport:
                 links_by_part[pid].add(n)
                 links_by_item[n].add(pid)
                 keys_by_link[(pid, n)] = (oem_keys | brand_keys) & self.part_keys(pid)
+                if found:
+                    self.targets[(pid, n)] = found
                 rc[f'link_{method}'] += 1
         self.links = []
         for pid, items in links_by_part.items():
@@ -307,17 +323,18 @@ class CatalogImport:
             PartCode.objects.create(part_id=pid, code=code, brand=brand, ref_type=ref_type, reference_source=cite)
             self.ix['codes'].setdefault(key, set()).add(pid)
 
-    def sheet(self, part, item, apply):
-        """Classify an unclassified SKU into the item's subgrupo, add missing template fields and store the absent values."""
+    def sheet(self, part, item, apply, target=None):
+        """Classify an unclassified SKU into target (the subgrupo its description names, else the item's), add missing template fields
+        and store the absent values. A SKU already in any subgrupo the item's product type accepts keeps it."""
         from .technical_data import bind_part_types
         from .technical_models import PartSpecification, TechnicalField, TechnicalTemplate
         from .technical_api import specification
-        rc, target = self.report['counts'], TAXONOMY.get(item['product_type'])
+        rc, target = self.report['counts'], target or TAXONOMY.get(item['product_type'])
         specs = [s for s in item.get('specs', []) if s.get('key') and s['key'] not in SKIP_KEYS and str(s.get('value', '')).strip()]
         if not specs or not target:
             return
         if part.part_type_id:
-            if (fold(part.part_type.category), fold(part.part_type.name)) != (fold(target[0]), fold(target[1])):
+            if (fold(part.part_type.category), fold(part.part_type.name)) not in compatible(item['product_type']):
                 rc['specs_other_subgroup'] += 1
                 return
         elif part.category or part.subcategory:
@@ -413,17 +430,23 @@ class CatalogImport:
                         if xr.get('brand') and xr.get('code'):
                             self.add_code(pid, xr['code'], xr['brand'], 'company', citation(self.catalog, xr.get('page')), apply, 'cross_ref')
                     if part.is_OEM:  # sister OEM numbers; reconcile_identities never touches a main already marked OEM
-                        groups = {g for g in [self.make_group(m) for m in self.finder.parsed[self.fid[str(pid)]]['makes']] if g}
+                        groups = {g for g in map(self.make_group, self.finder.parsed[self.fid[str(pid)]]['makes']) if g}
                         for o in item.get('oem', []):
                             if not groups or self.make_group(o['manufacturer']) in groups:
                                 self.add_code(pid, o['code'], o['manufacturer'], 'oem', citation(self.catalog, o.get('page')), apply, 'oem_alterno')
-                self.sheet(part, item, apply)
+                self.sheet(part, item, apply, self.targets.get((pid, n)))
 
     @staticmethod
     def make_group(make):
-        from .oem_finder import MAKE_GROUP
+        """The OEM finder's make group for a catalog manufacturer or a SKU make, through the finder's own make tokens: VOLKSWAGEN,
+        AUDI and SEAT -> VAG, MERCEDES-BENZ -> MB, JEEP and DODGE -> MOPAR, CADILLAC -> GM. '' when there is no make evidence: the
+        finder lumps PEUGEOT, VOLVO, OPEL... together as OTHER, which says nothing about agreement."""
+        from .oem_finder import MAKE_GROUP, MAKE_TOKENS
         make = (make or '').strip().upper()
-        return MAKE_GROUP.get(make, make)
+        tokens = [make, *re.split(r'[^0-9A-Z]+', make)]
+        canonical = next((MAKE_TOKENS.get(x) or EXTRA_MAKES.get(x) for x in tokens if x in MAKE_TOKENS or x in EXTRA_MAKES), make)
+        group = MAKE_GROUP.get(canonical, canonical)
+        return '' if group == 'OTHER' else group
 
 
 def build_indexes(finder):
