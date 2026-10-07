@@ -114,6 +114,11 @@ class SupplierCatalogImportTests(Fresh, TestCase):
         gmb = result['catalogs'][0]['counts']
         self.assertEqual((gmb.get('brand_code_new', 0), gmb.get('brand_code_present', 0)), (0, 1))
 
+    def test_a_dry_run_after_an_apply_reports_stored_measurements_as_present(self):
+        self.run_import(apply=True)
+        asva = self.run_import(apply=False)['catalogs'][1]['counts']
+        self.assertEqual((asva.get('specs_new', 0), asva['specs_present']), (0, 2))
+
     def test_a_different_stored_measurement_is_kept_and_reported(self):
         self.run_import(apply=True)
         spec = PartSpecification.objects.get(part=self.joint, field__key='outer_splines')

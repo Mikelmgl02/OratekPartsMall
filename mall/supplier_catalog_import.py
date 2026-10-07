@@ -332,10 +332,12 @@ class CatalogImport:
             part.category, part.subcategory = target
             bind_part_types([part])
             part.save(update_fields=['category', 'subcategory', 'part_type'])
-        template = TechnicalTemplate.objects.select_for_update().get(pk=part.part_type_id) if apply else None
+        # A dry run reads the template and the stored values too, so a re-run reports present values instead of new ones.
+        template = (TechnicalTemplate.objects.select_for_update().get(pk=part.part_type_id) if apply
+                    else TechnicalTemplate.objects.filter(pk=part.part_type_id).first())
         fields = {f.key: f for f in template.fields.all()} if template else {}
-        stored = {s.field_id: s for s in PartSpecification.objects.filter(part=part)} if apply else {}
-        created, grew = [], False
+        stored = {s.field_id: s for s in PartSpecification.objects.filter(part=part)}
+        created, grew, pending = [], False, set()
         for spec in specs:
             key = re.sub(r'[^a-z0-9_]', '_', spec['key'].strip().lower())[:60].strip('_')
             parsed = spec_value(spec, key)
@@ -349,8 +351,10 @@ class CatalogImport:
                 continue
             unit = (spec.get('unit') or '').strip() if kind == 'number' else ''
             field = fields.get(key)
-            if not apply:
-                rc['specs_new'] += 1
+            if field is None and not apply:
+                if key not in pending:  # the field itself is new: nothing stored to compare with
+                    pending.add(key)
+                    rc['specs_new'] += 1
                 continue
             if field is None:
                 field = TechnicalField.objects.create(template=template, key=key, label=(spec.get('label_es') or key.replace('_', ' ')).upper()[:120],
@@ -381,10 +385,11 @@ class CatalogImport:
             created.append(row)
             stored[field.pk] = row
         if created:
-            PartSpecification.objects.bulk_create(created)
-            part.technical_revision += 1
-            part.save(update_fields=['technical_revision'])
             rc['specs_new'] += len(created)
+            if apply:
+                PartSpecification.objects.bulk_create(created)
+                part.technical_revision += 1
+                part.save(update_fields=['technical_revision'])
         if grew:
             template.revision += 1
             template.save(update_fields=['revision', 'updated_at'])
