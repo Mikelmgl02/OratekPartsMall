@@ -49,6 +49,11 @@ const Status = ({ status }: { status: OEMReferenceStatus }) => <span className={
 type View = { kind: 'list' } | { kind: 'add' } | { kind: 'detail'; id: string; notice?: string };
 
 export default function OEMLibrary({ onClose }: { onClose: () => void }) {
+  return <Modal title="Biblioteca OEM" wide className="suffix-modal oem-library" onClose={onClose}><OEMLibraryPanel/></Modal>;
+}
+
+// The library body: the Inventario toolbar shows it in a modal, the OEM admin section inline.
+export function OEMLibraryPanel() {
   const [view, setView] = useState<View>({ kind: 'list' });
   const [search, setSearch] = useState(''); const [query, setQuery] = useState(''); const [manufacturer, setManufacturer] = useState(''); const [status, setStatus] = useState('');
   const [sourceKind, setSourceKind] = useState(''); const [linked, setLinked] = useState(''); const [page, setPage] = useState(1); const [revision, setRevision] = useState(0);
@@ -67,7 +72,7 @@ export default function OEMLibrary({ onClose }: { onClose: () => void }) {
   function back() { setView({ kind: 'list' }); setRevision(v => v + 1); }
   const counts = data?.counts;
   const filtered = Boolean(query || manufacturer || status || sourceKind || linked);
-  return <Modal title="Biblioteca OEM" wide className="suffix-modal oem-library" onClose={onClose}>
+  return <div className="oem-panel">
     {view.kind === 'detail' ? <ReferenceDetail key={view.id} id={view.id} initialNotice={view.notice} onBack={back} onOpen={id => setView({ kind: 'detail', id })}/>
       : view.kind === 'add' ? <AddReference onBack={back} onSaved={(id, created) => setView({ kind: 'detail', id, notice: created ? 'Número agregado a la biblioteca.' : 'El número ya estaba en la biblioteca: se unieron la forma escrita y la fuente.' })}/> : <>
         <p className="modal-description">Números OEM guardados como hechos con su procedencia, independientes de los SKU. Cada número se guarda compacto, solo letras y dígitos (17801-30070 → 1780130070), y conserva las formas impresas en sus fuentes. El estado sigue a las fuentes: verificado, declarado o inferido, salvo que lo marques en disputa.</p>
@@ -100,7 +105,7 @@ export default function OEMLibrary({ onClose }: { onClose: () => void }) {
         {data && <div className="pagination"><span>{number(data.count)} {data.count === 1 ? 'resultado' : 'resultados'}</span><div><button className="button soft small" disabled={!data.previous} onClick={() => setPage(page - 1)}>Anterior</button><span>Página {page}</span><button className="button soft small" disabled={!data.next} onClick={() => setPage(page + 1)}>Siguiente</button></div></div>}
         <p className="form-footnote">Los alternos OEM del catálogo (buscador OEM, Revisión OEM, editor de inventario y búsquedas con IA aprobadas) se reflejan aquí solos; al retirar el alterno se retira su fuente.</p>
       </>}
-  </Modal>;
+  </div>;
 }
 
 function AddReference({ onBack, onSaved }: { onBack: () => void; onSaved: (id: string, created: boolean) => void }) {

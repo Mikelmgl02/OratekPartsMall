@@ -23,6 +23,11 @@ function impact(row: CatalogSuffix) {
 }
 
 export default function CatalogSuffixes({ onClose, initialSearch = '' }: { onClose: () => void; initialSearch?: string }) {
+  return <Modal title="Sufijos de códigos" wide className="suffix-modal" onClose={onClose}><CatalogSuffixesPanel initialSearch={initialSearch}/></Modal>;
+}
+
+// The suffix table body: a modal from the Inventario toolbar, inline in the OEM admin section (keyed by initialSearch there).
+export function CatalogSuffixesPanel({ initialSearch = '' }: { initialSearch?: string }) {
   const [cls, setCls] = useState(''); const [status, setStatus] = useState(''); const [unlock, setUnlock] = useState(false);
   const [search, setSearch] = useState(initialSearch); const [query, setQuery] = useState(initialSearch); const [page, setPage] = useState(1);
   const [data, setData] = useState<CatalogSuffixPage | null>(null); const [error, setError] = useState(''); const [notice, setNotice] = useState('');
@@ -43,7 +48,7 @@ export default function CatalogSuffixes({ onClose, initialSearch = '' }: { onClo
     finally { setBusy(''); }
   }
   const counts = data?.counts;
-  return <Modal title="Sufijos de códigos" wide className="suffix-modal" onClose={onClose}>
+  return <div className="oem-panel">
     {editing ? <SuffixEditor token={editing} onBack={() => { setEditing(null); setRevision(v => v + 1); }}/> : <>
       <p className="modal-description">Cada sufijo al final de un SKU es una etiqueta (marca, origen o marcador que no cambia la pieza), una variante (cambia o puede cambiar la pieza) o un sufijo desconocido que bloquea la búsqueda del OEM hasta que lo etiquetes.</p>
       {counts && <p className="suffix-counts" aria-label="Resumen de la tabla">TABLA: {number(counts.cls.TAG ?? 0)} ETIQUETAS · {number(counts.cls.VARIANT ?? 0)} VARIANTES · {number(counts.cls.UNKNOWN ?? 0)} DESCONOCIDOS · {number(counts.status.needs_owner_label ?? 0)} POR ETIQUETAR · VERSIÓN {data.version}</p>}
@@ -79,7 +84,7 @@ export default function CatalogSuffixes({ onClose, initialSearch = '' }: { onClo
       {data && <div className="pagination"><span>{number(data.count)} {data.count === 1 ? 'resultado' : 'resultados'}</span><div><button className="button soft small" disabled={!data.previous} onClick={() => setPage(page - 1)}>Anterior</button><span>Página {page}</span><button className="button soft small" disabled={!data.next} onClick={() => setPage(page + 1)}>Siguiente</button></div></div>}
       <p className="form-footnote">Confirmar una etiqueta permite quitarla en los renombrados automáticos a OEM. Cada cambio queda auditado y sube la versión de la tabla.</p>
     </>}
-  </Modal>;
+  </div>;
 }
 
 function SuffixEditor({ token, onBack }: { token: string; onBack: () => void }) {

@@ -35,6 +35,11 @@ function scopeText(run: OEMRun) {
 }
 
 export default function OEMRuns({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
+  return <Modal title="Aplicación OEM automática" wide className="suffix-modal" onClose={onClose}><OEMRunsPanel onChanged={onChanged}/></Modal>;
+}
+
+// Pending automatic conversions and run history: a modal from the Inventario toolbar, inline in the OEM admin section.
+export function OEMRunsPanel({ onChanged }: { onChanged: () => void }) {
   const [data, setData] = useState<OEMRunPage | null>(null); const [error, setError] = useState(''); const [notice, setNotice] = useState('');
   const [page, setPage] = useState(1); const [revision, setRevision] = useState(0); const [busy, setBusy] = useState('');
   const [confirming, setConfirming] = useState<number | null>(null); const [spotRun, setSpotRun] = useState<OEMRun | null>(null);
@@ -71,7 +76,7 @@ export default function OEMRuns({ onClose, onChanged }: { onClose: () => void; o
     } catch (e) { setError(errorMessage(e)); }
     finally { setBusy(''); }
   }
-  return <Modal title="Aplicación OEM automática" wide className="suffix-modal" onClose={onClose}>
+  return <div className="oem-panel">
     {spotRun ? <SpotCheck run={spotRun} busy={busy} onBack={() => { setSpotRun(null); setRevision(v => v + 1); }} onRevert={(part) => revert(spotRun, part)} notice={notice} error={error}/> : <>
       <p className="modal-description">Ejecuciones del buscador OEM que marcaron SKU como OEM o los renombraron a su base OEM (mismo SKU interno, existencias, fotos y alternos). Cada ejecución empieza con un canario, aplica primero los SKU con existencias en lotes de hasta 100 y deja una muestra de control de 20 filas. Si más de una fila de la muestra es incorrecta, detén la aplicación y deshaz la ejecución.</p>
       {data?.halt ? <div className="notice error" role="alert"><OctagonPause size={16}/>APLICACIÓN DETENIDA: {data.halt.reason} · {data.halt.created_by || 'SISTEMA'} · {stamp(data.halt.created_at)}<button className="button soft small" disabled={!!busy} onClick={() => void toggleHalt()}><Play size={14}/>Levantar detención</button></div>
@@ -101,7 +106,7 @@ export default function OEMRuns({ onClose, onChanged }: { onClose: () => void; o
       {data && <div className="pagination"><span>{number(data.count)} {data.count === 1 ? 'ejecución' : 'ejecuciones'}</span><div><button className="button soft small" disabled={!data.previous} onClick={() => setPage(page - 1)}>Anterior</button><span>Página {page}</span><button className="button soft small" disabled={!data.next} onClick={() => setPage(page + 1)}>Siguiente</button></div></div>}
       <p className="form-footnote">Deshacer devuelve el SKU anterior si sigue libre, borra el OEM y los alternos que creó la ejecución, quita la marca OEM y registra el cambio inverso. Las filas en conflicto pasan a la revisión OEM (Agrupar SKU); nunca se renombran en silencio.</p>
     </>}
-  </Modal>;
+  </div>;
 }
 
 function SpotCheck({ run, busy, notice, error, onBack, onRevert }: { run: OEMRun; busy: string; notice: string; error: string; onBack: () => void; onRevert: (part: string) => Promise<boolean> }) {

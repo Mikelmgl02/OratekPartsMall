@@ -711,6 +711,8 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .admin-inventory-tabs { display:flex; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:21px; padding-bottom:16px; border-bottom:1px solid var(--line); }
 .admin-inventory-tabs button { padding:9px 12px; border-radius:7px; font-size:10px; color:#849773; }
 .admin-inventory-tabs button.selected { background:#eef3e5; color:#607f48; font-weight:600; }
+.oem-section-tabs button { display:inline-flex; align-items:center; gap:6px; }
+.oem-section .oem-panel>.modal-description { margin-top:0; }
 .admin-catalog-table td .status { display:inline-flex; align-items:center; gap:5px; }
 .admin-notes-cell { white-space:normal; min-width:170px; max-width:300px; line-height:1.7; }
 .catalog-editor textarea,.catalog-editor select { width:100%; min-width:0; padding:12px 13px; border:1px solid #dbe2d1; border-radius:7px; background:white; color:var(--ink); font:inherit; font-size:12px; }

@@ -3,10 +3,11 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { ArrowLeft, ArrowUpRight, BarChart3, Boxes, Building2, Check, ChevronRight, Copy, LoaderCircle, LogOut, MailPlus, Menu, Plus, Repeat2, Search, ShieldCheck, Users, X } from 'lucide-react';
+import { ArrowLeft, ArrowUpRight, BadgeCheck, BarChart3, Boxes, Building2, Check, ChevronRight, Copy, LoaderCircle, LogOut, MailPlus, Menu, Plus, Repeat2, Search, ShieldCheck, Users, X } from 'lucide-react';
 import BrandLogo from './brand-logo';
 import Modal from './modal';
 import AdminCatalogSection from './admin-catalog-section';
+import AdminOEMSection from './admin-oem-section';
 import AdminAnalytics from './admin-analytics';
 import AdminTechnical from './admin-technical';
 import { AppToolbar, usePageViewport } from './app-shell';
@@ -66,10 +67,11 @@ export default function AdminWorkspace({ user, section = 'accounts' }: { user: S
     try { const account = await request<ManagedAccount>(`${base}/accounts/${id}`); setUserEditor(null); setMemberEditor(account); }
     catch (error) { setError(message(error)); }
   }
-  const heading = { inventory: 'Inventario', alternates: 'Alternos', accounts: 'Cuentas', users: 'Usuarios', invitations: 'Invitaciones', analytics: 'Estadísticas', templates: 'Plantillas técnicas', applications: 'Aplicaciones vehiculares' }[tab];
+  const heading = { inventory: 'Inventario', alternates: 'Alternos', oem: 'OEM', accounts: 'Cuentas', users: 'Usuarios', invitations: 'Invitaciones', analytics: 'Estadísticas', templates: 'Plantillas técnicas', applications: 'Aplicaciones vehiculares' }[tab];
   const navigation = [
     { key: 'inventory', slug: 'inventario', text: 'Inventario', Icon: Boxes, group: 'Catálogo' },
     { key: 'alternates', slug: 'alternos', text: 'Alternos', Icon: Repeat2, group: 'Catálogo' },
+    { key: 'oem', slug: 'oem', text: 'OEM', Icon: BadgeCheck, group: 'Catálogo' },
     { key: 'templates', slug: 'plantillas', text: 'Plantillas técnicas', Icon: Boxes, group: 'Catálogo' },
     { key: 'applications', slug: 'aplicaciones', text: 'Aplicaciones vehiculares', Icon: Repeat2, group: 'Catálogo' },
     { key: 'accounts', slug: 'cuentas', text: 'Cuentas', Icon: Building2, group: 'Accesos' },
@@ -109,7 +111,7 @@ export default function AdminWorkspace({ user, section = 'accounts' }: { user: S
         {data && <div className="pagination"><span>{data.count} {data.count === 1 ? 'resultado' : 'resultados'}</span><div><button className="button soft small" disabled={!data.previous} onClick={() => setPage(page - 1)}>Anterior</button><span>Página {page}</span><button className="button soft small" disabled={!data.next} onClick={() => setPage(page + 1)}>Siguiente</button></div></div>}
       </section>
       <p className="admin-footnote">Las cuentas pueden tener varios tipos de cliente o proveedor. Cada usuario puede acceder a varias cuentas con su propio permiso.</p>
-      </> : tab === 'analytics' ? <AdminAnalytics/> : tab === 'templates' || tab === 'applications' ? <AdminTechnical key={tab} applications={tab === 'applications'}/> : <AdminCatalogSection key={tab} section={tab as 'inventory' | 'alternates'}/>}
+      </> : tab === 'analytics' ? <AdminAnalytics/> : tab === 'oem' ? <AdminOEMSection/> : tab === 'templates' || tab === 'applications' ? <AdminTechnical key={tab} applications={tab === 'applications'}/> : <AdminCatalogSection key={tab} section={tab as 'inventory' | 'alternates'}/>}
       </main>
     </div>
     {accountEditor !== undefined && <AccountEditor account={accountEditor} roles={roles} onClose={() => setAccountEditor(undefined)} onSaved={() => { setAccountEditor(undefined); saved('Cuenta guardada.'); }}/>}
