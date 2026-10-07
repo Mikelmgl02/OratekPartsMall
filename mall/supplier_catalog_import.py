@@ -46,13 +46,22 @@ COMPATIBLE = {
 # Product families the shared category rules do not cover yet: used only when local_category finds no rule for a description.
 EXTRA_RULES = [(c, s, re.compile(pattern)) for c, s, pattern in [
     ('REFRIGERACIÓN', 'EMBRAGUES DE VENTILADOR', r'^(?:FAN CLUTCH|EMBRAGUE (?:DE )?VENT(?:ILADOR)?|ACOPLE (?:DE )?VENTILADOR)\b'),
+    ('FRENOS', 'ACCESORIOS DE PASTILLAS', r'^(?:SENSOR (?:DE )?(?:DESGASTE|PASTILLAS?)|ALARMA (?:DE )?(?:PASTILLAS?|FRENO)|TESTIGO (?:DE )?PASTILLAS?|CABLE (?:DE )?(?:SENSOR|ALARMA) (?:DE )?PASTILLAS?)\b'),
 ]]
 # Codes and ambiguous printed columns stay text even when they look numeric (ASVA boot codes such as 2071).
-TEXT_KEYS = {'cv_boot', 'boot_code', 'joint_type', 'note', 'design', 'type', 'splines_or_diameter'}
+TEXT_KEYS = {'cv_boot', 'boot_code', 'joint_type', 'design', 'type', 'splines_or_diameter', 'brake_system', 'bolt_hole_diameter'}
+# Free-text remarks (often German) and the brand's own catalog numbers (ATE short number) would surface in the customer sheet as if
+# they were measurements of the SKU: never imported into templates.
+SKIP_KEYS = {'note', 'remark', 'remarks', 'short_number'}
 # Plausible ranges for printed measurements: a value outside (a catalog typo such as a 630 mm seal) is reported, never stored.
 SPEC_RANGES = {'seal_diameter': (15, 130), 'outer_splines': (10, 60), 'inner_splines': (10, 60), 'splines': (10, 60), 'abs_teeth': (20, 120),
-               'length': (50, 1500), 'big_diameter': (20, 250), 'small_diameter': (8, 120), 'inner_diameter': (3, 200),
-               'outer_diameter': (5, 400), 'holes': (2, 12), 'bolts': (2, 12)}
+               'length': (10, 2500), 'big_diameter': (20, 250), 'small_diameter': (8, 120), 'inner_diameter': (3, 200),
+               'outer_diameter': (5, 400), 'holes': (2, 12), 'bolts': (2, 12), 'diameter': (100, 520), 'max_diameter': (100, 520),
+               'thickness': (3, 60), 'min_thickness': (3, 60), 'height': (5, 400), 'pcd': (60, 250), 'center_bore': (30, 220),
+               'width': (10, 260), 'depth': (10, 200), 'wheel_cylinder_diameter': (10, 40)}
+# Product-specific ranges win over SPEC_RANGES (a disc's inner hat diameter is not a bushing bore).
+SPEC_RANGES_BY_TYPE = {('brake_disc', 'inner_diameter'): (50, 320), ('brake_drum', 'inner_diameter'): (50, 320),
+                       ('wheel_hub', 'inner_diameter'): (10, 120), ('hub_bearing', 'inner_diameter'): (10, 120)}
 INTEGER_KEYS = {'holes', 'bolts', 'outer_splines', 'inner_splines', 'abs_teeth', 'teeth', 'splines', 'quantity', 'pieces'}
 BOOLEAN_KEYS = {'vented', 'wear_indicator', 'abs', 'with_abs', 'with_sensor'}
 YES, NO = {'YES', 'SI', 'SÍ', 'TRUE', 'Y', '+', 'X'}, {'NO', 'FALSE', 'N', '-'}
@@ -217,7 +226,7 @@ class CatalogImport:
         rc['duplicate_part_items'] = sum(1 for n, pids in links_by_item.items() if len(pids) > 1)
         for n, pids in links_by_item.items():
             if len(pids) > 1:
-                self.note('duplicates', {'item': self.items[n]['brand_code'], 'skus': sorted(self.finder.by_id[p]['sku'] for p in pids)})
+                self.note('duplicates', {'item': self.items[n]['brand_code'], 'skus': sorted(self.finder.by_id[self.fid[str(p)]]['sku'] for p in pids)})
         return self.report
 
     # ------------------------------------------------------------------ OEM table
@@ -304,7 +313,7 @@ class CatalogImport:
         from .technical_models import PartSpecification, TechnicalField, TechnicalTemplate
         from .technical_api import specification
         rc, target = self.report['counts'], TAXONOMY.get(item['product_type'])
-        specs = [s for s in item.get('specs', []) if s.get('key') and str(s.get('value', '')).strip()]
+        specs = [s for s in item.get('specs', []) if s.get('key') and s['key'] not in SKIP_KEYS and str(s.get('value', '')).strip()]
         if not specs or not target:
             return
         if part.part_type_id:
@@ -333,7 +342,7 @@ class CatalogImport:
             if not key or not parsed:
                 continue
             kind, value = parsed
-            bounds = SPEC_RANGES.get(key)
+            bounds = SPEC_RANGES_BY_TYPE.get((item['product_type'], key)) or SPEC_RANGES.get(key)
             if bounds and kind in ('number', 'integer') and not bounds[0] <= value <= bounds[1]:
                 rc['specs_out_of_range'] += 1
                 self.note('specs_out_of_range', {'sku': part.sku, 'field': key, 'value': str(value), 'range': list(bounds)})

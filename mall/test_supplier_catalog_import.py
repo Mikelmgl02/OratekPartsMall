@@ -187,3 +187,22 @@ class OEMOnlyItemTests(Fresh, TestCase):
         ref = OEMReference.objects.get(manufacturer='TOYOTA', code='4346060010')
         self.assertEqual(ref.sources.get(kind='aftermarket_catalog').detail['brand_codes'], [])
         self.assertFalse(part.codes.exists())
+
+
+class BrakeDiscSheetTests(Fresh, TestCase):
+    def test_a_disc_hat_diameter_is_kept_and_the_brand_short_number_is_not_a_measurement(self):
+        disc = Part.objects.create(sku='43512-60150', description='DISCO FRENO DEL TOY LAND CRUISER', is_OEM=True)
+        data = extract([item('24.0132-0123.1', 'brake_disc', oem=[('43512-60150', 'TOYOTA')], name_es='DISCO DE FRENO',
+                             specs=[('inner_diameter', 'DIÁMETRO INTERIOR', '210', 'mm'), ('short_number', 'NÚMERO CORTO', '410123', ''),
+                                    ('diameter', 'DIÁMETRO', '354', 'mm')])], key='ate', title='ATE', brand='ATE', product_line='brake_disc')
+        with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False, encoding='utf-8') as handle:
+            json.dump(data, handle, ensure_ascii=False)
+        try:
+            result = sci.run([handle.name], apply=True, stdout=io.StringIO())
+        finally:
+            os.unlink(handle.name)
+        self.assertEqual(result['catalogs'][0]['counts'].get('specs_out_of_range', 0), 0)  # 210 mm is a disc hat, not a bushing bore
+        values = {s.field.key: s for s in disc.specifications.select_related('field')}
+        self.assertEqual((values['inner_diameter'].number_value, values['diameter'].number_value), (210, 354))
+        self.assertNotIn('short_number', values)
+        self.assertFalse(TechnicalField.objects.filter(key='short_number').exists())
