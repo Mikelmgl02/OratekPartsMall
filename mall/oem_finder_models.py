@@ -1,4 +1,4 @@
-"""OEM finder runs, the 'Revisión OEM' queue (phase 2) and the auto-apply audit (phase 2B). New tables only.
+"""OEM finder runs, the 'Revisión OEM' queue (phase 2), the auto-apply audit (phase 2B) and its pending AUTO rows. New tables only.
 
 OEMFinderRun records one pass (mode, rules and suffix table versions, scope, tier counts, timings). OEMReviewCase holds one
 review-tier proposal per Part; its fingerprint covers the finder version, the Part snapshot, the candidate, the tier, the
@@ -135,3 +135,49 @@ class OEMReviewDecision(models.Model):
 
     class Meta:
         ordering = ['-created_at', '-id']
+
+
+# 'Pendientes de aplicación automática' (Aplicación OEM → Pendientes). New table only: every dry run and apply run refreshes it.
+AUTO_STATUSES = [('pending', 'Pendiente'), ('applied', 'Aplicado'), ('sent_to_review', 'Enviado a revisión'),
+                 ('excluded', 'Excluido hasta una decisión humana'), ('stale', 'Ya no es automático')]
+
+
+class OEMAutoCandidate(models.Model):
+    """One SKU the finder grades AUTO_FLAG_CURRENT or AUTO_RENAME_BASE (tier), with the apply tier mall.oem_apply would run it under,
+    as of the last refresh. status: pending (the next apply run of its tier takes it), applied (an unreverted OEMFinderChange and the
+    OEM flag now), excluded (reverted before with the same OEM or an open apply conflict: never re-applied automatically, reason says
+    which), sent_to_review (a person took it out of automatic application: apply_auto skips it and its OEMReviewCase decides; a refresh
+    never undoes it), stale (it no longer grades AUTO)."""
+    part = models.OneToOneField('mall.Part', on_delete=models.CASCADE, related_name='oem_auto')
+    run = models.ForeignKey(OEMFinderRun, on_delete=models.SET_NULL, null=True, blank=True, related_name='auto_candidates')  # last change
+    tier = models.CharField(max_length=30, db_index=True)
+    apply_tier = models.CharField(max_length=30, choices=APPLY_TIERS)
+    sku = models.CharField(max_length=200)  # as evaluated
+    candidate = models.CharField(max_length=200)  # proposed MAIN, manufacturer canonical form
+    written_form = models.CharField(max_length=200, blank=True, default='')
+    brand = models.CharField(max_length=40, blank=True, default='')
+    makes = models.JSONField(default=list, blank=True)
+    system = models.CharField(max_length=20, blank=True, default='')
+    grade = models.PositiveSmallIntegerField(default=0)
+    chain = models.CharField(max_length=300, blank=True, default='')
+    chain_tokens = models.JSONField(default=list, blank=True)  # sep, tok, token, class, kind, status, auto_eligible
+    owner_tags = models.JSONField(default=list, blank=True)  # owner-confirmed tags the rename rests on (G, NP)
+    evidence = models.JSONField(default=dict, blank=True)
+    snapshot = models.JSONField(default=dict, blank=True)
+    in_stock = models.BooleanField(default=False)
+    available_quantity = models.IntegerField(default=0)
+    fingerprint = models.CharField(max_length=64)
+    rules_version = models.CharField(max_length=40)
+    suffix_table_version = models.CharField(max_length=40, blank=True, default='')
+    status = models.CharField(max_length=16, choices=AUTO_STATUSES, default='pending', db_index=True)
+    reason = models.CharField(max_length=40, blank=True, default='')
+    note = models.CharField(max_length=300, blank=True, default='')
+    decided_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    decided_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-in_stock', '-available_quantity', 'sku']
+        indexes = [models.Index(fields=['status', 'tier', '-in_stock'], name='oem_auto_queue_idx'),
+                   models.Index(fields=['tier', 'brand', 'chain'], name='oem_auto_filter_idx')]

@@ -1,5 +1,6 @@
 """Superuser API of the OEM finder runs (phase 2B): run history, the spot-check export of an apply_auto run (JSON or CSV), undo of a
-run or one of its SKU, and the halt rule. Applying runs from the command line only (python -m mall.oem_finder --apply-auto).
+run or one of its SKU, and the halt rule. Runs are applied from the command line (python -m mall.oem_finder --apply-auto) or from
+'Pendientes de aplicación automática' (mall.oem_auto_views).
 """
 import json
 

@@ -1,5 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
-import type { OEMHalt, OEMRun, OEMRunPage, OEMSpotCheck, OEMSpotRow } from '../lib/oem-finder-types';
+import type { OEMHalt, OEMPendingPage, OEMRun, OEMRunPage, OEMSpotCheck, OEMSpotRow } from '../lib/oem-finder-types';
 
 const stamp = '2026-10-06T12:00:00Z';
 const empty = { count: 0, next: null, previous: null, results: [], pending_count: 0 };
@@ -29,6 +29,10 @@ async function fixture(page: Page) {
   await page.route('**/api/market/analytics/events', route => route.fulfill({ status: 202, json: { recorded: true } }));
   await page.route(/\/api\/management\/(roles|catalog\/import\/issues|part-types)(?:\?.*)?$/, route => route.fulfill({ json: route.request().url().includes('/roles') ? [] : empty }));
   await page.route(/\/api\/management\/catalog(?:\?.*)?$/, route => route.fulfill({ json: empty }));
+  const idle = { pending: 0, in_stock: 0, canary_done: true };
+  const pending: OEMPendingPage = { count: 0, next: null, previous: null, results: [], tiers: {}, apply_tiers: {}, statuses: { applied: 48 }, facets: { chains: [], makes: [], systems: [] },
+    apply: { AUTO_FLAG_CURRENT: idle, AUTO_RENAME_BASE: idle, STRONG_PENDING_OWNER_TAGS: idle }, sizes: { canary: 50, batch: 100 }, halt: null, busy: { lock: false, running: null }, last_refresh: null };
+  await page.route(/\/api\/management\/oem-finder\/pending(?:\?.*)?$/, route => route.fulfill({ json: pending }));
   await page.route(/\/api\/management\/oem-finder\/runs(?:\?.*)?$/, route => {
     lists.push(new URL(route.request().url()).search);
     const body: OEMRunPage = { count: 1, next: null, previous: null, results: [run], halt };

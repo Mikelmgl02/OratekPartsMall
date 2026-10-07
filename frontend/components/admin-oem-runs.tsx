@@ -1,8 +1,9 @@
 'use client';
 
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Check, Download, LoaderCircle, OctagonPause, Play, Undo2, Wand2 } from 'lucide-react';
 import Modal from './modal';
+import OEMPending from './admin-oem-pending';
 import { request } from '@/lib/types';
 import { OEMRevertResult, OEMRun, OEMRunPage, OEMSpotCheck, skipLabels, stoppedLabels, tierLabels } from '@/lib/oem-finder-types';
 
@@ -29,6 +30,7 @@ function scopeText(run: OEMRun) {
   const parts = [run.scope.tier ? tierLabels[run.scope.tier] || run.scope.tier : 'TODOS LOS NIVELES AUTOMÁTICOS'];
   if (run.scope.canary) parts.push(`CANARIO ${number(run.scope.canary)}`);
   else if (run.scope.limit) parts.push(`LÍMITE ${number(run.scope.limit)}`);
+  if (run.scope.stage === 'admin') parts.push(`DESDE PENDIENTES${run.actor ? ` · ${run.actor}` : ''}`);
   return parts.join(' · ');
 }
 
@@ -36,6 +38,14 @@ export default function OEMRuns({ onClose, onChanged }: { onClose: () => void; o
   const [data, setData] = useState<OEMRunPage | null>(null); const [error, setError] = useState(''); const [notice, setNotice] = useState('');
   const [page, setPage] = useState(1); const [revision, setRevision] = useState(0); const [busy, setBusy] = useState('');
   const [confirming, setConfirming] = useState<number | null>(null); const [spotRun, setSpotRun] = useState<OEMRun | null>(null);
+  const [focus, setFocus] = useState<number | null>(null); const scrolled = useRef<number | null>(null);
+  useEffect(() => {
+    if (focus === null || scrolled.current === focus || !data?.results.some(run => run.id === focus)) return;
+    scrolled.current = focus;
+    const row = document.getElementById(`oem-run-${focus}`);
+    row?.scrollIntoView({ block: 'center', behavior: 'smooth' }); row?.focus({ preventScroll: true });
+  }, [data, focus]);
+  function showRun(id: number) { scrolled.current = null; setFocus(id); setPage(1); setRevision(v => v + 1); }
   useEffect(() => {
     let live = true;
     request<OEMRunPage>(`${base}/runs?mode=apply_auto&stage=auto&page=${page}`).then(result => { if (live) setData(result); }).catch(e => { if (live) { setData(null); setError(errorMessage(e)); } });
@@ -68,11 +78,13 @@ export default function OEMRuns({ onClose, onChanged }: { onClose: () => void; o
         : data && <form className="suffix-inline-form" onSubmit={toggleHalt} aria-label="Regla de detención"><label>Motivo para detener<input name="reason" required maxLength={300} autoComplete="off" placeholder="EJ.: 2 FILAS INCORRECTAS EN LA MUESTRA"/></label><button className="button soft" disabled={!!busy}><OctagonPause size={15}/>Detener aplicación automática</button></form>}
       {error && <div className="notice error" role="alert">{error}{!data && <button onClick={() => { setError(''); setRevision(v => v + 1); }}>Intentar de nuevo</button>}</div>}
       {notice && <div className="notice success" role="status"><Check size={16}/>{notice}</div>}
+      <OEMPending revision={revision} onApplied={run => { showRun(run.id); if (run.applied.applied) onChanged(); }} onShowRun={showRun}/>
+      <h3 className="oem-runs-heading">Historial de ejecuciones</h3>
       {!data && !error && <div className="loading"><LoaderCircle className="spin" size={20}/>Cargando ejecuciones…</div>}
-      {data && !data.results.length && <div className="empty-state"><Wand2 size={30}/><h3>Aún no hay ejecuciones automáticas.</h3><p>Se lanzan desde el servidor con python -m mall.oem_finder --apply-auto --canary 50.</p></div>}
+      {data && !data.results.length && <div className="empty-state"><Wand2 size={30}/><h3>Aún no hay ejecuciones automáticas.</h3><p>Se lanzan desde Pendientes (arriba) o en el servidor con python -m mall.oem_finder --apply-auto --canary 50.</p></div>}
       {!!data?.results.length && <div className="suffix-table-wrap"><table className="suffix-table">
         <thead><tr><th>Ejecución</th><th>Alcance</th><th>Resultado</th><th>Revertidos</th><th>Acciones</th></tr></thead>
-        <tbody>{data.results.map(run => { const s = run.applied; return <tr key={run.id}>
+        <tbody>{data.results.map(run => { const s = run.applied; return <tr key={run.id} id={`oem-run-${run.id}`} tabIndex={-1} className={focus === run.id ? 'oem-run-focus' : ''}>
           <td data-label="Ejecución"><strong>#{run.id}</strong><span>{stamp(run.started_at)}</span><span>{run.status === 'failed' ? 'FALLIDA' : run.status === 'running' ? 'EN CURSO' : 'COMPLETADA'} · {run.rules_version}</span></td>
           <td data-label="Alcance">{scopeText(run)}<span>{number(s.selected ?? 0)} SELECCIONADOS · {number(s.batches?.length ?? 0)} {s.batches?.length === 1 ? 'LOTE' : 'LOTES'}</span></td>
           <td data-label="Resultado"><strong>{number(s.applied ?? 0)} APLICADOS</strong>{!!s.conflicts && <span>{number(s.conflicts)} A REVISIÓN POR CONFLICTO</span>}{Object.entries(s.skipped ?? {}).map(([reason, n]) => <span key={reason}>{number(n)} OMITIDOS: {skipLabels[reason] || reason}</span>)}{!!s.errors && <span>{number(s.errors)} ERRORES</span>}{s.stopped && <span>{stoppedLabels[s.stopped]}</span>}</td>

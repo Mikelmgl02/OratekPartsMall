@@ -298,4 +298,4 @@ from .quote_draft_models import DealQuotationDraft, DealQuotationDraftLine, Deal
 from .price_import_models import PriceImportJob, PriceImportBatch
 from .quote_assistant_models import QuoteAssistantRun, AIUsageRecord
 from .catalog_suffix_models import CatalogCodeSuffix, CatalogCodeSuffixChange
-from .oem_finder_models import OEMFinderRun, OEMReviewCase, OEMFinderChange, OEMApplyHalt, OEMReviewDecision
+from .oem_finder_models import OEMFinderRun, OEMReviewCase, OEMFinderChange, OEMApplyHalt, OEMReviewDecision, OEMAutoCandidate

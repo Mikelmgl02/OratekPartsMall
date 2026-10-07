@@ -37,7 +37,7 @@ SKIP_LABELS = {
     'new_claimant': 'otro SKU reclama ahora el mismo número', 'canonical_differs': 'el número del fabricante no es el SKU actual',
     'previously_reverted': 'se revirtió antes con el mismo OEM', 'open_conflict': 'tiene un conflicto de aplicación abierto',
     'sku_changed': 'el SKU cambió después de aplicarse', 'old_sku_taken': 'el SKU anterior ya identifica a otro SKU',
-    'codes_changed': 'se editaron los códigos que creó la aplicación',
+    'codes_changed': 'se editaron los códigos que creó la aplicación', 'sent_to_review': 'se envió a la revisión OEM',
 }
 
 
@@ -132,18 +132,29 @@ def candidates(finder, results, tiers):
     return rows
 
 
-def handled(rows, results):
-    """Rows a human must look at first: an open apply-conflict case, or the same OEM reverted before (never re-applied silently).
-    Before migration 0036 (read-only preview) neither can exist."""
-    from .oem_finder_models import OEMFinderChange, OEMReviewCase
-    if not apply_tables_ready():
-        return rows, {}
+def exclusions():
+    """What apply_auto leaves to a human: (part, OEM) pairs reverted before, Parts with an open apply-conflict case and Parts a person
+    sent to the review queue from the pending list (OEMAutoCandidate, migration 0038)."""
+    from .oem_auto import auto_tables_ready
+    from .oem_finder_models import OEMAutoCandidate, OEMFinderChange, OEMReviewCase
     reverted = {(str(p), c) for p, c in OEMFinderChange.objects.filter(reverted_at__isnull=False).values_list('part_id', 'code')}
     conflicts = {str(p) for p, b in OEMReviewCase.objects.filter(tier='CONFLICT', status__in=['review', 'dismissed']).values_list('part_id', 'blockers')
                  if 'apply_conflict' in (b or [])}
+    sent = {str(p) for p in OEMAutoCandidate.objects.filter(status='sent_to_review').values_list('part_id', flat=True)} if auto_tables_ready() else set()
+    return reverted, conflicts, sent
+
+
+def handled(rows, results):
+    """Rows a human must look at first: sent to review, an open apply-conflict case, or the same OEM reverted before (never re-applied
+    silently). Before migration 0036 (read-only preview) none can exist."""
+    if not apply_tables_ready():
+        return rows, {}
+    reverted, conflicts, sent = exclusions()
     keep, out = [], Counter()
     for pid, tier in rows:
-        if pid in conflicts:
+        if pid in sent:
+            out['sent_to_review'] += 1
+        elif pid in conflicts:
             out['open_conflict'] += 1
         elif (pid, results[pid]['proposed_main']) in reverted:
             out['previously_reverted'] += 1
@@ -306,31 +317,38 @@ def plan_row(pid, r, tier):
     return ('conflict', problem) if problem else ('applied', '')
 
 
-def plan(finder, results, rows):
+def plan(finder, results, rows, detail=False):
+    """Per tier: selected, would apply, conflicts (first 10 as examples), skipped by reason; detail=True also lists every row."""
     outermost = not connection.in_atomic_block
     with transaction.atomic():
         if outermost and connection.vendor == 'postgresql':  # a preview never writes, whatever plan_row grows into
             with connection.cursor() as cursor:
                 cursor.execute('SET TRANSACTION READ ONLY')
-        out = {t: {'selected': 0, 'applied': 0, 'conflicts': 0, 'skipped': {}, 'examples': []} for t in APPLY_TIERS}
+        out = {t: {'selected': 0, 'applied': 0, 'conflicts': 0, 'skipped': {}, 'examples': [], **({'rows': []} if detail else {})} for t in APPLY_TIERS}
         for pid, tier in rows:
-            outcome, detail = plan_row(pid, results[pid], tier)
-            o = out[tier]
+            outcome, why = plan_row(pid, results[pid], tier)
+            o, p, r = out[tier], finder.by_id[pid], results[pid]
             o['selected'] += 1
             if outcome == 'applied':
                 o['applied'] += 1
             elif outcome == 'conflict':
                 o['conflicts'] += 1
                 if len(o['examples']) < 10:
-                    o['examples'].append({'sku': finder.by_id[pid]['sku'], 'oem': results[pid]['proposed_main'], 'detail': detail})
+                    o['examples'].append({'sku': p['sku'], 'oem': r['proposed_main'], 'detail': why})
             else:
-                o['skipped'][detail] = o['skipped'].get(detail, 0) + 1
+                o['skipped'][why] = o['skipped'].get(why, 0) + 1
+            if detail:
+                o['rows'].append({'part_id': pid, 'sku': p['sku'], 'description': p['description'], 'oem': r['proposed_main'], 'brand': r['proposed_brand'],
+                                  'method': 'flag' if tier == FLAG else 'rename', 'outcome': outcome, 'detail': why,
+                                  'available_quantity': finder.avail[pid], 'in_stock': finder.avail[pid] > 0})
     return out
 
 
 def apply_auto(*, tier=None, limit=None, canary=None, actor=None, stage='command', read_only=False, snapshot=None, table=None,
-               batch_size=BATCH_SIZE):
-    """One apply_auto run (the caller holds the matching advisory lock). read_only=True only previews: no run, no write."""
+               batch_size=BATCH_SIZE, operation_id=None, detail=False):
+    """One apply_auto run (the caller holds the matching advisory lock). read_only=True only previews: no run, no write (detail=True
+    lists every previewed row). operation_id (the admin's idempotency key) is kept in the run's scope. A completed run refreshes the
+    pending AUTO rows (OEMAutoCandidate)."""
     from .catalog_suffixes import suffix_table
     from .oem_finder_models import OEMFinderRun
     tiers = [tier] if tier else list(APPLY_TIERS)
@@ -346,7 +364,8 @@ def apply_auto(*, tier=None, limit=None, canary=None, actor=None, stage='command
             raise ApplyRefused('needs_canary', 'Primero ejecuta un canario (--canary 50) de ' + ', '.join(missing) + '.', tiers=missing)
     t0 = time.monotonic()
     table = table or suffix_table()
-    scope = {'tier': tier, 'limit': limit, 'canary': canary, 'in_stock_first': True, 'batch_size': batch_size, 'stage': stage}
+    scope = {'tier': tier, 'limit': limit, 'canary': canary, 'in_stock_first': True, 'batch_size': batch_size, 'stage': stage,
+             **({'operation_id': str(operation_id)} if operation_id else {})}
     run = None
     if not read_only:
         actor = actor or service_user()
@@ -358,11 +377,11 @@ def apply_auto(*, tier=None, limit=None, canary=None, actor=None, stage='command
         results = finder.evaluate()
         t_eval = time.monotonic()
         rows, excluded = handled(candidates(finder, results, tiers), results)
-        take = canary or limit
+        eligible, take = len(rows), canary or limit
         rows = rows[:take] if take else rows
         counts = of.report(finder, results, [pid for pid, _ in rows])
         if read_only:
-            return {'run': None, 'plan': plan(finder, results, rows), 'excluded': excluded, 'counts': counts, 'finder': finder,
+            return {'run': None, 'plan': plan(finder, results, rows, detail), 'excluded': excluded, 'eligible': eligible, 'counts': counts, 'finder': finder,
                     'results': results, 'rows': rows, 'timings': {'evaluate': round(t_eval - t0, 2), 'total': round(time.monotonic() - t0, 2)},
                     'suffix_table_version': of.table_version(table)}
         summary = execute_batches(run, finder, results, rows, batch_size, actor)
@@ -378,8 +397,9 @@ def apply_auto(*, tier=None, limit=None, canary=None, actor=None, stage='command
     run.status, run.counts, run.applied, run.finished_at = 'completed', counts, summary, timezone.now()
     run.timings = {'evaluate': round(t_eval - t0, 2), 'total': round(time.monotonic() - t0, 2)}
     run.save(update_fields=['status', 'counts', 'applied', 'timings', 'finished_at', 'errors'])
+    from .oem_auto import refresh_after_apply
     return {'run': run, 'summary': summary, 'counts': counts, 'finder': finder, 'results': results, 'rows': rows, 'timings': run.timings,
-            'suffix_table_version': of.table_version(table)}
+            'suffix_table_version': of.table_version(table), 'auto': refresh_after_apply(run, finder, results)}
 
 
 def execute_batches(run, finder, results, rows, batch_size, actor):
@@ -550,10 +570,15 @@ def revert_run(run_id, *, actor=None, part=None):
     if part:
         links = links.filter(part_id=part)
     actor = actor or service_user()
-    outcome, skipped = Counter(), []
+    outcome, skipped, undone = Counter(), [], []
     for link_id, sku in links.values_list('pk', 'change__sku'):
         try:
-            outcome[revert_link(link_id, actor)] += 1
+            result = revert_link(link_id, actor)
         except Skip as skip:
             skipped.append({'change': link_id, 'sku': sku, 'reason': skip.reason, 'detail': skip.detail})
+        else:
+            outcome[result] += 1
+            undone.append(link_id)
+    from .oem_auto import mark_reverted
+    mark_reverted(undone)  # a reverted OEM never comes back to the pending list as automatic
     return {'run': run_id, 'reverted': outcome['reverted'], 'already_reverted': outcome['already_reverted'], 'skipped': skipped}

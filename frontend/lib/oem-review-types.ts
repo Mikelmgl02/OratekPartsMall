@@ -78,6 +78,7 @@ const blockerLabels: Record<string, string> = {
   apply_conflict: 'EL CATÁLOGO RECHAZÓ EL CAMBIO', contradiction: 'CONTRADICCIÓN', unconfirmed_tag: 'ETIQUETA SIN CONFIRMAR', unknown: 'SUFIJO DESCONOCIDO',
   conflict: 'CONFLICTO', system: 'SISTEMA SIN APLICACIÓN AUTOMÁTICA', lexicon_not_strong: 'LÉXICO NO FUERTE', desc_variant: 'DESCRIPCIÓN DE VARIANTE O PAQUETE',
   make_source: 'MARCA NO EXPLÍCITA', make_groups: 'VARIAS MARCAS', flag: 'BANDERA', assembly_or_kit_head: 'CONJUNTO O KIT',
+  sent_to_review: 'ENVIADO DESDE LOS PENDIENTES AUTOMÁTICOS',
 };
 const lexiconLabels: Record<string, string> = { agree_strong: 'COINCIDE FUERTE', agree: 'SOLO COINCIDE', disagree: 'NO COINCIDE', weak: 'DÉBIL', no_data: 'SIN DATOS', 'n/a': 'NO APLICA', None: 'SIN DATOS' };
 export const lexiconLabel = (result: string | null) => lexiconLabels[result || 'no_data'] || (result || '').toUpperCase();

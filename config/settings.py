@@ -103,7 +103,10 @@ SPECTACULAR_SETTINGS = {"TITLE": "MotionPartes API", "VERSION": "0.1.0", "COMPON
     "OEMReviewStatusEnum": ["review", "applied", "dismissed", "resolved"], "OEMReviewMethodEnum": ["flag", "rename"],
     "OEMReviewActionEnum": ["approve", "choose_oem", "send_to_merge", "dismiss", "reopen"],
     "OEMDismissReasonEnum": ["not_oem", "other_part", "keep_code", "data_error", "other"], "OEMReviewOutcomeEnum": ["applied", "conflict", "skipped"],
-    "OEMBulkStepActionEnum": ["continue", "stop"]}}
+    "OEMBulkStepActionEnum": ["continue", "stop"],
+    # Pendientes de aplicación automática (superuser-only). Must match mall.oem_auto (TIERS, STATUSES, MODES, ORDERINGS).
+    "OEMAutoTierEnum": ["AUTO_FLAG_CURRENT", "AUTO_RENAME_BASE"], "OEMAutoStatusEnum": ["pending", "applied", "sent_to_review", "excluded", "stale"],
+    "OEMAutoModeEnum": ["canary", "batch"], "OEMAutoOrderingEnum": ["stock", "sku"]}}
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY') or os.getenv('GEM_API_KEY', '')
 GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-3.5-flash-lite')
 

@@ -1257,15 +1257,24 @@ def case_blockers(r):
 
 
 def evidence(finder, pid, r):
+    return evidence_of(r, finder.avail[pid])
+
+
+def evidence_of(r, avail):
     out = {k: v for k, v in r.items() if not k.startswith('_')}
-    out.update(available_quantity=finder.avail[pid], in_stock=finder.avail[pid] > 0, tier_label=TIER_LABELS[r['tier']])
+    out.update(available_quantity=avail, in_stock=avail > 0, tier_label=TIER_LABELS[r['tier']])
     return out
 
 
 def case_fields(finder, pid, r, version):
+    return case_values(r, part_snapshot(finder, pid), finder.avail[pid], version)
+
+
+def case_values(r, snap, avail, version):
+    """The OEMReviewCase fields of a result r (or of a stored evidence dict, which holds the same public keys)."""
     from .matching_engine import digest
     ev = r.get('primary') or {}
-    blockers, snap = case_blockers(r), part_snapshot(finder, pid)
+    blockers = case_blockers(r)
     candidate = {'main': r.get('proposed_main') or '', 'written': r.get('written_form') or '', 'brand': r.get('proposed_brand') or '',
                  'system': ev.get('system') or '', 'key': ev.get('key') or '', 'others': r.get('other_oem_candidates') or [],
                  'shared_with': r.get('shared_with') or []}
@@ -1276,7 +1285,7 @@ def case_fields(finder, pid, r, version):
             'candidate': candidate['main'][:200], 'written_form': candidate['written'][:200], 'brand': candidate['brand'][:40],
             'system': candidate['system'], 'grade': ev.get('grade') or 0,
             'chain': '-'.join(c['tok'] for c in r.get('suffix_chain') or [])[:300], 'blockers': blockers,
-            'evidence': evidence(finder, pid, r), 'snapshot': snap, 'in_stock': finder.avail[pid] > 0, 'suffix_table_version': version}
+            'evidence': evidence_of(r, avail), 'snapshot': snap, 'in_stock': avail > 0, 'suffix_table_version': version}
 
 
 CASE_FIELDS = ['fingerprint', 'tier', 'tier_rank', 'underlying_tier', 'candidate', 'written_form', 'brand', 'system', 'grade', 'chain',
@@ -1292,6 +1301,8 @@ def sync_cases(run, finder, results, selected, *, full):
     from .oem_finder_models import OEMReviewCase
     version, now, stats = table_version(finder.table), timezone.now(), Counter()
     wanted = {pid: case_fields(finder, pid, results[pid], version) for pid in selected if results[pid]['tier'] in REVIEW_TIERS}
+    from .oem_auto import sent_case_fields  # SKUs a person took out of automatic application keep their case while they grade AUTO
+    wanted.update(sent_case_fields(finder, results, selected, version))
     existing = {str(c['part_id']): c for c in OEMReviewCase.objects.values('id', 'part_id', 'fingerprint', 'status', 'in_stock', 'blockers')}
     scope = set(selected)
     create, update, stock = [], [], defaultdict(list)
@@ -1359,7 +1370,9 @@ def execute(*, mode='dry_run', in_stock_first=False, limit=None, tier=None, acto
         selected = select(finder, results, in_stock_first=in_stock_first, limit=limit, tier=tier)
         counts = report(finder, results, selected)
         if store:
+            from .oem_auto import refresh_after_dry_run
             counts['cases'] = sync_cases(run, finder, results, selected, full=not (limit or tier))
+            counts['auto'] = refresh_after_dry_run(run, finder, results)  # 'Pendientes de aplicación automática': tiers are always global
         timings = {'load': round(t_load - t0, 2), 'evaluate': round(t_eval - t_load, 2), 'total': round(time.monotonic() - t0, 2)}
     except Exception as error:
         if run is not None:
@@ -1440,7 +1453,21 @@ def render(outcome):
                         ', %d omitidos por una decisión reciente' % k['skipped'] if k['skipped'] else '', outcome['run'].pk))
     else:
         lines.append('Solo lectura: no se guardaron la ejecución ni los casos.')
+    lines += render_auto(c.get('auto'))
     return '\n'.join(lines)
+
+
+def render_auto(auto):
+    """The refresh of 'Pendientes de aplicación automática' (mall.oem_auto) in one line."""
+    if not auto:
+        return []
+    if 'statuses' not in auto:
+        return ['Pendientes de aplicación automática: %s.' % ('falta la migración 0038, no se actualizaron' if auto.get('status') == 'not_migrated'
+                                                             else 'no se pudieron actualizar; el próximo análisis lo reintenta')]
+    st, p = auto['statuses'], auto['pending']
+    return ['Pendientes de aplicación automática: %d (%s) · %d aplicados · %d excluidos · %d enviados a revisión · %d ya no automáticos'
+            % (st.get('pending', 0), ', '.join('%s %d' % (t, p[t]) for t in APPLY_TIERS if p.get(t)) or 'ninguno', st.get('applied', 0),
+               st.get('excluded', 0), st.get('sent_to_review', 0), st.get('stale', 0))]
 
 
 def render_apply(outcome):
@@ -1472,6 +1499,7 @@ def render_apply(outcome):
         lines.append('Muestra de control: %d filas · GET /api/v1/management/oem-finder/runs/%d/spot-check/ (?download=csv o json)'
                      % (len(s['spot_check']), run.pk))
         lines.append('Deshacer: python -m mall.oem_finder_revert --run %d [--part UUID]' % run.pk)
+        lines += render_auto(outcome.get('auto'))
     excluded = outcome.get('excluded') or {}
     if excluded:
         lines.append('Excluidos hasta una decisión humana: %s' % ', '.join('%d %s' % (n, SKIP_LABELS.get(k, k)) for k, n in sorted(excluded.items())))

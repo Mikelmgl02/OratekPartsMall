@@ -1670,3 +1670,30 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
  .oem-bulk { padding:12px; }
  .oem-review .suffix-table { min-width:0; } /* the dialog sits inside .admin-panel, whose tables keep a desktop min-width */
 }
+/* Pendientes de aplicación automática (Inventario → Aplicación OEM) */
+.oem-pending { display:grid; gap:12px; min-width:0; padding:16px; margin:4px 0 22px; border:1px solid var(--line); border-radius:12px; background:#fcfdf9; }
+.oem-pending>.form-footnote { margin-top:0; }
+.oem-pending-heading { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; }
+.oem-pending-heading h3 { font-size:16px; letter-spacing:-.3px; margin-right:auto; }
+.oem-pending-heading>span { font-size:10px; letter-spacing:.4px; color:#6d7f60; overflow-wrap:anywhere; }
+.oem-pending .admin-inventory-tabs { margin-bottom:0; }
+.oem-apply-tiers { display:grid; gap:10px; }
+.oem-apply-tier { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px 14px; padding:12px 14px; border:1px solid #dfe7d4; border-radius:10px; background:#fff; min-width:0; }
+.oem-apply-tier-text { display:grid; gap:4px; min-width:0; }
+.oem-apply-tier-text strong { font-size:12px; overflow-wrap:anywhere; }
+.oem-apply-tier-text>span { font-size:10px; letter-spacing:.3px; color:#6d7f60; line-height:1.9; }
+.oem-apply-tier .suffix-actions { min-width:0; }
+.oem-apply-reason { flex:1 0 100%; display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; margin:0; font-size:11px; line-height:1.5; color:#a1543c; overflow-wrap:anywhere; }
+.oem-confirm { border-color:#c9a27f; }
+.oem-pending-table th:first-child,.oem-pending-table td.oem-pick { width:28px; }
+.oem-pending-table input[type=checkbox],.oem-pending-table th input[type=checkbox] { width:16px; height:16px; accent-color:#607f48; }
+.oem-pending-table tr.oem-picked td { background:#f6faef; }
+.oem-runs-heading { font-size:14px; letter-spacing:-.2px; margin:0 0 10px; }
+.oem-run-focus { outline:none; }
+@media(max-width:760px) {
+ .oem-pending { padding:12px; margin-bottom:16px; }
+ .oem-apply-tier { padding:10px 12px; }
+ .oem-apply-tier .suffix-actions { width:100%; }
+ .oem-pending-table td.oem-pick { width:100%; display:flex; align-items:center; gap:8px; }
+ .oem-pending-table td.oem-pick::before { margin:0; }
+}
