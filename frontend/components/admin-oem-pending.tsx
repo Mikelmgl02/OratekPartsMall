@@ -66,7 +66,7 @@ export default function OEMPending({ revision, onApplied, onShowRun }: Props) {
     return '';
   }
   function batchBlocked(t: OEMApplyTier) {
-    return blocked(t) || (data && !data.apply[t].canary_done ? `Aplica primero un canario de ${data.sizes.canary}: los lotes de ${data.sizes.batch} se habilitan cuando termina.` : '');
+    return blocked(t) || (data && !data.apply[t].canary_done ? `Aplica primero un canario de ${data.sizes.canary}${rules ? ` con las reglas ${rules}` : ''}: los lotes de ${data.sizes.batch} se habilitan cuando termina.` : '');
   }
   async function runPreview(t: OEMApplyTier) {
     if (!data) return;
@@ -109,6 +109,8 @@ export default function OEMPending({ revision, onApplied, onShowRun }: Props) {
   const pageIds = rows.map(row => row.part_id); const allPicked = !!pageIds.length && pageIds.every(id => selected.includes(id));
   const sizeOf = (mode: OEMPendingMode) => data?.sizes[mode] ?? (mode === 'canary' ? 50 : 100);
   const narrowed = !!(filters.chain || filters.make || filters.in_stock || filters.search || selected.length);
+  const rules = data?.rules_version ?? '', refreshedWith = data?.last_refresh?.rules_version ?? '';
+  const olderRules = rules && refreshedWith && refreshedWith !== rules ? refreshedWith : '';
   function openConfirm(t: OEMApplyTier, mode: OEMPendingMode) {  // the count is frozen: a retry after a lost response states the same one
     if (!data) return;
     const pending = data.apply[t].pending;
@@ -117,9 +119,10 @@ export default function OEMPending({ revision, onApplied, onShowRun }: Props) {
   }
   return <section className="oem-pending" aria-labelledby="oem-pending-title">
     <div className="oem-pending-heading"><h3 id="oem-pending-title">Pendientes de aplicación automática</h3>
-      {data?.last_refresh && <span>ACTUALIZADO POR LA EJECUCIÓN #{data.last_refresh.id} ({data.last_refresh.mode === 'dry_run' ? 'ANÁLISIS' : 'APLICACIÓN'}) · {stamp(data.last_refresh.finished_at)}</span>}
+      {data?.last_refresh && <span>ACTUALIZADO POR LA EJECUCIÓN #{data.last_refresh.id} ({data.last_refresh.mode === 'dry_run' ? 'ANÁLISIS' : 'APLICACIÓN'}{refreshedWith && `, REGLAS ${refreshedWith.toUpperCase()}`}) · {stamp(data.last_refresh.finished_at)}</span>}
       <button className="button text small" aria-label="Actualizar pendientes" disabled={!!busy} onClick={refresh}><RefreshCw size={14}/>Actualizar</button></div>
-    <p className="form-footnote">SKU que el buscador OEM aplicaría solo, con existencias primero. Cada nivel empieza con un canario de {sizeOf('canary')} y después aplica lotes de hasta {sizeOf('batch')}, cada SKU en su propia transacción, con muestra de control y deshacer en el historial. Si una fila no te convence, envíala a la Revisión OEM: la aplicación automática ya no la tomará.</p>
+    <p className="form-footnote">SKU que el buscador OEM aplicaría solo, con existencias primero. Cada nivel empieza con un canario de {sizeOf('canary')} y después aplica lotes de hasta {sizeOf('batch')}, cada SKU en su propia transacción, con muestra de control y deshacer en el historial. El canario vale para la versión de las reglas del buscador con que se aplicó{rules && ` (ahora ${rules})`}: cuando las reglas cambian, cada nivel vuelve a empezar con un canario. Si una fila no te convence, envíala a la Revisión OEM: la aplicación automática ya no la tomará.</p>
+    {olderRules && <p className="oem-apply-reason">Estos pendientes se calcularon con las reglas {olderRules}. El próximo análisis OEM (python -m mall.oem_finder --dry-run) o la próxima aplicación los recalcula con {rules}, sin cambiar los enviados a revisión, los aplicados ni los excluidos.</p>}
     {data && !data.last_refresh && !total(data.statuses) && <p className="oem-review-run">AÚN NO HAY PENDIENTES CALCULADOS. Se llenan con el próximo análisis OEM (python -m mall.oem_finder --dry-run) o la próxima aplicación.</p>}
     <div className="admin-inventory-tabs oem-tier-tabs" role="group" aria-label="Nivel automático">
       {tabs.map(t => <button key={t} className={tier === t ? 'selected' : ''} aria-pressed={tier === t} onClick={() => chooseTab(t)}>{autoTierLabels[t]} ({number(data?.tiers[t] ?? 0)})</button>)}
@@ -128,7 +131,7 @@ export default function OEMPending({ revision, onApplied, onShowRun }: Props) {
     {data && <div className="oem-apply-tiers">{applyTiersOf[tier].filter(t => tier === 'AUTO_FLAG_CURRENT' || data.apply[t].pending || data.apply[t].canary_done).map(t => {
       const state = data.apply[t], reason = blocked(t), batchReason = batchBlocked(t), hint = reason || batchReason;
       return <div key={t} className="oem-apply-tier" role="group" aria-label={`Aplicación de ${tierLabels[t]}`}>
-        <div className="oem-apply-tier-text"><strong>{tierLabels[t]}</strong><span>{number(state.pending)} PENDIENTES · {number(state.in_stock)} CON EXISTENCIAS · <span className={`status ${state.canary_done ? 'matched' : 'review'}`}>{state.canary_done ? 'CANARIO HECHO: LOTES HABILITADOS' : 'FALTA EL CANARIO'}</span></span></div>
+        <div className="oem-apply-tier-text"><strong>{tierLabels[t]}</strong><span>{number(state.pending)} PENDIENTES · {number(state.in_stock)} CON EXISTENCIAS · <span className={`status ${state.canary_done ? 'matched' : 'review'}`}>{state.canary_done ? 'CANARIO HECHO: LOTES HABILITADOS' : `FALTA EL CANARIO${rules && ` DE ${rules.toUpperCase()}`}`}</span></span></div>
         <div className="suffix-actions">
           <button className="button soft small" aria-label={`Vista previa de ${tierLabels[t]}`} disabled={!!busy || !state.pending} onClick={() => void runPreview(t)}>{busy === `preview:${t}` ? <LoaderCircle size={14} className="spin"/> : <Eye size={14}/>}Vista previa</button>
           {!state.canary_done && <button className="button primary small" aria-label={`Aplicar canario (${sizeOf('canary')}) de ${tierLabels[t]}`} aria-describedby={reason ? `oem-reason-${t}` : undefined} disabled={!!busy || !!reason} onClick={() => openConfirm(t, 'canary')}><Play size={14}/>Aplicar canario ({sizeOf('canary')})</button>}

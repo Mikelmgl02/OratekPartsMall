@@ -72,8 +72,8 @@ class RefreshTests(Pending, TestCase):
         applied = set(OEMAutoCandidate.objects.filter(status='applied').values_list('part_id', flat=True))
         self.assertEqual(applied, set(outcome['run'].changes.values_list('part_id', flat=True)))
         self.assertEqual(set(OEMAutoCandidate.objects.filter(status='applied').values_list('run', flat=True)), {outcome['run'].pk})
-        # graded again after the writes: SKUs flagged OEM leave the class lexicon, so a neighbour can stop grading AUTO (stale)
-        self.assertEqual(set(OEMAutoCandidate.objects.filter(status='stale').values_list('reason', flat=True)) - {'left_auto'}, set())
+        # graded again after the writes: the flagged SKUs still teach the class lexicon, so no neighbour leaves AUTO
+        self.assertEqual(statuses, {'applied': 3, 'pending': 10})
         self.assert_mirrors_apply()
         of.execute()  # the applied SKUs are OEM now: the dry run no longer grades them, they stay applied
         self.assertEqual(self.statuses(), statuses)
@@ -110,6 +110,24 @@ class RefreshTests(Pending, TestCase):
         self.assertEqual((row.status, row.reason), ('excluded', 'open_conflict'))
         of.execute()
         self.assertEqual(self.row('54830-2H000-MOBIS').status, 'excluded')
+
+    def test_a_rules_bump_refreshes_every_graded_row_and_keeps_its_status(self):
+        run = self.canary(FLAG, 2)['run']
+        reverted = run.changes.order_by('pk').first().part
+        oa.revert_run(run.pk, part=reverted.pk)
+        au.send_to_review([self.parts['48654-30030'].pk], self.root, note='REVISAR')
+        Part.objects.filter(pk=self.parts['48654-42010'].pk).update(description='BASE AMORT TOY RAV4 COMPLETO')  # CURRENT_REVIEW: stale
+        of.execute()
+        before = dict(OEMAutoCandidate.objects.values_list('part__sku', 'status'))
+        self.assertEqual(Counter(before.values()), {'pending': 9, 'applied': 1, 'excluded': 1, 'sent_to_review': 1, 'stale': 1})
+        with patch.object(of, 'OEM_FINDER_VERSION', 'oem-finder-9'):
+            stats = of.execute()['counts']['auto']
+        self.assertEqual((dict(OEMAutoCandidate.objects.values_list('part__sku', 'status')), stats['created']), (before, 0))
+        versions = dict(OEMAutoCandidate.objects.values_list('part__sku', 'rules_version'))
+        self.assertEqual({sku for sku, v in versions.items() if v == 'oem-finder-9'}, {sku for sku, st in before.items() if st not in ('applied', 'stale')})
+        self.assertEqual((self.row(reverted.sku).reason, self.row('48654-30030').note), ('previously_reverted', 'REVISAR'))
+        case = OEMReviewCase.objects.get(part=self.parts['48654-30030'])
+        self.assertEqual((case.status, case.decision['action'], case.run.rules_version), ('review', 'sent_to_review', 'oem-finder-9'))
 
     def test_rows_that_leave_the_auto_tiers_become_stale_but_sent_rows_stay_sent(self):
         of.execute()
@@ -225,6 +243,7 @@ class APITests(Pending, APITestCase):
         self.assertEqual(data['apply'][CONFIRMED], {'pending': 1, 'in_stock': 1, 'canary_done': False})
         self.assertEqual((data['halt'], data['busy'], data['last_refresh']['id'], data['sizes']), (None, {'lock': False, 'running': None}, self.dry.pk,
                                                                                                  {'canary': 50, 'batch': 100}))
+        self.assertEqual((data['rules_version'], data['last_refresh']['rules_version']), (of.OEM_FINDER_VERSION, of.OEM_FINDER_VERSION))
         g = next(r for r in data['results'] if r['sku'] == '48654-0K030-G')
         self.assertEqual((g['candidate'], g['method'], g['owner_tags'], g['chain_tokens'][0]['tok'], g['apply_tier'], g['stale']),
                          ('48654-0K030', 'rename', ['G'], 'G', CONFIRMED, ''))

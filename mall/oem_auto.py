@@ -5,7 +5,8 @@ results; the first dry run after migration 0038 fills it (no data migration). A 
 would take it, applied once its OEMFinderChange stands and the SKU is OEM, excluded while O3 leaves it to a human (reverted before with
 the same OEM, or an open apply conflict: a revert never puts it back as automatic), stale once it no longer grades AUTO, and
 sent_to_review when a person took it out of automatic application: mall.oem_apply.handled() skips it and an OEMReviewCase (created, or
-reopened) lets a human decide. Applying from the admin is oem_apply.apply_auto itself (canary per apply tier, halt rule, in stock first,
+reopened) lets a human decide. Rows refresh on the next run after a rules bump (rules_version), keeping these statuses. Applying from
+the admin is oem_apply.apply_auto itself (canary per apply tier and rules version, halt rule, in stock first,
 batches of at most 100, per-row transactions, spot-check, undo) under the matching advisory lock, idempotent per operation id. No AI.
 """
 import logging
@@ -81,7 +82,8 @@ def refresh(run, finder, results):
         if tier:
             wanted[pid] = candidate_values(r, of.part_snapshot(finder, pid), finder.avail[pid], version, tier,
                                            [] if tier == oa.FLAG else oa.owner_confirmed_tags(table, r))
-    existing = {str(c['part_id']): c for c in OEMAutoCandidate.objects.values('id', 'part_id', 'fingerprint', 'status', 'reason', 'in_stock', 'available_quantity')}
+    keys = ('fingerprint', 'status', 'reason', 'in_stock', 'available_quantity', 'rules_version')
+    existing = {str(c['part_id']): c for c in OEMAutoCandidate.objects.values('id', 'part_id', *keys)}
     create, update, moved, unchanged = [], [], defaultdict(list), 0
     for pid, row in wanted.items():
         cur = existing.get(pid)
@@ -97,7 +99,7 @@ def refresh(run, finder, results):
             row.update(status='pending', reason='')
         if cur is None:
             create.append(OEMAutoCandidate(part_id=pid, run=run, **row))
-        elif any(cur[k] != row[k] for k in ('fingerprint', 'status', 'reason', 'in_stock', 'available_quantity')):
+        elif any(cur[k] != row[k] for k in keys):
             update.append(OEMAutoCandidate(id=cur['id'], part_id=pid, run=run, updated_at=now, **row))
         else:
             unchanged += 1
@@ -127,9 +129,9 @@ def refresh_after_dry_run(run, finder, results):
 
 def refresh_after_apply(run, finder, results):
     """After a completed apply run: from the evaluation it applied, its applied rows leave the pending list and its conflicts are
-    excluded; a run that wrote something is then graded again (a SKU flagged OEM leaves the class lexicon, so a neighbour may stop
-    grading AUTO), so pending is what the next run would take. A failure here never fails the run: it is logged and the next dry run
-    refreshes the table."""
+    excluded; a run that wrote something is then graded again (a rename changes the SKU its neighbours' claims and siblings read; a
+    flagged SKU still teaches the lexicon), so pending is what the next run would take. A failure here never fails the run: it is
+    logged and the next dry run refreshes the table."""
     try:
         if not auto_tables_ready():
             return {'status': 'not_migrated'}
@@ -274,7 +276,7 @@ def lock_held():
 
 
 def apply_state():
-    """Per apply tier: pending rows (all, in stock) and whether a canary of the current rules unlocked batches."""
+    """Per apply tier: pending rows (all, in stock) and whether a canary of the current rules (OEM_FINDER_VERSION) unlocked batches."""
     from .oem_finder_models import OEMAutoCandidate
     counts = {t: [0, 0] for t in oa.APPLY_TIERS}
     for tier, stock, n in OEMAutoCandidate.objects.filter(status='pending').values_list('apply_tier', 'in_stock').annotate(n=Count('id')).order_by():
@@ -294,11 +296,12 @@ def overview(f):
         'statuses': dict(OEMAutoCandidate.objects.values_list('status').annotate(c=Count('id')).order_by()),
         'facets': {'chains': facet(rows(f, skip=('chain',)), 'chain'), 'makes': facet(rows(f, skip=('make',)), 'brand'),
                    'systems': facet(rows(f, skip=('system',)), 'system')},
-        'apply': apply_state(), 'sizes': MODES,
+        'apply': apply_state(), 'sizes': MODES, 'rules_version': of.OEM_FINDER_VERSION,
         'halt': halt and {'reason': halt.reason, 'run': halt.run_id, 'created_by': halt.created_by.username if halt.created_by_id else None,
                           'created_at': halt.created_at},
         'busy': {'lock': lock_held(), 'running': running},
-        'last_refresh': last and {'id': last.pk, 'mode': last.mode, 'stage': (last.scope or {}).get('stage', ''), 'finished_at': last.finished_at},
+        'last_refresh': last and {'id': last.pk, 'mode': last.mode, 'stage': (last.scope or {}).get('stage', ''), 'finished_at': last.finished_at,
+                                  'rules_version': last.rules_version},
     }
 
 
@@ -374,8 +377,8 @@ def apply(tier, mode, operation_id, actor):
     if halt:
         raise Refused('halted', f'La aplicación automática está detenida: {halt.reason}. Levanta la detención para continuar.')
     if mode == 'batch' and not oa.canary_done(tier):
-        raise Refused('needs_canary', f'Primero aplica un canario de {MODES["canary"]} de «{tier_label(tier)}»: los lotes de {MODES["batch"]} se habilitan '
-                                      'cuando el canario termina.', tier=tier)
+        raise Refused('needs_canary', f'Primero aplica un canario de {MODES["canary"]} de «{tier_label(tier)}» con las reglas {of.OEM_FINDER_VERSION}: los lotes '
+                                      f'de {MODES["batch"]} se habilitan cuando el canario termina (cada versión de las reglas necesita su propio canario).', tier=tier)
     try:
         outcome = oa.apply_auto(tier=tier, actor=actor, stage='admin', operation_id=operation_id, **size_kwargs(mode))
     except oa.ApplyRefused as refused:

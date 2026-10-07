@@ -163,7 +163,7 @@ class ApplyRevertTests(Catalog, TestCase):
         part = self.part(sku)
         self.assertEqual((part.pk, part.sku, part.is_OEM), (self.parts[sku].pk, new_sku, True))
         self.assertEqual(self.preserved(sku), before)
-        source = f'algo:oem-finder:v2:{source_rule}:{run.pk}'
+        source = f'algo:oem-finder:v3:{source_rule}:{run.pk}'
         self.assertTrue(part.codes.filter(code=new_sku, brand=self.brand(sku), ref_type='oem', reference_source=source).exists())
         self.assertTrue(codes <= set(part.codes.values_list('code', 'brand', 'ref_type', 'reference_source')))
         link = self.link(sku)
@@ -245,7 +245,7 @@ class ApplyRevertTests(Catalog, TestCase):
         self.assertEqual((part.sku, part.is_OEM, set(part.codes.values_list('code', 'brand', 'ref_type', 'reference_source'))), ('54830-2H000', True, codes))
         self.assertIsNone(self.link('54830-2H000-MOBIS').reverted_at)
         PartCode.objects.filter(part=part, code='54830-2H000').delete()  # re-created with the values the run wrote: still the run's
-        PartCode.objects.create(part=part, code='54830-2H000', brand='HYUNDAI', ref_type='oem', reference_source=f'algo:oem-finder:v2:strong-MOBIS:{run.pk}')
+        PartCode.objects.create(part=part, code='54830-2H000', brand='HYUNDAI', ref_type='oem', reference_source=f'algo:oem-finder:v3:strong-MOBIS:{run.pk}')
         self.assertEqual(oa.revert_run(run.pk)['reverted'], 1)
         reconcile_identities()  # no verified OEM is left behind to rename the SKU again
         part = self.part('54830-2H000-MOBIS')
@@ -292,6 +292,43 @@ class RunTests(Catalog, TestCase):
         self.assertFalse(oa.canary_done(FLAG))
         with self.assertRaises(oa.ApplyRefused):
             oa.apply_auto(tier=FLAG)
+
+    def test_applied_rows_leave_the_grading_but_their_neighbours_keep_their_grades(self):
+        def grade():
+            finder = of.OEMFinder(of.load_snapshot(), suffix_table())
+            return finder, finder.evaluate()
+
+        def view(r):
+            ev = r.get('primary') or {}
+            lex = ev.get('lexicon') or {}
+            return (r['tier'], ev.get('grade'), ev.get('units'), lex.get('result'), lex.get('n_other_keys'), lex.get('share'), r.get('auto_blockers'),
+                    r.get('proposed_main'), ev.get('n_siblings'))
+        _, before = grade()
+        run = self.canary(FLAG, 3)['run']
+        flagged = {str(p) for p in run.changes.values_list('part_id', flat=True)}
+        finder, after = grade()
+        self.assertEqual(len(flagged), 3)
+        self.assertEqual(set(after), set(before) - flagged)  # applied rows are graded no more...
+        self.assertTrue(flagged <= {p['id'] for p in finder.learn})  # ...but still teach the lexicon, siblings and claims
+        self.assertEqual({pid: view(r) for pid, r in after.items()}, {pid: view(before[pid]) for pid in after})
+        self.assertEqual(sum(1 for r in after.values() if r['tier'] == FLAG), 11 - 3)
+        self.assertEqual(oa.apply_auto(tier=FLAG, read_only=True)['eligible'], 8)
+
+    def test_a_rules_bump_needs_new_canaries_and_never_re_applies_a_reverted_oem(self):
+        run = self.canary(FLAG, 2)['run']
+        reverted = run.changes.order_by('pk').first().part_id
+        oa.revert_run(run.pk, part=reverted)
+        self.assertTrue(oa.canary_done(FLAG))
+        with patch.object(of, 'OEM_FINDER_VERSION', 'oem-finder-9'):
+            self.assertFalse(oa.canary_done(FLAG))
+            with self.assertRaises(oa.ApplyRefused) as refused:
+                oa.apply_auto(tier=FLAG)
+            self.assertIn('con las reglas oem-finder-9', str(refused.exception))
+            outcome = self.canary(FLAG, 50)
+            self.assertEqual((outcome['run'].rules_version, outcome['summary']['applied'], outcome['summary']['excluded']),
+                             ('oem-finder-9', 9, {'previously_reverted': 1}))
+            self.assertTrue(oa.canary_done(FLAG))
+        self.assertFalse(Part.objects.get(pk=reverted).is_OEM)
 
     def test_a_failed_run_raises_the_halt(self):
         with patch.object(oa, 'execute_batches', side_effect=RuntimeError('boom')), self.assertRaises(RuntimeError):

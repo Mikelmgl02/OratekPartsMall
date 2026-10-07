@@ -1,8 +1,8 @@
 """OEM finder runs, the 'Revisión OEM' queue (phase 2), the auto-apply audit (phase 2B) and its pending AUTO rows. New tables only.
 
 OEMFinderRun records one pass (mode, rules and suffix table versions, scope, tier counts, timings). OEMReviewCase holds one
-review-tier proposal per Part; its fingerprint covers the finder version, the Part snapshot, the candidate, the tier, the
-blockers and the suffix entries the decision read, so a re-run keeps every decision whose evidence did not change.
+review-tier proposal per Part; its fingerprint covers the fingerprint schema, the Part snapshot, the candidate, the tier, the
+blockers and the suffix entries the decision read, so a re-run (under new rules too) keeps every decision whose proposal did not change.
 A review candidate is never a PartCode: reconcile_identities would promote a verified OEM PartCode on its own.
 """
 from django.conf import settings

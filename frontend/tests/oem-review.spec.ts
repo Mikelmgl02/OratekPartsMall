@@ -22,7 +22,7 @@ function oemCase(id: number, sku: string, patch: Partial<OEMReviewCase> = {}): O
 }
 
 function run(id: number, patch: Partial<OEMRun> = {}): OEMRun {
-  return { id, mode: 'apply_auto', status: 'completed', rules_version: 'oem-finder-2', suffix_table_version: 'db:9',
+  return { id, mode: 'apply_auto', status: 'completed', rules_version: 'oem-finder-3', suffix_table_version: 'db:9',
     scope: { stage: 'review', action: 'approve_batch', tier: 'PROBABLE_BASE', filters: { tier: 'PROBABLE_BASE' }, in_stock_first: true, batch_size: 50 },
     tiers: { PROBABLE_BASE: [2, 2] }, applied: { applied: 2, conflicts: 0, skipped: {}, errors: 0, tiers: { PROBABLE_BASE: 2 }, batches: [{ index: 1, applied: 2, conflicts: 0, skipped: 0, errors: 0 }],
       stopped: null, excluded: {}, selected: 2, done: 2, total: 2, spot_check: [1, 2] }, errors: [], actor: 'ADMIN', started_at: stamp, finished_at: stamp, changes: 2, reverted: 0, ...patch };

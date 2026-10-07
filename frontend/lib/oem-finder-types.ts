@@ -45,8 +45,9 @@ export type OEMPendingPage = {
   count: number; next: string | null; previous: string | null; results: OEMPendingRow[]; tiers: Partial<Record<OEMAutoTier, number>>;
   apply_tiers: Partial<Record<OEMApplyTier, number>>; statuses: Partial<Record<OEMPendingStatus, number>>;
   facets: { chains: [string, number][]; makes: [string, number][]; systems: [string, number][] }; apply: Record<OEMApplyTier, OEMApplyTierState>;
-  sizes: Record<OEMPendingMode, number>; halt: OEMHalt | null; busy: { lock: boolean; running: number | null };
-  last_refresh: { id: number; mode: OEMRunMode; stage: string; finished_at: string } | null;
+  // rules_version: optional while an API older than oem-finder-3 may still answer (the canary credit is per rules version)
+  sizes: Record<OEMPendingMode, number>; rules_version?: string; halt: OEMHalt | null; busy: { lock: boolean; running: number | null };
+  last_refresh: { id: number; mode: OEMRunMode; stage: string; finished_at: string; rules_version?: string } | null;
 };
 export type OEMPendingPreviewRow = {
   part_id: string; sku: string; description: string; oem: string; brand: string; method: 'flag' | 'rename'; outcome: 'applied' | 'conflict' | 'skipped'; detail: string;

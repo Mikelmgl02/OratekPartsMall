@@ -2,7 +2,8 @@
 
 OEMFinder is pure computation over a read-only Snapshot (Part, PartCode and SupplierItem rows) and the admin suffix table
 (mall.catalog_suffixes): OEM format systems and aftermarket patterns, makes and curated model hints, a head/qualifier class
-lexicon built per run in memory, evaluate_key, decide, pass-3 claimants and the auto gates. It never renames a Part, never
+lexicon built per run in memory, evaluate_key, decide, pass-3 claimants and the auto gates. It grades only active non-OEM SKUs but
+learns from every active canonical SKU, OEM-flagged ones included (OEMFinder lists each index's population). It never renames a Part, never
 writes a PartCode and never calls an AI provider. execute() records an OEMFinderRun and syncs the review tiers into
 OEMReviewCase; read-only mode writes nothing and works before the tables are migrated. Applying the AUTO tiers (phase 2B) lives
 in mall.oem_apply; this module only grades.
@@ -13,7 +14,7 @@ Run: python -m mall.oem_finder --dry-run [--in-stock-first] [--limit N] [--tier 
      python -m mall.oem_finder --halt MOTIVO | --resume        (undo: python -m mall.oem_finder_revert --run ID [--part UUID])
 It takes the matching worker's PostgreSQL advisory lock, so it never overlaps a matching pass, and like a pass it waits out a
 catalog import (exit 2). Before migration 0035 only --read-only runs (exit 1 otherwise); applying also needs 0036 and, per tier,
-a completed canary (exit 1), and refuses while the halt rule is active (exit 3).
+a completed canary of the current rules version (exit 1), and refuses while the halt rule is active (exit 3).
 """
 import argparse
 import json
@@ -28,7 +29,11 @@ from .catalog_families import normalized_reference
 from .catalog_suffixes import (ALPHA_RE, chain_summary, classify_chain, clean_code, description_head, generic_base,
                                shape, strip_lifecycle, tokenize_chain, up)
 
-OEM_FINDER_VERSION = 'oem-finder-2'  # rules version; independent of the matching VERSION
+OEM_FINDER_VERSION = 'oem-finder-3'  # rules version (3: learned indexes keep OEM-flagged SKUs); independent of the matching VERSION
+# The review-case fingerprint's own version: frozen at the old value when the rules went to oem-finder-3, so no stored fingerprint
+# changed. A rules bump keeps every decision whose proposal (snapshot, candidate, tier, blockers, suffix entries) did not change and
+# only refreshes its evidence (sync_cases: restamped). Bump this only to reopen every case on purpose.
+FINGERPRINT_SCHEMA = 'oem-finder-2'
 
 
 def norm_key(s):
@@ -532,12 +537,19 @@ def load_snapshot():
 
 
 class OEMFinder:
-    """Every derived index of one run, built in memory from a Snapshot and a SuffixTable; evaluate() returns {part_id: result}."""
+    """Every derived index of one run, built in memory from a Snapshot and a SuffixTable; evaluate() returns {part_id: result}.
+
+    Populations. parts (active canonical, not OEM) is what a run grades: results, review cases, auto candidates and avail. learn
+    (every active canonical SKU, OEM-flagged included: they are the best examples of their class, and flagging one must not move its
+    neighbours) feeds what a run learns: model hints, makes and parses, the class lexicon, sibling base claims and the SKU claims of
+    pass 3. owners (every Part SKU, retired and OEM included, and every alterno) finds conflicts; by_id, merged_into, codes and items
+    cover every Part. A graded row never counts itself: the lexicon leaves its own key out, siblings and claimants its own Part."""
 
     def __init__(self, snapshot, table):
         self.snapshot, self.table = snapshot, table
         self.by_id = {p['id']: p for p in snapshot.parts}
-        self.parts = [p for p in snapshot.parts if p['active'] and not p['merged_into_id'] and not p['is_OEM']]
+        self.learn = [p for p in snapshot.parts if p['active'] and not p['merged_into_id']]
+        self.parts = [p for p in self.learn if not p['is_OEM']]
         self.items_by_part, self.codes_by_part = defaultdict(list), defaultdict(list)
         for s in snapshot.items:
             if s['part_id']:
@@ -554,8 +566,8 @@ class OEMFinder:
         for c in snapshot.codes:
             self.owners[norm_key(c['code'])].append((c['part_id'], 'partcode', c['code']))
         self.model_hints = self._model_hints()
-        self.makes = {p['id']: self.detect_make(p) for p in self.parts}
-        self.parsed = {p['id']: self.parse_part(p) for p in self.parts}
+        self.makes = {p['id']: self.detect_make(p) for p in self.learn}
+        self.parsed = {p['id']: self.parse_part(p) for p in self.learn}
         self._build_lexicon()
 
     # ---------------------------------------------------------- makes
@@ -569,7 +581,7 @@ class OEMFinder:
 
     def _model_hints(self):
         tok_group = defaultdict(Counter)
-        for p in self.parts:
+        for p in self.learn:
             grps = {MAKE_GROUP[m] for m in self.explicit_makes(p['description'])}
             if len(grps) == 1:
                 g = grps.pop()
@@ -690,7 +702,7 @@ class OEMFinder:
     def _build_lexicon(self):
         self.base_claims = defaultdict(list)
         lex_keys = defaultdict(lambda: defaultdict(lambda: [Counter(), Counter()]))
-        for p in self.parts:
+        for p in self.learn:
             P = self.parsed[p['id']]
             for it in P['interps']:
                 if it['source'] in ('sku', 'sku_prefixed'):
@@ -915,7 +927,7 @@ class OEMFinder:
         if sec:
             res['secondary_company_refs'] = sec
 
-        if P['lifecycle'] or any(i['cs']['lifecycle'] for i in sku_interps):
+        if self.held(P):
             res['tier'] = 'HOLD_LIFECYCLE'
             res['reasons'].append('marcador de ciclo de vida %s: código ERP anulado o eliminado que sigue activo'
                                   % (P['lifecycle'] or 'en la cadena'))
@@ -1059,16 +1071,25 @@ class OEMFinder:
         res['tier'] = tier
         return res
 
+    @staticmethod
+    def held(P):
+        """HOLD_LIFECYCLE: an annulled or deleted ERP code that is still active."""
+        return bool(P['lifecycle']) or any(i['cs']['lifecycle'] for i in P['interps'] if i['source'] in ('sku', 'sku_prefixed'))
+
     # ---------------------------------------------------------- pass 3 and gates
     def build_claimants(self, results):
+        """key -> Parts claiming it: every learned SKU's own numbers, plus each graded row's primary and other candidates. An OEM-flagged
+        SKU is graded no more but still claims its numbers (its alternos are owners)."""
         cl = defaultdict(set)
-        for p in self.parts:
-            r, P = results[p['id']], self.parsed[p['id']]
-            if r['tier'] == 'HOLD_LIFECYCLE' or P['lifecycle']:
+        for p in self.learn:
+            r, P = results.get(p['id']), self.parsed[p['id']]
+            if self.held(P):
                 continue
             for it in P['interps']:
                 if it['source'] in SKU_SOURCES:
                     cl[it['key']].add(p['id'])
+            if r is None:
+                continue
             if r.get('primary') and r['tier'] in PRE_CLAIM | {'MULTI_OEM'}:
                 cl[r['primary']['key']].add(p['id'])
             for k in r.get('other_oem_candidates') or []:
@@ -1280,7 +1301,7 @@ def case_values(r, snap, avail, version):
                  'shared_with': r.get('shared_with') or []}
     # Only the suffix entries this decision read (not the table-wide version): labelling an unrelated token keeps decisions.
     suffixes = [r.get('suffix_chain') or [], r.get('pending_owner_tags') or []]
-    return {'fingerprint': digest([OEM_FINDER_VERSION, snap, candidate, r['tier'], blockers, suffixes]), 'tier': r['tier'],
+    return {'fingerprint': digest([FINGERPRINT_SCHEMA, snap, candidate, r['tier'], blockers, suffixes]), 'tier': r['tier'],
             'tier_rank': TIER_ORDER.index(r['tier']), 'underlying_tier': r.get('underlying_tier') or '',
             'candidate': candidate['main'][:200], 'written_form': candidate['written'][:200], 'brand': candidate['brand'][:40],
             'system': candidate['system'], 'grade': ev.get('grade') or 0,
@@ -1295,7 +1316,8 @@ CASE_FIELDS = ['fingerprint', 'tier', 'tier_rank', 'underlying_tier', 'candidate
 
 def sync_cases(run, finder, results, selected, *, full):
     """Idempotent: an unchanged fingerprint writes nothing (decisions are kept); a changed one replaces the evidence and reopens
-    the case; a review case whose Part left the review tiers is resolved (within the run's scope only)."""
+    the case; one last written under other rules gets the new evidence and keeps its status and decision (restamped); a review case
+    whose Part left the review tiers is resolved (within the run's scope only)."""
     from django.db import transaction
     from django.utils import timezone
     from .oem_finder_models import OEMReviewCase
@@ -1303,7 +1325,8 @@ def sync_cases(run, finder, results, selected, *, full):
     wanted = {pid: case_fields(finder, pid, results[pid], version) for pid in selected if results[pid]['tier'] in REVIEW_TIERS}
     from .oem_auto import sent_case_fields  # SKUs a person took out of automatic application keep their case while they grade AUTO
     wanted.update(sent_case_fields(finder, results, selected, version))
-    existing = {str(c['part_id']): c for c in OEMReviewCase.objects.values('id', 'part_id', 'fingerprint', 'status', 'in_stock', 'blockers')}
+    existing = {str(c['part_id']): c for c in OEMReviewCase.objects.values('id', 'part_id', 'fingerprint', 'status', 'in_stock', 'blockers',
+                                                                            'run__rules_version')}
     scope = set(selected)
     create, update, stock = [], [], defaultdict(list)
     for pid, row in wanted.items():
@@ -1311,7 +1334,9 @@ def sync_cases(run, finder, results, selected, *, full):
         if cur is None:
             create.append(OEMReviewCase(part_id=pid, run=run, **row))
         elif cur['fingerprint'] != row['fingerprint'] or cur['status'] == 'resolved':
-            update.append((cur, row))
+            update.append((cur, row, True))
+        elif cur['run__rules_version'] != OEM_FINDER_VERSION:
+            update.append((cur, row, False))
         elif cur['in_stock'] != row['in_stock']:
             stock[row['in_stock']].append(cur['id'])
         else:
@@ -1324,9 +1349,9 @@ def sync_cases(run, finder, results, selected, *, full):
         stats['created'] = len(create)
         for i in range(0, len(update), 500):
             chunk = update[i:i + 500]
-            locked = OEMReviewCase.objects.select_for_update().in_bulk([cur['id'] for cur, _ in chunk])
+            locked = OEMReviewCase.objects.select_for_update().in_bulk([cur['id'] for cur, _, _ in chunk])
             objs = []
-            for cur, row in chunk:
+            for cur, row, reopen in chunk:
                 obj = locked.get(cur['id'])
                 # compare-and-set: a decision recorded since the read keeps its row until the next run
                 if obj is None or (obj.fingerprint, obj.status) != (cur['fingerprint'], cur['status']):
@@ -1334,16 +1359,18 @@ def sync_cases(run, finder, results, selected, *, full):
                     continue
                 for k, v in row.items():
                     setattr(obj, k, v)
-                obj.run, obj.status, obj.ai, obj.decided_by, obj.decided_at, obj.decision, obj.updated_at = run, 'review', {}, None, None, {}, now
+                obj.run, obj.updated_at = run, now
+                if reopen:
+                    obj.status, obj.ai, obj.decided_by, obj.decided_at, obj.decision = 'review', {}, None, None, {}
+                stats['updated' if reopen else 'restamped'] += 1
                 objs.append(obj)
             OEMReviewCase.objects.bulk_update(objs, CASE_FIELDS, batch_size=500)
-            stats['updated'] += len(objs)
         for value, ids in stock.items():
             for i in range(0, len(ids), 1000):
                 stats['stock_changed'] += OEMReviewCase.objects.filter(pk__in=ids[i:i + 1000]).update(in_stock=value)
         for i in range(0, len(stale), 1000):
             stats['resolved'] += OEMReviewCase.objects.filter(pk__in=stale[i:i + 1000], status='review').update(status='resolved', updated_at=now)
-    return {k: stats[k] for k in ('created', 'updated', 'unchanged', 'stock_changed', 'resolved', 'skipped')}
+    return {k: stats[k] for k in ('created', 'updated', 'restamped', 'unchanged', 'stock_changed', 'resolved', 'skipped')}
 
 
 def execute(*, mode='dry_run', in_stock_first=False, limit=None, tier=None, actor=None, stage='command', store=True, snapshot=None, table=None):
@@ -1448,8 +1475,9 @@ def render(outcome):
             '%s %d' % (t, c['scenario']['tiers'][t]) for t in TIER_ORDER if c['scenario']['tiers'].get(t))))
     if 'cases' in c:
         k = c['cases']
-        lines.append('Casos de revisión: %d nuevos, %d actualizados, %d sin cambios, %d resueltos, %d con cambio de existencias%s · ejecución %s'
+        lines.append('Casos de revisión: %d nuevos, %d actualizados, %d sin cambios, %d resueltos, %d con cambio de existencias%s%s · ejecución %s'
                      % (k['created'], k['updated'], k['unchanged'], k['resolved'], k['stock_changed'],
+                        ', %d con la evidencia de las reglas %s (conservan su decisión)' % (k['restamped'], OEM_FINDER_VERSION) if k['restamped'] else '',
                         ', %d omitidos por una decisión reciente' % k['skipped'] if k['skipped'] else '', outcome['run'].pk))
     else:
         lines.append('Solo lectura: no se guardaron la ejecución ni los casos.')

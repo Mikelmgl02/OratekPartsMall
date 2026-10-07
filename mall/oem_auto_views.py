@@ -113,9 +113,10 @@ class PendingListResponse(serializers.Serializer):
     facets = serializers.DictField(help_text='chains, makes, systems: [[valor, filas], ...] con los demás filtros.')
     apply = serializers.DictField(child=ApplyTierState(), help_text='Por nivel de aplicación: pendientes y crédito de canario.')
     sizes = serializers.DictField(child=serializers.IntegerField(), help_text='canary y batch: filas por ejecución.')
+    rules_version = serializers.CharField(help_text='Versión actual de las reglas del buscador: el crédito de canario es por versión.')
     halt = HaltRow(allow_null=True)
     busy = serializers.DictField(help_text='lock: hay un análisis de coincidencias o una búsqueda OEM en curso; running: ejecución automática sin terminar.')
-    last_refresh = serializers.DictField(allow_null=True, help_text='Última ejecución que actualizó los pendientes: id, mode, stage, finished_at.')
+    last_refresh = serializers.DictField(allow_null=True, help_text='Última ejecución que actualizó los pendientes: id, mode, stage, finished_at, rules_version.')
 
 
 class PreviewRequest(serializers.Serializer):

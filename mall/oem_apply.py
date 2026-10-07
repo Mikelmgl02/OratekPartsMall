@@ -31,7 +31,7 @@ METHODS = {'AUTO_FLAG_CURRENT': 'flag_current', 'AUTO_RENAME_BASE': 'rename_base
 BATCH_SIZE = 100
 SPOT_CHECK_ROWS = 20
 SERVICE_USER = 'motionpartes-oem-finder-service'
-SOURCE_VERSION = 'v' + of.OEM_FINDER_VERSION.rsplit('-', 1)[-1]  # oem-finder-2 -> v2
+SOURCE_VERSION = 'v' + of.OEM_FINDER_VERSION.rsplit('-', 1)[-1]  # oem-finder-3 -> v3
 SKIP_LABELS = {
     'missing': 'el SKU ya no existe', 'retired': 'el SKU se retiró o se agrupó', 'snapshot_changed': 'el SKU cambió desde el análisis',
     'new_claimant': 'otro SKU reclama ahora el mismo número', 'canonical_differs': 'el número del fabricante no es el SKU actual',
@@ -94,7 +94,7 @@ def resume(*, actor=None):
 
 def canary_done(tier):
     """A completed canary run of the current rules applied rows of this tier that were not all reverted since (a failed spot-check
-    is undone and needs a new canary), or was scoped to the tier and found none."""
+    is undone and needs a new canary), or was scoped to the tier and found none. A rules bump (OEM_FINDER_VERSION) needs new canaries."""
     from .oem_finder_models import OEMFinderChange, OEMFinderRun
     for pk, scope, applied in OEMFinderRun.objects.filter(mode='apply_auto', status='completed', rules_version=of.OEM_FINDER_VERSION).values_list('pk', 'scope', 'applied'):
         scope, applied = scope or {}, applied or {}
@@ -294,7 +294,7 @@ def conflict_case(run, finder, pid, r, tier, message):
     blockers = fields['blockers'] + ['apply_conflict']
     fields.update(tier='CONFLICT', tier_rank=of.TIER_ORDER.index('CONFLICT'), underlying_tier=r['tier'], blockers=blockers,
                   evidence={**fields['evidence'], 'apply_conflict': {'run': run.pk, 'tier': tier, 'detail': message}},
-                  fingerprint=digest([of.OEM_FINDER_VERSION, fields['snapshot'], fields['candidate'], 'CONFLICT', blockers, 'apply', message]))
+                  fingerprint=digest([of.FINGERPRINT_SCHEMA, fields['snapshot'], fields['candidate'], 'CONFLICT', blockers, 'apply', message]))
     with transaction.atomic():
         case = OEMReviewCase.objects.select_for_update().filter(part_id=pid).first() or OEMReviewCase(part_id=pid)
         for key, value in fields.items():
@@ -361,7 +361,8 @@ def apply_auto(*, tier=None, limit=None, canary=None, actor=None, stage='command
             raise ApplyRefused('halted', f'La aplicación automática está detenida: {current.reason}', halt=current.pk)
         missing = [] if canary else [t for t in tiers if not canary_done(t)]
         if missing:
-            raise ApplyRefused('needs_canary', 'Primero ejecuta un canario (--canary 50) de ' + ', '.join(missing) + '.', tiers=missing)
+            raise ApplyRefused('needs_canary', f'Primero ejecuta un canario (--canary 50) de {", ".join(missing)} con las reglas {of.OEM_FINDER_VERSION}: '
+                                               'cada versión de las reglas necesita su propio canario.', tiers=missing)
     t0 = time.monotonic()
     table = table or suffix_table()
     scope = {'tier': tier, 'limit': limit, 'canary': canary, 'in_stock_first': True, 'batch_size': batch_size, 'stage': stage,

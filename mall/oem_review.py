@@ -534,7 +534,7 @@ def to_conflict(case_id, fingerprint, message, actor, run=None, owners=None, oem
         case.evidence = {**(case.evidence or {}), 'apply_conflict': {'run': run.pk if run else None, 'tier': case.tier, 'detail': message, 'source': 'review',
                                                                      'owners': ids, 'code': oem['code'], 'brand': oem['brand']}}
         case.underlying_tier, case.tier, case.tier_rank, case.blockers = case.tier, 'CONFLICT', of.TIER_ORDER.index('CONFLICT'), blockers
-        case.fingerprint = digest([of.OEM_FINDER_VERSION, case.snapshot, case.candidate, 'CONFLICT', blockers, 'apply', message])
+        case.fingerprint = digest([of.FINGERPRINT_SCHEMA, case.snapshot, case.candidate, 'CONFLICT', blockers, 'apply', message])
         case.decided_by, case.decided_at, case.decision = actor, timezone.now(), {'action': 'apply_conflict', 'detail': message}
         case.save()
     return case

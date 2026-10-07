@@ -123,7 +123,7 @@ class DecisionTests(Review, APITestCase):
         part = self.part('48654-0K040-MANDO')
         run = OEMFinderRun.objects.get(pk=response.data['run'])
         self.assertEqual((part.pk, part.sku, part.name, part.is_OEM), (self.parts['48654-0K040-MANDO'].pk, '48654-0K040', '48654-0K040', True))
-        source = f'algo:oem-finder:v2:review-probable-base:{run.pk}'
+        source = f'algo:oem-finder:v3:review-probable-base:{run.pk}'
         self.assertTrue(part.codes.filter(code='48654-0K040', brand='TOYOTA', ref_type='oem', reference_source=source).exists())
         self.assertTrue(part.codes.filter(code='48654-0K040-MANDO').exists())  # the old SKU stays searchable
         self.assertEqual((run.mode, run.status, run.scope['stage'], run.scope['action'], run.applied['applied']), ('apply_auto', 'completed', 'review', 'approve', 1))

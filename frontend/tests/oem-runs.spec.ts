@@ -8,7 +8,7 @@ function spotRow(change: number, patch: Partial<OEMSpotRow> = {}): OEMSpotRow {
   return { run: 12, change, batch: 1, tier: 'AUTO_FLAG_CURRENT', method: 'flag_current', part_id: `00000000-0000-4000-8000-0000000000${String(change).padStart(2, '0')}`,
     previous_sku: '48654-30030', sku: '48654-30030', current_sku: '48654-30030', code: '48654-30030', brand: 'TOYOTA', description: 'BASE AMORT TOY COROLLA',
     system: 'TOYOTA', grade: 'F3', lexicon: 'agree_strong', lexicon_share: 1, lexicon_keys: 7, class_heads: 'BASE|AMORT (7)', units: 'lexicon_agree',
-    attributions: 'BARE', suppliers: 1, available_quantity: 4, reference_source: 'algo:oem-finder:v2:current:12', reasons: 'formato OEM de TOYOTA (F3)',
+    attributions: 'BARE', suppliers: 1, available_quantity: 4, reference_source: 'algo:oem-finder:v3:current:12', reasons: 'formato OEM de TOYOTA (F3)',
     reverted_at: '', verdict: '', evidence: { tier: 'AUTO_FLAG_CURRENT' }, ...patch };
 }
 
@@ -18,7 +18,7 @@ async function fixture(page: Page) {
   await page.context().addCookies([{ name: 'partsmall_session', value: process.env.E2E_ADMIN_TOKEN!, url: 'http://localhost:8080', httpOnly: true, sameSite: 'Strict' }]);
   const rows = [spotRow(1), spotRow(2, { previous_sku: '54830-2H000-MOBIS', sku: '54830-2H000', current_sku: '54830-2H000', code: '54830-2H000', brand: 'HYUNDAI',
     tier: 'AUTO_RENAME_BASE', method: 'rename_base', description: 'TERM ESTAB HYU ELANTRA', system: 'HMG', grade: 'F4' })];
-  const run: OEMRun = { id: 12, mode: 'apply_auto', status: 'completed', rules_version: 'oem-finder-2', suffix_table_version: 'db:7',
+  const run: OEMRun = { id: 12, mode: 'apply_auto', status: 'completed', rules_version: 'oem-finder-3', suffix_table_version: 'db:7',
     scope: { tier: null, limit: null, canary: 50, in_stock_first: true, batch_size: 100, stage: 'command' }, tiers: { AUTO_FLAG_CURRENT: [4249, 3130] },
     applied: { applied: 48, conflicts: 1, skipped: { snapshot_changed: 1 }, errors: 0, tiers: { AUTO_FLAG_CURRENT: 47, AUTO_RENAME_BASE: 1 },
       batches: [{ index: 1, applied: 48, conflicts: 1, skipped: 1, errors: 0 }], stopped: null, excluded: {}, selected: 50, spot_check: [1, 2] },
@@ -31,7 +31,7 @@ async function fixture(page: Page) {
   await page.route(/\/api\/management\/catalog(?:\?.*)?$/, route => route.fulfill({ json: empty }));
   const idle = { pending: 0, in_stock: 0, canary_done: true };
   const pending: OEMPendingPage = { count: 0, next: null, previous: null, results: [], tiers: {}, apply_tiers: {}, statuses: { applied: 48 }, facets: { chains: [], makes: [], systems: [] },
-    apply: { AUTO_FLAG_CURRENT: idle, AUTO_RENAME_BASE: idle, STRONG_PENDING_OWNER_TAGS: idle }, sizes: { canary: 50, batch: 100 }, halt: null, busy: { lock: false, running: null }, last_refresh: null };
+    apply: { AUTO_FLAG_CURRENT: idle, AUTO_RENAME_BASE: idle, STRONG_PENDING_OWNER_TAGS: idle }, sizes: { canary: 50, batch: 100 }, rules_version: 'oem-finder-3', halt: null, busy: { lock: false, running: null }, last_refresh: null };
   await page.route(/\/api\/management\/oem-finder\/pending(?:\?.*)?$/, route => route.fulfill({ json: pending }));
   await page.route(/\/api\/management\/oem-finder\/runs(?:\?.*)?$/, route => {
     lists.push(new URL(route.request().url()).search);

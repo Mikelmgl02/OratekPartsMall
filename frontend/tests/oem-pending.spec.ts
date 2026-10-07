@@ -15,7 +15,7 @@ function pendingRow(id: number, sku: string, patch: Partial<OEMPendingRow> = {})
 }
 
 function run(id: number, patch: Partial<OEMRun> = {}): OEMRun {
-  return { id, mode: 'apply_auto', status: 'completed', rules_version: 'oem-finder-2', suffix_table_version: 'db:9',
+  return { id, mode: 'apply_auto', status: 'completed', rules_version: 'oem-finder-3', suffix_table_version: 'db:9',
     scope: { tier: 'AUTO_FLAG_CURRENT', limit: null, canary: 50, in_stock_first: true, batch_size: 100, stage: 'command' }, tiers: {},
     applied: { applied: 50, conflicts: 0, skipped: {}, errors: 0, tiers: { AUTO_FLAG_CURRENT: 50 }, batches: [{ index: 1, applied: 50, conflicts: 0, skipped: 0, errors: 0 }],
       stopped: null, excluded: {}, selected: 50, spot_check: [1] }, errors: [], actor: 'motionpartes-oem-finder-service', started_at: stamp, finished_at: stamp, changes: 50, reverted: 0, ...patch };
@@ -67,8 +67,8 @@ async function fixture(page: Page) {
     const count = (key: 'chain' | 'brand') => Object.entries(inTab.reduce<Record<string, number>>((acc, row) => { if (row[key]) acc[row[key]] = (acc[row[key]] ?? 0) + 1; return acc; }, {}));
     const body: OEMPendingPage = { count: shown.length, next: null, previous: null, results: shown, tiers, apply_tiers: {}, statuses,
       facets: { chains: count('chain'), makes: count('brand'), systems: [] }, apply: { AUTO_FLAG_CURRENT: state('AUTO_FLAG_CURRENT'), AUTO_RENAME_BASE: state('AUTO_RENAME_BASE'),
-        STRONG_PENDING_OWNER_TAGS: state('STRONG_PENDING_OWNER_TAGS') }, sizes: { canary: 50, batch: 100 }, halt, busy: { lock: false, running: null },
-      last_refresh: { id: 12, mode: 'dry_run', stage: 'command', finished_at: stamp } };
+        STRONG_PENDING_OWNER_TAGS: state('STRONG_PENDING_OWNER_TAGS') }, sizes: { canary: 50, batch: 100 }, rules_version: 'oem-finder-3', halt, busy: { lock: false, running: null },
+      last_refresh: { id: 12, mode: 'dry_run', stage: 'command', finished_at: stamp, rules_version: 'oem-finder-3' } };
     return route.fulfill({ json: body });
   });
   await page.route('**/api/management/oem-finder/pending/preview', route => {
@@ -137,10 +137,10 @@ for (const width of [1440, 390]) {
 
     const flag = pending.getByRole('group', { name: 'Aplicación de SKU YA ES EL OEM' });
     await expect(flag).toContainText('3 PENDIENTES · 1 CON EXISTENCIAS');
-    await expect(flag).toContainText('FALTA EL CANARIO');
+    await expect(flag).toContainText('FALTA EL CANARIO DE OEM-FINDER-3');
     const batch = flag.getByRole('button', { name: 'Aplicar lote (100) de SKU YA ES EL OEM' });
     await expect(batch).toBeDisabled();
-    await expect(flag.getByText('Aplica primero un canario de 50: los lotes de 100 se habilitan cuando termina.')).toBeVisible();
+    await expect(flag.getByText('Aplica primero un canario de 50 con las reglas oem-finder-3: los lotes de 100 se habilitan cuando termina.')).toBeVisible();
 
     await flag.getByRole('button', { name: 'Vista previa de SKU YA ES EL OEM' }).click();
     const preview = pending.getByRole('region', { name: 'Vista previa de la aplicación' });
