@@ -96,7 +96,14 @@ SPECTACULAR_SETTINGS = {"TITLE": "MotionPartes API", "VERSION": "0.1.0", "COMPON
     # OEM finder runs and auto-apply (superuser-only).
     "OEMRunModeEnum": ["dry_run", "apply_auto", "ai"], "OEMRunStatusEnum": ["running", "completed", "failed"],
     "OEMApplyTierEnum": ["AUTO_FLAG_CURRENT", "AUTO_RENAME_BASE", "STRONG_PENDING_OWNER_TAGS"],
-    "OEMApplyMethodEnum": ["flag_current", "rename_base", "rename_confirmed_tags"], "OEMHaltActionEnum": ["halt", "resume"]}}
+    "OEMApplyMethodEnum": ["flag_current", "rename_base", "rename_confirmed_tags"], "OEMHaltActionEnum": ["halt", "resume"],
+    # Revisión OEM queue (superuser-only). Tiers and statuses must match mall.oem_finder.REVIEW_TIERS and OEMReviewCase.status.
+    "OEMReviewTierEnum": ["STRONG_PENDING_OWNER_TAGS", "CURRENT_REVIEW", "PROBABLE_BASE", "CURRENT_LIKELY_OEM", "LOCAL_XREF", "MULTI_OEM",
+                          "CONFLICT", "VARIANT_REVIEW", "UNKNOWN_SUFFIX", "WEAK", "NEEDS_AI"],
+    "OEMReviewStatusEnum": ["review", "applied", "dismissed", "resolved"], "OEMReviewMethodEnum": ["flag", "rename"],
+    "OEMReviewActionEnum": ["approve", "choose_oem", "send_to_merge", "dismiss", "reopen"],
+    "OEMDismissReasonEnum": ["not_oem", "other_part", "keep_code", "data_error", "other"], "OEMReviewOutcomeEnum": ["applied", "conflict", "skipped"],
+    "OEMBulkStepActionEnum": ["continue", "stop"]}}
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY') or os.getenv('GEM_API_KEY', '')
 GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-3.5-flash-lite')
 

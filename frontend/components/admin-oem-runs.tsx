@@ -38,7 +38,7 @@ export default function OEMRuns({ onClose, onChanged }: { onClose: () => void; o
   const [confirming, setConfirming] = useState<number | null>(null); const [spotRun, setSpotRun] = useState<OEMRun | null>(null);
   useEffect(() => {
     let live = true;
-    request<OEMRunPage>(`${base}/runs?mode=apply_auto&page=${page}`).then(result => { if (live) setData(result); }).catch(e => { if (live) { setData(null); setError(errorMessage(e)); } });
+    request<OEMRunPage>(`${base}/runs?mode=apply_auto&stage=auto&page=${page}`).then(result => { if (live) setData(result); }).catch(e => { if (live) { setData(null); setError(errorMessage(e)); } });
     return () => { live = false; };
   }, [page, revision]);
   async function revert(run: OEMRun, part?: string) {

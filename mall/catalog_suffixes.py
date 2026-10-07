@@ -409,5 +409,11 @@ def suffix_table():
     return table
 
 
+def current_suffix_table():
+    """suffix_table() re-checked now rather than up to CHECK_SECONDS late (another worker may have just relabelled a token)."""
+    _cache['checked'] = float('-inf')
+    return suffix_table()
+
+
 def invalidate():
     _cache.update(key=None, table=None, checked=float('-inf'))

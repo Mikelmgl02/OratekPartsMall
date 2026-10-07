@@ -8,13 +8,13 @@ import { UppercaseInput } from './uppercase-field';
 
 type GroupingPage = Page<CatalogGroupingCandidate> & { configured?: boolean };
 
-export default function CatalogGrouping({ onClose, onSaved }: { onClose: () => void; onSaved: (targetSku: string, sourceCount: number) => void }) {
+export default function CatalogGrouping({ onClose, onSaved, initialFamily = null }: { onClose: () => void; onSaved: (targetSku: string, sourceCount: number) => void; initialFamily?: CatalogGroupingCandidate | null }) {
   const [data, setData] = useState<GroupingPage | null>(null);
-  const [search, setSearch] = useState('');
-  const [query, setQuery] = useState('');
+  const [search, setSearch] = useState(initialFamily?.target_sku ?? '');
+  const [query, setQuery] = useState(initialFamily?.target_sku ?? '');
   const [page, setPage] = useState(1);
   const [revision, setRevision] = useState(0);
-  const [editing, setEditing] = useState<CatalogGroupingCandidate | null>(null);
+  const [editing, setEditing] = useState<CatalogGroupingCandidate | null>(initialFamily);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
@@ -32,6 +32,7 @@ export default function CatalogGrouping({ onClose, onSaved }: { onClose: () => v
 
   return <Modal title="Agrupar SKU" wide onClose={() => { if (!busy) onClose(); }}>
     <p className="modal-description">Revisa los SKU que podrían representar el mismo repuesto. El SKU interno elegido conserva su identidad; los códigos de los SKU agrupados pasan a ser sus alternos.</p>
+    {initialFamily && editing === initialFamily && <p className="notice" role="status">Familia enviada desde la Revisión OEM: {initialFamily.reason}</p>}
     {notice && <p className="notice success" role="status"><Check size={16}/>{notice}</p>}
     {error && <p className="notice error" role="alert">{error}<button type="button" onClick={() => setRevision(value => value + 1)}>Intentar de nuevo</button></p>}
     {editing ? <GroupingEditor key={editing.target_sku} group={editing} aiConfigured={data?.configured !== false} onBack={() => setEditing(null)} onBusyChange={setBusy} onSaved={(targetSku, sourceCount) => {

@@ -51,7 +51,7 @@ class RunRow(serializers.Serializer):
     status = serializers.ChoiceField(choices=STATUSES)
     rules_version = serializers.CharField()
     suffix_table_version = serializers.CharField(allow_blank=True)
-    scope = serializers.DictField(help_text='tier, limit, canary, in_stock_first, batch_size, stage.')
+    scope = serializers.DictField(help_text='tier, limit, canary, in_stock_first, batch_size, stage (review: action, filters, case, sku).')
     tiers = serializers.DictField(help_text='{nivel: [total, con existencias]} de todo el catálogo al ejecutar.')
     applied = serializers.DictField(help_text='apply_auto: applied, conflicts, skipped, errors, tiers, batches, stopped, excluded, selected, spot_check.')
     errors = serializers.ListField(child=serializers.DictField())
@@ -141,7 +141,7 @@ def runs():
 
 def run_row(run):
     return {'id': run.pk, 'mode': run.mode, 'status': run.status, 'rules_version': run.rules_version, 'suffix_table_version': run.suffix_table_version,
-            'scope': run.scope, 'tiers': (run.counts or {}).get('tiers', {}), 'applied': run.applied, 'errors': run.errors,
+            'scope': {k: v for k, v in (run.scope or {}).items() if k != 'cases'}, 'tiers': (run.counts or {}).get('tiers', {}), 'applied': run.applied, 'errors': run.errors,
             'actor': run.actor.username if run.actor_id else None, 'started_at': run.started_at, 'finished_at': run.finished_at,
             'changes': run.n_changes, 'reverted': run.n_reverted}
 
@@ -156,16 +156,22 @@ class OEMRunList(APIView):
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_oem_finder_runs_list', responses=RunListResponse, parameters=[
-        OpenApiParameter('mode', OpenApiTypes.STR, enum=MODES), OpenApiParameter('page', OpenApiTypes.INT)],
+        OpenApiParameter('mode', OpenApiTypes.STR, enum=MODES), OpenApiParameter('page', OpenApiTypes.INT),
+        OpenApiParameter('stage', OpenApiTypes.STR, enum=['auto', 'review'], description='review: aprobaciones de la Revisión OEM; auto: las demás.')],
         description='Historial de ejecuciones del buscador OEM (las más recientes primero) y la regla de detención activa.')
     def get(self, request):
         require_tables()
         rows = runs()
-        mode = request.query_params.get('mode')
+        mode, stage = request.query_params.get('mode'), request.query_params.get('stage')
         if mode:
             if mode not in MODES:
                 raise ValidationError({'mode': 'El filtro no es válido.'})
             rows = rows.filter(mode=mode)
+        if stage:
+            if stage not in ('auto', 'review'):
+                raise ValidationError({'stage': 'El filtro no es válido.'})
+            review = Q(scope__stage='review')
+            rows = rows.filter(review) if stage == 'review' else rows.filter(~review | Q(scope__stage__isnull=True))
         paginator = PageNumberPagination()
         page = paginator.paginate_queryset(rows, request, view=self)
         return Response({'count': paginator.page.paginator.count, 'next': paginator.get_next_link(), 'previous': paginator.get_previous_link(),

@@ -2,12 +2,14 @@ export type OEMApplyTier = 'AUTO_FLAG_CURRENT' | 'AUTO_RENAME_BASE' | 'STRONG_PE
 export type OEMRunMode = 'dry_run' | 'apply_auto' | 'ai';
 export type OEMBatch = { index: number; applied: number; conflicts: number; skipped: number; errors: number };
 export type OEMApplySummary = {
-  applied?: number; conflicts?: number; skipped?: Record<string, number>; errors?: number; tiers?: Partial<Record<OEMApplyTier, number>>;
-  batches?: OEMBatch[]; stopped?: 'halted' | 'catalog_import' | 'errors' | null; excluded?: Record<string, number>; selected?: number; spot_check?: number[];
+  applied?: number; conflicts?: number; skipped?: Record<string, number>; errors?: number; tiers?: Partial<Record<string, number>>;
+  batches?: OEMBatch[]; stopped?: 'halted' | 'catalog_import' | 'errors' | 'cancelled' | null; excluded?: Record<string, number>; selected?: number; spot_check?: number[];
+  done?: number; total?: number;
 };
 export type OEMRun = {
   id: number; mode: OEMRunMode; status: 'running' | 'completed' | 'failed'; rules_version: string; suffix_table_version: string;
-  scope: { tier?: string | null; limit?: number | null; canary?: number | null; in_stock_first?: boolean; batch_size?: number; stage?: string };
+  scope: { tier?: string | null; limit?: number | null; canary?: number | null; in_stock_first?: boolean; batch_size?: number; stage?: string;
+    action?: 'approve' | 'choose_oem' | 'approve_batch'; sku?: string; case?: number; filters?: Record<string, string> };
   tiers: Record<string, [number, number]>; applied: OEMApplySummary; errors: { error: string; detail: string; sku?: string }[];
   actor: string | null; started_at: string; finished_at: string | null; changes: number; reverted: number;
 };
@@ -27,6 +29,7 @@ export const tierLabels: Record<string, string> = {
 };
 export const stoppedLabels: Record<string, string> = {
   halted: 'DETENIDA POR LA REGLA DE DETENCIÓN', catalog_import: 'DETENIDA: IMPORTACIÓN DEL CATÁLOGO EN CURSO', errors: 'DETENIDA POR ERRORES INESPERADOS',
+  cancelled: 'DETENIDA POR EL USUARIO',
 };
 export const skipLabels: Record<string, string> = {
   snapshot_changed: 'CAMBIÓ DESDE EL ANÁLISIS', new_claimant: 'OTRO SKU RECLAMA EL NÚMERO', missing: 'YA NO EXISTE', retired: 'RETIRADO O AGRUPADO',

@@ -537,6 +537,9 @@ def revert_link(link_id, actor):
             'action': 'revert', 'reverts': change.pk, 'run': link.run_id, 'code': link.code, 'brand': link.brand, 'method': link.method})
         link.reverted_at, link.reverted_by, link.revert_change = timezone.now(), actor, reverse
         link.save(update_fields=['reverted_at', 'reverted_by', 'revert_change'])
+        if (link.evidence or {}).get('review'):  # an approval from the review queue: its case goes back to the queue
+            from .oem_review import reopen_reverted
+            reopen_reverted(link, actor)
     return 'reverted'
 
 

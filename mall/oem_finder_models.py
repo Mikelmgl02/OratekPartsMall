@@ -109,3 +109,29 @@ class OEMApplyHalt(models.Model):
 
     class Meta:
         ordering = ['-created_at', '-id']
+
+
+# Phase 2C ('Revisión OEM'): one row per human decision on a review case. New table only; OEMReviewCase keeps the latest decision.
+REVIEW_ACTIONS = [('approve', 'Aprobar'), ('choose_oem', 'Elegir OEM'), ('send_to_merge', 'Enviar a Agrupar SKU'), ('dismiss', 'Descartar'),
+                  ('reopen', 'Reabrir'), ('reverted', 'Revertido'), ('apply_conflict', 'Rechazado al aplicar')]
+
+
+class OEMReviewDecision(models.Model):
+    """The audit of the review queue: who decided what on which evidence (tier, fingerprint, snapshot, chosen OEM or reason). An
+    approval links the apply run and its OEMFinderChange, so the O3 undo machinery reverts it; a revert writes a 'reverted' row."""
+    case = models.ForeignKey(OEMReviewCase, on_delete=models.CASCADE, related_name='decisions')
+    part = models.ForeignKey('mall.Part', on_delete=models.CASCADE, related_name='+')
+    action = models.CharField(max_length=16, choices=REVIEW_ACTIONS)
+    tier = models.CharField(max_length=30)
+    fingerprint = models.CharField(max_length=64)
+    run = models.ForeignKey(OEMFinderRun, on_delete=models.SET_NULL, null=True, blank=True, related_name='review_decisions')
+    change = models.ForeignKey(OEMFinderChange, on_delete=models.SET_NULL, null=True, blank=True, related_name='review_decisions')
+    code = models.CharField(max_length=120, blank=True, default='')
+    brand = models.CharField(max_length=120, blank=True, default='')
+    reason = models.CharField(max_length=300, blank=True, default='')
+    evidence = models.JSONField(default=dict, blank=True)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']

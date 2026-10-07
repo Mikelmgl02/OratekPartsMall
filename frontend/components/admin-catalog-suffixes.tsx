@@ -22,9 +22,9 @@ function impact(row: CatalogSuffix) {
   return parts.length ? parts : ['SIN ANÁLISIS OEM'];
 }
 
-export default function CatalogSuffixes({ onClose }: { onClose: () => void }) {
+export default function CatalogSuffixes({ onClose, initialSearch = '' }: { onClose: () => void; initialSearch?: string }) {
   const [cls, setCls] = useState(''); const [status, setStatus] = useState(''); const [unlock, setUnlock] = useState(false);
-  const [search, setSearch] = useState(''); const [query, setQuery] = useState(''); const [page, setPage] = useState(1);
+  const [search, setSearch] = useState(initialSearch); const [query, setQuery] = useState(initialSearch); const [page, setPage] = useState(1);
   const [data, setData] = useState<CatalogSuffixPage | null>(null); const [error, setError] = useState(''); const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(''); const [revision, setRevision] = useState(0); const [editing, setEditing] = useState<string | null>(null);
   useEffect(() => { const timer = setTimeout(() => { setQuery(search.trim()); setPage(1); }, 300); return () => clearTimeout(timer); }, [search]);
