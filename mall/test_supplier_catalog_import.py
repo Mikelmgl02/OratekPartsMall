@@ -140,3 +140,50 @@ class SupplierCatalogImportTests(Fresh, TestCase):
         self.assertEqual(self.joint.subcategory, 'SEMIEJES')
         self.assertFalse(self.joint.specifications.exists())
         self.assertEqual(result['catalogs'][1]['counts'].get('linked_parts', 0), 0)  # the product rules disagree with SEMIEJES
+
+
+class SupplierCatalogImportGuardTests(Fresh, TestCase):
+    def setUp(self):
+        super().setUp()
+        self.joint = Part.objects.create(sku='49501-2S300-PF', description='PUNTA FLECHA HYU TUCSON')
+        data = extract([item('HY-IX35', 'cv_joint_outer', oem=[('49501-2S300', 'HYUNDAI')], name_es='JUNTA HOMOCINÉTICA EXTERIOR',
+                             specs=[('seal_diameter', 'DIÁMETRO DEL RETÉN', '630', 'mm'), ('cv_boot', 'GUARDAPOLVO', '2071', ''),
+                                    ('outer_splines', 'ESTRÍAS EXTERIORES', '27', '')])], key='asva', title='ASVA CV', brand='ASVA')
+        handle = tempfile.NamedTemporaryFile('w', suffix='.json', delete=False, encoding='utf-8')
+        json.dump(data, handle, ensure_ascii=False)
+        handle.close()
+        self.path = handle.name
+
+    def tearDown(self):
+        os.unlink(self.path)
+        super().tearDown()
+
+    def test_typos_are_reported_codes_stay_text_and_assembly_numbers_are_labelled(self):
+        result = sci.run([self.path], apply=True, stdout=io.StringIO())
+        counts = result['catalogs'][0]['counts']
+        self.assertEqual(counts['specs_out_of_range'], 1)  # a 630 mm CV seal is a catalog typo
+        values = {s.field.key: s for s in self.joint.specifications.select_related('field')}
+        self.assertNotIn('seal_diameter', values)
+        self.assertEqual((values['cv_boot'].field.kind, values['cv_boot'].text_value), ('text', '2071'))
+        self.assertEqual(values['outer_splines'].number_value, 27)
+        ref = OEMReference.objects.get(manufacturer='HYUNDAI', code='495012S300')
+        self.assertEqual(ref.part_type, 'SEMIEJES')  # Hyundai 49501 is a drive-shaft assembly number, listed for the joint
+        self.assertTrue(ref.sources.get(kind='aftermarket_catalog').detail['assembly_number_listed_for_component'])
+
+
+class OEMOnlyItemTests(Fresh, TestCase):
+    def test_items_without_a_brand_code_only_feed_the_oem_table(self):
+        part = Part.objects.create(sku='43460-60010', description='PUNTA FLECHA TOY LAND CRUISER')
+        data = extract([item('', 'cv_joint_outer', oem=[('43460-60010', 'TOYOTA')], name_es='JUNTA HOMOCINÉTICA EXTERIOR')],
+                       key='asva_only', title='ASVA CV — OEM sin pieza ASVA', brand='ASVA')
+        with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False, encoding='utf-8') as handle:
+            json.dump(data, handle, ensure_ascii=False)
+        try:
+            result = sci.run([handle.name], apply=True, stdout=io.StringIO())
+        finally:
+            os.unlink(handle.name)
+        counts = result['catalogs'][0]['counts']
+        self.assertEqual((counts['oem_only_items'], counts.get('linked_parts', 0)), (1, 0))
+        ref = OEMReference.objects.get(manufacturer='TOYOTA', code='4346060010')
+        self.assertEqual(ref.sources.get(kind='aftermarket_catalog').detail['brand_codes'], [])
+        self.assertFalse(part.codes.exists())

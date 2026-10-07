@@ -47,6 +47,12 @@ COMPATIBLE = {
 EXTRA_RULES = [(c, s, re.compile(pattern)) for c, s, pattern in [
     ('REFRIGERACIÓN', 'EMBRAGUES DE VENTILADOR', r'^(?:FAN CLUTCH|EMBRAGUE (?:DE )?VENT(?:ILADOR)?|ACOPLE (?:DE )?VENTILADOR)\b'),
 ]]
+# Codes and ambiguous printed columns stay text even when they look numeric (ASVA boot codes such as 2071).
+TEXT_KEYS = {'cv_boot', 'boot_code', 'joint_type', 'note', 'design', 'type', 'splines_or_diameter'}
+# Plausible ranges for printed measurements: a value outside (a catalog typo such as a 630 mm seal) is reported, never stored.
+SPEC_RANGES = {'seal_diameter': (15, 130), 'outer_splines': (10, 60), 'inner_splines': (10, 60), 'splines': (10, 60), 'abs_teeth': (20, 120),
+               'length': (50, 1500), 'big_diameter': (20, 250), 'small_diameter': (8, 120), 'inner_diameter': (3, 200),
+               'outer_diameter': (5, 400), 'holes': (2, 12), 'bolts': (2, 12)}
 INTEGER_KEYS = {'holes', 'bolts', 'outer_splines', 'inner_splines', 'abs_teeth', 'teeth', 'splines', 'quantity', 'pieces'}
 BOOLEAN_KEYS = {'vented', 'wear_indicator', 'abs', 'with_abs', 'with_sensor'}
 YES, NO = {'YES', 'SI', 'SÍ', 'TRUE', 'Y', '+', 'X'}, {'NO', 'FALSE', 'N', '-'}
@@ -83,6 +89,8 @@ def spec_value(spec, key):
     if not raw:
         return None
     up = raw.upper()
+    if key in TEXT_KEYS:
+        return 'text', ' '.join(up.split())[:2000]
     if key in BOOLEAN_KEYS or up in YES | NO and key not in INTEGER_KEYS:
         if up in YES:
             return 'boolean', True
@@ -159,6 +167,9 @@ class CatalogImport:
         rc, ix = self.report['counts'], self.ix
         links_by_part, links_by_item, keys_by_link = defaultdict(set), defaultdict(set), {}
         for n, item in enumerate(self.items):
+            if not (item.get('brand_code') or '').strip():
+                rc['oem_only_items'] += 1  # an OEM number the catalog prints without a part of its own: OEM table only
+                continue
             oem_keys = {compact(o['code']) for o in item.get('oem', []) if len(compact(o['code'])) >= 5}
             brand_keys = {k for k in [compact(item['brand_code'])] + [compact(x['code']) for x in item.get('cross_refs', [])]
                           if len(k) >= 5 and re.search(r'\d', k)}
@@ -210,6 +221,12 @@ class CatalogImport:
         return self.report
 
     # ------------------------------------------------------------------ OEM table
+    def is_assembly(self, manufacturer, code):
+        """A drive-shaft assembly number (OEM finder ASSEMBLY_CLASSES), e.g. Hyundai 49501-2S300 printed next to a CV joint."""
+        from .oem_finder import ASSEMBLY_CLASSES, MAKE_SYSTEMS, system_hits
+        own = set(MAKE_SYSTEMS.get(manufacturer, ([], []))[0])
+        return any((h['system'], h.get('lexkey')) in ASSEMBLY_CLASSES for h in system_hits(code.strip().upper(), self.finder.table) if h['system'] in own)
+
     def oem_rows(self):
         rows = {}
         for item in self.items:
@@ -218,11 +235,14 @@ class CatalogImport:
                 key = (o['manufacturer'].strip().upper(), compact(o['code']))
                 if not key[0] or not 1 <= len(key[1]) <= 60:
                     continue
-                row = rows.setdefault(key, {'printed': set(), 'pages': set(), 'brand_codes': set(), 'product_types': set(),
-                                            'description': item.get('name_es') or '', 'part_type': pt[1] if pt else '', 'apps': []})
+                assembly = item['product_type'].startswith('cv_') and item['product_type'] != 'cv_axle' and self.is_assembly(key[0], o['code'])
+                row = rows.setdefault(key, {'printed': set(), 'pages': set(), 'brand_codes': set(), 'product_types': set(), 'assembly': assembly,
+                                            'description': 'SEMIEJE (EJE COMPLETO)' if assembly else item.get('name_es') or '',
+                                            'part_type': 'SEMIEJES' if assembly else pt[1] if pt else '', 'apps': []})
                 row['printed'].add(o['code'].strip().upper())
                 row['pages'].add(o.get('page'))
-                row['brand_codes'].add(item['brand_code'])
+                if item.get('brand_code'):
+                    row['brand_codes'].add(item['brand_code'])
                 row['product_types'].add(item['product_type'])
                 for a in item.get('applications', []):
                     text = application_text(a)
@@ -244,7 +264,8 @@ class CatalogImport:
             try:
                 upsert_reference(manufacturer, number, printed=sorted(row['printed']), source_kind='aftermarket_catalog', citation=cite,
                                  detail={'catalog': self.catalog['key'], 'brand': self.brand, 'brand_codes': sorted(row['brand_codes']),
-                                         'pages': sorted(p for p in row['pages'] if p), 'product_types': sorted(row['product_types'])},
+                                         'pages': sorted(p for p in row['pages'] if p), 'product_types': sorted(row['product_types']),
+                                         **({'assembly_number_listed_for_component': True} if row['assembly'] else {})},
                                  defaults={'description': row['description'][:300], 'part_type': row['part_type'],
                                            'applications': '; '.join(row['apps'])})
             except ValueError as error:
@@ -312,6 +333,11 @@ class CatalogImport:
             if not key or not parsed:
                 continue
             kind, value = parsed
+            bounds = SPEC_RANGES.get(key)
+            if bounds and kind in ('number', 'integer') and not bounds[0] <= value <= bounds[1]:
+                rc['specs_out_of_range'] += 1
+                self.note('specs_out_of_range', {'sku': part.sku, 'field': key, 'value': str(value), 'range': list(bounds)})
+                continue
             unit = (spec.get('unit') or '').strip() if kind == 'number' else ''
             field = fields.get(key)
             if not apply:
