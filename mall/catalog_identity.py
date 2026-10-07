@@ -11,6 +11,39 @@ from .catalog_families import normalized_reference
 from .models import CatalogIdentityChange, Part, PartCode
 
 
+NON_ALNUM = '[^0-9A-Za-z]*'
+
+
+def reference_pattern(key, *, anchored=True):
+    """An iregex for every spelling of a normalized reference (MR968365: MR-968365, mr968365_); unanchored, it also finds the key
+    inside a longer code. Callers re-check the hits with normalized_reference."""
+    body = NON_ALNUM.join(key)
+    return f'^{NON_ALNUM}{body}{NON_ALNUM}$' if anchored else body
+
+
+def reference_owners(code, part, *, merged_here=True):
+    """Other Parts (retired included) whose SKU, and other Parts' PartCodes, are this reference once normalized.
+    merged_here=False ignores Parts already merged into this one: they share its identity."""
+    key = normalized_reference(code)
+    if not key:
+        return []
+    rx = reference_pattern(key)
+    parts = Part.objects.filter(sku__iregex=rx).exclude(pk=part.pk)
+    if not merged_here:
+        parts = parts.exclude(merged_into=part.pk)
+    return ([s for s in parts.values_list('sku', flat=True) if normalized_reference(s) == key]
+            + [c for c in PartCode.objects.filter(code__iregex=rx).exclude(part=part.pk).values_list('code', flat=True)
+               if normalized_reference(c) == key])
+
+
+def rename_conflicts(part, code):
+    """Why renaming part to code would make a reference ambiguous: the new MAIN, or the old SKU it keeps as an alterno, already
+    identifies another Part (its SKU, retired included, or an alterno) under any punctuation (MR-968365 = MR968365 = MR968365_).
+    A Part merged into this one shares its identity (Agrupar SKU, then the OEM as MAIN); only its exact SKU still blocks the MAIN."""
+    return (reference_owners(code, part, merged_here=False) + reference_owners(part.sku, part, merged_here=False)
+            + list(Part.objects.filter(sku__iexact=code, merged_into=part.pk).values_list('sku', flat=True)))
+
+
 def company_registry():
     """An explicit CATALOG_COMPANY_SUFFIXES setting wins; otherwise the admin suffix table (company_code TAGs, FEB/FEBEST)."""
     if hasattr(settings, 'CATALOG_COMPANY_SUFFIXES'):
@@ -105,10 +138,7 @@ def prefer_oem(part, *, actor=None, selected=None, confirm_current=False):
             part.is_OEM = True
             part.save(update_fields=['is_OEM'])
         return part
-    collision = (Part.objects.filter(sku__iexact=target.code).exclude(pk=part.pk).exists()
-                 or PartCode.objects.filter(code__iexact=target.code).exclude(part=part).exists()
-                 or PartCode.objects.filter(code__iexact=part.sku).exclude(part=part).exists())
-    if collision:
+    if rename_conflicts(part, target.code):
         if selected:
             raise ValidationError('El OEM ya identifica otro SKU. Usa Agrupar SKU para revisar y conservar todos sus vínculos.')
         return part
@@ -133,7 +163,8 @@ def reconcile_identities(actor=None):
     criteria = Q(codes__ref_type='oem')
     for suffix in company_registry():
         criteria |= Q(sku__endswith='-' + suffix)
-    ids = Part.objects.filter(criteria, active=True, merged_into__isnull=True).values_list('pk', flat=True).distinct()
+    # A main already marked OEM is left alone by prefer_oem and never takes a company alterno: skip it up front.
+    ids = Part.objects.filter(criteria, active=True, merged_into__isnull=True, is_OEM=False).values_list('pk', flat=True).distinct()
     promoted = 0
     for pk in list(ids):
         with transaction.atomic():

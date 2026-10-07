@@ -4,11 +4,16 @@ OEMFinder is pure computation over a read-only Snapshot (Part, PartCode and Supp
 (mall.catalog_suffixes): OEM format systems and aftermarket patterns, makes and curated model hints, a head/qualifier class
 lexicon built per run in memory, evaluate_key, decide, pass-3 claimants and the auto gates. It never renames a Part, never
 writes a PartCode and never calls an AI provider. execute() records an OEMFinderRun and syncs the review tiers into
-OEMReviewCase; read-only mode writes nothing and works before the tables are migrated.
+OEMReviewCase; read-only mode writes nothing and works before the tables are migrated. Applying the AUTO tiers (phase 2B) lives
+in mall.oem_apply; this module only grades.
 
 Run: python -m mall.oem_finder --dry-run [--in-stock-first] [--limit N] [--tier T] [--read-only] [--json PATH]
+     python -m mall.oem_finder --apply-auto [--tier AUTO_FLAG_CURRENT|AUTO_RENAME_BASE|STRONG_PENDING_OWNER_TAGS] [--limit N]
+                               [--canary N] [--read-only] [--spot-check-dir DIR]
+     python -m mall.oem_finder --halt MOTIVO | --resume        (undo: python -m mall.oem_finder_revert --run ID [--part UUID])
 It takes the matching worker's PostgreSQL advisory lock, so it never overlaps a matching pass, and like a pass it waits out a
-catalog import (exit 2). Before migration 0035 only --read-only runs (exit 1 otherwise).
+catalog import (exit 2). Before migration 0035 only --read-only runs (exit 1 otherwise); applying also needs 0036 and, per tier,
+a completed canary (exit 1), and refuses while the halt rule is active (exit 3).
 """
 import argparse
 import json
@@ -486,6 +491,8 @@ TIER_LABELS = {
     'HOLD_LIFECYCLE': 'Anulado (excluido)',
 }
 AUTO_TIERS = ('AUTO_FLAG_CURRENT', 'AUTO_RENAME_BASE')
+# What mall.oem_apply may apply: STRONG_PENDING_OWNER_TAGS there means the AUTO_RENAME_BASE rows resting on an owner-confirmed tag.
+APPLY_TIERS = ('AUTO_FLAG_CURRENT', 'AUTO_RENAME_BASE', 'STRONG_PENDING_OWNER_TAGS')
 # Review tiers become OEMReviewCase rows. NO_MAKE waits for the owner to set a make; the last three are not OEM work.
 REVIEW_TIERS = ('STRONG_PENDING_OWNER_TAGS', 'CURRENT_REVIEW', 'PROBABLE_BASE', 'CURRENT_LIKELY_OEM', 'LOCAL_XREF', 'MULTI_OEM',
                 'CONFLICT', 'VARIANT_REVIEW', 'UNKNOWN_SUFFIX', 'WEAK', 'NEEDS_AI')
@@ -1285,7 +1292,7 @@ def sync_cases(run, finder, results, selected, *, full):
     from .oem_finder_models import OEMReviewCase
     version, now, stats = table_version(finder.table), timezone.now(), Counter()
     wanted = {pid: case_fields(finder, pid, results[pid], version) for pid in selected if results[pid]['tier'] in REVIEW_TIERS}
-    existing = {str(c['part_id']): c for c in OEMReviewCase.objects.values('id', 'part_id', 'fingerprint', 'status', 'in_stock')}
+    existing = {str(c['part_id']): c for c in OEMReviewCase.objects.values('id', 'part_id', 'fingerprint', 'status', 'in_stock', 'blockers')}
     scope = set(selected)
     create, update, stock = [], [], defaultdict(list)
     for pid, row in wanted.items():
@@ -1298,7 +1305,9 @@ def sync_cases(run, finder, results, selected, *, full):
             stock[row['in_stock']].append(cur['id'])
         else:
             stats['unchanged'] += 1
-    stale = [c['id'] for pid, c in existing.items() if c['status'] == 'review' and pid not in wanted and (full or pid in scope)]
+    # A CONFLICT that prefer_oem raised while applying stays open: the finder alone cannot see why the rename was refused.
+    stale = [c['id'] for pid, c in existing.items() if c['status'] == 'review' and pid not in wanted and (full or pid in scope)
+             and 'apply_conflict' not in (c['blockers'] or [])]
     with transaction.atomic():
         OEMReviewCase.objects.bulk_create(create, batch_size=500)
         stats['created'] = len(create)
@@ -1330,7 +1339,7 @@ def execute(*, mode='dry_run', in_stock_first=False, limit=None, tier=None, acto
     """One finder pass. The caller holds the matching advisory lock (matching_lock() or the worker pass). store=False writes
     nothing at all; otherwise the run is recorded and the selected review tiers are synced into OEMReviewCase."""
     if mode != 'dry_run':
-        raise ValueError('Solo está disponible la simulación (dry_run); la aplicación automática llega en la fase 2B.')
+        raise ValueError('execute() solo simula (dry_run); la aplicación automática es mall.oem_apply.apply_auto.')
     from django.utils import timezone
     from .catalog_suffixes import suffix_table
     t0 = time.monotonic()
@@ -1434,27 +1443,95 @@ def render(outcome):
     return '\n'.join(lines)
 
 
+def render_apply(outcome):
+    from .oem_apply import SKIP_LABELS
+    lines = []
+    if outcome['run'] is None:
+        lines.append('Vista previa de la aplicación OEM %s · tabla de sufijos %s · %.1f s (solo lectura: no se escribió nada)'
+                     % (OEM_FINDER_VERSION, outcome['suffix_table_version'], outcome['timings']['total']))
+        lines.append('%-26s %9s %9s %10s %9s' % ('Nivel', 'Selección', 'Aplicaría', 'Conflictos', 'Omitidos'))
+        for t in APPLY_TIERS:
+            p = outcome['plan'][t]
+            lines.append('%-26s %9d %9d %10d %9d' % (t, p['selected'], p['applied'], p['conflicts'], sum(p['skipped'].values())))
+        for t in APPLY_TIERS:
+            for ex in outcome['plan'][t]['examples'][:3]:
+                lines.append('  conflicto %s: %s -> %s (%s)' % (t, ex['sku'], ex['oem'], ex['detail']))
+    else:
+        run, s = outcome['run'], outcome['summary']
+        lines.append('Aplicación OEM %s · ejecución %d%s · tabla de sufijos %s · %.1f s'
+                     % (OEM_FINDER_VERSION, run.pk, ' · canario %d' % run.scope['canary'] if run.scope.get('canary') else '',
+                        run.suffix_table_version, run.timings['total']))
+        lines.append('Seleccionados %d · aplicados %d (%s) · conflictos %d (a revisión) · omitidos %d · errores %d · lotes %d'
+                     % (s['selected'], s['applied'], ', '.join('%s %d' % (t, s['tiers'][t]) for t in APPLY_TIERS if s['tiers'].get(t)) or 'ninguno',
+                        s['conflicts'], sum(s['skipped'].values()), s['errors'], len(s['batches'])))
+        for reason, n in sorted(s['skipped'].items()):
+            lines.append('  omitidos %d: %s' % (n, SKIP_LABELS.get(reason, reason)))
+        if s['stopped']:
+            lines.append('Detenida antes de terminar: %s.' % {'halted': 'regla de detención activa', 'catalog_import': 'importación del catálogo en curso',
+                                                               'errors': 'errores inesperados (se activó la regla de detención)'}[s['stopped']])
+        lines.append('Muestra de control: %d filas · GET /api/v1/management/oem-finder/runs/%d/spot-check/ (?download=csv o json)'
+                     % (len(s['spot_check']), run.pk))
+        lines.append('Deshacer: python -m mall.oem_finder_revert --run %d [--part UUID]' % run.pk)
+    excluded = outcome.get('excluded') or {}
+    if excluded:
+        lines.append('Excluidos hasta una decisión humana: %s' % ', '.join('%d %s' % (n, SKIP_LABELS.get(k, k)) for k, n in sorted(excluded.items())))
+    return '\n'.join(lines)
+
+
+def write_spot_check(run, directory):
+    from pathlib import Path
+    from .oem_apply import spot_check_csv, spot_check_rows
+    rows, folder = spot_check_rows(run), Path(directory)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f'oem-run-{run.pk}-spot-check.json').write_text(json.dumps({'run': run.pk, 'rows': rows}, ensure_ascii=False, default=str), encoding='utf-8')
+    (folder / f'oem-run-{run.pk}-spot-check.csv').write_text(spot_check_csv(rows), encoding='utf-8-sig')  # BOM: Excel reads the accents
+
+
 def main(argv=None, stdout=None):
-    parser = argparse.ArgumentParser(description='Buscador OEM determinista (simulación).')
-    parser.add_argument('--dry-run', action='store_true', help='Calcula los niveles y sincroniza la cola de revisión; no renombra nada.')
-    parser.add_argument('--in-stock-first', action='store_true', help='Ordena primero los SKU con existencias.')
+    parser = argparse.ArgumentParser(description='Buscador OEM determinista: simulación, aplicación automática y regla de detención.')
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--dry-run', action='store_true', help='Calcula los niveles y sincroniza la cola de revisión; no renombra nada.')
+    mode.add_argument('--apply-auto', action='store_true', help='Aplica los niveles automáticos (con existencias primero, lotes de 100).')
+    mode.add_argument('--halt', metavar='MOTIVO', help='Activa la regla de detención: ninguna aplicación automática empieza ni continúa.')
+    mode.add_argument('--resume', action='store_true', help='Levanta la regla de detención.')
+    parser.add_argument('--in-stock-first', action='store_true', help='Ordena primero los SKU con existencias (la aplicación siempre lo hace).')
     parser.add_argument('--limit', type=int, help='Limita el alcance a los primeros N SKU.')
     parser.add_argument('--tier', choices=TIER_ORDER, help='Limita el alcance a un nivel.')
-    parser.add_argument('--read-only', action='store_true', help='No guarda la ejecución ni los casos (funciona sin migrar).')
+    parser.add_argument('--canary', type=int, metavar='N', help='--apply-auto: canario que aplica solo N filas (obligatorio antes de los lotes).')
+    parser.add_argument('--read-only', action='store_true', help='No escribe nada (funciona sin migrar); con --apply-auto es una vista previa.')
     parser.add_argument('--json', metavar='PATH', help="Escribe los resultados del alcance en JSON ('-' = salida estándar).")
+    parser.add_argument('--spot-check-dir', metavar='DIR', help='--apply-auto: también escribe la muestra de control (JSON y CSV) en DIR.')
     options = parser.parse_args(argv)
-    if not options.dry_run:
-        parser.error('Indica --dry-run: la aplicación automática llega en la fase 2B.')
-    if options.limit is not None and options.limit < 1:
-        parser.error('--limit debe ser mayor que cero.')
+    for value, name in ((options.limit, '--limit'), (options.canary, '--canary')):
+        if value is not None and value < 1:
+            parser.error(f'{name} debe ser mayor que cero.')
+    if options.apply_auto and options.tier and options.tier not in APPLY_TIERS:
+        parser.error('Con --apply-auto, --tier es uno de: ' + ', '.join(APPLY_TIERS) + '.')
+    if (options.canary or options.spot_check_dir) and not options.apply_auto:
+        parser.error('--canary y --spot-check-dir solo aplican con --apply-auto.')
+    if options.canary and options.limit:
+        parser.error('Usa --canary o --limit, no ambos.')
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
     import django
     django.setup()
     out = stdout or sys.stdout
     log = sys.stderr if options.json == '-' else out
-    if not options.read_only and not tables_ready():
+    if options.dry_run and not options.read_only and not tables_ready():
         print('Las tablas del buscador OEM aún no están migradas: aplica las migraciones o usa --read-only.', file=log)
         return 1
+    if (options.halt or options.resume or (options.apply_auto and not options.read_only)):
+        from .oem_apply import apply_tables_ready
+        if not apply_tables_ready():
+            print('Las tablas de la aplicación OEM aún no están migradas: aplica las migraciones (o usa --apply-auto --read-only).', file=log)
+            return 1
+    if options.halt or options.resume:
+        from .oem_apply import halt, resume, service_user
+        if options.halt:
+            row = halt(options.halt, actor=service_user())
+            print('Regla de detención activa desde %s: %s' % (row.created_at.isoformat(timespec='seconds'), row.reason), file=log)
+        else:
+            print('Regla de detención levantada.' if resume(actor=service_user()) else 'No había una regla de detención activa.', file=log)
+        return 0
     with matching_lock() as acquired:
         if not acquired:
             print('Hay un análisis de coincidencias o una búsqueda OEM en curso; vuelve a intentarlo cuando termine.', file=log)
@@ -1462,13 +1539,28 @@ def main(argv=None, stdout=None):
         if not options.read_only and import_running():  # like a matching pass: never grade a half-imported catalog
             print('Hay una importación del catálogo en curso; vuelve a intentarlo cuando termine.', file=log)
             return 2
-        outcome = execute(in_stock_first=options.in_stock_first, limit=options.limit, tier=options.tier, store=not options.read_only)
-    print(render(outcome), file=log)
+        if options.apply_auto:
+            from .oem_apply import ApplyRefused, apply_auto
+            try:
+                outcome = apply_auto(tier=options.tier, limit=options.limit, canary=options.canary, read_only=options.read_only)
+            except ApplyRefused as refused:
+                print(str(refused), file=log)
+                return 3 if refused.reason == 'halted' else 1
+        else:
+            outcome = execute(in_stock_first=options.in_stock_first, limit=options.limit, tier=options.tier, store=not options.read_only)
+    if options.apply_auto and outcome['run'] is not None and outcome['summary']['applied']:
+        from .matching_queue import enqueue_matching
+        enqueue_matching()  # like any catalog edit: new OEM MAINs and alternos may match pending supplier codes
+    print(render_apply(outcome) if options.apply_auto else render(outcome), file=log)
+    if options.spot_check_dir and outcome['run'] is not None:
+        write_spot_check(outcome['run'], options.spot_check_dir)
     if options.json:
-        doc = json.dumps({'summary': {**outcome['counts'], 'timings': outcome['timings'], 'version': OEM_FINDER_VERSION,
+        selected = [pid for pid, _ in outcome['rows']] if options.apply_auto else outcome['selected']
+        summary = {**outcome['counts'], 'apply': outcome.get('summary') or outcome.get('plan')} if options.apply_auto else outcome['counts']
+        doc = json.dumps({'summary': {**summary, 'timings': outcome['timings'], 'version': OEM_FINDER_VERSION,
                                       'suffix_table_version': outcome['suffix_table_version']},
                           'results': [result_row(outcome['finder'], pid, outcome['results'][pid], i)
-                                      for i, pid in enumerate(outcome['selected'], 1)]}, ensure_ascii=False, default=str)
+                                      for i, pid in enumerate(selected, 1)]}, ensure_ascii=False, default=str)
         if options.json == '-':
             out.write(doc + '\n')
         else:

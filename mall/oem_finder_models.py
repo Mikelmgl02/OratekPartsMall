@@ -1,4 +1,4 @@
-"""OEM finder runs and the 'Revisión OEM' queue (phase 2). New tables only: the finder never alters catalog rows here.
+"""OEM finder runs, the 'Revisión OEM' queue (phase 2) and the auto-apply audit (phase 2B). New tables only.
 
 OEMFinderRun records one pass (mode, rules and suffix table versions, scope, tier counts, timings). OEMReviewCase holds one
 review-tier proposal per Part; its fingerprint covers the finder version, the Part snapshot, the candidate, the tier, the
@@ -63,3 +63,49 @@ class OEMReviewCase(models.Model):
         ordering = ['-in_stock', 'tier_rank', 'id']
         indexes = [models.Index(fields=['status', 'tier_rank', '-in_stock'], name='oem_case_queue_idx'),
                    models.Index(fields=['tier', 'brand', 'chain'], name='oem_case_batch_idx')]
+
+
+# Phase 2B (auto-apply with audit and undo). New tables only: CatalogIdentityChange, Part and PartCode are never altered.
+APPLY_TIERS = [('AUTO_FLAG_CURRENT', 'El SKU ya es el OEM'), ('AUTO_RENAME_BASE', 'Renombrar a la base OEM'),
+               ('STRONG_PENDING_OWNER_TAGS', 'Renombrar con etiquetas confirmadas por el propietario')]
+APPLY_METHODS = [('flag_current', 'Marcar el SKU actual como OEM'), ('rename_base', 'Renombrar a la base OEM'),
+                 ('rename_confirmed_tags', 'Renombrar a la base OEM (etiquetas confirmadas)')]
+
+
+class OEMFinderChange(models.Model):
+    """One catalog identity change written by an apply_auto run: the CatalogIdentityChange it links, the run, the method, the
+    finder's evidence and what undoing it needs (undo: the old SKU, name and OEM flag plus the PartCodes the run created or
+    retyped). A revert writes a reverse CatalogIdentityChange and stamps reverted_at; it never deletes this row."""
+    change = models.OneToOneField('mall.CatalogIdentityChange', on_delete=models.PROTECT, related_name='oem_finder')
+    run = models.ForeignKey(OEMFinderRun, on_delete=models.PROTECT, related_name='changes')
+    part = models.ForeignKey('mall.Part', on_delete=models.PROTECT, related_name='oem_finder_changes')
+    tier = models.CharField(max_length=30, choices=APPLY_TIERS)
+    method = models.CharField(max_length=24, choices=APPLY_METHODS)
+    batch = models.PositiveIntegerField(default=1)
+    code = models.CharField(max_length=120)  # the OEM MAIN written (manufacturer form)
+    brand = models.CharField(max_length=120)
+    evidence = models.JSONField(default=dict, blank=True)
+    undo = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    reverted_at = models.DateTimeField(null=True, blank=True)
+    reverted_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    revert_change = models.OneToOneField('mall.CatalogIdentityChange', on_delete=models.PROTECT, null=True, blank=True,
+                                         related_name='oem_finder_revert')
+
+    class Meta:
+        ordering = ['run', 'batch', 'id']
+        indexes = [models.Index(fields=['part', 'reverted_at'], name='oem_change_part_idx')]
+
+
+class OEMApplyHalt(models.Model):
+    """Ops flag of the halt rule: while one is active (cleared_at empty) no apply_auto run starts and a running one stops before
+    its next batch. A run with unexpected errors raises one itself."""
+    reason = models.CharField(max_length=300)
+    run = models.ForeignKey(OEMFinderRun, on_delete=models.SET_NULL, null=True, blank=True, related_name='halts')
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    cleared_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    cleared_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']

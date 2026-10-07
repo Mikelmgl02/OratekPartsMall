@@ -3,7 +3,7 @@
 import { referenceLabel } from '@/lib/reference-label';
 
 import { useEffect, useState } from 'react';
-import { Boxes, BrainCircuit, Check, FileSpreadsheet, FileWarning, Layers3, LoaderCircle, Plus, Repeat2, Search, Tags } from 'lucide-react';
+import { Boxes, BrainCircuit, Check, FileSpreadsheet, FileWarning, Layers3, LoaderCircle, Plus, Repeat2, Search, Tags, Wand2 } from 'lucide-react';
 import { CatalogImportIssuePage, ManagedAlternate, ManagedPart, ManagedStockItem, Page, request } from '@/lib/types';
 import { AlternateEditor, MatchEditor, PartEditor, RemoveAlternate } from './admin-catalog-editors';
 import { UppercaseInput } from './uppercase-field';
@@ -14,6 +14,7 @@ import InventoryAssistant from './admin-inventory-assistant';
 import CatalogImages from './admin-catalog-images';
 import SmartMatching from './admin-smart-matching';
 import CatalogSuffixes from './admin-catalog-suffixes';
+import OEMRuns from './admin-oem-runs';
 import { PartTechnicalEditor } from './part-technical';
 
 type Kind = 'catalog' | 'inventory' | 'alternates';
@@ -23,6 +24,7 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
   const [technicalPart, setTechnicalPart] = useState<ManagedPart | null>(null);
   const [matchingOpen, setMatchingOpen] = useState(false);
   const [suffixesOpen, setSuffixesOpen] = useState(false);
+  const [oemRunsOpen, setOemRunsOpen] = useState(false);
   const [imagePart, setImagePart] = useState<ManagedPart | null>(null);
   const [stockView, setStockView] = useState(false);
   const kind: Kind = section === 'alternates' ? 'alternates' : stockView ? 'inventory' : 'catalog';
@@ -45,12 +47,13 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
   function saved(text: string) { setRevision(value => value + 1); setNotice(text); }
   return <section className="inventory-panel admin-panel" aria-label={section === 'inventory' ? 'Inventario' : 'Alternos'}>
     <div className="admin-toolbar"><div><h2>{section === 'inventory' ? 'Inventario' : 'Alternos'}</h2><p>{section === 'inventory' ? 'SKU internos que agrupan repuestos idénticos y existencias por proveedor.' : 'Biblioteca de referencias OEM y de fabricantes equivalentes a cada SKU maestro.'}</p></div>{kind !== 'inventory' && <div className="admin-toolbar-actions">{kind === 'catalog' && <><button className="button soft" onClick={() => setGroupingOpen(true)}><Layers3 size={17}/>Agrupar SKU</button><button className="button soft" aria-label="Errores de importación" onClick={() => setIssuesOpen(true)}><FileWarning size={17}/>Errores de importación{pendingIssueCount != null && <span className="import-issues-count" aria-hidden="true">{pendingIssueCount}</span>}</button><button className="button soft" onClick={() => setImportOpen(true)}><FileSpreadsheet size={17}/>Importar Excel</button></>}<button className="button primary" onClick={() => { if (kind === 'alternates') setAlternateEditor(null); else setPartEditor(null); }}><Plus size={17}/>{kind === 'alternates' ? 'Crear alterno' : 'Crear SKU'}</button></div>}</div>
-    {section === 'inventory' && <div className="admin-inventory-view-toolbar"><div className="admin-toolbar-actions"><button className="button soft" onClick={()=>setMatchingOpen(true)}><Layers3 size={17}/>Agrupación inteligente</button><button className="button soft" onClick={()=>setSuffixesOpen(true)}><Tags size={17}/>Sufijos</button></div><div className="admin-inventory-tabs" role="group" aria-label="Vistas de inventario"><button className={!stockView ? 'selected' : ''} aria-pressed={!stockView} onClick={() => setStockView(false)}>Inventario interno</button><button className={stockView ? 'selected' : ''} aria-pressed={stockView} onClick={() => setStockView(true)}>Existencias por proveedor</button></div>{!stockView && <button type="button" className="button soft" onClick={()=>setAssistantOpen(true)}><BrainCircuit size={17}/>Asistente IA</button>}</div>}
+    {section === 'inventory' && <div className="admin-inventory-view-toolbar"><div className="admin-toolbar-actions"><button className="button soft" onClick={()=>setMatchingOpen(true)}><Layers3 size={17}/>Agrupación inteligente</button><button className="button soft" onClick={()=>setSuffixesOpen(true)}><Tags size={17}/>Sufijos</button><button className="button soft" onClick={()=>setOemRunsOpen(true)}><Wand2 size={17}/>Aplicación OEM</button></div><div className="admin-inventory-tabs" role="group" aria-label="Vistas de inventario"><button className={!stockView ? 'selected' : ''} aria-pressed={!stockView} onClick={() => setStockView(false)}>Inventario interno</button><button className={stockView ? 'selected' : ''} aria-pressed={stockView} onClick={() => setStockView(true)}>Existencias por proveedor</button></div>{!stockView && <button type="button" className="button soft" onClick={()=>setAssistantOpen(true)}><BrainCircuit size={17}/>Asistente IA</button>}</div>}
     {notice && <div className="notice success admin-notice" role="status"><Check size={16}/>{notice}</div>}
     <Collection onTechnical={setTechnicalPart} onImages={setImagePart} key={kind} kind={kind} revision={revision} onEditPart={setPartEditor} onEditAlternate={setAlternateEditor} onEditMatch={setMatchEditor} onRemoveAlternate={setRemoveAlternate}/>
     <p className="admin-footnote">{kind === 'alternates' ? 'Los alternos de un SKU también aparecen en su editor de inventario interno. Cada artículo del proveedor mantiene su propio inventario e historial.' : kind === 'catalog' ? 'El SKU maestro no tiene marca. Sus referencias identifican piezas equivalentes; los artículos del proveedor conservan sus propios códigos y existencias.' : 'Los registros conservan el ID de inventario de cada proveedor y su vínculo con el SKU interno.'}</p>
     {matchingOpen && <SmartMatching onClose={()=>setMatchingOpen(false)} onSaved={()=>saved('Coincidencias actualizadas.')}/>}
     {suffixesOpen && <CatalogSuffixes onClose={()=>{ setSuffixesOpen(false); setRevision(value => value + 1); }}/>}
+    {oemRunsOpen && <OEMRuns onClose={()=>setOemRunsOpen(false)} onChanged={()=>setRevision(value => value + 1)}/>}
     {technicalPart && <PartTechnicalEditor part={technicalPart} onClose={() => setTechnicalPart(null)} onSaved={() => { setTechnicalPart(null); saved('Ficha técnica y aplicaciones guardadas.'); }}/>}
     {imagePart && <CatalogImages part={imagePart} onClose={() => setImagePart(null)} onChanged={() => setRevision(value => value + 1)}/>}
     {partEditor !== undefined && <PartEditor part={partEditor} onClose={() => setPartEditor(undefined)} onSaved={() => { setPartEditor(undefined); saved('SKU y alternos guardados.'); }}/>}

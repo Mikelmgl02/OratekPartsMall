@@ -18,6 +18,7 @@ from mall.catalog_import_issues import CatalogImportIssueList, CatalogImportIssu
 from mall.catalog_grouping import CatalogGroupingMerge
 from mall.oem_lookup import CatalogOEMLookup
 from mall.catalog_suffix_views import CompanySuffixes, SuffixDetail, SuffixList
+from mall.oem_finder_views import OEMApplyHaltView, OEMRunDetail, OEMRunList, OEMRunRevert, OEMRunSpotCheck
 from mall.catalog_media import CatalogImages, CatalogImageDetail, CatalogImageOrder
 from mall.catalog_grouping_suggestions import CatalogGroupingList, CatalogGroupingClassify
 from mall.supplier_import import SupplierInventoryImport, SupplierInventoryImportTemplate, SupplierInventoryImportJobView, SupplierInventoryImportErrors
@@ -66,6 +67,11 @@ urlpatterns = [
     path('api/v1/management/catalog/<uuid:pk>/images/', CatalogImages.as_view()),
     path('api/v1/management/catalog/<uuid:pk>/images/order/', CatalogImageOrder.as_view()),
     path('api/v1/management/catalog/<uuid:pk>/images/<uuid:image_id>/', CatalogImageDetail.as_view()),
+    path('api/v1/management/oem-finder/runs/', OEMRunList.as_view()),
+    path('api/v1/management/oem-finder/runs/<int:pk>/', OEMRunDetail.as_view()),
+    path('api/v1/management/oem-finder/runs/<int:pk>/spot-check/', OEMRunSpotCheck.as_view()),
+    path('api/v1/management/oem-finder/runs/<int:pk>/revert/', OEMRunRevert.as_view()),
+    path('api/v1/management/oem-finder/halt/', OEMApplyHaltView.as_view()),
     path('api/v1/management/matching/', MatchingOverview.as_view()),
     path('api/v1/management/matching/<uuid:pk>/', MatchingReview.as_view()),
     path('api/v1/management/inventory/', management.InventoryList.as_view()),
