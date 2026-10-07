@@ -184,13 +184,13 @@ class CatalogImport:
 
     def plan(self):
         rc, ix = self.report['counts'], self.ix
-        links_by_part, links_by_item, keys_by_link = defaultdict(set), defaultdict(set), {}
+        links_by_part, links_by_item, keys_by_link, oem_by_item = defaultdict(set), defaultdict(set), {}, {}
         self.targets = {}  # (pid, item) -> subgrupo for an unclassified SKU: the one its description names
         for n, item in enumerate(self.items):
             if not (item.get('brand_code') or '').strip():
                 rc['oem_only_items'] += 1  # an OEM number the catalog prints without a part of its own: OEM table only
                 continue
-            oem_keys = {compact(o['code']) for o in item.get('oem', []) if len(compact(o['code'])) >= 5}
+            oem_keys = oem_by_item[n] = {compact(o['code']) for o in item.get('oem', []) if len(compact(o['code'])) >= 5}
             brand_keys = {k for k in [compact(item['brand_code'])] + [compact(x['code']) for x in item.get('cross_refs', [])]
                           if len(k) >= 5 and re.search(r'\d', k)}
             candidates = {}
@@ -227,9 +227,10 @@ class CatalogImport:
         self.links = []
         for pid, items in links_by_part.items():
             if len(items) > 1:
-                # Several items of one product type matched through the same number (a catalog listing one part in two make
-                # sections, e.g. GMB GWDW-90A and GWG-90A for OEM 96352648): each claims to replace that number, so all link.
-                shared = set.intersection(*(keys_by_link[(pid, n)] for n in items))
+                # Several items of one product type matched through an OEM number they all print (a catalog listing one part in two
+                # make sections, e.g. GMB GWDW-90A and GWG-90A for OEM 96352648): each claims to replace that number, so all link.
+                # A shared competitor code is no such proof: ASVA prints SNR R177.27 for two bearings of different sizes.
+                shared = set.intersection(*(keys_by_link[(pid, n)] for n in items)) & set.intersection(*(oem_by_item[n] for n in items))
                 if not shared or len({self.items[n]['product_type'] for n in items}) > 1:
                     rc['ambiguous_parts'] += 1
                     self.note('ambiguous', {'sku': self.finder.by_id[self.fid[str(pid)]]['sku'], 'items': sorted(self.items[n]['brand_code'] for n in items)})
@@ -449,20 +450,37 @@ class CatalogImport:
         return '' if group == 'OTHER' else group
 
 
-def build_indexes(finder):
+def catalog_citations(datasets=()):
+    """Citations of every supplier catalog, imported before or in this run. The alternos a catalog wrote cite it, and they never act
+    as matching keys: otherwise a re-run, or the next catalog, would chain one catalog's competitor codes into links of its own (SNR
+    R177.27, printed for two different ASVA bearings, would hand the second bearing's measurements to the first one's SKU)."""
+    from .oem_reference_models import OEMReferenceSource
+    cited = set(OEMReferenceSource.objects.filter(kind='aftermarket_catalog').values_list('citation', flat=True).distinct())
+    return tuple(sorted({c for c in cited | {citation(d['catalog']) for d in datasets} if c}))
+
+
+def build_indexes(finder, imported=()):
+    """Matching keys (raw, oem) from the catalog's own data only, never from alternos citing a supplier catalog (imported); the
+    ownership indexes (codes, skus) hold every code so an imported alterno still counts as present or as owned."""
     from .models import Part, PartCode
     raw, oem, codes, skus = defaultdict(set), defaultdict(set), defaultdict(set), defaultdict(set)
     from .catalog_suffixes import clean_code
+
+    def own(ref):
+        return not (ref or '').startswith(imported) if imported else True
+
     for p in finder.learn:
         pid, P = p['id'], finder.parsed[p['id']]
         keys = {compact(p['sku'])} | {compact(s) for s in P['segs']}
-        keys |= {compact(c['code']) for c in finder.codes_by_part.get(pid, [])}
+        keys |= {compact(c['code']) for c in finder.codes_by_part.get(pid, []) if own(c.get('reference_source'))}
         for it in finder.items_by_part.get(pid, []):
             keys.add(compact(it['codigo']))
             keys |= {compact(s) for s in clean_code(it['codigo']).replace('_', '-').split(' ') if s}
         for k in keys - {''}:
             raw[k].add(str(pid))
         for it in P['interps']:
+            if it['source'] == 'alterno' and not own(it.get('reference_source')):
+                continue
             if it['source'] in ('sku', 'sku_prefixed', 'sku_segment', 'alterno', 'codigo', 'supplier_reference') and it.get('key'):
                 oem[it['key']].add(str(pid))
     # Finder snapshot ids and ORM ids differ in type (str vs UUID): every index keys parts by str(id).
@@ -482,7 +500,7 @@ def run(paths, *, apply=False, report_path=None, stdout=None):
 
     def execute():
         finder = OEMFinder(load_snapshot(), suffix_table())
-        indexes = build_indexes(finder)
+        indexes = build_indexes(finder, catalog_citations(datasets))
         reports = []
         for data in datasets:
             job = CatalogImport(data, finder, indexes)

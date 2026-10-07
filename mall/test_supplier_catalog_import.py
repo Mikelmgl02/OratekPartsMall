@@ -265,3 +265,24 @@ class MakeGroupTests(Fresh, TestCase):
             os.unlink(handle.name)
         self.assertEqual(result['catalogs'][0]['counts'].get('linked_parts', 0), 1)
         self.assertTrue(disc.codes.filter(brand='ATE', code='24.0125-0111.1').exists())
+
+
+class ChainedMatchTests(Fresh, TestCase):
+    def test_codes_a_catalog_wrote_never_link_another_item(self):
+        bearing = Part.objects.create(sku='DAC4072W-3CS35', description='BALINERA DEL SUZ SWIFT 04-10')
+        data = extract([item('DAC35620040', 'hub_bearing', oem=[('43440-78A00', 'SUZUKI')], cross_refs=[('SNR', 'R177.27')], name_es='RODAMIENTO DE RUEDA',
+                             specs=[('inner_diameter', 'DIÁMETRO INTERIOR', '35', 'mm')]),
+                        item('DAC40723336', 'hub_bearing', oem=[('09267-40001', 'SUZUKI')], cross_refs=[('KOYO', 'DAC4072W-3CS35'), ('SNR', 'R177.27')],
+                             name_es='RODAMIENTO DE RUEDA')],
+                       key='asva_hub', title='ASVA HUB', brand='ASVA', product_line='wheel_hub')
+        with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False, encoding='utf-8') as handle:
+            json.dump(data, handle, ensure_ascii=False)
+        try:
+            sci.run([handle.name], apply=True, stdout=io.StringIO())
+            self.assertTrue(bearing.codes.filter(code='R177.27').exists())  # written from DAC40723336, which printed the SKU itself
+            again = sci.run([handle.name], apply=True, stdout=io.StringIO())
+        finally:
+            os.unlink(handle.name)
+        self.assertEqual(again['catalogs'][0]['counts']['linked_parts'], 1)  # R177.27 is not a key: DAC35620040 stays unlinked
+        self.assertFalse(bearing.codes.filter(code='DAC35620040').exists())
+        self.assertFalse(bearing.specifications.exists())
