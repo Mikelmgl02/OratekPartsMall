@@ -1974,3 +1974,26 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .results-heading>h2 { flex-shrink:0; margin:0 12px 0 0; font-size:16px; letter-spacing:-.3px; color:var(--ink); }
 .results-heading>p { margin-right:auto; }
 @media(max-width:900px) { .results-heading>h2 { display:none; } }
+
+/* Business areas (Administración, panel de proveedor): EssaMobileApp's dark rail in MotionPartes colours. Muted icons, a tinted
+   hover, and the active item in lime with a glowing bar on its left edge. */
+.admin-sidebar,.supplier-sidebar { background:#1c231f; border-color:#2b352e; color:#c9d3c0; box-shadow:0 14px 34px #10180f2e; }
+.admin-sidebar-title,.supplier-sidebar-heading { border-bottom-color:#2e3931; color:#eef3e6; }
+.admin-sidebar-title>svg { color:var(--green); }
+.admin-sidebar-title strong,.supplier-sidebar-heading strong { color:#f4f8ef; }
+.admin-sidebar-title span,.supplier-sidebar-heading small { color:#8f9d84; }
+.supplier-sidebar-heading>span { background:#2a352d; color:var(--green); }
+.admin-nav-group>span,.supplier-sidebar-label { color:#7f8c74; }
+.admin-nav-group a,.supplier-workspace-tabs>button { position:relative; color:#aab6a0; transition:background .15s,color .15s; }
+.admin-nav-group a:hover,.supplier-workspace-tabs>button:not([aria-selected="true"]):hover { background:#2a332c; color:#f4f8ef; }
+.admin-nav-group a.selected,.supplier-workspace-tabs>button[aria-selected="true"] { background:#29352b; color:var(--green); font-weight:700; }
+.admin-nav-group a.selected::before,.supplier-workspace-tabs>button[aria-selected="true"]::before { content:''; position:absolute; left:-6px; top:9px; bottom:9px; width:3px; border-radius:0 3px 3px 0; background:var(--green); box-shadow:0 0 8px #dcf39ecc; }
+.admin-nav-group a:focus-visible,.supplier-workspace-tabs>button:focus-visible { outline:2px solid var(--green); outline-offset:1px; }
+.supplier-workspace-tabs small { color:#7f8c74; }
+.supplier-workspace-tabs>button[aria-selected="true"] small { color:#b9c99e; }
+.admin-sidebar-user { border-top-color:#2e3931; }
+.admin-sidebar-user strong { color:#e6eddc; }
+.admin-sidebar-user span:not(.live-dot) { color:#8f9d84; }
+.admin-sidebar-collapse { color:#9aa78f; }
+.admin-sidebar-collapse:hover { background:#2a332c; color:#f4f8ef; }
+.admin-layout.is-collapsed .admin-nav-group+.admin-nav-group { border-top-color:#2e3931; }
