@@ -202,6 +202,8 @@ class EquivalentsTests(Fresh, APITestCase):
         detail = self.client.get(f'{URL}{self.sister.pk}/').json()
         self.assertEqual([(c['brand'], c['code'], c['citations']) for c in detail['cross_references']],
                          [('AIRTEX', 'AW-1698', ['ASVA 2017 · pág. 9']), ('AISIN', 'WPT-111', ['GMB 2016 · pág. 5'])])
+        self.assertEqual(sorted(r['code'] for r in self.client.get(URL, {'q': 'wpt 111'}).json()['results']), ['1610029155', '1610029156'])
+        self.assertEqual([r['code'] for r in self.client.get(URL, {'q': 'GWT-101A'}).json()['results']], ['1610029155'])
         lone = number('TOYOTA', '16100-00001')
         self.assertEqual([r['code'] for r in self.client.get(URL, {'linked': 'false'}).json()['results']], [lone.code])
         self.assertEqual(linked_parts([lone])[lone.pk], [])

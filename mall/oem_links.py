@@ -1,6 +1,7 @@
 """OEM cross-references and SKU links (alternos, step 2a). Aftermarket codes hang off the OEM number they replace (OEMCrossReference),
 and a SKU reaches them through its OEM numbers: its OEM alternos, the number its own code names and the numbers a supplier catalog
-printed for the item matched to it (PartOEMLink).
+printed for the item matched to it (PartOEMLink). Catalog search (search_q) and supplier matching (reach_index, read by
+mall.matching_engine.MatchIndex) find SKUs through those numbers and codes (step 2b).
 
     python -m mall.link_oem_numbers --dry-run|--apply
 
@@ -13,6 +14,7 @@ import re
 from collections import defaultdict
 
 from django.db import OperationalError, ProgrammingError, connection, transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from .oem_reference_models import OEMCrossReference, OEMReference, PartOEMLink, citation_list, compact, manufacturer_name
@@ -20,6 +22,7 @@ from .oem_reference_models import OEMCrossReference, OEMReference, PartOEMLink, 
 log = logging.getLogger(__name__)
 CHUNK = 5000
 MIN_KEY = 5  # shorter codes, or codes without a digit, name no OEM number
+MIN_SEARCH = 4  # letters and digits a search needs before it looks through OEM numbers and aftermarket codes
 VIA_ORDER = ['oem', 'sku_name', 'catalog']  # how a SKU reaches a number, strongest first
 # Catalog manufacturers the OEM finder's make tokens do not name, mapped to the finder's canonical make.
 EXTRA_MAKES = {'SEAT': 'VAG', 'CUPRA': 'VAG', 'MINI': 'BMW', 'MERCURY': 'FORD', 'GM': 'CHEVROLET'}
@@ -204,6 +207,49 @@ def part_equivalents(part):
     for entry in codes.values():
         entry['numbers'].sort(key=order.get)  # in the order the numbers are listed
     return {'numbers': numbers, 'cross_references': list(codes.values())}
+
+
+def search_q(text):
+    """Q for catalog SKUs that reach an OEM number, or an aftermarket code filed under one, containing the text compared compact
+    (16100 39315, gwt41a); None for text with fewer than MIN_SEARCH letters or digits. Uncorrelated subqueries, no Python lists."""
+    from .models import PartCode
+    key = compact(text)
+    if len(key) < MIN_SEARCH:
+        return None
+    refs = Q(reference__in=OEMReference.objects.filter(code__contains=key).values('pk')) | \
+        Q(reference__in=OEMCrossReference.objects.filter(number__contains=key).values('reference_id'))
+    alternos = Q(oem_reference__in=OEMReference.objects.filter(code__contains=key).values('pk')) | \
+        Q(oem_reference__in=OEMCrossReference.objects.filter(number__contains=key).values('reference_id'))
+    return (Q(pk__in=PartOEMLink.objects.filter(refs).values('part_id'))
+            | Q(pk__in=PartCode.objects.filter(alternos, ref_type='oem').values('part_id')))
+
+
+def reach_index(part_ids):
+    """The OEM library as supplier matching reads it, for these canonical SKUs (string ids): {reference id: {part id}} through OEM
+    alternos and links; {compact number: {(reference id, manufacturer)}} of the numbers some SKU reaches; {(brand, compact code):
+    ({reference id}, {printed code})} of the aftermarket codes filed under those numbers."""
+    from .models import PartCode
+    part_ids = {str(pk) for pk in part_ids}
+    reaching = defaultdict(set)
+    rows = [*PartCode.objects.filter(ref_type='oem', oem_reference__isnull=False).values_list('oem_reference_id', 'part_id'),
+            *PartOEMLink.objects.values_list('reference_id', 'part_id')]
+    for ref_id, part_id in rows:
+        if str(part_id) in part_ids:
+            reaching[str(ref_id)].add(str(part_id))
+    numbers, aftermarket = defaultdict(set), {}
+    for chunk in chunks(sorted(reaching)):
+        for pk, manufacturer, code in OEMReference.objects.filter(pk__in=chunk).values_list('pk', 'manufacturer', 'code'):
+            numbers[code].add((str(pk), manufacturer))
+        for ref_id, brand, number, code in OEMCrossReference.objects.filter(reference_id__in=chunk).values_list('reference_id', 'brand', 'number', 'code'):
+            refs, printed = aftermarket.setdefault((brand, number), (set(), set()))
+            refs.add(str(ref_id))
+            printed.add(code)
+    return dict(reaching), dict(numbers), aftermarket
+
+
+def same_make(a, b):
+    """Two manufacturer names agree: equal, or in the same OEM finder make group (LEXUS and TOYOTA, JEEP and DODGE)."""
+    return manufacturer_name(a) == manufacturer_name(b) or bool(make_group(a)) and make_group(a) == make_group(b)
 
 
 def guarded(sync, *args):

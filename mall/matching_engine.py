@@ -2,6 +2,11 @@
 
 Deterministic evidence can apply a match. Semantic similarity and AI only rank
 review candidates. Stock ingestion never waits for an AI response.
+
+When no SKU, alterno or remembered mapping carries a code, the OEM library is
+read as a fallback: an OEM number linked to a SKU (by its code, a catalog or an
+OEM alterno) or an aftermarket code a catalog files under such a number. It
+applies only when it reaches exactly one SKU; duplicates go to review.
 """
 import hashlib
 import json
@@ -15,6 +20,7 @@ from rest_framework.exceptions import ValidationError
 from .catalog_families import normalized_reference, supplier_base, application, family_candidates
 from .models import Account, Part, PartCode, SupplierItem, SupplierCodeMapping, MatchingCase, MatchingDecision
 from .matching_queue import matching_work
+from .oem_links import reach_index, same_make
 
 VERSION = 'matching-3-oem-identity'
 
@@ -124,6 +130,8 @@ class MatchIndex:
                 self.base[normalized].add(row['id'])
                 if alias['kind'] == 'oem':
                     self.oem_codes[normalized].add(row['id'])
+        # SKUs reached through the OEM library: numbers linked to them and the aftermarket codes filed under those numbers.
+        self.reaching, self.numbers, self.aftermarket = reach_index(self.parts)
         # Follow retired parents so reviewed mappings survive future catalog merges.
         self.mappings = {}
         self.portable = defaultdict(set)
@@ -134,6 +142,31 @@ class MatchIndex:
                 if mapping.actor_id and mapping.brand and detailed(mapping.description):
                     self.portable[(normalized_reference(mapping.code), mapping.brand, description(mapping.description))].add(str(part.pk))
 
+    def oem_targets(self, refs):
+        return set().union(*(self.reaching.get(ref, set()) for ref in refs))
+
+    def number_targets(self, code, manufacturer=''):
+        """SKUs linked to this OEM number; under the manufacturer's make when one is given."""
+        return self.oem_targets(ref for ref, maker in self.numbers.get(code, ()) if not manufacturer or same_make(maker, manufacturer))
+
+    def aftermarket_targets(self, code, brand):
+        """SKUs reaching an OEM number a catalog prints this brand's code for (GMB GWT-41A -> TOYOTA 1610039315)."""
+        entry = self.aftermarket.get((' '.join(brand.upper().split()), code)) if brand else None
+        return self.oem_targets(entry[0]) if entry else set()
+
+    def printed_aftermarket(self, codigo, brand):
+        entry = self.aftermarket.get((' '.join(brand.upper().split()), normalized_reference(codigo))) if brand else None
+        return bool(entry) and ' '.join(codigo.upper().split()) in entry[1]
+
+    def equivalent_targets(self, code, brand='', ref_type='unknown'):
+        """A reference through the OEM library: an OEM number linked to a SKU, or a brand's aftermarket code filed under one."""
+        if ref_type == 'oem':
+            return self.number_targets(code, brand)
+        found = self.aftermarket_targets(code, brand)
+        if found or ref_type == 'company':
+            return found
+        return self.number_targets(code, brand) if len(code) >= 8 else set()
+
     def reference_targets(self, rows):
         targets = set()
         for row in rows:
@@ -141,15 +174,17 @@ class MatchIndex:
             ref_type = row.get('ref_type', 'unknown')
             if ref_type in ['oem', 'company']:
                 if brand:
-                    targets |= self.typed_codes.get((code, brand, ref_type), set())
+                    found = set(self.typed_codes.get((code, brand, ref_type), set()))
                     if ref_type == 'oem':
-                        targets |= self.unbranded_oem_masters.get(code, set())
+                        found |= self.unbranded_oem_masters.get(code, set())
                 else:
-                    targets |= self.oem_codes.get(code, set()) if ref_type == 'oem' else set()
+                    found = set(self.oem_codes.get(code, set())) if ref_type == 'oem' else set()
             elif brand:
-                targets |= self.codes.get((code, brand), set()) | self.codes.get((code, ''), set())
+                found = self.codes.get((code, brand), set()) | self.codes.get((code, ''), set())
             else:
-                targets |= self.all_codes.get(code, set())
+                found = set(self.all_codes.get(code, set()))
+            # The OEM library only answers when no SKU or alterno carries the reference.
+            targets |= found or self.equivalent_targets(code, brand, ref_type)
         return targets
 
     def resolve(self, item):
@@ -157,7 +192,8 @@ class MatchIndex:
         candidates, reasons = set(), []
         from .catalog_identity import company_reference
         company = company_reference(item.codigo)
-        known_company = self.codes.get((normalized_reference(company['code']), company['brand']), set()) if company and item.brand in ['', company['brand']] else set()
+        company = company if company and item.brand in ['', company['brand']] else None
+        known_company = self.codes.get((normalized_reference(company['code']), company['brand']), set()) if company else set()
         exact = known_company | self.codes.get((code, ''), set()) | self.codes.get((code, item.brand), set()) | self.oem_codes.get(code, set())
         remembered = self.mappings.get((str(item.supplier_id), code, item.brand))
         declared = self.reference_targets(item.references)
@@ -194,6 +230,25 @@ class MatchIndex:
             target = self.parts[next(iter(learned))]
             if not spec_conflict(item.description, target['description']):
                 return [target], 'reviewed_brand_spec', True, 'Código y marca confirmados en otro proveedor con especificaciones idénticas.'
+        if not exact and not remembered and not learned:
+            # The OEM library: the code is an aftermarket code a catalog files under an OEM number a SKU reaches, or that number itself.
+            aftermarket = self.aftermarket_targets(code, item.brand)
+            if company:
+                aftermarket |= self.aftermarket_targets(normalized_reference(company['code']), company['brand'])
+            linked = self.number_targets(code) if len(code) >= 8 else set()
+            reached = aftermarket | linked
+            candidates |= reached
+            if len(reached) == 1:
+                target = self.parts[next(iter(reached))]
+                literal = target['id'] in aftermarket and (self.printed_aftermarket(item.codigo, item.brand)
+                                                           or bool(company) and self.printed_aftermarket(company['code'], company['brand']))
+                if (literal or len(code) >= 8) and not spec_conflict(item.description, target['description']):
+                    if target['id'] in aftermarket:
+                        return [target], 'aftermarket_code', True, 'Código de marca de repuesto que un catálogo imprime para un número OEM del SKU.'
+                    return [target], 'linked_oem_number', True, 'El código es un número OEM vinculado al SKU, por su propio código o por un catálogo de repuesto.'
+                reasons.append('El código equivale por número OEM a un SKU, pero las especificaciones o un código corto requieren revisión.')
+            elif reached:
+                reasons.append('El código equivale por número OEM a varios SKU, posibles duplicados: agrúpalos con Agrupar SKU o elige el correcto.')
         base = supplier_base(item.codigo)
         family = self.base.get(normalized_reference(base or item.codigo), set())
         candidates |= family

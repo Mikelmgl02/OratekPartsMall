@@ -380,9 +380,21 @@ class ManagedAlternateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('Este alterno ya está registrado.')
 
 
+class CatalogSearch(filters.SearchFilter):
+    """The search fields, or an OEM number the SKU reaches or an aftermarket code filed under one (mall.oem_links.search_q)."""
+
+    def filter_queryset(self, request, queryset, view):
+        from .oem_links import search_q
+        terms = self.get_search_terms(request)
+        matched = super().filter_queryset(request, queryset, view)
+        library = search_q(' '.join(terms)) if terms else None
+        # DRF removes duplicates with an Exists subquery, and the library adds pk__in subqueries: both sides stay row-unique.
+        return matched | queryset.filter(library) if library is not None else matched
+
+
 class CatalogList(SuperuserMixin, generics.ListCreateAPIView):
     serializer_class = ManagedPartSerializer
-    filter_backends = [filters.SearchFilter, StableOrdering]
+    filter_backends = [CatalogSearch, StableOrdering]
     search_fields = ['sku', 'name', 'description', 'codes__code', 'codes__brand']
     ordering_fields = ['sku', 'name', 'description', 'category', 'subcategory', 'active', 'is_OEM', 'stock_record_count']
     queryset = Part.objects.filter(merged_into__isnull=True).annotate(stock_record_count=Count('supplier_items', distinct=True)).prefetch_related('codes', 'images').order_by('sku', 'id')

@@ -19,7 +19,7 @@ from . import oem_reference as orf
 from .catalog_suffix_models import values
 from .management import IsSuperuser, UppercaseCharField
 from .models import Part
-from .oem_links import part_equivalents
+from .oem_links import MIN_SEARCH, part_equivalents
 from .oem_links import tables_ready as oem_links_ready
 from .oem_reference_models import (LINK_SOURCES, MANUAL_KINDS, REFERENCE_STATUSES, SOURCE_KINDS, OEMCrossReference, OEMReference,
                                    OEMReferenceSource, compact, manufacturer_name)
@@ -336,7 +336,8 @@ class OEMReferenceList(APIView):
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_oem_references_list', responses=OEMReferenceListResponse, parameters=[
-        OpenApiParameter('q', OpenApiTypes.STR, description='Inicio del número compacto, una forma impresa, la descripción o el tipo de pieza.'),
+        OpenApiParameter('q', OpenApiTypes.STR, description='Inicio del número compacto, una forma impresa, la descripción, el tipo de pieza o un código de '
+                                                       'marca de repuesto equivalente (desde 4 letras o dígitos).'),
         OpenApiParameter('manufacturer', OpenApiTypes.STR, description='Fabricante exacto (TOYOTA, HYUNDAI, KIA...).'),
         OpenApiParameter('status', OpenApiTypes.STR, enum=values(REFERENCE_STATUSES)),
         OpenApiParameter('source_kind', OpenApiTypes.STR, enum=values(SOURCE_KINDS), description='Con al menos una fuente de ese tipo.'),
@@ -350,7 +351,11 @@ class OEMReferenceList(APIView):
         text = ' '.join(params.get('q', '').upper().split())
         if text:
             match = Q(printed_forms__icontains=text) | Q(description__icontains=text) | Q(part_type__icontains=text)
-            rows = rows.filter(match | Q(code__startswith=compact(text)) if compact(text) else match)
+            if compact(text):
+                match |= Q(code__startswith=compact(text))
+            if len(compact(text)) >= MIN_SEARCH:  # an aftermarket code filed under the number (GWT-41A -> TOYOTA 1610039315)
+                match |= Q(pk__in=OEMCrossReference.objects.filter(number__contains=compact(text)).values('reference_id'))
+            rows = rows.filter(match)
         if params.get('manufacturer'):
             rows = rows.filter(manufacturer=manufacturer_name(params['manufacturer']))
         for key, choices in (('status', REFERENCE_STATUSES), ('source_kind', SOURCE_KINDS)):

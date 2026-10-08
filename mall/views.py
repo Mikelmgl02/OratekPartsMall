@@ -16,6 +16,7 @@ from .serializers import AccountSerializer, InventorySerializer, OfferSerializer
 from .services import ingest_inventory
 from .catalog_availability import catalog_availability
 from .catalog_filters import apply_filters, catalog_facets, filter_values
+from .oem_links import search_q
 
 def account_for(user, account_id, capability=None):
     account = get_object_or_404(Account, pk=account_id, active=True, memberships__user=user)
@@ -71,10 +72,13 @@ class AccountList(generics.ListAPIView):
 def catalog_parts(search=''):
     query = Part.objects.filter(active=True, merged_into__isnull=True)
     if search:
-        query = query.filter(Q(sku__icontains=search) | Q(name__icontains=search) | Q(description__icontains=search)
-                             | Q(category__icontains=search) | Q(subcategory__icontains=search)
-                             | Q(codes__code__icontains=search) | Q(codes__brand__icontains=search)
-                             | Q(supplier_items__codigo__icontains=search, supplier_items__matching_status='matched', supplier_items__supplier__active=True)).distinct()
+        match = (Q(sku__icontains=search) | Q(name__icontains=search) | Q(description__icontains=search)
+                 | Q(category__icontains=search) | Q(subcategory__icontains=search)
+                 | Q(codes__code__icontains=search) | Q(codes__brand__icontains=search)
+                 | Q(supplier_items__codigo__icontains=search, supplier_items__matching_status='matched', supplier_items__supplier__active=True))
+        # Also through the OEM library: an OEM number the SKU reaches, or an aftermarket code filed under one (separators ignored).
+        library = search_q(search)
+        query = query.filter(match | library if library is not None else match).distinct()
     return query
 
 
