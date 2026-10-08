@@ -18,6 +18,8 @@ export function identityText(part: ManagedPart) {
   return `${main}${!part.is_OEM ? part.identity?.status === 'choose_oem' ? ' · ELEGIR OEM' : ' · OEM PENDIENTE' : ''}`;
 }
 const describe = (part?: ManagedPart) => part ? part.description || (part.name !== part.sku ? part.name : '') : '';
+export const subgroupLabel = (part?: Pick<ManagedPart, 'category' | 'subcategory'>) => [part?.category, part?.subcategory].filter(Boolean).join(' / ');
+export const parseSubgroup = (label: unknown) => { const [category = '', subcategory = ''] = String(label || '').split(' / '); return { category, subcategory }; };
 const codeText = (part?: ManagedPart) => part?.codes.map(code => `${code.code} · ${referenceLabel(code)}`).join('\n') || '';
 
 // ---------------------------------------------------------------- Inventario interno
@@ -48,14 +50,31 @@ function PartActions({ data, context }: Cell<ManagedPart>) {
   </div>;
 }
 export const catalogOrdering: Record<string, string> = { sku: 'sku', description: 'description', subgroup: 'category,subcategory', active: 'active', stock: 'stock_record_count' };
-export function catalogColumns(wide: boolean): ColDef<ManagedPart>[] {
+// subgroups: the catalog's group / subgroup labels while cells are editable (Editar celdas); null keeps the grid read-only. Description,
+// group / subgroup and status edit in place; the SKU and its alternos keep the dialog, since renaming a MAIN has side effects.
+export function catalogColumns(wide: boolean, subgroups: string[] | null = null): ColDef<ManagedPart>[] {
+  const editable = subgroups !== null;
+  const cellClass = (base: string) => editable ? [...base.split(' '), 'quotation-editable-cell'] : base;
   return [
     { colId: 'sku', headerName: 'SKU interno', width: 214, minWidth: 170, pinned: wide ? 'left' : undefined, cellRenderer: SkuCell, tooltipValueGetter: ({ data }) => data?.sku },
-    { colId: 'description', headerName: 'Descripción', valueGetter: ({ data }) => describe(data), flex: 1.2, minWidth: 200, cellClass: 'admin-grid-text', tooltipValueGetter: ({ data }) => describe(data) },
+    { colId: 'description', headerName: 'Descripción', field: 'description', valueFormatter: ({ data }) => describe(data), flex: 1.2, minWidth: 200, cellClass: cellClass('admin-grid-text'),
+      tooltipValueGetter: ({ data }) => describe(data), editable, cellEditor: 'agTextCellEditor', cellDataType: false },
     { colId: 'codes', headerName: 'Alternos', cellRenderer: CodesCell, flex: 1, minWidth: 230, tooltipValueGetter: ({ data }) => codeText(data) },
     { colId: 'stock', headerName: 'Existencias', valueGetter: ({ data }) => data?.stock_record_count ?? null, valueFormatter: ({ value }) => value === null ? '' : number(value), width: 112, type: 'rightAligned', cellClass: ['ag-right-aligned-cell', 'admin-grid-number'] },
-    { colId: 'active', headerName: 'Estado', width: 100, cellRenderer: ActiveCell },
-    { colId: 'subgroup', headerName: 'Grupo / subgrupo', valueGetter: ({ data }) => [data?.category, data?.subcategory].filter(Boolean).join(' / ') || '—', width: 190, cellClass: 'admin-grid-text muted', tooltipValueGetter: ({ data }) => [data?.category, data?.subcategory].filter(Boolean).join(' / ') },
+    // The select editor labels its options with the column's valueFormatter (the renderer still draws the cell).
+    { colId: 'active', headerName: 'Estado', field: 'active', width: 110, cellRenderer: ActiveCell, valueFormatter: ({ value }) => value ? 'ACTIVO' : 'INACTIVO',
+      cellClass: cellClass(''), editable, cellEditor: 'agSelectCellEditor', cellEditorParams: { values: [true, false] }, cellDataType: false },
+    { colId: 'subgroup', headerName: 'Grupo / subgrupo', valueGetter: ({ data }) => subgroupLabel(data), valueFormatter: ({ value }) => value || '—', width: 210,
+      cellClass: cellClass('admin-grid-text muted'), tooltipValueGetter: ({ data }) => subgroupLabel(data), cellDataType: false, editable,
+      valueSetter: ({ data, newValue }) => {
+        const next = parseSubgroup(newValue);
+        if (data.category === next.category && data.subcategory === next.subcategory) return false;
+        Object.assign(data, next);
+        return true;
+      },
+      cellEditor: 'agRichSelectCellEditor', cellEditorPopup: true,
+      cellEditorParams: { values: ['', ...(subgroups ?? [])], allowTyping: true, filterList: true, searchType: 'matchAny', highlightMatch: true, valueListMaxHeight: 320,
+                          formatValue: (value: string) => value || 'SIN CLASIFICAR' } },
     { colId: 'actions', headerName: 'Acciones', width: 214, pinned: wide ? 'right' : undefined, cellRenderer: PartActions, suppressHeaderMenuButton: true, resizable: false },
   ];
 }

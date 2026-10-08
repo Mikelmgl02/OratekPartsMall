@@ -1,10 +1,11 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Boxes, BrainCircuit, Check, ClipboardCheck, Combine, FileSpreadsheet, FileWarning, Layers3, Library, LoaderCircle, Plus, Repeat2, Search, Tags, Wand2, Warehouse } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { CellValueChangedEvent, GridApi } from 'ag-grid-community';
+import { Boxes, BrainCircuit, Check, ClipboardCheck, Combine, FileSpreadsheet, FileWarning, Layers3, Library, LoaderCircle, PencilLine, Plus, Repeat2, Search, Tags, Wand2, Warehouse } from 'lucide-react';
 import { CatalogGroupingCandidate, CatalogImportIssuePage, ManagedAlternate, ManagedPart, ManagedStockItem, request } from '@/lib/types';
 import ServerGrid from './server-grid';
-import { alternateColumns, alternateOrdering, CatalogGridActions, catalogColumns, catalogOrdering, stockColumns, stockOrdering } from './admin-catalog-grids';
+import { alternateColumns, alternateOrdering, CatalogGridActions, catalogColumns, catalogOrdering, parseSubgroup, stockColumns, stockOrdering } from './admin-catalog-grids';
 import { AlternateEditor, MatchEditor, PartEditor, RemoveAlternate } from './admin-catalog-editors';
 import { UppercaseInput } from './uppercase-field';
 import CatalogImport from './admin-catalog-import';
@@ -21,6 +22,9 @@ import type { AlternateReviewList } from '@/lib/oem-reference-types';
 import { PartTechnicalEditor } from './part-technical';
 
 type Kind = 'catalog' | 'inventory' | 'alternates';
+type CellStatus = { kind: 'saving' | 'saved' | 'error'; text: string };
+const editedColumns: Record<string, string> = { description: 'Descripción', subgroup: 'Grupo / subgrupo', active: 'Estado' };
+const errorText = (error: unknown) => error instanceof Error ? error.message : 'No se pudo guardar el cambio. Inténtalo de nuevo.';
 
 export default function AdminCatalogSection({ section }: { section: 'inventory' | 'alternates' }) {
   const [technicalPart, setTechnicalPart] = useState<ManagedPart | null>(null);
@@ -108,10 +112,44 @@ function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditA
   const [count, setCount] = useState<number | null>(null);
   // Columns pin to the sides only where there is room for them next to the scrolling middle.
   const [wide] = useState(() => typeof window === 'undefined' || window.innerWidth >= 900);
+  // Editar celdas: description, group / subgroup and status save in place, one cell at a time, without the SKU dialog.
+  const [editing, setEditing] = useState(false);
+  const [subgroups, setSubgroups] = useState<string[] | null>(null);
+  const [cellStatus, setCellStatus] = useState<CellStatus | null>(null);
+  const grid = useRef<GridApi<ManagedPart> | null>(null);
   useEffect(() => { const timer = setTimeout(() => setQuery(search.trim()), 300); return () => clearTimeout(timer); }, [search]);
+  useEffect(() => {
+    if (!editing || subgroups) return;
+    let live = true;
+    request<{ results: { category: string; subcategory: string }[] }>('/api/management/catalog/taxonomy')
+      .then(result => { if (live) setSubgroups(result.results.map(row => `${row.category} / ${row.subcategory}`)); })
+      .catch(error => { if (live) { setEditing(false); setCellStatus({ kind: 'error', text: errorText(error) }); } });
+    return () => { live = false; };
+  }, [editing, subgroups]);
   const actions = useMemo<CatalogGridActions>(() => ({ onEditPart, onTechnical, onImages, onEditAlternate, onRemoveAlternate, onEditMatch }), [onEditPart, onTechnical, onImages, onEditAlternate, onRemoveAlternate, onEditMatch]);
   const params = useMemo(() => ({ search: query, is_OEM: kind === 'catalog' ? oemFilter : '' }), [query, oemFilter, kind]);
-  const partColumns = useMemo(() => catalogColumns(wide), [wide]);
+  const partColumns = useMemo(() => catalogColumns(wide, editing ? subgroups : null), [wide, editing, subgroups]);
+  const saveCell = useCallback(async (event: CellValueChangedEvent<ManagedPart>) => {
+    const part = event.data, column = event.column.getColId();
+    if (!part || !(column in editedColumns)) return;
+    const fields = column === 'description' ? { description: part.description } : column === 'subgroup' ? { category: part.category, subcategory: part.subcategory } : { active: part.active };
+    const restore = column === 'description' ? { description: event.oldValue ?? '' } : column === 'subgroup' ? parseSubgroup(event.oldValue) : { active: event.oldValue };
+    setCellStatus({ kind: 'saving', text: `Guardando ${part.sku}…` });
+    try {
+      // The current OEM flag makes it a plain field edit: the dialog's OEM preference (which may rename the SKU) does not run.
+      const saved = await request<ManagedPart>(`/api/management/catalog/${part.id}`, { method: 'PATCH', body: JSON.stringify({ ...fields, is_OEM: part.is_OEM }) });
+      event.node.setData(saved);
+      setCellStatus({ kind: 'saved', text: `${saved.sku} · ${editedColumns[column]} guardado.` });
+    } catch (error) {
+      event.node.setData({ ...part, ...restore });
+      setCellStatus({ kind: 'error', text: `${part.sku}: ${errorText(error)}` });
+    }
+  }, []);
+  const editProps = useMemo(() => ({ onCellValueChanged: saveCell, stopEditingWhenCellsLoseFocus: true, undoRedoCellEditing: true }), [saveCell]);
+  function toggleEditing() {
+    grid.current?.stopEditing();
+    setEditing(value => !value); setCellStatus(null);
+  }
   const codeColumns = useMemo(() => alternateColumns(wide), [wide]);
   const label = kind === 'catalog' ? 'Buscar repuestos' : kind === 'inventory' ? 'Buscar existencias' : 'Buscar alternos';
   const filtered = !!(query || oemFilter);
@@ -120,9 +158,14 @@ function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditA
     <div className="inventory-filters">
       <div className="catalog-search admin-search"><Search size={19}/><label className="sr-only" htmlFor="catalog-admin-search">{label}</label><UppercaseInput id="catalog-admin-search" value={search} onChange={event => setSearch(event.target.value)} placeholder={kind === 'catalog' ? 'SKU, nombre o código alterno…' : kind === 'inventory' ? 'Proveedor, marca o código del repuesto…' : 'SKU interno, código alterno o marca…'}/></div>
       {kind === 'catalog' && <label className="inventory-filter-select"><span>Tipo de SKU</span><select aria-label="Tipo de SKU" value={oemFilter} onChange={event => setOemFilter(event.target.value)}><option value="">TODOS</option><option value="true">OEM</option><option value="false">SIN MARCAR COMO OEM</option></select></label>}
+      {kind === 'catalog' && <button type="button" className={`inventory-edit-toggle${editing ? ' selected' : ''}`} aria-pressed={editing} onClick={toggleEditing}><PencilLine size={15} aria-hidden="true"/>{editing ? 'Editando celdas' : 'Editar celdas'}</button>}
       <span className="inventory-count" aria-live="polite">{count === null ? <><LoaderCircle className="spin" size={13}/>Cargando…</> : `${count.toLocaleString('es-PA')} ${count === 1 ? 'resultado' : 'resultados'}`}</span>
     </div>
-    {kind === 'catalog' ? <ServerGrid<ManagedPart> storageKey="admin-catalog" label="Inventario interno" path="/api/management/catalog" params={params} columns={partColumns} rowId={part => part.id} ordering={catalogOrdering} revision={revision} rowHeight={64} context={actions} empty={empty} onCount={setCount}/>
+    {kind === 'catalog' && editing && <p className="inventory-edit-hint">{subgroups ? 'Selecciona una celda resaltada y escribe, o haz doble clic. Enter guarda, Esc cancela y Ctrl+Z deshace. El SKU y sus alternos se editan con Editar.' : 'Cargando grupos y subgrupos…'}
+      {cellStatus && cellStatus.kind !== 'error' && <span className={`inventory-edit-status ${cellStatus.kind}`} role="status">{cellStatus.text}</span>}</p>}
+    {cellStatus?.kind === 'error' && <div className="notice error" role="alert">{cellStatus.text}<button type="button" onClick={() => setCellStatus(null)}>Cerrar</button></div>}
+    {kind === 'catalog' ? <ServerGrid<ManagedPart> storageKey="admin-catalog" label="Inventario interno" path="/api/management/catalog" params={params} columns={partColumns} rowId={part => part.id} ordering={catalogOrdering} revision={revision} rowHeight={64} context={actions} empty={empty} onCount={setCount}
+      gridProps={editProps} onReady={api => { grid.current = api; }}/>
       : kind === 'inventory' ? <ServerGrid<ManagedStockItem> storageKey="admin-stock" label="Existencias por proveedor" path="/api/management/inventory" params={params} columns={stockColumns} rowId={item => String(item.id)} ordering={stockOrdering} revision={revision} rowHeight={58} context={actions} empty={empty} onCount={setCount}/>
       : <ServerGrid<ManagedAlternate> storageKey="admin-alternates" label="Alternos" path="/api/management/alternates" params={params} columns={codeColumns} rowId={alternate => String(alternate.id)} ordering={alternateOrdering} revision={revision} rowHeight={58} context={actions} empty={empty} onCount={setCount}/>}
   </>;

@@ -4,7 +4,10 @@ from django.db import IntegrityError, transaction
 from django.db.models import Count, F, Q, Value
 from django.db.models.functions import Greatest
 from django.utils import timezone
+from drf_spectacular.utils import extend_schema
 from rest_framework import filters, generics, permissions, serializers
+from rest_framework.response import Response
+from rest_framework.views import APIView
 from .list_ordering import StableOrdering
 from rest_framework.authtoken.models import Token
 from rest_framework.exceptions import ValidationError
@@ -407,6 +410,24 @@ class CatalogList(SuperuserMixin, generics.ListCreateAPIView):
                 raise serializers.ValidationError({'is_OEM': 'Usa true o false.'})
             queryset = queryset.filter(is_OEM=value.lower() == 'true')
         return queryset
+
+
+class TaxonomyPair(serializers.Serializer):
+    category = serializers.CharField()
+    subcategory = serializers.CharField()
+
+
+class TaxonomyResponse(serializers.Serializer):
+    results = TaxonomyPair(many=True)
+
+
+class CatalogTaxonomy(SuperuserMixin, APIView):
+    @extend_schema(operation_id='v1_management_catalog_taxonomy', responses=TaxonomyResponse,
+                   description='Los grupos y subgrupos del catálogo (las reglas de clasificación y los tipos de repuesto existentes), para elegir uno sin '
+                               'crear subgrupos nuevos por error.')
+    def get(self, request):
+        from .category_suggestions import taxonomy
+        return Response({'results': [{'category': category, 'subcategory': subcategory} for category, subcategory in taxonomy()]})
 
 
 class CatalogDetail(SuperuserMixin, generics.RetrieveUpdateAPIView):

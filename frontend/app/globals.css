@@ -2076,3 +2076,13 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .alt-review-actions { display:flex; flex-wrap:wrap; align-items:center; gap:6px; flex-shrink:0; }
 .alt-review-done { display:flex; align-items:center; gap:8px; margin:0; }
 @media(max-width:600px) { .alt-review-codes>li { flex-direction:column; } }
+
+/* Inventario interno: Editar celdas switches description, group / subgroup and status to in-place editing */
+.inventory-edit-toggle { display:inline-flex; align-items:center; gap:7px; min-height:42px; padding:0 14px; border:1px solid #dce4d2; border-radius:9px; background:#fff; color:#4e6a3b; font-size:12px; font-weight:600; white-space:nowrap; }
+.inventory-edit-toggle:hover { background:#f4f8ee; }
+.inventory-edit-toggle.selected { background:var(--green); border-color:#c6df85; color:#2f4421; box-shadow:0 0 0 3px #dcf39e55; }
+.inventory-edit-toggle:focus-visible { outline:2px solid #6e954b; outline-offset:2px; }
+.inventory-edit-hint { display:flex; flex-wrap:wrap; align-items:center; gap:6px 14px; margin:-4px 0 10px; padding:8px 12px; border-radius:8px; background:#f7faef; color:#5f7351; font-size:11px; line-height:1.6; }
+.inventory-edit-status { font-weight:600; }
+.inventory-edit-status.saving { color:#7d8c71; }
+.inventory-edit-status.saved { color:#47702c; }
