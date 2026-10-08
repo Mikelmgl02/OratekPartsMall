@@ -46,11 +46,16 @@ export default function PartDetail({ part, preview, canQuote, accountId, basketL
     request<Offer[]>(`/api/market/catalog/${part.id}/suppliers`).then(data => { if (!cancelled) setOffers(data); }).catch(error => { if (!cancelled) setError(error.message); }).finally(() => { if (!cancelled) setBusy(false); });
     return () => { cancelled = true; };
   }, [part.id, preview, canQuote, retry]);
-  return <Modal title="Detalles del repuesto" onClose={onClose} wide>
+  return <Modal title="Detalles del repuesto" onClose={onClose} wide className="product-modal">
+    <div className="product-page">
+    <div className="product-media"><PartGallery key={part.id} part={part} preview={preview}/></div>
+    <div className="product-info">
     <div className="detail-favorite"><FavoriteButton sku={part.sku} saved={saved} busy={saving} onToggle={onFavorite}/></div>
-    <div className="detail-grid"><PartGallery key={part.id} part={part} preview={preview}/><div className="detail-copy"><span className="eyebrow">SKU INTERNO</span><h3>{part.sku}</h3><StockStatus availability={part.availability} preview={preview}/><dl className="part-classification detail-classification"><div><dt>GRUPO</dt><dd>{part.category || 'SIN CLASIFICAR'}</dd></div><div><dt>SUBGRUPO</dt><dd>{part.subcategory || 'SIN CLASIFICAR'}</dd></div></dl>{part.name && part.name !== part.sku && <h4>{part.name}</h4>}<div className="code-list" aria-label="Alternos">{part.codes.map(code => <span key={`${code.brand}:${code.code}`}>{code.code} · {referenceLabel(code)}</span>)}</div><p>{part.description || 'Este SKU agrupa repuestos idénticos con distintos códigos y marcas. Consulta al proveedor para confirmar su aplicación en tu vehículo.'}</p><div className="private-note"><LockKeyhole size={16}/>El precio se proporciona en una cotización privada.</div></div></div>
+    <div className="detail-copy"><span className="eyebrow">SKU INTERNO</span><h3>{part.sku}</h3><StockStatus availability={part.availability} preview={preview}/><dl className="part-classification detail-classification"><div><dt>GRUPO</dt><dd>{part.category || 'SIN CLASIFICAR'}</dd></div><div><dt>SUBGRUPO</dt><dd>{part.subcategory || 'SIN CLASIFICAR'}</dd></div></dl>{part.name && part.name !== part.sku && <h4>{part.name}</h4>}<div className="code-list" aria-label="Alternos">{part.codes.map(code => <span key={`${code.brand}:${code.code}`}>{code.code} · {referenceLabel(code)}</span>)}</div><p>{part.description || 'Este SKU agrupa repuestos idénticos con distintos códigos y marcas. Consulta al proveedor para confirmar su aplicación en tu vehículo.'}</p><div className="private-note"><LockKeyhole size={16}/>El precio se proporciona en una cotización privada.</div></div>
     {!preview && <PartTechnical partId={part.id}/>}
     {canQuote && <PartRequestStates draftQuantity={draftQuantity} history={requestState?.totals} loading={stateLoading} preview={preview} error={stateError} onRetry={() => setStateRetry(stateRetry + 1)}/>}
+    </div>
+    <div className="product-buybox">
     <div className="detail-supplier-heading"><div><h3>Elige tu proveedor</h3><p>{preview ? 'Proveedores de ejemplo para esta vista.' : 'Artículos disponibles que corresponden a este SKU, con sus códigos y marcas.'}</p></div><label className="quantity-field">Cantidad<input aria-label="Cantidad solicitada" type="number" min={1} max={9999} step={1} autoComplete="off" value={quantity} onChange={event => setQuantity(Math.max(1, Math.min(9999, Math.trunc(Number(event.target.value) || 1))))}/></label></div>
     {busy && <div className="loading"><LoaderCircle className="spin" size={20}/>Buscando proveedores…</div>}
     {error && <div className="notice error" role="alert">{error}<button onClick={() => setRetry(retry+1)}>Intentar de nuevo</button></div>}
@@ -67,5 +72,7 @@ export default function PartDetail({ part, preview, canQuote, accountId, basketL
         })}
       </div>;
     })}</div>
+    </div>
+    </div>
   </Modal>;
 }

@@ -1997,3 +1997,24 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .admin-sidebar-collapse { color:#9aa78f; }
 .admin-sidebar-collapse:hover { background:#2a332c; color:#f4f8ef; }
 .admin-layout.is-collapsed .admin-nav-group+.admin-nav-group { border-top-color:#2e3931; }
+
+/* Product detail, Amazon product-page style: gallery | facts | supplier buy box (sticky) in a wide modal */
+.modal.wide.product-modal { width:min(1240px,calc(100% - 32px)); }
+.product-page { display:grid; grid-template-columns:minmax(0,.95fr) minmax(0,1.15fr) minmax(300px,.95fr); gap:26px; align-items:start; }
+.product-media { position:sticky; top:0; min-width:0; }
+.product-info { min-width:0; }
+.product-info>.detail-favorite { justify-content:flex-start; margin:0 0 10px; }
+.product-info .detail-copy { padding-top:0; }
+.product-info .detail-copy h3 { font-size:24px; letter-spacing:-.6px; }
+.product-buybox { position:sticky; top:0; min-width:0; padding:16px; border:1px solid #dfe5d6; border-radius:12px; background:#fff; box-shadow:0 10px 26px #1a2a1f12; }
+.product-buybox .detail-supplier-heading { flex-wrap:wrap; align-items:flex-end; margin-bottom:14px; }
+.product-buybox .detail-supplier-heading h3 { font-size:16px; }
+.product-buybox .detail-supplier-heading p { font-size:11px; }
+.product-buybox .supplier-option { flex-wrap:wrap; padding:12px; }
+.product-buybox .supplier-option>div:not(.supplier-item-actions) { flex:1 1 150px; min-width:0; }
+.product-buybox .supplier-item-actions { display:flex; flex-wrap:wrap; gap:8px; width:100%; }
+.product-buybox .sku-supplier-item { flex-wrap:wrap; gap:10px; padding:12px; }
+.product-buybox .supplier-item-actions .button.primary,.product-buybox .sku-supplier-item .button.primary { flex:1 1 auto; width:100%; border-radius:20px; min-height:40px; }
+.product-buybox .supplier-item-actions .button.soft { flex:1 1 auto; border-radius:20px; }
+@media(max-width:1100px) { .product-page { grid-template-columns:minmax(0,1fr) minmax(0,1fr); }.product-buybox { grid-column:1/-1; position:static; } }
+@media(max-width:760px) { .product-page { grid-template-columns:minmax(0,1fr); gap:18px; }.product-media { position:static; }.modal.wide.product-modal { width:calc(100% - 20px); } }
