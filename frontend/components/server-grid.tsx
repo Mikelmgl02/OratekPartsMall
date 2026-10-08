@@ -2,12 +2,13 @@
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { AgGridReact } from 'ag-grid-react';
-import type { ColDef, GetRowIdParams, GridState, IServerSideDatasource, StateUpdatedEvent } from 'ag-grid-community';
+import type { AgGridReactProps } from 'ag-grid-react';
+import type { ColDef, GetRowIdParams, GridApi, GridState, IServerSideDatasource, StateUpdatedEvent } from 'ag-grid-community';
 import { gridLocale, motionGridTheme } from '@/lib/ag-grid';
 import { Page, request } from '@/lib/types';
 import { usePageViewport } from './app-shell';
 
-// The management lists page by 50 (DRF PAGE_SIZE): grid block N is API page N + 1.
+// Lists page by 50 (DRF PAGE_SIZE) unless the endpoint says otherwise (prices: 100): grid block N is API page N + 1.
 export const GRID_BLOCK = 50;
 const HEADER = 42;
 const MIN_HEIGHT = 360;
@@ -42,11 +43,18 @@ type Props<T> = {
   onPage?: (page: Page<T>) => void;
   /** Extra classes for the grid frame. */
   className?: string;
+  /** The endpoint's page size; each grid block is one API page. */
+  pageSize?: number;
+  /** Extra AG Grid options (editing, clipboard, tooltips...). */
+  gridProps?: Partial<AgGridReactProps<T>>;
+  /** The grid API once ready, for callers that edit rows in place. */
+  onReady?: (api: GridApi<T>) => void;
 };
 
-// AG Grid Enterprise server-side row model over a paginated management list: rows load in blocks while scrolling, sorting runs
-// on the server, and the whole list stays one grid however long it is.
-export default function AdminServerGrid<T>({ storageKey, label, path, params, columns, rowId, ordering, revision, rowHeight, context, empty, onCount, onPage, className = '' }: Props<T>) {
+// Rows load in blocks while scrolling, sorting runs on the server, and the whole list stays one grid however long it is.
+// AG Grid Enterprise server-side row model over a paginated list (admin and supplier panels).
+export default function ServerGrid<T>({ storageKey, label, path, params, columns, rowId, ordering, revision, rowHeight, context, empty, onCount, onPage, className = '',
+  pageSize = GRID_BLOCK, gridProps, onReady }: Props<T>) {
   const grid = useRef<AgGridReact<T>>(null);
   const frame = useRef<HTMLDivElement>(null);
   const viewport = usePageViewport();
@@ -65,7 +73,7 @@ export default function AdminServerGrid<T>({ storageKey, label, path, params, co
   const datasource = useMemo<IServerSideDatasource<T>>(() => ({
     getRows(rows) {
       const generation = current.current.generation;
-      const query = new URLSearchParams({ page: String(Math.floor((rows.request.startRow ?? 0) / GRID_BLOCK) + 1) });
+      const query = new URLSearchParams({ page: String(Math.floor((rows.request.startRow ?? 0) / pageSize) + 1) });
       for (const [name, value] of Object.entries(current.current.params)) if (value) query.set(name, value);
       const sort = rows.request.sortModel.flatMap(item => (current.current.ordering[item.colId] || '').split(',').filter(Boolean)
         .map(field => item.sort === 'desc' ? `-${field}` : field));
@@ -78,7 +86,7 @@ export default function AdminServerGrid<T>({ storageKey, label, path, params, co
         rows.fail();
       });
     },
-  }), [path]);
+  }), [path, pageSize]);
   const filters = JSON.stringify(params);
   const loadedFilters = useRef(filters);
   useEffect(() => {
@@ -129,9 +137,9 @@ export default function AdminServerGrid<T>({ storageKey, label, path, params, co
     {error && <div className="notice error" role="alert">{error}<button type="button" onClick={() => { setError(''); grid.current?.api?.refreshServerSide({ purge: true }); }}><RefreshCw size={14}/>Intentar de nuevo</button></div>}
     <div ref={frame} className={`quotation-grid admin-grid ${className}`} role="region" aria-label={label} style={{ height, ['--admin-row-height' as string]: `${rowHeight - 2}px` }}>
       <AgGridReact<T> ref={grid} theme={motionGridTheme} localeText={gridLocale} rowModelType="serverSide" serverSideDatasource={datasource}
-        cacheBlockSize={GRID_BLOCK} maxBlocksInCache={40} blockLoadDebounceMillis={80} getRowId={({ data }: GetRowIdParams<T>) => rowId(data)}
+        cacheBlockSize={pageSize} maxBlocksInCache={40} blockLoadDebounceMillis={80} getRowId={({ data }: GetRowIdParams<T>) => rowId(data)}
         columnDefs={columnDefs} defaultColDef={defaultColumn} rowHeight={rowHeight} context={context} initialState={initialState} onStateUpdated={remember}
-        cellSelection enableBrowserTooltips ensureDomOrder suppressColumnVirtualisation loadThemeGoogleFonts={false}/>
+        cellSelection enableBrowserTooltips ensureDomOrder suppressColumnVirtualisation loadThemeGoogleFonts={false} onGridReady={event => onReady?.(event.api)} {...gridProps}/>
       {count === 0 && <div className="admin-grid-empty">{empty}</div>}
     </div>
   </div>;

@@ -40,6 +40,18 @@ class FoundationTests(APITestCase):
         data.update(changes)
         return self.client.post(self.url, data, format='json')
 
+    def test_inventory_list_searches_sorts_and_filters_by_match(self):
+        self.ingest(update_id='a', supplier_invent_id='stable-1', codigo='abc', quantity=10)
+        self.ingest(update_id='b', supplier_invent_id='stable-2', codigo='ZZZ-NO-MATCH', brand='OTRA', quantity=3)
+        url = f'/api/v1/accounts/{self.account.pk}/inventory/'
+        ids = lambda **params: [row['supplier_invent_id'] for row in self.client.get(url, params).data['results']]
+        self.assertEqual(ids(), ['stable-1', 'stable-2'])
+        self.assertEqual(ids(ordering='available'), ['stable-2', 'stable-1'])
+        self.assertEqual(ids(search='zzz'), ['stable-2'])
+        self.assertEqual(ids(matching_status='matched'), ['stable-1'])
+        self.assertEqual(ids(matching_status='unmatched'), ['stable-2'])
+        self.assertEqual(self.client.get(url, {'matching_status': 'other'}).status_code, 400)
+
     def test_ledger_adjustments_and_idempotency(self):
         self.assertEqual(self.ingest().status_code, 200)
         self.assertEqual(self.ingest().status_code, 200)

@@ -3,7 +3,7 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import type { ColDef } from 'ag-grid-community';
 import type { CustomCellRendererProps } from 'ag-grid-react';
-import AdminServerGrid from './admin-server-grid';
+import ServerGrid from './server-grid';
 import { ArrowLeft, Check, ExternalLink, Library, LoaderCircle, Plus, Search, Trash2 } from 'lucide-react';
 import Modal from './modal';
 import { UppercaseInput, UppercaseTextarea } from './uppercase-field';
@@ -118,7 +118,7 @@ export function OEMLibraryPanel() {
           <label>FUENTE<select aria-label="Fuente" value={sourceKind} onChange={e => filter(() => setSourceKind(e.target.value))}><option value="">TODAS</option>{(Object.keys(sourceKindLabels) as OEMSourceKind[]).map(key => <option key={key} value={key}>{sourceKindLabels[key]}</option>)}</select></label>
           <label>SKU VINCULADOS<select aria-label="SKU vinculados" value={linked} onChange={e => filter(() => setLinked(e.target.value))}><option value="">TODOS</option><option value="true">CON SKU</option><option value="false">SIN SKU</option></select></label>
         </div>
-        <AdminServerGrid<OEMReference> storageKey="admin-oem-library" label="Números OEM" path={base} params={params} columns={columns} rowId={row => row.id}
+        <ServerGrid<OEMReference> storageKey="admin-oem-library" label="Números OEM" path={base} params={params} columns={columns} rowId={row => row.id}
           ordering={libraryOrdering} revision={0} rowHeight={66} context={open} onPage={page => setCounts((page as OEMReferencePage).counts)} className="suffix-table-wrap oem-library-table"
           empty={<div className="empty-state"><Library size={30}/><h3>{filtered ? 'No hay números con estos filtros.' : 'La biblioteca OEM está vacía.'}</h3><p>{filtered ? 'Prueba con otra búsqueda o quita un filtro.' : 'Los alternos OEM del catálogo aparecen aquí solos; también puedes agregar un número con su fuente.'}</p></div>}/>
         <p className="form-footnote">Los alternos OEM del catálogo (buscador OEM, Revisión OEM, editor de inventario y búsquedas con IA aprobadas) se reflejan aquí solos; al retirar el alterno se retira su fuente.</p>

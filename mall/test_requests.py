@@ -421,6 +421,17 @@ class SupplierRequestWorkflowTests(APITestCase):
         self.assertEqual(self.client.get(self.url(self.supplier_a), {'status': 'invalid'}).status_code, 400)
         self.assertEqual(self.stock_snapshot(), before)
 
+    def test_supplier_request_list_sorts_on_whitelisted_columns(self):
+        for quantities in ((3,), (1,)):
+            self.assertEqual(self.submit(self.payload([(self.item_a, quantities[0])])).status_code, 200)
+            SupplierRequest.objects.filter(status='pending').update(status='reviewed')
+        self.client.force_authenticate(self.seller_a)
+        units = lambda ordering: [row['unit_count'] for row in self.client.get(self.url(self.supplier_a), {'ordering': ordering}).data['results']]
+        self.assertEqual(units(''), [1, 3])  # newest first
+        self.assertEqual(units('unit_count'), [1, 3])
+        self.assertEqual(units('-unit_count'), [3, 1])
+        self.assertEqual(units('password'), [1, 3])  # unknown names are ignored
+
     def test_supplier_request_list_paginates_without_exposing_other_supplier_requests(self):
         for _ in range(51):
             self.assertEqual(self.submit(self.payload([(self.item_a, 1), (self.item_b, 1)])).status_code, 200)

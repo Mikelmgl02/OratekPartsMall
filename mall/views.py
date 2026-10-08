@@ -1,13 +1,16 @@
 from django.db import transaction
-from django.db.models import F, Prefetch, Q
+from django.db.models import F, Prefetch, Q, Value
+from django.db.models.functions import Greatest
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from rest_framework import generics, permissions, status
+from rest_framework import filters, generics, permissions, status
 from rest_framework.authtoken.models import Token
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, extend_schema
+from .list_ordering import StableOrdering
 from .models import Account, Invitation, Membership, Part, StockEntry, SupplierItem, User
 from .serializers import AccountSerializer, InventorySerializer, OfferSerializer, PartSerializer, SignupResponseSerializer, SignupSerializer, StockEntrySerializer, SupplierItemSerializer
 from .services import ingest_inventory
@@ -108,11 +111,32 @@ class OffersView(APIView):
             offer['items'].append(item)
         return Response(OfferSerializer(list(suppliers.values()), many=True).data)
 
+MATCHING_FILTERS = {'matched': Q(matching_status='matched'), 'pending': Q(matching_status='pending'), 'review': Q(matching_status='review'),
+                    'unmatched': ~Q(matching_status='matched')}
+
+
 class InventoryList(generics.ListAPIView):
     serializer_class = SupplierItemSerializer
+    filter_backends = [filters.SearchFilter, StableOrdering]
+    search_fields = ['codigo', 'brand', 'supplier_invent_id', 'description', 'part__sku']
+    ordering_fields = ['codigo', 'brand', 'supplier_invent_id', 'source', 'available', 'reserved_quantity', 'matching_status', 'updated_at']
+
+    @extend_schema(parameters=[OpenApiParameter('matching_status', OpenApiTypes.STR, enum=list(MATCHING_FILTERS),
+                                                description='unmatched: pendientes y por revisar (lo que aún no ven los clientes).')])
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
     def get_queryset(self):
         supplier = account_for(self.request.user, self.kwargs['account_id'], 'supplier')
-        return SupplierItem.objects.filter(supplier=supplier).order_by('supplier_invent_id')
+        # available mirrors SupplierItem.available_quantity (never below zero) so the grid can sort by it.
+        rows = (SupplierItem.objects.filter(supplier=supplier).select_related('part')
+                .annotate(available=Greatest(F('reported_quantity') - F('reserved_quantity'), Value(0))).order_by('supplier_invent_id', 'id'))
+        matching = self.request.query_params.get('matching_status', '')
+        if matching:
+            if matching not in MATCHING_FILTERS:
+                raise ValidationError({'matching_status': 'Usa matched, pending, review o unmatched.'})
+            rows = rows.filter(MATCHING_FILTERS[matching])
+        return rows
 
 class InventoryIngest(APIView):
     @extend_schema(request=InventorySerializer, responses=SupplierItemSerializer)

@@ -76,10 +76,12 @@ async function openSupplier(page: Page) {
   else await page.getByRole('button', { name: 'Para proveedores', exact: true }).click();
   await openSupplierNavigation(page);
   await expect(page.getByRole('tab', { name: 'Inventario', exact: true })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByRole('cell', { name: 'inventario-existente', exact: true })).toBeVisible();
+  await expect(page.getByRole('gridcell', { name: 'inventario-existente', exact: true })).toBeVisible();
   await page.getByRole('tab', { name: 'Solicitudes', exact: true }).click();
 }
 function requests(page: Page) { return page.getByRole('region', { name: 'Solicitudes de clientes', exact: true }); }
+// Each order is one grid row (the list is an AG Grid without pinned columns).
+function requestRows(page: Page) { return requests(page).locator('.ag-center-cols-container [role="row"]'); }
 function requestDialog(page: Page) { return page.getByRole('main', { name: 'Detalle de orden de proveedor', exact: true }); }
 
 test('order has its own URL, reloads safely and returns to supplier requests with browser Back', async ({ page }) => {
@@ -102,7 +104,7 @@ test('order has its own URL, reloads safely and returns to supplier requests wit
   await page.goBack();
   await expect(page.getByLabel('Cuenta activa', { exact: true })).toHaveValue(supplierAccount);
   await expect(page.getByRole('tab', { name: 'Solicitudes', exact: true })).toHaveAttribute('aria-selected', 'true');
-  await expect(requests(page).getByRole('heading', { name: 'SOL-PRUEBA-001', exact: true })).toBeVisible();
+  await expect(requests(page).getByText('SOL-PRUEBA-001', { exact: true })).toBeVisible();
   expect(unexpected).toEqual([]);
 });
 
@@ -176,8 +178,7 @@ test('ordinary supplier searches, filters and pages requests, sees each own item
     const pending = summary(requestId, 'SOL-PRUEBA-001', 'TALLER CENTRAL', wasReviewed ? 'reviewed' : 'pending');
     if (query.search === 'MOTOR' || query.status === 'reviewed') return route.fulfill({ json: { ...emptyPage, count: 1, results: [reviewed] } });
     if (query.status === 'pending') return route.fulfill({ json: { ...emptyPage, count: wasReviewed ? 0 : 1, results: wasReviewed ? [] : [pending] } });
-    if (query.page === '2') return route.fulfill({ json: { ...emptyPage, count: 3, previous: `${root}?page=1`, results: [summary('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'SOL-PRUEBA-003', 'TALLER NORTE')] } });
-    return route.fulfill({ json: { ...emptyPage, count: 3, next: `${root}?page=2`, results: [pending, reviewed] } });
+    return route.fulfill({ json: { ...emptyPage, count: 3, results: [pending, reviewed, summary('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'SOL-PRUEBA-003', 'TALLER NORTE')] } });
   });
   await page.route(`${root}/${requestId}`, route => route.fulfill({ json: detail(wasReviewed ? 'reviewed' : 'pending') }));
   await page.route(`${root}/${requestId}/review`, route => {
@@ -185,7 +186,7 @@ test('ordinary supplier searches, filters and pages requests, sees each own item
     return route.fulfill({ json: detail('reviewed') });
   });
   await openSupplier(page);
-  await expect(requests(page).getByRole('article')).toHaveCount(2);
+  await expect(requestRows(page)).toHaveCount(3);
   const sidebar = page.getByRole('complementary', { name: 'Navegación del proveedor', exact: true });
   const sidebarBounds = await sidebar.boundingBox();
   const contentBounds = await requests(page).boundingBox();
@@ -205,25 +206,25 @@ test('ordinary supplier searches, filters and pages requests, sees each own item
   await page.keyboard.press('End');
   await expect(requestsTab).toBeFocused();
   await expect(requestsTab).toHaveAttribute('aria-selected', 'true');
-  await expect(requests(page).getByRole('article')).toHaveCount(2);
+  await expect(requestRows(page)).toHaveCount(3);
   await page.screenshot({ path: '../output/ui/supplier-sidebar-desktop.png' });
   await page.screenshot({ path: '/tmp/motionpartes-supplier-requests-desktop.png' });
-  await requests(page).getByRole('button', { name: 'Siguiente', exact: true }).click();
-  await expect(requests(page).getByText('Página 2', { exact: true })).toBeVisible();
-  await expect(requests(page).getByRole('heading', { name: 'SOL-PRUEBA-003', exact: true })).toBeVisible();
+  // No pages: the grid lists every order and loads more while scrolling.
+  await expect(requests(page).getByText('SOL-PRUEBA-003', { exact: true })).toBeVisible();
   const search = requests(page).getByLabel('Buscar solicitudes', { exact: true });
   await expect(search).toHaveAttribute('autocomplete', 'off');
   await search.fill('motor');
   await expect(search).toHaveValue('MOTOR');
-  await expect(requests(page).getByRole('heading', { name: 'SOL-PRUEBA-002', exact: true })).toBeVisible();
-  await expect(requests(page).getByText('Página 1', { exact: true })).toBeVisible();
-  expect(queries.at(-1)).toEqual({ search: 'MOTOR', status: '', page: '1' });
+  // SOL-PRUEBA-002 is already among the first rows: wait for the search request itself.
+  await expect.poll(() => queries.at(-1)).toEqual({ search: 'MOTOR', status: '', page: '1' });
+  await expect(requests(page).getByText('SOL-PRUEBA-002', { exact: true })).toBeVisible();
+  await expect(requests(page).getByText('SOL-PRUEBA-001', { exact: true })).toHaveCount(0);
   await search.fill('');
   await requests(page).getByRole('group', { name: 'Estado de las solicitudes', exact: true }).getByRole('button', { name: 'En revisión', exact: true }).click();
-  await expect(requests(page).getByRole('article')).toHaveCount(1);
+  await expect(requestRows(page)).toHaveCount(1);
   await expect.poll(() => queries.at(-1)?.status).toBe('reviewed');
   await requests(page).getByRole('button', { name: 'Pendientes', exact: true }).click();
-  await expect(requests(page).getByRole('heading', { name: 'SOL-PRUEBA-001', exact: true })).toBeVisible();
+  await expect(requests(page).getByText('SOL-PRUEBA-001', { exact: true })).toBeVisible();
   await requests(page).getByRole('link', { name: 'Ver solicitud SOL-PRUEBA-001', exact: true }).click();
   const dialog = requestDialog(page);
   await expect(dialog.locator('.supplier-request-lines').getByText('58411-1R000-G', { exact: true })).toBeVisible();
@@ -243,7 +244,7 @@ test('ordinary supplier searches, filters and pages requests, sees each own item
   await page.screenshot({ path: '/tmp/motionpartes-supplier-requests-mobile.png' });
   await page.getByRole('link', { name: 'Volver a solicitudes', exact: true }).click();
   await requests(page).getByRole('button', { name: 'Todas', exact: true }).click();
-  await expect(requests(page).getByRole('heading', { name: 'SOL-PRUEBA-001', exact: true })).toBeVisible();
+  await expect(requests(page).getByText('SOL-PRUEBA-001', { exact: true })).toBeVisible();
   await openSupplierNavigation(page);
   await expect(sidebar).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
@@ -251,7 +252,7 @@ test('ordinary supplier searches, filters and pages requests, sees each own item
   await page.getByRole('tab', { name: 'Inventario', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Menú de proveedor', exact: false })).toHaveAttribute('aria-expanded', 'false');
   await expect(page.getByRole('button', { name: 'Menú de proveedor', exact: false })).toBeFocused();
-  await expect(page.getByRole('cell', { name: 'inventario-existente', exact: true })).toBeVisible();
+  await expect(page.getByRole('gridcell', { name: 'inventario-existente', exact: true })).toBeVisible();
   expect(unexpected).toEqual([]);
 });
 
@@ -308,12 +309,12 @@ test('late request list and detail responses from a previous supplier cannot app
     await page.getByLabel('Cuenta activa', { exact: true }).selectOption(otherSupplierAccount);
     await page.getByRole('button', { name: 'Para proveedores', exact: true }).click();
     await page.getByRole('tab', { name: 'Solicitudes', exact: true }).click();
-    await expect(requests(page).getByRole('heading', { name: 'SOL-SEGUNDO-001', exact: true })).toBeVisible();
+    await expect(requests(page).getByText('SOL-SEGUNDO-001', { exact: true })).toBeVisible();
     releaseList(); releaseDetail(); await Promise.all([listDone, detailDone]);
     await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-    await expect(requests(page).getByRole('article')).toHaveCount(1);
-    await expect(requests(page).getByRole('heading', { name: 'SOL-SEGUNDO-001', exact: true })).toBeVisible();
-    await expect(requests(page).getByRole('heading', { name: 'SOL-PRUEBA-001', exact: true })).toHaveCount(0);
+    await expect(requestRows(page)).toHaveCount(1);
+    await expect(requests(page).getByText('SOL-SEGUNDO-001', { exact: true })).toBeVisible();
+    await expect(requests(page).getByText('SOL-PRUEBA-001', { exact: true })).toHaveCount(0);
     await expect(page.getByRole('dialog')).toHaveCount(0);
     expect(unexpected).toEqual([]);
   } finally { releaseList(); releaseDetail(); }
@@ -470,7 +471,7 @@ test('the supplier list marks orders with a saved draft or a pending approval re
   page.on('request', request => { if (request.url().includes('/draft')) drafts.push(request.url()); });
   await page.route(new RegExp(`${root}(?:\\?.*)?$`), route => route.fulfill({ json: { ...emptyPage, count: rows.length, results: rows } }));
   await openSupplier(page);
-  const card = (reference: string, client: string) => requests(page).getByRole('article', { name: `Solicitud ${reference} de ${client}`, exact: true });
+  const card = (reference: string, client: string) => requestRows(page).filter({ hasText: reference }).filter({ hasText: client });
   await expect(card('SOL-BORRADOR-001', 'TALLER CENTRAL').locator('.supplier-request-draft')).toHaveText('Borrador');
   await expect(card('SOL-APROBAR-002', 'MOTOR CAR').locator('.supplier-request-draft')).toHaveText('Por aprobar');
   await expect(card('SOL-NUEVA-003', 'TALLER NORTE').locator('.supplier-request-draft')).toHaveCount(0);

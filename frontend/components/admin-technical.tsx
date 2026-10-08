@@ -3,7 +3,7 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import type { ColDef } from 'ag-grid-community';
 import type { CustomCellRendererProps } from 'ag-grid-react';
-import AdminServerGrid from './admin-server-grid';
+import ServerGrid from './server-grid';
 import { ArrowDown, ArrowUp, Plus, SlidersHorizontal, Trash2 } from 'lucide-react';
 import { request } from '@/lib/types';
 import { PartType, TechnicalField, TechnicalTemplate, VehicleApplication, applicationLabel, kindLabels, units } from '@/lib/technical-types';
@@ -63,9 +63,9 @@ export default function AdminTechnical({ applications = false }: { applications?
     {notice && <div className="notice success" role="status">{notice}</div>}
     <label className="technical-search">{applications ? 'Buscar aplicaciones' : 'Buscar grupo o subgrupo'}<UppercaseInput value={search} onChange={e => setSearch(e.target.value)} placeholder={applications ? 'MARCA, MODELO O MOTOR' : 'EJ.: FRENOS'}/></label>
     {applications
-      ? <AdminServerGrid<VehicleApplication> key="applications" storageKey="admin-applications" label="Aplicaciones vehiculares" path={`${base}/applications`} params={params} columns={applicationGrid} rowId={row => row.id}
+      ? <ServerGrid<VehicleApplication> key="applications" storageKey="admin-applications" label="Aplicaciones vehiculares" path={`${base}/applications`} params={params} columns={applicationGrid} rowId={row => row.id}
           ordering={applicationOrdering} revision={revision} rowHeight={52} context={actions} empty={<div className="empty-state"><SlidersHorizontal/><h3>No hay resultados.</h3><p>Agrega una configuración de vehículo para reutilizarla en tus repuestos.</p></div>}/>
-      : <AdminServerGrid<PartType> key="part-types" storageKey="admin-part-types" label="Plantillas técnicas" path={`${base}/part-types`} params={params} columns={typeGrid} rowId={row => row.id}
+      : <ServerGrid<PartType> key="part-types" storageKey="admin-part-types" label="Plantillas técnicas" path={`${base}/part-types`} params={params} columns={typeGrid} rowId={row => row.id}
           ordering={typeOrdering} revision={revision} rowHeight={56} context={actions} empty={<div className="empty-state"><SlidersHorizontal/><h3>No hay resultados.</h3><p>Crea un subgrupo y configura los campos de su ficha técnica.</p></div>}/>}
     {(creating || editing) && (applications ? <ApplicationEditor initial={editing as VehicleApplication | null} onClose={() => { setCreating(false); setEditing(null); }} onSaved={saved}/> : <PartTypeEditor initial={editing as PartType | null} onClose={() => { setCreating(false); setEditing(null); }} onSaved={saved}/>)}
     {template && <TemplateEditor type={template} onClose={() => setTemplate(null)}/>}

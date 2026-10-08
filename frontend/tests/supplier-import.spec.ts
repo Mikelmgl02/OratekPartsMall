@@ -135,11 +135,11 @@ test('ordinary supplier imports valid balances, sees positive debit and credit m
   await dialog.getByRole('button', { name: 'Cerrar', exact: true }).click();
   await expect(dialog).not.toBeVisible();
   expect(savedBatches).toEqual([0]);
-  await expect(page.getByRole('cell', { name: 'supplier-id-lowercase', exact: true })).toBeVisible();
+  await expect(page.getByRole('gridcell', { name: 'supplier-id-lowercase', exact: true })).toBeVisible();
   const updatedRow = page.getByRole('row').filter({ hasText: 'supplier-id-lowercase' });
-  await expect(updatedRow.getByRole('cell').nth(3)).toHaveText('1');
-  await expect(updatedRow.getByRole('cell').nth(4)).toHaveText('2');
-  await expect(page.getByRole('cell', { name: '00045', exact: true })).toBeVisible();
+  await expect(updatedRow.getByRole('gridcell').nth(3)).toHaveText('1');
+  await expect(updatedRow.getByRole('gridcell').nth(4)).toHaveText('2');
+  await expect(page.getByRole('gridcell', { name: '00045', exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: 'Ver movimientos de FE-ONE', exact: true }).click();
   const history = page.getByRole('dialog', { name: 'Movimientos de existencias · FE-ONE', exact: true });

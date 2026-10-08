@@ -67,6 +67,18 @@ class RequestSubmission(serializers.Serializer):
 class RequestFilters(serializers.Serializer):
     search = serializers.CharField(required=False, allow_blank=True, max_length=200)
     status = serializers.ChoiceField(required=False, choices=[value for value, _ in SupplierRequest.STATUS_CHOICES])
+    ordering = serializers.CharField(required=False, allow_blank=True, max_length=200)
+
+
+# Grid sorting for the supplier's request list: whitelisted names, newest first and the primary key as the stable tail.
+REQUEST_SORT = {'created_at': 'created_at', 'reference': 'reference', 'status': 'status', 'client_name': 'client_name',
+                'line_count': 'line_count', 'unit_count': 'unit_count'}
+
+
+def request_ordering(value):
+    fields = [('-' if item.strip().startswith('-') else '') + REQUEST_SORT[item.strip().lstrip('-')]
+              for item in (value or '').split(',') if item.strip().lstrip('-') in REQUEST_SORT]
+    return [*fields, '-created_at', 'id'] if fields else ['-created_at', 'id']
 
 
 def quote_summary_fields():
@@ -333,6 +345,7 @@ def submit_request(*, client, actor, data):
 
 class AccountRequests(APIView):
     @extend_schema(operation_id='v1_accounts_requests_list', parameters=[OpenApiParameter('search', OpenApiTypes.STR), OpenApiParameter('status', OpenApiTypes.STR),
+                               OpenApiParameter('ordering', OpenApiTypes.STR, description='created_at, reference, status, client_name, line_count o unit_count; - para descendente.'),
                                OpenApiParameter('page', OpenApiTypes.INT)], responses=OpenApiTypes.OBJECT)
     def get(self, request, account_id):
         supplier = account_for(request.user, account_id, 'supplier')
@@ -349,6 +362,7 @@ class AccountRequests(APIView):
                 | Q(brand__icontains=term) | Q(description__icontains=term) | Q(supplier_invent_id__icontains=term))
             rows = rows.filter(Q(reference__icontains=term) | Q(client_name__icontains=term)
                                | Q(pk__in=matching_lines.values('request_id')))
+        rows = rows.order_by(*request_ordering(data.get('ordering', '')))
         paginator = PageNumberPagination()
         page = paginator.paginate_queryset(rows, request, view=self)
         return paginator.get_paginated_response([supplier_request_summary(row) for row in page])

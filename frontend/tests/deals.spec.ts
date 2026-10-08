@@ -306,7 +306,8 @@ test('a client accept refused for availability keeps the deal open, explains it 
   await page.getByRole('button', {name:'Para proveedores', exact:true}).click();
   await openSupplierNavigation(page);
   await page.getByRole('tab', {name:'Solicitudes', exact:true}).click();
-  await expect(page.getByRole('article', {name:'Solicitud ORD-PRUEBA-001 de TALLER CENTRAL', exact:true})).toContainText('Confirmación bloqueada por existencias');
+  // The supplier's request list is a grid: the order's row carries the availability warning.
+  await expect(page.getByRole('region', {name:'Listado de solicitudes', exact:true}).getByRole('row').filter({hasText:'ORD-PRUEBA-001'}).filter({hasText:'TALLER CENTRAL'})).toContainText('Confirmación bloqueada por existencias');
   expect(state.unexpected).toEqual([]);
 });
 
