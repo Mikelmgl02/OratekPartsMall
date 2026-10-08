@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { ArrowLeft, ArrowUpRight, BadgeCheck, BarChart3, Boxes, Building2, Check, ChevronRight, Copy, LoaderCircle, LogOut, MailPlus, Menu, Plus, Repeat2, Search, ShieldCheck, Users, X } from 'lucide-react';
+import { ArrowLeft, ArrowUpRight, BadgeCheck, BarChart3, Boxes, Building2, Check, ChevronRight, Copy, LoaderCircle, LogOut, MailPlus, Menu, PanelLeftClose, PanelLeftOpen, Plus, Repeat2, Search, ShieldCheck, Users, X } from 'lucide-react';
 import BrandLogo from './brand-logo';
 import Modal from './modal';
 import AdminCatalogSection from './admin-catalog-section';
@@ -19,12 +19,20 @@ const permissionNames = { owner: 'Propietario', manager: 'Administrador', staff:
 const formatDate = (date: string) => new Date(date).toLocaleString('es-PA', { timeZone: 'America/Panama', dateStyle: 'medium', timeStyle: 'short' });
 const message = (error: unknown) => error instanceof Error ? error.message : 'No se pudo guardar el cambio. Inténtalo de nuevo.';
 
+const SIDEBAR_KEY = 'motionpartes.admin.sidebar.collapsed';
+
 export default function AdminWorkspace({ user, section = 'accounts' }: { user: SessionUser; section?: AdminSection }) {
   const router = useRouter();
   const viewport = usePageViewport();
   const tab = section;
   const isAccessSection = ['accounts', 'users', 'invitations'].includes(tab);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Desktop only: the side menu folds into an icon rail so wide grids get the whole window. Remembered in this browser.
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => { try { setCollapsed(localStorage.getItem(SIDEBAR_KEY) === '1'); } catch { /* storage blocked: start expanded */ } }, []);
+  function toggleSidebar() {
+    setCollapsed(value => { try { localStorage.setItem(SIDEBAR_KEY, value ? '0' : '1'); } catch { /* not remembered */ } return !value; });
+  }
   const [search, setSearch] = useState('');
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(1);
@@ -84,11 +92,11 @@ export default function AdminWorkspace({ user, section = 'accounts' }: { user: S
       <Link className="wordmark" aria-label="Inicio de MotionPartes" href="/"><BrandLogo/></Link>
       <div className="admin-header-actions"><Link className="button soft small" href="/"><ArrowLeft size={15}/>Volver al catálogo</Link><button className="icon-button" aria-label="Cerrar sesión" title="Cerrar sesión" onClick={logout}><LogOut size={19}/></button></div>
     </div></header></AppToolbar>
-    <div className="admin-layout section-container">
+    <div className={`admin-layout section-container${collapsed ? ' is-collapsed' : ''}`}>
       <button className="admin-menu-toggle" aria-expanded={sidebarOpen} aria-controls="admin-side-menu" onClick={() => setSidebarOpen(!sidebarOpen)}><Menu size={18}/><span>Menú administrativo</span><small>{heading}</small></button>
       <aside id="admin-side-menu" className={`admin-sidebar ${sidebarOpen ? 'is-open' : ''}`}>
-        <div className="admin-sidebar-title"><ShieldCheck size={21}/><div><strong>Administración</strong><span>MotionPartes</span></div></div>
-        <nav aria-label="Gestión administrativa">{['Catálogo', 'Accesos', 'Actividad'].map(group => <div className="admin-nav-group" key={group}><span>{group}</span>{navigation.filter(item => item.group === group).map(({ key, slug, text, Icon }) => <Link key={key} href={`/administracion?seccion=${slug}`} aria-current={tab === key ? 'page' : undefined} className={tab === key ? 'selected' : ''} onClick={() => setSidebarOpen(false)}><Icon size={18}/><span>{text}</span>{tab === key && <ChevronRight size={14}/>}</Link>)}</div>)}</nav>
+        <div className="admin-sidebar-title"><ShieldCheck size={21}/><div><strong>Administración</strong><span>MotionPartes</span></div><button type="button" className="admin-sidebar-collapse" aria-label={collapsed ? 'Mostrar menú lateral' : 'Ocultar menú lateral'} title={collapsed ? 'Mostrar menú lateral' : 'Ocultar menú lateral'} onClick={toggleSidebar}>{collapsed ? <PanelLeftOpen size={16}/> : <PanelLeftClose size={16}/>}</button></div>
+        <nav aria-label="Gestión administrativa">{['Catálogo', 'Accesos', 'Actividad'].map(group => <div className="admin-nav-group" key={group}><span>{group}</span>{navigation.filter(item => item.group === group).map(({ key, slug, text, Icon }) => <Link key={key} href={`/administracion?seccion=${slug}`} aria-current={tab === key ? 'page' : undefined} className={tab === key ? 'selected' : ''} title={collapsed ? text : undefined} onClick={() => setSidebarOpen(false)}><Icon size={18}/><span>{text}</span>{tab === key && <ChevronRight size={14}/>}</Link>)}</div>)}</nav>
         <div className="admin-sidebar-user"><span className="live-dot"/><div><strong>{user.username}</strong><span>Superusuario</span></div></div>
       </aside>
       <main className="workspace admin-workspace">

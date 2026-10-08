@@ -1817,3 +1817,25 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .admin-grid-chips>span.company { background:#f1efe6; color:#6f6545; }
 .admin-grid-chips>span.unknown { background:#f1f3ee; color:#6f7a68; }
 .admin-grid-codes>.more { flex-shrink:0; padding:3px 7px; border-radius:6px; border:1px dashed #cfd8c2; color:#6f8160; font-size:10px; font-weight:600; }
+
+/* Administración uses the whole window (no 1240px cap): the catalog grids need the room */
+.header-inner.admin-header { width:calc(100% - 48px); }
+.admin-layout.section-container { width:calc(100% - 48px); }
+.admin-layout .admin-workspace { max-width:none; }
+.admin-sidebar-collapse { margin-left:auto; flex-shrink:0; display:grid; place-items:center; width:28px; height:28px; border-radius:7px; color:#7c8c6d; }
+.admin-sidebar-collapse:hover { background:#f3f6ed; color:#486732; }
+@media(min-width:761px) {
+  .admin-layout.is-collapsed { grid-template-columns:62px minmax(0,1fr); column-gap:20px; }
+  .admin-layout.is-collapsed .admin-sidebar { padding:14px 8px; }
+  .admin-layout.is-collapsed .admin-sidebar-title { flex-direction:column; gap:12px; padding:0 0 14px; }
+  .admin-layout.is-collapsed .admin-sidebar-title>div,.admin-layout.is-collapsed .admin-sidebar-user>div,
+  .admin-layout.is-collapsed .admin-nav-group a>svg:last-child:not(:first-child) { display:none; }
+  .admin-layout.is-collapsed .admin-sidebar-collapse { margin-left:0; }
+  .admin-layout.is-collapsed .admin-nav-group { padding-top:10px; }
+  .admin-layout.is-collapsed .admin-nav-group>span,.admin-layout.is-collapsed .admin-nav-group a>span { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+  .admin-layout.is-collapsed .admin-nav-group a { justify-content:center; gap:0; padding:10px 0; }
+  .admin-layout.is-collapsed .admin-nav-group+.admin-nav-group { border-top:1px solid #edf0e7; }
+  .admin-layout.is-collapsed .admin-sidebar-user { justify-content:center; padding:14px 0 0; margin-top:14px; }
+}
+@media(max-width:1200px) { .header-inner.admin-header,.admin-layout.section-container { width:calc(100% - 32px); } }
+@media(max-width:760px) { .admin-sidebar-collapse { display:none; } }
