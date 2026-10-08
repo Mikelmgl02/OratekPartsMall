@@ -111,6 +111,13 @@ class LibrarySearchTests(OEMLibraryTests):
             self.assertEqual(self.skus(url, 'YZZD2', user), ['90915-YZZD2'])  # the usual fields still match
             self.assertEqual(self.skus(url, 'T16', user), [])  # three characters do not look through the library
 
+    def test_the_catalog_lists_the_codes_a_sku_reaches_through_its_numbers(self):
+        self.client.force_authenticate(self.buyer)
+        rows = {row['sku']: row for row in self.client.get('/api/v1/catalog/', {'search': 'BOMBA'}).json()['results']}
+        self.assertEqual(rows['16100-39315-RAZ']['equivalents'], [{'brand': 'AISIN', 'code': 'WPT-111'}, {'brand': 'GMB', 'code': 'GWT-41A'},
+                                                               {'brand': 'NPW', 'code': 'T-16'}])  # each code once, from both numbers
+        self.assertEqual(rows['16100-39315-RAZ']['codes'], [])  # the SKU's own alternos stay separate
+
     def test_a_grouped_or_inactive_sku_is_not_found_by_the_customer(self):
         Part.objects.filter(pk=self.pump.pk).update(active=False)
         self.assertEqual(self.skus('/api/v1/catalog/', 'GWT-41A', self.buyer), [])

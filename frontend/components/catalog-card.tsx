@@ -1,12 +1,13 @@
 import { ArrowRight, Clock3, Store } from 'lucide-react';
 import type { Part } from '@/lib/types';
+import { visibleReferences } from '@/lib/reference-label';
 import { CatalogPhoto } from './part-image';
 import CatalogSkeleton from './catalog-skeleton';
 import StockStatus from './stock-status';
 import FavoriteButton from './favorite-button';
 
 export default function CatalogCard({ part, preview, busy, onOpen, saved = false, saving = false, onFavorite, unavailable = false }: { part: Part; preview: boolean; busy: boolean; onOpen: () => void; saved?: boolean; saving?: boolean; onFavorite?: () => void; unavailable?: boolean }) {
-  const codes = [...new Set(part.codes.map(code => code.code))].filter(code => code !== part.sku);
+  const codes = [...new Set(visibleReferences(part).map(code => code.code))].filter(code => code !== part.sku);
   const suppliers = part.availability?.supplier_count || 0;
   const updated = part.availability?.updated_at ? new Date(part.availability.updated_at) : null;
   return <article className={`part-card ${busy ? 'is-loading' : ''} ${onFavorite ? 'has-favorite' : ''}`} aria-label={`Repuesto ${part.sku}`} inert={busy || undefined} aria-hidden={busy || undefined}>

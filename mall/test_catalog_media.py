@@ -136,7 +136,7 @@ class CatalogMediaTests(TestCase):
     def test_catalog_queries_prefetch_gallery(self):
         from .serializers import PartSerializer
         self.add_image(); self.add_image()
-        with self.assertNumQueries(3):
+        with self.assertNumQueries(4):  # parts, codes, images and the page's OEM numbers (no SKU reaches one: no codes query)
             data = PartSerializer(Part.objects.all().prefetch_related('codes', 'images'), many=True).data
         self.assertEqual(len(next(row for row in data if row['sku'] == self.part.sku)['images']), 2)
 

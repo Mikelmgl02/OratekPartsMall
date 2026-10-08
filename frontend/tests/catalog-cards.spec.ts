@@ -5,6 +5,8 @@ const parts = ['low', 'high', 'sold_out', 'unknown', 'medium'].map((status, inde
   description: index === 0 ? 'DISCO DE FRENO VENTILADO DELANTERO PARA HYUNDAI ACCENT' : '',
   category: index === 0 ? 'FRENOS' : '', subcategory: index === 0 ? 'DISCOS DELANTEROS' : '',
   codes: index === 0 ? [{code: '58411-1R000-G', brand: 'MARCA A'}, {code: '58-1R0', brand: 'MARCA B'}, {code: 'D-HYU-1R', brand: ''}] : [],
+  // Codes reached through the SKU's OEM numbers: shown with its own alternos, each once.
+  equivalents: index === 0 ? [{code: '58411-1R000-G', brand: 'MARCA A'}, {code: 'T-16', brand: 'NPW'}] : index === 1 ? [{code: 'WPT-111', brand: 'AISIN'}] : [],
   availability: {status, supplier_count: status === 'low' ? 2 : status === 'high' || status === 'medium' ? 1 : 0, updated_at: status === 'unknown' ? null : '2026-10-02T16:30:00Z'},
 }));
 
@@ -27,8 +29,9 @@ for (const viewport of [{name:'desktop', width:1440, height:1000}, {name:'mobile
     await expect(card).toContainText('2 PROVEEDORES CON STOCK');
     await expect(card).toContainText('STOCK ACTUALIZADO');
     await expect(card.getByText('58411-1R000-G', {exact:true})).toBeVisible();
-    await expect(card.getByRole('button', {name:'Ver los 3 alternos de 58411-1R000'})).toHaveText('+1');
+    await expect(card.getByRole('button', {name:'Ver los 4 alternos de 58411-1R000'})).toHaveText('+2');
     await expect(page.getByRole('article', {name:'Repuesto SKU-1', exact:true})).toContainText('ALTAS EXISTENCIAS');
+    await expect(page.getByRole('article', {name:'Repuesto SKU-1', exact:true}).getByLabel('Alternos de SKU-1')).toHaveText(/ALTERNOS \(1\)\s*WPT-111/);
     await expect(page.getByRole('article', {name:'Repuesto SKU-4', exact:true})).toContainText('EXISTENCIAS MEDIAS');
     await expect(page.getByRole('article', {name:'Repuesto SKU-2', exact:true})).toContainText('AGOTADO');
     const unknown = page.getByRole('article', {name:'Repuesto SKU-3', exact:true});
@@ -39,11 +42,12 @@ for (const viewport of [{name:'desktop', width:1440, height:1000}, {name:'mobile
     await page.getByRole('button', {name:'Vista de lista', exact:true}).click();
     await expect(card).toContainText('BAJAS EXISTENCIAS');
     expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
-    await card.getByRole('button', {name:'Ver los 3 alternos de 58411-1R000'}).click();
+    await card.getByRole('button', {name:'Ver los 4 alternos de 58411-1R000'}).click();
     const detail = page.getByRole('dialog');
     await expect(detail).toContainText('BAJAS EXISTENCIAS');
     await expect(detail).toContainText('DISCOS DELANTEROS');
     await expect(detail).toContainText('D-HYU-1R');
+    await expect(detail.getByLabel('Alternos', {exact:true})).toContainText('T-16 · EMPRESA · NPW');
     await expect(detail).toContainText('Aún no hay proveedores con existencias disponibles.');
     await expect(detail.getByRole('button', {name:/Agregar/})).toHaveCount(0);
   });

@@ -16,7 +16,7 @@ from .serializers import AccountSerializer, InventorySerializer, OfferSerializer
 from .services import ingest_inventory
 from .catalog_availability import catalog_availability
 from .catalog_filters import apply_filters, catalog_facets, filter_values
-from .oem_links import search_q
+from .oem_links import equivalents_for, search_q
 
 def account_for(user, account_id, capability=None):
     account = get_object_or_404(Account, pk=account_id, active=True, memberships__user=user)
@@ -88,7 +88,8 @@ class CatalogList(generics.ListAPIView):
         queryset = self.filter_queryset(self.get_queryset())
         page = self.paginate_queryset(queryset)
         parts = list(page if page is not None else queryset)
-        context = {**self.get_serializer_context(), 'availability_by_part': catalog_availability(parts)}
+        context = {**self.get_serializer_context(), 'availability_by_part': catalog_availability(parts),
+                   'equivalents_by_part': equivalents_for([part.pk for part in parts])}
         data = self.get_serializer(parts, many=True, context=context).data
         response = self.get_paginated_response(data) if page is not None else Response(data)
         if request.query_params.get('include_facets') == '1' and page is not None:

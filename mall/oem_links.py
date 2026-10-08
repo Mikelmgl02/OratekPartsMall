@@ -209,6 +209,26 @@ def part_equivalents(part):
     return {'numbers': numbers, 'cross_references': list(codes.values())}
 
 
+def equivalents_for(part_ids):
+    """{part id: [{'brand', 'code'}]}: the aftermarket codes each SKU reaches through its OEM numbers (OEM alternos and links), each
+    code once, by brand and code, in two queries for a whole page (one when no SKU reaches a number). What customers see next to the
+    SKU's own alternos."""
+    from .models import PartCode
+    ids = [str(pk) for pk in part_ids]
+    reached = defaultdict(set)
+    for chunk in chunks(ids):
+        alternos = PartCode.objects.filter(part_id__in=chunk, ref_type='oem', oem_reference__isnull=False).values_list('part_id', 'oem_reference_id')
+        for part_id, ref_id in alternos.union(PartOEMLink.objects.filter(part_id__in=chunk).values_list('part_id', 'reference_id'), all=True):
+            reached[str(ref_id)].add(str(part_id))
+    codes = defaultdict(dict)
+    for chunk in chunks(sorted(reached)):
+        for ref_id, brand, number, code in (OEMCrossReference.objects.filter(reference_id__in=chunk).order_by('brand', 'number', 'pk')
+                                            .values_list('reference_id', 'brand', 'number', 'code')):
+            for part_id in reached[str(ref_id)]:
+                codes[part_id].setdefault((brand, number), code)
+    return {part_id: [{'brand': brand, 'code': code} for (brand, _), code in sorted(found.items())] for part_id, found in codes.items()}
+
+
 def search_q(text):
     """Q for catalog SKUs that reach an OEM number, or an aftermarket code filed under one, containing the text compared compact
     (16100 39315, gwt41a); None for text with fewer than MIN_SEARCH letters or digits. Uncorrelated subqueries, no Python lists."""

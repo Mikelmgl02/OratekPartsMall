@@ -11,6 +11,7 @@ from rest_framework.views import APIView
 
 from .catalog_availability import catalog_availability
 from .models import Membership, Part, WishlistItem
+from .oem_links import equivalents_for
 from .serializers import PartSerializer
 
 
@@ -51,6 +52,7 @@ class WishlistList(generics.ListAPIView):
         rows = list(self.paginate_queryset(self.get_queryset()))
         context = self.get_serializer_context()
         context['availability_by_part'] = catalog_availability([row.part for row in rows if row.part.active])
+        context['equivalents_by_part'] = equivalents_for([row.part_id for row in rows])
         return self.get_paginated_response(self.get_serializer(rows, many=True, context=context).data)
 
 

@@ -7,6 +7,7 @@ import BasketSubmission from './basket-submission';
 import ClientRequestNavigation from './client-request-navigation';
 import { Account, BasketLine } from '@/lib/types';
 import type { RequestSubmissionResult } from '@/lib/request-types';
+import { visibleReferences } from '@/lib/reference-label';
 
 function QuantityControl({ name, quantity, onChange, disabled }: { name: string; quantity: number; onChange: (quantity: number) => void; disabled: boolean }) {
   const [value, setValue] = useState(String(quantity));
@@ -50,9 +51,10 @@ export default function Basket({ lines, onChange, onClose, preview, account, onS
             const selected = line.offer.selected_item;
             const name = selected?.codigo || line.part.name || line.part.sku;
             const description = selected?.description || line.part.description;
+            const firstCode = visibleReferences({ codes: line.part.codes ?? [], equivalents: line.part.equivalents })[0];
             return <article className="basket-page-item" data-line-key={line.key} key={line.key} aria-label={`Artículo ${name} de ${line.offer.supplier_name}`}>
               <div className="basket-page-art"><CatalogPhoto image={line.part.images?.[0]} alt={line.part.name || description || line.part.sku} thumbnail/></div>
-              <div className="basket-page-item-info"><span className="basket-page-sku">SKU INTERNO {line.part.sku || line.part.name}</span><h3>{name}</h3>{selected ? <span className="basket-page-code">{selected.codigo} · {selected.brand || 'SIN MARCA INDICADA'}</span> : <span className="basket-page-code">{line.part.codes[0] ? `${line.part.codes[0].code} · ${line.part.codes[0].brand || 'SIN MARCA INDICADA'}` : line.part.sku}</span>}{selected && line.part.name && line.part.name !== name && <p className="basket-page-part-name">{line.part.name}</p>}{description && <p className="basket-page-description">{description}</p>}</div>
+              <div className="basket-page-item-info"><span className="basket-page-sku">SKU INTERNO {line.part.sku || line.part.name}</span><h3>{name}</h3>{selected ? <span className="basket-page-code">{selected.codigo} · {selected.brand || 'SIN MARCA INDICADA'}</span> : <span className="basket-page-code">{firstCode ? `${firstCode.code} · ${firstCode.brand || 'SIN MARCA INDICADA'}` : line.part.sku}</span>}{selected && line.part.name && line.part.name !== name && <p className="basket-page-part-name">{line.part.name}</p>}{description && <p className="basket-page-description">{description}</p>}</div>
               <div className="basket-page-item-service"><div><LockKeyhole size={16}/><span><strong>Cotización privada</strong><small>El precio lo indica tu proveedor.</small></span></div><div><Truck size={17}/><span><strong>Entrega del proveedor</strong><small>Coordina la entrega o el retiro al reservar.</small></span></div></div>
               <div className="basket-page-item-actions"><QuantityControl name={name} quantity={line.quantity} disabled={sending} onChange={quantity => setQuantity(line.key, quantity)}/><button type="button" className="basket-page-remove" disabled={sending} aria-label={`Eliminar ${name}`} onClick={() => onChange(lines.filter(item => item.key !== line.key))}><Trash2 size={15}/>Eliminar</button></div>
             </article>;

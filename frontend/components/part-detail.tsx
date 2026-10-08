@@ -1,6 +1,6 @@
 'use client';
 
-import { referenceLabel } from '@/lib/reference-label';
+import { referenceLabel, visibleReferences } from '@/lib/reference-label';
 import { useEffect, useState } from 'react';
 import { ArrowUpRight, Check, CheckCircle2, LoaderCircle, LockKeyhole, Package, Store } from 'lucide-react';
 import Modal from './modal';
@@ -51,7 +51,7 @@ export default function PartDetail({ part, preview, canQuote, accountId, basketL
     <div className="product-media"><PartGallery key={part.id} part={part} preview={preview}/></div>
     <div className="product-info">
     <div className="detail-favorite"><FavoriteButton sku={part.sku} saved={saved} busy={saving} onToggle={onFavorite}/></div>
-    <div className="detail-copy"><span className="eyebrow">SKU INTERNO</span><h3>{part.sku}</h3><StockStatus availability={part.availability} preview={preview}/><dl className="part-classification detail-classification"><div><dt>GRUPO</dt><dd>{part.category || 'SIN CLASIFICAR'}</dd></div><div><dt>SUBGRUPO</dt><dd>{part.subcategory || 'SIN CLASIFICAR'}</dd></div></dl>{part.name && part.name !== part.sku && <h4>{part.name}</h4>}<div className="code-list" aria-label="Alternos">{part.codes.map(code => <span key={`${code.brand}:${code.code}`}>{code.code} · {referenceLabel(code)}</span>)}</div><p>{part.description || 'Este SKU agrupa repuestos idénticos con distintos códigos y marcas. Consulta al proveedor para confirmar su aplicación en tu vehículo.'}</p><div className="private-note"><LockKeyhole size={16}/>El precio se proporciona en una cotización privada.</div></div>
+    <div className="detail-copy"><span className="eyebrow">SKU INTERNO</span><h3>{part.sku}</h3><StockStatus availability={part.availability} preview={preview}/><dl className="part-classification detail-classification"><div><dt>GRUPO</dt><dd>{part.category || 'SIN CLASIFICAR'}</dd></div><div><dt>SUBGRUPO</dt><dd>{part.subcategory || 'SIN CLASIFICAR'}</dd></div></dl>{part.name && part.name !== part.sku && <h4>{part.name}</h4>}<div className="code-list" aria-label="Alternos">{visibleReferences(part).map(code => <span key={`${code.brand}:${code.code}`}>{code.code} · {referenceLabel(code)}</span>)}</div><p>{part.description || 'Este SKU agrupa repuestos idénticos con distintos códigos y marcas. Consulta al proveedor para confirmar su aplicación en tu vehículo.'}</p><div className="private-note"><LockKeyhole size={16}/>El precio se proporciona en una cotización privada.</div></div>
     {!preview && <PartTechnical partId={part.id}/>}
     {canQuote && <PartRequestStates draftQuantity={draftQuantity} history={requestState?.totals} loading={stateLoading} preview={preview} error={stateError} onRetry={() => setStateRetry(stateRetry + 1)}/>}
     </div>

@@ -43,16 +43,42 @@ class PartCodeSerializer(serializers.ModelSerializer):
         model = PartCode
         fields = ['brand', 'code', 'kind', 'ref_type']
 
+class PartEquivalentSerializer(serializers.Serializer):
+    brand = serializers.CharField()
+    code = serializers.CharField()
+
+
 class CatalogAvailabilitySerializer(serializers.Serializer):
     status = serializers.ChoiceField(choices=['unknown', 'sold_out', 'low', 'medium', 'high'])
     supplier_count = serializers.IntegerField(min_value=0)
     updated_at = serializers.DateTimeField(allow_null=True)
 
 
+class PartListSerializer(serializers.ListSerializer):
+    """Reads the page's aftermarket codes in one go when the caller did not pass them (equivalents_by_part)."""
+
+    def to_representation(self, data):
+        parts = list(data.all() if hasattr(data, 'all') else data)
+        if 'equivalents_by_part' not in self.context:
+            from .oem_links import equivalents_for
+            self._context['equivalents_by_part'] = equivalents_for([part.pk for part in parts])
+        return super().to_representation(parts)
+
+
 class PartSerializer(serializers.ModelSerializer):
     codes = PartCodeSerializer(many=True, read_only=True)
     images = PartImageSerializer(many=True, read_only=True)
     availability = serializers.SerializerMethodField()
+    equivalents = serializers.SerializerMethodField()
+
+    @extend_schema_field(PartEquivalentSerializer(many=True))
+    def get_equivalents(self, obj):
+        """Aftermarket codes the SKU reaches through its OEM numbers (mall.oem_links); lists pass them for the whole page."""
+        by_part = self.context.get('equivalents_by_part')
+        if by_part is None:
+            from .oem_links import equivalents_for
+            by_part = equivalents_for([obj.pk])
+        return by_part.get(str(obj.pk), [])
 
     @extend_schema_field(CatalogAvailabilitySerializer)
     def get_availability(self, obj):
@@ -63,7 +89,8 @@ class PartSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Part
-        fields = ['id', 'sku', 'is_OEM', 'name', 'description', 'category', 'subcategory', 'part_type', 'codes', 'availability', 'images']
+        fields = ['id', 'sku', 'is_OEM', 'name', 'description', 'category', 'subcategory', 'part_type', 'codes', 'equivalents', 'availability', 'images']
+        list_serializer_class = PartListSerializer
 
 class SupplierItemSerializer(serializers.ModelSerializer):
     class Meta:

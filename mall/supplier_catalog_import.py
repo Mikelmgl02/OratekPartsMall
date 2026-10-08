@@ -6,8 +6,9 @@ FILE follows the normalized extract schema (catalog + items with brand_code, pro
 Every OEM number a catalog prints becomes, or joins, an OEMReference with one aftermarket_catalog source per catalog (status
 declared), whether or not a SKU carries it. A catalog item is linked to a SKU only when one of its numbers equals a code of that SKU
 (the SKU, its OEM base, alternos or supplier codes), the SKU description classifies to the item's product type with the deterministic
-category rules, and the makes agree. A linked SKU receives the catalog's own code and its competitor codes as company alternos and,
-when the item prints measurements, its subgrupo template gains those fields and the SKU gets the values. OEM numbers become OEM
+category rules, and the makes agree. A linked SKU receives the catalog's own code and its competitor codes as company alternos only
+when no OEM number carries them to it (see below) and, when the item prints measurements, its subgrupo template gains those fields
+and the SKU gets the values. OEM numbers become OEM
 alternos only on SKUs already marked OEM: on any other SKU reconcile_identities would promote a sole sourced OEM alterno to MAIN
 outside the OEM finder's canary and review. Nothing is overwritten: a code owned by another SKU, a different stored measurement or
 another subgrupo is reported and left alone. Re-running a file changes nothing.
@@ -18,7 +19,10 @@ those numbers (PartOEMLink, source catalog) when the makes agree. A number the c
 inner and an outer joint of one drive shaft, a row the extract misread) says nothing about which part replaces it: it files no codes
 and ties no SKU, and a SKU matched to an item only through such numbers is tied to none of the item's numbers. Variants of one part
 (GWT-116A and GWT-116AH) count as one. A drive-shaft assembly number listed for a CV component files nothing either. After an apply
-the name links of every SKU are refreshed (mall.oem_links), since new numbers may name existing SKUs. These rows are derived from the
+the name links of every SKU are refreshed (mall.oem_links), since new numbers may name existing SKUs. Codes an OEM number carries to the
+SKU are not copied onto it as company alternos (alternos step 2c); a SKU matched only through shared numbers gets none either, so
+only an item whose codes no number can carry (no OEM number printed, or only shared or assembly ones) still writes them on the SKU.
+These rows are derived from the
 extracts and the importer only adds to them: after changing these rules, empty OEMCrossReference and the catalog links and re-run
 every extract.
 """
@@ -514,12 +518,17 @@ class CatalogImport:
                 part = (Part.objects.select_for_update() if apply else Part.objects).get(pk=pid)
                 if not part.active or part.merged_into_id:
                     continue
-                self.link_numbers(pid, n, item, cite)
-                if not duplicate:  # a code has one owner: duplicate SKUs of one item need Agrupar SKU first
+                carried = self.link_numbers(pid, n, item, cite)
+                if carried:  # the item's codes reach the SKU through those numbers: no copy on the SKU
+                    self.report['counts']['codes_carried_by_numbers'] += 1
+                elif not self.clean.get((pid, n)):
+                    pass  # matched only through numbers the catalog prints for other parts too: reported, nothing written
+                elif not duplicate:  # a code has one owner: duplicate SKUs of one item need Agrupar SKU first
                     self.add_code(pid, item['brand_code'], self.brand, 'company', cite, apply, 'brand_code')
                     for xr in item.get('cross_refs', []):
                         if xr.get('brand') and xr.get('code'):
                             self.add_code(pid, xr['code'], xr['brand'], 'company', citation(self.catalog, xr.get('page')), apply, 'cross_ref')
+                if not duplicate:
                     if part.is_OEM:  # sister OEM numbers; reconcile_identities never touches a main already marked OEM
                         groups = {g for g in map(self.make_group, self.finder.parsed[self.fid[str(pid)]]['makes']) if g}
                         for o in item.get('oem', []):
@@ -532,14 +541,16 @@ class CatalogImport:
         matched the item cleanly; never to a number the catalog prints for other parts too, one the SKU's makes rule out or an
         assembly number listed for a component."""
         if not self.clean.get((pid, n)):
-            return
-        groups = {g for g in map(self.make_group, self.finder.parsed[self.fid[str(pid)]]['makes']) if g}
+            return 0
+        groups, tied = {g for g in map(self.make_group, self.finder.parsed[self.fid[str(pid)]]['makes']) if g}, 0
         for o in item.get('oem', []):
             key = (o['manufacturer'].strip().upper(), compact(o['code']))
             if not key[0] or not 1 <= len(key[1]) <= 60 or key[1] in self.shared_numbers() or self.listed_assembly(item, o):
                 continue
             if not groups or self.make_group(o['manufacturer']) in groups:
                 self.catalog_links[(str(pid), key)].add(f"{cite} · {item['brand_code']}")
+                tied += 1
+        return tied
 
     def write_catalog_links(self, apply):
         from .oem_links import store_catalog_links

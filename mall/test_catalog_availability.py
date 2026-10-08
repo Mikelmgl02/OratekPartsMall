@@ -140,4 +140,4 @@ class CatalogAvailabilityTests(APITestCase):
             response = self.client.get(self.url)
         self.assertEqual(len(response.data['results']), 50)
         self.assertEqual(len(page_queries), len(first_queries))
-        self.assertLessEqual(len(page_queries), 6)
+        self.assertLessEqual(len(page_queries), 7)  # one more per page: the OEM numbers the page's SKUs reach
