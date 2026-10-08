@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { ArrowDownLeft, ArrowUpRight, Boxes, ChevronRight, CircleHelp, ClipboardList, FileSpreadsheet, LoaderCircle, Menu, PackagePlus, RefreshCw, Search, Store, Tags, X } from 'lucide-react';
+import { ArrowDownLeft, ArrowUpRight, Boxes, ChevronRight, CircleHelp, ClipboardList, FileSpreadsheet, LoaderCircle, Menu, PackagePlus, PanelLeftClose, PanelLeftOpen, RefreshCw, Search, Store, Tags, X } from 'lucide-react';
 import ServerGrid from './server-grid';
 import { inventoryColumns, inventoryOrdering } from './supplier-grids';
 import Modal from './modal';
@@ -19,6 +19,7 @@ const headings: Record<SupplierSection, [string, (name: string) => string]> = {
   pricing: ['Tus precios privados, en un solo lugar.', name => `Mantén las listas de precios, los perfiles de tus clientes y las reglas comerciales de ${name} para cotizar más rápido.`],
   requests: ['Tus solicitudes, en un solo lugar.', name => `Consulta lo que los clientes solicitan a ${name}.`],
 };
+const SIDEBAR_KEY = 'motionpartes.supplier.sidebar.collapsed';
 function initialSection(): SupplierSection {
   if (typeof window === 'undefined') return 'inventory';
   const params = new URL(window.location.href).searchParams;
@@ -28,6 +29,9 @@ function initialSection(): SupplierSection {
 export default function SupplierWorkspace({ account }: { account: Account }) {
   const [section, setSection] = useState<SupplierSection>(initialSection);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Desktop only: the side menu folds into an icon rail so the grids get the whole window. Remembered in this browser.
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => { try { setCollapsed(localStorage.getItem(SIDEBAR_KEY) === '1'); } catch { /* storage blocked: start expanded */ } }, []);
   const menuToggle = useRef<HTMLButtonElement>(null);
   const viewport = usePageViewport();
   const tabId = useId();
@@ -55,6 +59,10 @@ export default function SupplierWorkspace({ account }: { account: Account }) {
   const inventoryParams = useMemo(() => ({ search: query, matching_status: matchFilter }), [query, matchFilter]);
   const ledgerContext = useMemo(() => ({ openLedger: (item: StockItem) => setLedgerItem(item) }), []);
   function selectSection(next: SupplierSection) { setSection(next); setEditing(false); setImporting(false); setLedgerItem(null); viewport.current?.scrollTo({ top: 0, behavior: 'instant' }); }
+  function toggleSidebar() {
+    const next = !collapsed; setCollapsed(next);
+    try { localStorage.setItem(SIDEBAR_KEY, next ? '1' : '0'); } catch { /* not remembered */ }
+  }
   function closeSidebar() { setSidebarOpen(false); if (window.matchMedia('(max-width: 760px)').matches) menuToggle.current?.focus(); }
   // Vertical tabs: arrows cycle through every section, Home and End jump to the first and last.
   function tabKey(event: React.KeyboardEvent<HTMLButtonElement>) {
@@ -68,12 +76,13 @@ export default function SupplierWorkspace({ account }: { account: Account }) {
     event.preventDefault(); selectSection(next); document.getElementById(`${tabId}-${next}-tab`)?.focus();
   }
   const current = sections.find(({ key }) => key === section)!;
-  return <section className="workspace section-container supplier-workspace-layout" aria-label="Panel de proveedor">
+  const railLabel = collapsed ? 'Mostrar menú lateral' : 'Ocultar menú lateral';
+  return <section className={`workspace section-container supplier-workspace-layout${collapsed ? ' is-collapsed' : ''}`} aria-label="Panel de proveedor">
     <button ref={menuToggle} type="button" className="supplier-menu-toggle" aria-expanded={sidebarOpen} aria-controls={`${tabId}-side-menu`} onClick={() => setSidebarOpen(value => !value)}>{sidebarOpen ? <X size={18}/> : <Menu size={18}/>}<span>Menú de proveedor</span><small>{current.label}</small></button>
     <aside id={`${tabId}-side-menu`} className={`supplier-sidebar ${sidebarOpen ? 'is-open' : ''}`} aria-label="Navegación del proveedor">
       <div className="supplier-sidebar-heading"><span><Store size={22}/></span><div><strong>Panel de proveedor</strong><small>{account.name}</small></div></div>
-      <div className="supplier-sidebar-label">GESTIÓN</div>
-      <div className="supplier-workspace-tabs" role="tablist" aria-label="Secciones del proveedor" aria-orientation="vertical">{sections.map(({ key, label, detail, Icon }) => <button type="button" key={key} role="tab" aria-label={label} id={`${tabId}-${key}-tab`} aria-selected={section === key} aria-controls={`${tabId}-${key}-panel`} tabIndex={section === key ? 0 : -1} onClick={() => { selectSection(key); closeSidebar(); }} onKeyDown={tabKey}><Icon size={18}/><span><strong>{label}</strong><small>{detail}</small></span>{section === key && <ChevronRight size={15}/>}</button>)}</div>
+      <div className="supplier-sidebar-label"><span>GESTIÓN</span><button type="button" className="supplier-sidebar-collapse" aria-label={railLabel} title={railLabel} onClick={toggleSidebar}>{collapsed ? <PanelLeftOpen size={16}/> : <PanelLeftClose size={16}/>}</button></div>
+      <div className="supplier-workspace-tabs" role="tablist" aria-label="Secciones del proveedor" aria-orientation="vertical">{sections.map(({ key, label, detail, Icon }) => <button type="button" key={key} role="tab" aria-label={label} id={`${tabId}-${key}-tab`} aria-selected={section === key} aria-controls={`${tabId}-${key}-panel`} tabIndex={section === key ? 0 : -1} title={collapsed ? label : undefined} onClick={() => { selectSection(key); closeSidebar(); }} onKeyDown={tabKey}><Icon size={18}/><span><strong>{label}</strong><small>{detail}</small></span>{section === key && <ChevronRight size={15}/>}</button>)}</div>
     </aside>
     <div className="supplier-workspace-content">
     <div className="section-heading"><div><span className="eyebrow">Panel de proveedores</span><h1>{headings[section][0]}</h1><p>{headings[section][1](account.name)}</p></div>{section === 'inventory' && <div className="supplier-workspace-actions"><button className="button soft" onClick={() => setImporting(true)}><FileSpreadsheet size={18}/>Importar Excel</button><button className="button primary" onClick={() => setEditing(true)}><PackagePlus size={18}/>Actualizar existencias</button></div>}</div>

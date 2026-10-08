@@ -285,9 +285,11 @@ export default function Catálogo() {
     else if (canSupply) { setBasketPage(false); setView('inventory'); viewport.current?.scrollTo({ top: 0, behavior: 'instant' }); }
     else setNotice('Tu cuenta activa necesita un rol de proveedor para acceder al panel.');
   }
+  // The supplier panel spans the whole window, so the header lines up with it instead of the storefront's centred width.
+  const supplierPanel = view === 'inventory' && canSupply && !!account && !basketOpen && !sentOpen && !wishlistOpen && !purchasesOpen;
   return <>
     <AppToolbar>
-    <header className="header store-header">
+    <header className={`header store-header${supplierPanel ? ' is-wide' : ''}`}>
       <div className="header-inner store-header-main">
         <button className="wordmark" aria-label="Inicio de MotionPartes" onClick={() => {setBasketPage(false); setView('catalog'); setSearch(''); changeFilters(emptyFilters); viewport.current?.scrollTo({top: 0, behavior: 'smooth'});}}><BrandLogo/></button>
         {authenticated && <div className="store-account" title={account?.roles.map(role => roleLabel[role] || role).join(' · ') || undefined}><span className="store-account-caption"><span className="live-dot"/>Cuenta conectada</span><label className="sr-only" htmlFor="active-account">Cuenta activa</label><select id="active-account" disabled={!accounts.length} value={accountId} onChange={event => selectAccount(event.target.value)}>{!accounts.length && <option value="">Sin cuenta asignada</option>}{accounts.map(account => <option key={account.id} value={account.id}>{account.name}</option>)}</select></div>}

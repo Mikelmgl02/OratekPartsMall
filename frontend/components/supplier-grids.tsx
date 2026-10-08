@@ -62,7 +62,7 @@ export function requestColumns(): ColDef<SupplierRequestListItem>[] {
     { colId: 'reference', headerName: 'Orden / recibida', width: 185, cellRenderer: ReferenceCell },
     { colId: 'status', headerName: 'Estado', width: 160, cellRenderer: ({ data }: RequestCell) => data ? <DealStatusBadge status={data.status}/> : null },
     { colId: 'client', headerName: 'Cliente', valueGetter: ({ data }) => data?.client.name ?? '', flex: 1, minWidth: 170, cellClass: 'admin-grid-text strong' },
-    { colId: 'lines', headerName: 'Artículos', field: 'line_count', valueFormatter: ({ value }) => number(value), width: 100, type: 'rightAligned', cellClass: right('admin-grid-number') },
+    { colId: 'lines', headerName: 'Artículos', field: 'line_count', valueFormatter: ({ value }) => number(value), width: 118, type: 'rightAligned', cellClass: right('admin-grid-number') },
     { colId: 'units', headerName: 'Unidades', field: 'unit_count', valueFormatter: ({ value }) => number(value), width: 100, type: 'rightAligned', cellClass: right() },
     { colId: 'alerts', headerName: 'Avisos', flex: 1, minWidth: 150, cellRenderer: AlertsCell },
     { colId: 'open', headerName: 'Acciones', width: 140, cellRenderer: OpenCell, suppressHeaderMenuButton: true, resizable: false },

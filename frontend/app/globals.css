@@ -1822,8 +1822,8 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .header-inner.admin-header { width:calc(100% - 48px); }
 .admin-layout.section-container { width:calc(100% - 48px); }
 .admin-layout .admin-workspace { max-width:none; }
-.admin-sidebar-collapse { margin-left:auto; flex-shrink:0; display:grid; place-items:center; width:28px; height:28px; border-radius:7px; color:#7c8c6d; }
-.admin-sidebar-collapse:hover { background:#f3f6ed; color:#486732; }
+.admin-sidebar-collapse,.supplier-sidebar-collapse { margin-left:auto; flex-shrink:0; display:grid; place-items:center; width:28px; height:28px; border-radius:7px; color:#7c8c6d; }
+.admin-sidebar-collapse:hover,.supplier-sidebar-collapse:hover { background:#f3f6ed; color:#486732; }
 @media(min-width:761px) {
   .admin-layout.is-collapsed { grid-template-columns:62px minmax(0,1fr); column-gap:20px; }
   .admin-layout.is-collapsed .admin-sidebar { padding:14px 8px; }
@@ -1839,6 +1839,23 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 }
 @media(max-width:1200px) { .header-inner.admin-header,.admin-layout.section-container { width:calc(100% - 32px); } }
 @media(max-width:760px) { .admin-sidebar-collapse { display:none; } }
+
+/* Panel de proveedor: the whole window as well, with the same foldable rail (its button sits on the GESTIÓN row, leaving the
+   heading room for the account name). The store header widens with the panel so both line up. */
+.supplier-workspace-layout.section-container,.store-header.is-wide .header-inner { width:calc(100% - 48px); }
+.supplier-sidebar-label { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:12px 2px 6px 10px; }
+@media(min-width:761px) {
+  .supplier-workspace-layout.is-collapsed { grid-template-columns:62px minmax(0,1fr); gap:20px; }
+  .supplier-workspace-layout.is-collapsed .supplier-sidebar { padding:14px 8px; }
+  .supplier-workspace-layout.is-collapsed .supplier-sidebar-heading { justify-content:center; padding:0 0 14px; }
+  .supplier-workspace-layout.is-collapsed .supplier-sidebar-heading>div,.supplier-workspace-layout.is-collapsed .supplier-sidebar-label>span,
+  .supplier-workspace-layout.is-collapsed .supplier-workspace-tabs>button>:not(:first-child) { display:none; }
+  .supplier-workspace-layout.is-collapsed .supplier-sidebar-label { justify-content:center; padding:12px 0 8px; }
+  .supplier-workspace-layout.is-collapsed .supplier-sidebar-collapse { margin-left:0; }
+  .supplier-workspace-layout.is-collapsed .supplier-workspace-tabs>button { justify-content:center; min-height:44px; padding:10px 0; }
+}
+@media(max-width:1200px) { .supplier-workspace-layout.section-container,.store-header.is-wide .header-inner { width:calc(100% - 32px); } }
+@media(max-width:760px) { .supplier-sidebar-collapse { display:none; } .supplier-sidebar-label { padding:3px 10px 8px; } }
 
 /* ===================================================================================================================
    Storefront, Amazon-style structure in MotionPartes colours: a white top band (logo, account, search, actions), a dark
@@ -1994,8 +2011,8 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .admin-sidebar-user { border-top-color:#2e3931; }
 .admin-sidebar-user strong { color:#e6eddc; }
 .admin-sidebar-user span:not(.live-dot) { color:#8f9d84; }
-.admin-sidebar-collapse { color:#9aa78f; }
-.admin-sidebar-collapse:hover { background:#2a332c; color:#f4f8ef; }
+.admin-sidebar-collapse,.supplier-sidebar-collapse { color:#9aa78f; }
+.admin-sidebar-collapse:hover,.supplier-sidebar-collapse:hover { background:#2a332c; color:#f4f8ef; }
 .admin-layout.is-collapsed .admin-nav-group+.admin-nav-group { border-top-color:#2e3931; }
 
 /* Product detail, Amazon product-page style: gallery | facts | supplier buy box (sticky) in a wide modal */
