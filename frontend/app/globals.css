@@ -2056,3 +2056,23 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .part-oem-codes li { display:inline-flex; align-items:center; gap:6px; padding:4px 8px; border-radius:6px; background:#f1efe6; color:#6f6545; font-size:11px; font-weight:600; cursor:help; }
 .part-oem-codes li small { font-size:9px; font-weight:500; color:#8a8064; }
 .oem-ref-cross li span { overflow-wrap:anywhere; }
+
+/* Alternos por revisar: catalog copies no OEM number of their SKU carries, decided one code at a time */
+.alt-review { display:grid; gap:12px; }
+.alt-review-detail { display:grid; gap:14px; }
+.alt-review-description { margin:0; display:grid; gap:4px; font-size:13px; color:#33452c; font-weight:600; }
+.alt-review-description small { font-size:10px; font-weight:500; color:#7a8a6c; letter-spacing:.3px; }
+.alt-review-numbers,.alt-review-codes,.alt-review-filed { margin:0; padding:0; list-style:none; display:grid; gap:8px; }
+.alt-review-numbers li { display:grid; gap:3px; padding:10px 12px; border-radius:8px; background:#f6f8f1; font-size:12px; color:#405238; }
+.alt-review-numbers span,.alt-review-numbers small { font-size:10px; color:#6f7f62; overflow-wrap:anywhere; }
+.alt-review-numbers small.shared { color:#8a5a1f; font-weight:600; }
+.alt-review-codes>li { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; padding:12px; border:1px solid var(--line); border-radius:10px; background:#fff; }
+.alt-review-codes>li>div:first-child { display:grid; gap:4px; min-width:0; font-size:12px; color:#33452c; }
+.alt-review-codes small { font-size:10px; color:#6f7f62; overflow-wrap:anywhere; }
+.alt-review-filed { gap:4px; margin-top:2px; padding-left:10px; border-left:2px solid #e4e9da; }
+.alt-review-filed li { display:grid; gap:1px; font-size:11px; color:#405238; }
+.alt-review-filed li span { font-size:10px; color:#7a8a6c; overflow-wrap:anywhere; }
+.alt-review-filed li.more { font-size:10px; color:#7d8f6c; }
+.alt-review-actions { display:flex; flex-wrap:wrap; align-items:center; gap:6px; flex-shrink:0; }
+.alt-review-done { display:flex; align-items:center; gap:8px; margin:0; }
+@media(max-width:600px) { .alt-review-codes>li { flex-direction:column; } }

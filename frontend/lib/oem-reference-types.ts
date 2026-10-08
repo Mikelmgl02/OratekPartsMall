@@ -32,6 +32,16 @@ export type OEMReferenceAction = 'edit' | 'add_source' | 'remove_source' | 'disp
 export type OEMSourceInput = { kind: OEMManualSourceKind; citation: string; verified?: boolean };
 export type OEMReferenceConflict = { detail: string; reference: OEMReferenceDetail };
 
+// Review of catalog alternos no OEM number of their SKU carries (mall.alternate_review).
+export type ReviewPart = { id: string; sku: string; name: string; description: string; category: string; subcategory: string; active: boolean; is_OEM: boolean };
+export type AlternateReviewRow = { part: ReviewPart; undecided: number; copies: number };
+export type AlternateReviewList = { count: number; results: AlternateReviewRow[] };
+export type NumberEvidence = { reference: OEMReferenceLink; description: string; applications: string };
+export type ReviewNumber = NumberEvidence & { via: PartNumberVia[]; printed_for: { catalog: string; brand_codes: string[] }[] };
+export type ReviewAlterno = { id: number; brand: string; code: string; reference_source: string; filed_under: NumberEvidence[]; filed_count: number };
+export type AlternateReviewDetail = { part: ReviewPart; numbers: ReviewNumber[]; undecided: ReviewAlterno[]; copies: ReviewAlterno[] };
+export type AlternateReviewAction = 'keep' | 'remove' | 'remove_copies';
+
 export const referenceStatusLabels: Record<OEMReferenceStatus, string> = { verified: 'VERIFICADO', declared: 'DECLARADO', inferred: 'INFERIDO', disputed: 'EN DISPUTA' };
 export const referenceStatusHints: Record<OEMReferenceStatus, string> = {
   verified: 'Una lista de precios, el catálogo del fabricante, un registro comprobado o una búsqueda con IA aprobada en el catálogo.',

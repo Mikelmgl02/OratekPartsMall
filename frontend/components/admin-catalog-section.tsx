@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import { Boxes, BrainCircuit, Check, Combine, FileSpreadsheet, FileWarning, Layers3, Library, LoaderCircle, Plus, Repeat2, Search, Tags, Wand2, Warehouse } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Boxes, BrainCircuit, Check, ClipboardCheck, Combine, FileSpreadsheet, FileWarning, Layers3, Library, LoaderCircle, Plus, Repeat2, Search, Tags, Wand2, Warehouse } from 'lucide-react';
 import { CatalogGroupingCandidate, CatalogImportIssuePage, ManagedAlternate, ManagedPart, ManagedStockItem, request } from '@/lib/types';
 import ServerGrid from './server-grid';
 import { alternateColumns, alternateOrdering, CatalogGridActions, catalogColumns, catalogOrdering, stockColumns, stockOrdering } from './admin-catalog-grids';
@@ -16,6 +16,8 @@ import SmartMatching from './admin-smart-matching';
 import CatalogSuffixes from './admin-catalog-suffixes';
 import OEMLibrary from './admin-oem-library';
 import OEMRuns from './admin-oem-runs';
+import AlternateReview from './admin-alternate-review';
+import type { AlternateReviewList } from '@/lib/oem-reference-types';
 import { PartTechnicalEditor } from './part-technical';
 
 type Kind = 'catalog' | 'inventory' | 'alternates';
@@ -30,6 +32,9 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
   const [oemRunsOpen, setOemRunsOpen] = useState(false);
   const [imagePart, setImagePart] = useState<ManagedPart | null>(null);
   const [stockView, setStockView] = useState(false);
+  // Alternos: the library, or the catalog copies no OEM number of their SKU carries (?vista=revisar deep-links it).
+  const [reviewView, setReviewView] = useState(false);
+  const [reviewCount, setReviewCount] = useState<number | null>(null);
   const kind: Kind = section === 'alternates' ? 'alternates' : stockView ? 'inventory' : 'catalog';
   const [partEditor, setPartEditor] = useState<ManagedPart | null | undefined>();
   const [alternateEditor, setAlternateEditor] = useState<ManagedAlternate | null | undefined>();
@@ -47,9 +52,23 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
     request<CatalogImportIssuePage>('/api/management/catalog/import/issues?status=pending&page=1').then(result => { if (!cancelled) setPendingIssueCount(result.pending_count); }).catch(() => { if (!cancelled) setPendingIssueCount(null); });
     return () => { cancelled = true; };
   }, [kind, revision]);
+  useEffect(() => {
+    if (section !== 'alternates') return;
+    if (new URL(window.location.href).searchParams.get('vista') === 'revisar') setReviewView(true);
+    let cancelled = false;
+    request<AlternateReviewList>('/api/management/alternate-review').then(result => { if (!cancelled) setReviewCount(result.count); }).catch(() => { if (!cancelled) setReviewCount(null); });
+    return () => { cancelled = true; };
+  }, [section]);
+  function showReview(next: boolean) {
+    setReviewView(next); setNotice('');
+    const url = new URL(window.location.href);
+    if (next) url.searchParams.set('vista', 'revisar'); else url.searchParams.delete('vista');
+    window.history.replaceState(window.history.state, '', url);
+  }
+  const reviewChanged = useCallback(() => setRevision(value => value + 1), []);
   function saved(text: string) { setRevision(value => value + 1); setNotice(text); }
   return <section className="inventory-panel admin-panel" aria-label={section === 'inventory' ? 'Inventario' : 'Alternos'}>
-    <div className="admin-toolbar inventory-header"><div><h2>{section === 'inventory' ? 'Inventario' : 'Alternos'}</h2><p>{section === 'inventory' ? 'SKU internos que agrupan repuestos idénticos y existencias por proveedor.' : 'Biblioteca de referencias OEM y de fabricantes equivalentes a cada SKU maestro.'}</p></div>{kind !== 'inventory' && <div className="admin-toolbar-actions">{kind === 'catalog' && <button className="button soft" onClick={() => setImportOpen(true)}><FileSpreadsheet size={17}/>Importar Excel</button>}<button className="button primary" onClick={() => { if (kind === 'alternates') setAlternateEditor(null); else setPartEditor(null); }}><Plus size={17}/>{kind === 'alternates' ? 'Crear alterno' : 'Crear SKU'}</button></div>}</div>
+    <div className="admin-toolbar inventory-header"><div><h2>{section === 'inventory' ? 'Inventario' : 'Alternos'}</h2><p>{section === 'inventory' ? 'SKU internos que agrupan repuestos idénticos y existencias por proveedor.' : 'Biblioteca de referencias OEM y de fabricantes equivalentes a cada SKU maestro.'}</p></div>{kind !== 'inventory' && !(kind === 'alternates' && reviewView) && <div className="admin-toolbar-actions">{kind === 'catalog' && <button className="button soft" onClick={() => setImportOpen(true)}><FileSpreadsheet size={17}/>Importar Excel</button>}<button className="button primary" onClick={() => { if (kind === 'alternates') setAlternateEditor(null); else setPartEditor(null); }}><Plus size={17}/>{kind === 'alternates' ? 'Crear alterno' : 'Crear SKU'}</button></div>}</div>
     {section === 'inventory' && <>
       <div className="inventory-view-tabs" role="group" aria-label="Vistas de inventario"><button className={!stockView ? 'selected' : ''} aria-pressed={!stockView} onClick={() => setStockView(false)}><Boxes size={15} aria-hidden="true"/>Inventario interno</button><button className={stockView ? 'selected' : ''} aria-pressed={stockView} onClick={() => setStockView(true)}><Warehouse size={15} aria-hidden="true"/>Existencias por proveedor</button></div>
       <div className="inventory-tools" role="group" aria-label="Herramientas del inventario">
@@ -58,10 +77,14 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
         {!stockView && <div className="inventory-tool-group"><span>Asistencia</span><div><button type="button" className="inventory-tool" onClick={()=>setAssistantOpen(true)}><BrainCircuit size={15}/>Asistente IA</button></div></div>}
       </div>
     </>}
-    {section === 'alternates' && <div className="inventory-tools-spacer"/>}
+    {section === 'alternates' && <div className="inventory-view-tabs" role="group" aria-label="Vistas de alternos">
+      <button className={!reviewView ? 'selected' : ''} aria-pressed={!reviewView} onClick={() => showReview(false)}><Repeat2 size={15} aria-hidden="true"/>Biblioteca de alternos</button>
+      <button className={reviewView ? 'selected' : ''} aria-pressed={reviewView} onClick={() => showReview(true)}><ClipboardCheck size={15} aria-hidden="true"/>Por revisar{!!reviewCount && <span className="import-issues-count" aria-label={`${reviewCount} SKU por revisar`}>{reviewCount}</span>}</button>
+    </div>}
     {notice && <div className="notice success admin-notice" role="status"><Check size={16}/>{notice}</div>}
-    <Collection onTechnical={setTechnicalPart} onImages={setImagePart} key={kind} kind={kind} revision={revision} onEditPart={setPartEditor} onEditAlternate={setAlternateEditor} onEditMatch={setMatchEditor} onRemoveAlternate={setRemoveAlternate}/>
-    <p className="admin-footnote">{kind === 'alternates' ? 'Los alternos de un SKU también aparecen en su editor de inventario interno. Cada artículo del proveedor mantiene su propio inventario e historial.' : kind === 'catalog' ? 'El SKU maestro no tiene marca. Sus referencias identifican piezas equivalentes; los artículos del proveedor conservan sus propios códigos y existencias.' : 'Los registros conservan el ID de inventario de cada proveedor y su vínculo con el SKU interno.'}</p>
+    {kind === 'alternates' && reviewView ? <AlternateReview onCount={setReviewCount} onChanged={reviewChanged}/>
+      : <Collection onTechnical={setTechnicalPart} onImages={setImagePart} key={kind} kind={kind} revision={revision} onEditPart={setPartEditor} onEditAlternate={setAlternateEditor} onEditMatch={setMatchEditor} onRemoveAlternate={setRemoveAlternate}/>}
+    <p className="admin-footnote">{kind === 'alternates' && reviewView ? 'Conservar marca el código como confirmado por ti y la limpieza de copias nunca lo retira. Retirar lo quita del SKU. Los clientes siguen viendo los códigos que llegan por número OEM.' : kind === 'alternates' ? 'Los alternos de un SKU también aparecen en su editor de inventario interno. Cada artículo del proveedor mantiene su propio inventario e historial.' : kind === 'catalog' ? 'El SKU maestro no tiene marca. Sus referencias identifican piezas equivalentes; los artículos del proveedor conservan sus propios códigos y existencias.' : 'Los registros conservan el ID de inventario de cada proveedor y su vínculo con el SKU interno.'}</p>
     {matchingOpen && <SmartMatching onClose={()=>setMatchingOpen(false)} onSaved={()=>saved('Coincidencias actualizadas.')} onOpenSuffixes={token => { setSuffixSearch(token); setSuffixesOpen(true); }} onOpenGrouping={family => { setGroupingFamily(family); setGroupingOpen(true); }}/>}
     {suffixesOpen && <CatalogSuffixes initialSearch={suffixSearch} onClose={()=>{ setSuffixesOpen(false); setSuffixSearch(''); setRevision(value => value + 1); }}/>}
     {oemLibraryOpen && <OEMLibrary onClose={()=>setOemLibraryOpen(false)}/>}
