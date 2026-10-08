@@ -483,8 +483,8 @@ test('superuser manages accounts, employee access, users, and invitations', asyn
   test.skip(!process.env.E2E_ADMIN_USERNAME || !process.env.E2E_ADMIN_PASSWORD || !process.env.E2E_USERNAME, 'Disposable superuser and employee fixtures are required.');
   await signIn(page, process.env.E2E_ADMIN_USERNAME!, process.env.E2E_ADMIN_PASSWORD!);
   await page.getByRole('link', { name: 'Administración', exact: true }).first().click();
-  await expect(page.getByRole('heading', { name: 'Administración.' })).toBeVisible();
-  await expect(page.getByText('Solo superusuarios')).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Gestión administrativa' })).toBeVisible();
+  await expect(page.locator('.admin-sidebar-user').getByText('Superusuario', { exact: true })).toBeVisible();
   await page.getByRole('navigation', { name: 'Gestión administrativa' }).getByRole('link', { name: 'Cuentas', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Crear cuenta', exact: true })).toBeVisible();
   expect((await page.request.post('/api/management/accounts', { headers: { Origin: 'https://unrelated.example' }, data: { name: 'Denied' } })).status()).toBe(403);

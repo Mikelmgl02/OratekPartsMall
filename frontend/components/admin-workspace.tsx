@@ -100,7 +100,8 @@ export default function AdminWorkspace({ user, section = 'accounts' }: { user: S
         <div className="admin-sidebar-user"><span className="live-dot"/><div><strong>{user.username}</strong><span>Superusuario</span></div></div>
       </aside>
       <main className="workspace admin-workspace">
-        <div className="section-heading"><div><span className="eyebrow">ADMINISTRACIÓN DE MOTIONPARTES</span><h1>Administración.</h1><p>Gestiona el catálogo, las cuentas y los usuarios de MotionPartes.</p></div><span className="admin-access-badge"><ShieldCheck size={17}/>Solo superusuarios<small>{user.username}</small></span></div>
+        {/* The side menu already names the area and the signed-in superuser; the page keeps its title for assistive technology. */}
+        <h1 className="sr-only">Administración</h1>
       {notice && <div className="notice success admin-notice" role="status"><Check size={16}/>{notice}<button className="icon-button" aria-label="Cerrar notificación" onClick={() => setNotice('')}><X size={15}/></button></div>}
       {isAccessSection ? <><section className="inventory-panel admin-panel" aria-label={heading}>
         <div className="admin-toolbar"><div><h2>{heading}</h2><p>{tab === 'accounts' ? 'Tipos de cuenta, estado y empleados con acceso.' : tab === 'users' ? 'Perfiles registrados y sus cuentas asignadas.' : 'Acceso por invitación para nuevos usuarios.'}</p></div><button className="button primary" onClick={() => { if (tab === 'accounts') setAccountEditor(null); else setInviting(true); }}>{tab === 'accounts' ? <Plus size={17}/> : <MailPlus size={17}/>} {tab === 'accounts' ? 'Crear cuenta' : 'Invitar usuario'}</button></div>

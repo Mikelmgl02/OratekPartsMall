@@ -1,15 +1,17 @@
 'use client';
-import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { AgGridReact } from 'ag-grid-react';
 import type { ColDef, GetRowIdParams, GridState, IServerSideDatasource, StateUpdatedEvent } from 'ag-grid-community';
 import { gridLocale, motionGridTheme } from '@/lib/ag-grid';
 import { Page, request } from '@/lib/types';
+import { usePageViewport } from './app-shell';
 
 // The management lists page by 50 (DRF PAGE_SIZE): grid block N is API page N + 1.
 export const GRID_BLOCK = 50;
 const HEADER = 42;
-const MAX_HEIGHT = 680;
+const MIN_HEIGHT = 360;
+const BOTTOM_GAP = 26; // the panel's bottom padding stays visible under the grid
 const KEPT: (keyof GridState)[] = ['columnOrder', 'columnSizing', 'columnVisibility', 'sort'];
 
 function savedState(key: string): GridState | undefined {
@@ -42,6 +44,11 @@ type Props<T> = {
 // on the server, and the whole list stays one grid however long it is.
 export default function AdminServerGrid<T>({ storageKey, label, path, params, columns, rowId, ordering, revision, rowHeight, context, empty, onCount }: Props<T>) {
   const grid = useRef<AgGridReact<T>>(null);
+  const frame = useRef<HTMLDivElement>(null);
+  const viewport = usePageViewport();
+  // The grid fills the window from where it starts down to the bottom edge (never under MIN_HEIGHT), and shrinks to its rows
+  // when a search leaves only a few.
+  const [fill, setFill] = useState<number | null>(null);
   const [count, setCount] = useState<number | null>(null);
   const [error, setError] = useState('');
   // The datasource reads the current filters from refs: AG Grid keeps one datasource and asks it again after a refresh.
@@ -88,12 +95,31 @@ export default function AdminServerGrid<T>({ storageKey, label, path, params, co
     const state = Object.fromEntries(KEPT.filter(name => event.state[name] !== undefined).map(name => [name, event.state[name]]));
     try { localStorage.setItem(key, JSON.stringify(state)); } catch { /* storage blocked: the layout is simply not remembered */ }
   }
-  const height = count === null ? MAX_HEIGHT : Math.min(MAX_HEIGHT, HEADER + Math.max(count, 2) * rowHeight + 2);
+  useLayoutEffect(() => {
+    // Found from the grid's own place in the DOM: on first load this effect runs before the shell attaches its viewport ref.
+    const element = frame.current, scroller = element?.closest<HTMLElement>('.app-viewport') ?? viewport.current;
+    if (!scroller || !element) return;
+    const measure = () => {
+      const top = element.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+      setFill(Math.max(MIN_HEIGHT, Math.floor(scroller.clientHeight - top - BOTTOM_GAP)));
+    };
+    measure();
+    // Anything above the grid can still move it (web fonts arriving, a notice, the tools wrapping): re-measure whenever the window
+    // or the page content changes size. The grid's own new height settles on the same value, so this stops after one round.
+    const observer = new ResizeObserver(measure);
+    observer.observe(scroller);
+    if (scroller.firstElementChild) observer.observe(scroller.firstElementChild);
+    let live = true;
+    document.fonts?.ready.then(() => { if (live) measure(); });
+    return () => { live = false; observer.disconnect(); };
+  }, [viewport, count === 0, error]);
+  const available = fill ?? 600;
+  const height = count === null ? available : Math.min(available, HEADER + Math.max(count, 2) * rowHeight + 2);
   const defaultColumn = useMemo<ColDef<T>>(() => ({ sortable: false, resizable: true, suppressHeaderMenuButton: false }), []);
   const columnDefs = useMemo(() => columns.map(column => ({ ...column, sortable: !!column.colId && column.colId in ordering })), [columns, ordering]);
   return <div className="admin-grid-shell">
     {error && <div className="notice error" role="alert">{error}<button type="button" onClick={() => { setError(''); grid.current?.api?.refreshServerSide({ purge: true }); }}><RefreshCw size={14}/>Intentar de nuevo</button></div>}
-    <div className="quotation-grid admin-grid" role="region" aria-label={label} style={{ height, ['--admin-row-height' as string]: `${rowHeight - 2}px` }}>
+    <div ref={frame} className="quotation-grid admin-grid" role="region" aria-label={label} style={{ height, ['--admin-row-height' as string]: `${rowHeight - 2}px` }}>
       <AgGridReact<T> ref={grid} theme={motionGridTheme} localeText={gridLocale} rowModelType="serverSide" serverSideDatasource={datasource}
         cacheBlockSize={GRID_BLOCK} maxBlocksInCache={40} blockLoadDebounceMillis={80} getRowId={({ data }: GetRowIdParams<T>) => rowId(data)}
         columnDefs={columnDefs} defaultColDef={defaultColumn} rowHeight={rowHeight} context={context} initialState={initialState} onStateUpdated={remember}
