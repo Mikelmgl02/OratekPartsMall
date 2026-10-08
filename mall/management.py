@@ -1,3 +1,4 @@
+import uuid
 from datetime import timedelta
 
 from django.db import IntegrityError, transaction
@@ -144,6 +145,7 @@ from .reference_serializers import LegacyReferenceKind, validate_reference_type
 
 
 class ManagedCodeSerializer(serializers.Serializer):
+    id = serializers.IntegerField(read_only=True, help_text='El alterno, para editarlo o retirarlo en management/alternates/.')
     brand = UppercaseCharField(max_length=120, required=False, allow_blank=True, default='')
     code = UppercaseCharField(max_length=120)
     kind = LegacyReferenceKind()
@@ -404,12 +406,110 @@ class CatalogList(SuperuserMixin, generics.ListCreateAPIView):
 
     def get_queryset(self):
         queryset = super().get_queryset()
+        ids = self.request.query_params.get('ids')
+        if ids:  # the rows a grid shows, re-read to patch what changed elsewhere
+            wanted = [value.strip() for value in ids.split(',') if value.strip()][:MAX_ROW_IDS]
+            try:
+                queryset = queryset.filter(pk__in=[uuid.UUID(value) for value in wanted])
+            except ValueError:
+                raise serializers.ValidationError({'ids': 'Usa identificadores de SKU separados por comas.'})
         value = self.request.query_params.get('is_OEM')
         if value is not None:
             if value.lower() not in ['true', 'false']:
                 raise serializers.ValidationError({'is_OEM': 'Usa true o false.'})
             queryset = queryset.filter(is_OEM=value.lower() == 'true')
         return queryset
+
+
+MAX_ROW_IDS = 100
+BULK_FIELDS = ('description', 'category', 'subcategory', 'active')
+MAX_BULK_ROWS = 500
+
+
+class BulkEditRow(serializers.Serializer):
+    id = serializers.UUIDField()
+    description = serializers.CharField(required=False, allow_blank=True)
+    category = serializers.CharField(required=False, allow_blank=True)
+    subcategory = serializers.CharField(required=False, allow_blank=True)
+    active = serializers.BooleanField(required=False)
+
+
+class BulkEditRequest(serializers.Serializer):
+    rows = BulkEditRow(many=True, help_text=f'Hasta {MAX_BULK_ROWS} SKU, cada uno con los campos que cambian.')
+
+
+class BulkEditError(serializers.Serializer):
+    id = serializers.UUIDField()
+    sku = serializers.CharField()
+    detail = serializers.CharField()
+
+
+class BulkEditFailure(serializers.Serializer):
+    detail = serializers.CharField()
+    errors = BulkEditError(many=True)
+
+
+class BulkEditResponse(serializers.Serializer):
+    updated = ManagedPartSerializer(many=True)
+
+
+def flat_error(detail):
+    if isinstance(detail, dict):
+        return ' '.join(flat_error(value) for value in detail.values())
+    if isinstance(detail, (list, tuple)):
+        return ' '.join(flat_error(value) for value in detail)
+    return str(detail)
+
+
+class CatalogBulkEdit(SuperuserMixin, APIView):
+    """The Inventario grid's batch: plain field edits of several SKUs, all saved or none. Each one keeps the SKU's OEM flag, so
+    the OEM preference never renames a SKU here, and a group / subgroup must be one of the catalog's (no new part type by a typo)."""
+
+    @extend_schema(operation_id='v1_management_catalog_bulk_edit', request=BulkEditRequest, responses={
+        200: BulkEditResponse, 400: BulkEditFailure},
+        description='Guarda juntos los cambios de descripción, grupo / subgrupo y estado de varios SKU: si uno falla no se guarda ninguno y '
+                    'la respuesta dice por qué.')
+    def post(self, request):
+        from django.core.exceptions import ValidationError as DjangoValidationError
+        from .category_suggestions import normalized, taxonomy
+        data = BulkEditRequest(data=request.data)
+        data.is_valid(raise_exception=True)
+        rows = data.validated_data['rows']
+        if not rows or len(rows) > MAX_BULK_ROWS:
+            raise serializers.ValidationError({'rows': f'Envía entre 1 y {MAX_BULK_ROWS} SKU.'})
+        known = {(normalized(category), normalized(subcategory)): (category, subcategory) for category, subcategory in taxonomy()}
+        parts = {part.pk: part for part in Part.objects.filter(pk__in=[row['id'] for row in rows], merged_into__isnull=True)}
+        errors, saved = [], []
+        with transaction.atomic():
+            for row in rows:
+                part = parts.get(row['id'])
+                fields = {key: row[key] for key in BULK_FIELDS if key in row}
+                if part is None:
+                    errors.append({'id': row['id'], 'sku': '', 'detail': 'El SKU ya no está en el catálogo o se agrupó en otro.'})
+                    continue
+                if 'category' in fields or 'subcategory' in fields:
+                    pair = (fields.get('category', part.category), fields.get('subcategory', part.subcategory))
+                    if any(pair):
+                        match = known.get((normalized(pair[0]), normalized(pair[1])))
+                        if match is None:
+                            errors.append({'id': part.pk, 'sku': part.sku, 'detail': f'{pair[0]} / {pair[1]} no es un grupo / subgrupo del catálogo.'})
+                            continue
+                        fields['category'], fields['subcategory'] = match
+                serializer = ManagedPartSerializer(part, data={**fields, 'is_OEM': part.is_OEM}, partial=True, context={'request': request})
+                if not serializer.is_valid():
+                    errors.append({'id': part.pk, 'sku': part.sku, 'detail': flat_error(serializer.errors)})
+                    continue
+                try:
+                    with transaction.atomic():
+                        saved.append(serializer.save())
+                except (DjangoValidationError, serializers.ValidationError) as error:
+                    errors.append({'id': part.pk, 'sku': part.sku, 'detail': flat_error(getattr(error, 'detail', None) or error.messages)})
+            if errors:
+                transaction.set_rollback(True)
+        if errors:
+            return Response({'detail': 'No se guardó ningún cambio: ' + ' '.join(f"{e['sku'] or 'SKU'}: {e['detail']}" for e in errors),
+                             'errors': errors}, status=400)
+        return Response({'updated': ManagedPartSerializer(saved, many=True, context={'request': request}).data})
 
 
 class TaxonomyPair(serializers.Serializer):

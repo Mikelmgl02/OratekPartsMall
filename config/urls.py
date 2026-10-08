@@ -69,6 +69,7 @@ urlpatterns = [
     path('api/v1/management/catalog/suffixes/<path:token>/', SuffixDetail.as_view()),
     path('api/v1/management/catalog/company-suffixes/', CompanySuffixes.as_view()),
     path('api/v1/management/catalog/taxonomy/', management.CatalogTaxonomy.as_view()),
+    path('api/v1/management/catalog/bulk-edit/', management.CatalogBulkEdit.as_view()),
     path('api/v1/management/catalog/<uuid:pk>/', management.CatalogDetail.as_view()),
     path('api/v1/management/catalog/<uuid:pk>/images/', CatalogImages.as_view()),
     path('api/v1/management/catalog/<uuid:pk>/images/order/', CatalogImageOrder.as_view()),

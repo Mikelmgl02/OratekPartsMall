@@ -10,7 +10,7 @@ export type ManagedRole = { code: string; name: string; capability: string };
 export type ManagedInvitation = { id: number; email: string; token: string; expires_at: string; accepted_at: string | null; status: 'pending' | 'accepted' | 'expired' };
 export type CatalogAvailability = { status: 'unknown' | 'sold_out' | 'low' | 'medium' | 'high'; supplier_count: number; updated_at: string | null };
 export type CatalogImage = { id: string; url: string; thumbnail_url: string; alt_text: string; position: number; width: number; height: number; size_bytes: number; created_at: string };
-export type PartReference = { brand: string; code: string; kind?: 'alias' | 'oem' | 'manufacturer'; ref_type?: 'unknown' | 'oem' | 'company'; reference_source?: string };
+export type PartReference = { id?: number; brand: string; code: string; kind?: 'alias' | 'oem' | 'manufacturer'; ref_type?: 'unknown' | 'oem' | 'company'; reference_source?: string };
 export type Part = { images?: CatalogImage[]; id: string; sku: string; is_OEM?: boolean; name: string; description: string; category?: string; subcategory?: string; part_type?: string | null; codes: PartReference[];
   // Aftermarket codes the SKU reaches through its OEM numbers (catalogs file them under the number, not on the SKU).
   equivalents?: { brand: string; code: string }[]; availability?: CatalogAvailability };

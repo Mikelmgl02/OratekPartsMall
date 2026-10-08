@@ -2086,3 +2086,28 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .inventory-edit-status { font-weight:600; }
 .inventory-edit-status.saving { color:#7d8c71; }
 .inventory-edit-status.saved { color:#47702c; }
+
+/* Editar celdas, EssaMobileApp's cue: editable cells get a dashed green outline and a lime tint (none while a batch is saving) */
+.admin-grid .ag-cell.editable-cell-active { background-color:#f6fbe8; outline:1px dashed #8fb86a; outline-offset:-3px; cursor:text; }
+.admin-grid .ag-cell.editable-cell-active:hover { background-color:#eef7d7; outline-color:#5f8d3c; }
+.admin-grid .ag-cell.editable-cell-active.ag-cell-range-selected,.admin-grid .ag-cell.editable-cell-active.ag-cell-range-single-cell { outline-color:#c3d9ae; background-color:#e3f1ff; }
+.admin-grid .ag-cell[col-id="codes"] { cursor:pointer; }
+
+/* The Alternos popup: every code to read and copy; with Editar celdas, retire one or add one */
+.codes-editor { display:grid; gap:10px; padding:12px; background:#fff; border:1px solid #d8e2cc; border-radius:10px; box-shadow:0 14px 34px #1a2a1f26; }
+.codes-editor-head { display:flex; align-items:center; gap:10px; font-size:12px; color:#33452c; }
+.codes-editor-head span { margin-right:auto; font-size:10px; color:#7a8a6c; }
+.codes-editor-list { margin:0; padding:0; list-style:none; display:flex; flex-wrap:wrap; gap:6px; max-height:220px; overflow:auto; }
+.codes-editor-list li { display:inline-flex; align-items:stretch; border-radius:7px; background:#f1f3ee; color:#4f5b47; }
+.codes-editor-list li.oem { background:#e6f2d5; color:#45682c; }
+.codes-editor-list li.company { background:#f1efe6; color:#6f6545; }
+.codes-editor-copy { display:grid; gap:1px; padding:5px 9px; text-align:left; font-size:12px; color:inherit; }
+.codes-editor-copy small { font-size:9px; opacity:.75; }
+.codes-editor-copy:hover strong { text-decoration:underline; }
+.codes-editor-remove { display:grid; place-items:center; width:26px; border-left:1px solid #0000000f; color:#9b4a3a; }
+.codes-editor-remove:hover { background:#fbe6e1; }
+.codes-editor-empty,.codes-editor-note { margin:0; font-size:11px; color:#7a8a6c; }
+.codes-editor-copied { display:flex; align-items:center; gap:5px; margin:0; font-size:11px; color:#47702c; font-weight:600; }
+.codes-editor-error { margin:0; padding:7px 9px; border-radius:7px; background:#fdecea; color:#9b3b2f; font-size:11px; }
+.codes-editor-add { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:6px; }
+.codes-editor-add input,.codes-editor-add select { min-width:0; height:34px; padding:0 9px; border:1px solid #dce4d2; border-radius:7px; font-size:12px; background:#fff; }

@@ -1,4 +1,5 @@
 from datetime import timedelta
+from unittest.mock import ANY
 
 from django.contrib.auth.models import Permission
 from django.utils import timezone
@@ -64,7 +65,7 @@ class ManagementTests(APITestCase):
         self.assertEqual(created.status_code, 201)
         part_id = created.data['id']
         self.assertEqual(created.data['stock_record_count'], 0)
-        self.assertEqual(created.data['codes'][0], {'brand': 'ACME', 'code': 'ABC-123', 'kind': 'alias', 'ref_type': 'unknown', 'reference_source': ''})
+        self.assertEqual(created.data['codes'][0], {'id': ANY, 'brand': 'ACME', 'code': 'ABC-123', 'kind': 'alias', 'ref_type': 'unknown', 'reference_source': ''})
         part = Part.objects.get(pk=part_id)
         self.assertEqual(part.name, 'FILTRO DE ACEITE')
         self.assertEqual(part.sku, 'FILTRO-001')
@@ -119,7 +120,7 @@ class ManagementTests(APITestCase):
         url = f"/api/v1/management/catalog/{created.data['id']}/"
         updated = self.client.patch(url, {'codes': [{'code': '58-1R0'}]}, format='json')
         self.assertEqual(updated.status_code, 200)
-        self.assertEqual(updated.data['codes'], [{'code': '58-1R0', 'brand': '', 'kind': 'alias', 'ref_type': 'unknown', 'reference_source': ''}])
+        self.assertEqual(updated.data['codes'], [{'id': ANY, 'code': '58-1R0', 'brand': '', 'kind': 'alias', 'ref_type': 'unknown', 'reference_source': ''}])
         self.assertEqual(Part.objects.count(), 1)
 
     def test_unknown_supplier_code_does_not_create_catalog_or_get_approved_automatically(self):
@@ -167,7 +168,7 @@ class ManagementTests(APITestCase):
         self.assertIsNone(pending.part)
         self.assertEqual(pending.matching_status, 'pending')
         catalog = self.client.get(f'/api/v1/management/catalog/{part.pk}/').data
-        self.assertEqual(catalog['codes'], [{'brand': '', 'code': '58411-1R000-G', 'kind': 'alias', 'ref_type': 'unknown', 'reference_source': ''}])
+        self.assertEqual(catalog['codes'], [{'id': ANY, 'brand': '', 'code': '58411-1R000-G', 'kind': 'alias', 'ref_type': 'unknown', 'reference_source': ''}])
         stock = ingest_inventory(supplier=self.account, actor=self.user, data={'update_id': 'known-alias', 'supplier_invent_id': 'known', 'codigo': '58411-1R000-G', 'brand': 'OTHER', 'source': 'upload', 'quantity': 8})
         self.assertEqual(stock.part, part)
         self.assertEqual(stock.matching_status, 'matched')

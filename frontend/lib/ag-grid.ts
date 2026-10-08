@@ -16,4 +16,5 @@ export const motionGridTheme = themeQuartz.withParams({
   borderColor: '#dfe5d8', headerBackgroundColor: '#f1f5eb', headerTextColor: '#647858',
   fontFamily: 'DM Sans, sans-serif', fontSize: 12, headerFontSize: 11,
   spacing: 6, rowHeight: 56, headerHeight: 42, wrapperBorderRadius: 10,
+  valueChangeValueHighlightBackgroundColor: '#dcf39e',  // flashCells: the brand lime, fading out
 });
