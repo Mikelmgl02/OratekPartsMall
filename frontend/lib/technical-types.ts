@@ -1,4 +1,4 @@
-export type PartType = { id: string; category: string; name: string; part_count: number };
+export type PartType = { id: string; category: string; name: string; part_count: number; field_count?: number };
 export type TechnicalField = { key: string; label: string; section: string; kind: 'number' | 'integer' | 'boolean' | 'choice' | 'text'; unit: string; options: string[]; required: boolean; position: number };
 export type TechnicalTemplate = { part_type: string; revision: number; fields: TechnicalField[] };
 export type VehicleApplication = { id: string; make: string; model: string; generation: string; year_from: number; year_to: number; engine: string; trim: string; transmission: string; market: string };

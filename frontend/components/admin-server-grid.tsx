@@ -38,11 +38,15 @@ type Props<T> = {
   context?: unknown;
   empty: ReactNode;
   onCount?: (count: number | null) => void;
+  /** Every page the current filters load, for lists that send more than rows (the OEM library's counts). */
+  onPage?: (page: Page<T>) => void;
+  /** Extra classes for the grid frame. */
+  className?: string;
 };
 
 // AG Grid Enterprise server-side row model over a paginated management list: rows load in blocks while scrolling, sorting runs
 // on the server, and the whole list stays one grid however long it is.
-export default function AdminServerGrid<T>({ storageKey, label, path, params, columns, rowId, ordering, revision, rowHeight, context, empty, onCount }: Props<T>) {
+export default function AdminServerGrid<T>({ storageKey, label, path, params, columns, rowId, ordering, revision, rowHeight, context, empty, onCount, onPage, className = '' }: Props<T>) {
   const grid = useRef<AgGridReact<T>>(null);
   const frame = useRef<HTMLDivElement>(null);
   const viewport = usePageViewport();
@@ -54,6 +58,8 @@ export default function AdminServerGrid<T>({ storageKey, label, path, params, co
   // The datasource reads the current filters from refs: AG Grid keeps one datasource and asks it again after a refresh.
   const current = useRef({ params, ordering, generation: 0 });
   current.current.params = params; current.current.ordering = ordering;
+  const pageListener = useRef(onPage);
+  pageListener.current = onPage;
   const key = `motionpartes.grid.${storageKey}.v2`;
   const initialState = useMemo(() => typeof window === 'undefined' ? undefined : savedState(key), [key]);
   const datasource = useMemo<IServerSideDatasource<T>>(() => ({
@@ -65,7 +71,7 @@ export default function AdminServerGrid<T>({ storageKey, label, path, params, co
         .map(field => item.sort === 'desc' ? `-${field}` : field));
       if (sort.length) query.set('ordering', sort.join(','));
       request<Page<T>>(`${path}?${query}`).then(page => {
-        if (generation === current.current.generation) { setCount(page.count); setError(''); }
+        if (generation === current.current.generation) { setCount(page.count); setError(''); pageListener.current?.(page); }
         rows.success({ rowData: page.results, rowCount: page.count });
       }).catch(caught => {
         if (generation === current.current.generation) setError(caught instanceof Error ? caught.message : 'No se pudo cargar la información.');
@@ -100,6 +106,8 @@ export default function AdminServerGrid<T>({ storageKey, label, path, params, co
     const element = frame.current, scroller = element?.closest<HTMLElement>('.app-viewport') ?? viewport.current;
     if (!scroller || !element) return;
     const measure = () => {
+      // In a dialog the page behind does not frame the grid: keep a fixed share of the window instead.
+      if (element.closest('dialog')) { setFill(Math.max(MIN_HEIGHT, Math.min(560, Math.floor(window.innerHeight * 0.6)))); return; }
       const top = element.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
       setFill(Math.max(MIN_HEIGHT, Math.floor(scroller.clientHeight - top - BOTTOM_GAP)));
     };
@@ -114,12 +122,12 @@ export default function AdminServerGrid<T>({ storageKey, label, path, params, co
     return () => { live = false; observer.disconnect(); };
   }, [viewport, count === 0, error]);
   const available = fill ?? 600;
-  const height = count === null ? available : Math.min(available, HEADER + Math.max(count, 2) * rowHeight + 2);
+  const height = count === null ? available : Math.min(available, HEADER + Math.max(count, count === 0 ? 4 : 2) * rowHeight + 2);
   const defaultColumn = useMemo<ColDef<T>>(() => ({ sortable: false, resizable: true, suppressHeaderMenuButton: false }), []);
   const columnDefs = useMemo(() => columns.map(column => ({ ...column, sortable: !!column.colId && column.colId in ordering })), [columns, ordering]);
   return <div className="admin-grid-shell">
     {error && <div className="notice error" role="alert">{error}<button type="button" onClick={() => { setError(''); grid.current?.api?.refreshServerSide({ purge: true }); }}><RefreshCw size={14}/>Intentar de nuevo</button></div>}
-    <div ref={frame} className="quotation-grid admin-grid" role="region" aria-label={label} style={{ height, ['--admin-row-height' as string]: `${rowHeight - 2}px` }}>
+    <div ref={frame} className={`quotation-grid admin-grid ${className}`} role="region" aria-label={label} style={{ height, ['--admin-row-height' as string]: `${rowHeight - 2}px` }}>
       <AgGridReact<T> ref={grid} theme={motionGridTheme} localeText={gridLocale} rowModelType="serverSide" serverSideDatasource={datasource}
         cacheBlockSize={GRID_BLOCK} maxBlocksInCache={40} blockLoadDebounceMillis={80} getRowId={({ data }: GetRowIdParams<T>) => rowId(data)}
         columnDefs={columnDefs} defaultColDef={defaultColumn} rowHeight={rowHeight} context={context} initialState={initialState} onStateUpdated={remember}

@@ -38,6 +38,18 @@ class TechnicalDataTests(APITestCase):
     def application(self, **overrides):
         return Application.objects.create(make='HYUNDAI', model='ACCENT', year_from=2011, year_to=2016, **overrides)
 
+    def test_grid_sorting_and_template_field_counts(self):
+        other = PartType.objects.create(category='ARRANQUE', name='MOTORES')
+        for sku in ('TEST-DISC-2', 'TEST-DISC-3'):
+            Part.objects.create(sku=sku, category='FRENOS', subcategory='DISCOS')
+        rows = self.client.get('/api/v1/management/part-types/', {'ordering': '-part_count'}).data['results']
+        self.assertEqual([(row['name'], row['part_count'], row['field_count']) for row in rows[:2]], [('DISCOS', 3, 4), ('MOTORES', 0, 0)])
+        self.assertEqual(self.client.get('/api/v1/management/part-types/', {'ordering': 'category'}).data['results'][0]['id'], str(other.pk))
+        for year in (2001, 2015):
+            self.client.post('/api/v1/management/applications/', {'make': 'TOYOTA', 'model': 'HILUX', 'year_from': year, 'year_to': year + 4}, format='json')
+        years = [row['year_from'] for row in self.client.get('/api/v1/management/applications/', {'ordering': '-year_from'}).data['results']]
+        self.assertEqual(years, sorted(years, reverse=True))
+
     def test_subgroup_identity_normalizes_and_is_scoped_to_group(self):
         same = Part.objects.create(sku='SAME', category=' frenos ', subcategory=' discos ')
         other = Part.objects.create(sku='OTHER', category='TRANSMISIÓN', subcategory='DISCOS')

@@ -1,8 +1,11 @@
 'use client';
 
-import { FormEvent, useEffect, useState } from 'react';
-import { ArrowDown, ArrowUp, LoaderCircle, Plus, SlidersHorizontal, Trash2 } from 'lucide-react';
-import { Page, request } from '@/lib/types';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
+import type { ColDef } from 'ag-grid-community';
+import type { CustomCellRendererProps } from 'ag-grid-react';
+import AdminServerGrid from './admin-server-grid';
+import { ArrowDown, ArrowUp, Plus, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { request } from '@/lib/types';
 import { PartType, TechnicalField, TechnicalTemplate, VehicleApplication, applicationLabel, kindLabels, units } from '@/lib/technical-types';
 import Modal from './modal';
 import { UppercaseInput } from './uppercase-field';
@@ -11,27 +14,59 @@ const base = '/api/management';
 const errorMessage = (e: unknown) => e instanceof Error ? e.message : 'No se pudo guardar. Inténtalo de nuevo.';
 export function TechnicalError({ error }: { error: string }) { return error ? <div className="notice error" role="alert">{error}</div> : null; }
 
+type TechnicalActions = { edit: (row: PartType | VehicleApplication) => void; template: (row: PartType) => void };
+type Cell<T> = CustomCellRendererProps<T, unknown, TechnicalActions>;
+const count = (value: number | null | undefined) => (value ?? 0).toLocaleString('es-PA');
+function TypeActions({ data, context }: Cell<PartType>) {
+  return data ? <div className="admin-grid-actions"><button className="button soft small" aria-label={`Editar subgrupo ${data.category} / ${data.name}`} onClick={() => context.edit(data)}>Editar</button><button className="button primary small" aria-label={`Configurar plantilla de ${data.name}`} onClick={() => context.template(data)}><SlidersHorizontal size={13} aria-hidden="true"/>Configurar plantilla</button></div> : null;
+}
+function ApplicationActions({ data, context }: Cell<VehicleApplication>) {
+  return data ? <div className="admin-grid-actions"><button className="button soft small" aria-label={`Editar aplicación ${applicationLabel(data)}`} onClick={() => context.edit(data)}>Editar</button></div> : null;
+}
+const typeOrdering: Record<string, string> = { category: 'category', name: 'name', parts: 'part_count', fields: 'field_count' };
+function typeColumns(wide: boolean): ColDef<PartType>[] {
+  return [
+    { colId: 'category', headerName: 'Grupo', field: 'category', width: 200, cellClass: 'admin-grid-text muted' },
+    { colId: 'name', headerName: 'Subgrupo / tipo de repuesto', field: 'name', flex: 1, minWidth: 220, cellClass: 'admin-grid-text strong' },
+    { colId: 'parts', headerName: 'SKU', field: 'part_count', valueFormatter: ({ value }) => count(value), width: 110, type: 'rightAligned', cellClass: ['ag-right-aligned-cell', 'admin-grid-number'] },
+    { colId: 'fields', headerName: 'Campos', field: 'field_count', valueFormatter: ({ value }) => count(value), width: 110, type: 'rightAligned' },
+    { colId: 'actions', headerName: 'Acciones', width: 270, pinned: wide ? 'right' : undefined, cellRenderer: TypeActions, suppressHeaderMenuButton: true, resizable: false },
+  ];
+}
+const applicationOrdering: Record<string, string> = { make: 'make', model: 'model', generation: 'generation', years: 'year_from,year_to', engine: 'engine', trim: 'trim', transmission: 'transmission', market: 'market' };
+function applicationColumns(wide: boolean): ColDef<VehicleApplication>[] {
+  const text = (colId: keyof VehicleApplication, headerName: string, width: number, strong = false): ColDef<VehicleApplication> => ({ colId, headerName, field: colId, width, cellClass: `admin-grid-text${strong ? ' strong' : ''}`, valueFormatter: ({ value }) => value || '—' });
+  return [
+    { ...text('make', 'Marca', 150, true), pinned: wide ? 'left' : undefined },
+    { ...text('model', 'Modelo', 170, true), flex: 1, minWidth: 150 },
+    text('generation', 'Generación / chasis', 170),
+    { colId: 'years', headerName: 'Años', valueGetter: ({ data }) => data ? `${data.year_from}–${data.year_to}` : '', width: 120, cellClass: 'admin-grid-text' },
+    text('engine', 'Motor', 140), text('trim', 'Versión', 130), text('transmission', 'Transmisión', 130), text('market', 'Mercado', 120),
+    { colId: 'actions', headerName: 'Acciones', width: 120, pinned: wide ? 'right' : undefined, cellRenderer: ApplicationActions, suppressHeaderMenuButton: true, resizable: false },
+  ];
+}
+
 export default function AdminTechnical({ applications = false }: { applications?: boolean }) {
-  const [search, setSearch] = useState(''); const [page, setPage] = useState(1); const [revision, setRevision] = useState(0);
-  const [data, setData] = useState<Page<PartType | VehicleApplication> | null>(null); const [error, setError] = useState('');
+  const [search, setSearch] = useState(''); const [query, setQuery] = useState(''); const [revision, setRevision] = useState(0);
   const [creating, setCreating] = useState(false); const [editing, setEditing] = useState<PartType | VehicleApplication | null>(null);
   const [template, setTemplate] = useState<PartType | null>(null); const [notice, setNotice] = useState('');
   const route = applications ? 'applications' : 'part-types';
-  useEffect(() => {
-    let live = true; setData(null); setError('');
-    const timer = setTimeout(() => request<Page<PartType | VehicleApplication>>(`${base}/${route}?search=${encodeURIComponent(search)}&page=${page}`).then(r => { if (live) setData(r); }).catch(e => { if (live) setError(errorMessage(e)); }), 250);
-    return () => { live = false; clearTimeout(timer); };
-  }, [route, search, page, revision]);
+  const [wide] = useState(() => typeof window === 'undefined' || window.innerWidth >= 900);
+  useEffect(() => { const timer = setTimeout(() => setQuery(search.trim()), 250); return () => clearTimeout(timer); }, [search]);
+  const params = useMemo(() => ({ search: query }), [query]);
+  const actions = useMemo<TechnicalActions>(() => ({ edit: row => setEditing(row), template: row => setTemplate(row) }), []);
+  const typeGrid = useMemo(() => typeColumns(wide), [wide]);
+  const applicationGrid = useMemo(() => applicationColumns(wide), [wide]);
   function saved() { setCreating(false); setEditing(null); setRevision(v => v + 1); setNotice('Cambios guardados.'); }
   return <section className="inventory-panel admin-panel technical-panel">
     <div className="admin-toolbar"><div><h2>{applications ? 'Aplicaciones vehiculares' : 'Plantillas técnicas'}</h2><p>{applications ? 'Configuraciones reutilizables. Vincúlalas a los SKU desde su ficha técnica.' : 'Cada subgrupo es un tipo de repuesto y tiene su propia plantilla.'}</p></div><button className="button primary" onClick={() => setCreating(true)}><Plus size={17}/>{applications ? 'Crear aplicación' : 'Crear subgrupo'}</button></div>
     {notice && <div className="notice success" role="status">{notice}</div>}
-    <label className="technical-search">{applications ? 'Buscar aplicaciones' : 'Buscar grupo o subgrupo'}<UppercaseInput value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} placeholder={applications ? 'MARCA, MODELO O MOTOR' : 'EJ.: FRENOS'}/></label>
-    <TechnicalError error={error}/>{error && <button className="button soft small" onClick={() => setRevision(v => v + 1)}>Reintentar</button>}
-    {!data && !error && <div className="loading"><LoaderCircle className="spin"/>Cargando…</div>}
-    {data && !data.results.length && <div className="empty-state"><SlidersHorizontal/><h3>No hay resultados.</h3><p>{applications ? 'Agrega una configuración de vehículo para reutilizarla en tus repuestos.' : 'Crea un subgrupo y configura los campos de su ficha técnica.'}</p></div>}
-    {!!data?.results.length && <div className="table-scroll"><table><thead><tr><th>{applications ? 'Vehículo / aplicación' : 'Grupo / subgrupo'}</th>{!applications && <th>SKU</th>}<th>Acciones</th></tr></thead><tbody>{data?.results.map(row => <tr key={row.id}><td>{applications ? <strong>{applicationLabel(row as VehicleApplication)}</strong> : <><strong>{(row as PartType).name}</strong><span>{(row as PartType).category}</span></>}</td>{!applications && <td>{(row as PartType).part_count}</td>}<td><div className="admin-row-actions"><button className="button soft small" onClick={() => setEditing(row)}>Editar</button>{!applications && <button className="button soft small" onClick={() => setTemplate(row as PartType)}>Configurar plantilla</button>}</div></td></tr>)}</tbody></table></div>}
-    {data && <div className="pagination"><span>{data.count} resultados</span><div><button className="button soft small" disabled={!data.previous} onClick={() => setPage(v => v - 1)}>Anterior</button><span>Página {page}</span><button className="button soft small" disabled={!data.next} onClick={() => setPage(v => v + 1)}>Siguiente</button></div></div>}
+    <label className="technical-search">{applications ? 'Buscar aplicaciones' : 'Buscar grupo o subgrupo'}<UppercaseInput value={search} onChange={e => setSearch(e.target.value)} placeholder={applications ? 'MARCA, MODELO O MOTOR' : 'EJ.: FRENOS'}/></label>
+    {applications
+      ? <AdminServerGrid<VehicleApplication> key="applications" storageKey="admin-applications" label="Aplicaciones vehiculares" path={`${base}/applications`} params={params} columns={applicationGrid} rowId={row => row.id}
+          ordering={applicationOrdering} revision={revision} rowHeight={52} context={actions} empty={<div className="empty-state"><SlidersHorizontal/><h3>No hay resultados.</h3><p>Agrega una configuración de vehículo para reutilizarla en tus repuestos.</p></div>}/>
+      : <AdminServerGrid<PartType> key="part-types" storageKey="admin-part-types" label="Plantillas técnicas" path={`${base}/part-types`} params={params} columns={typeGrid} rowId={row => row.id}
+          ordering={typeOrdering} revision={revision} rowHeight={56} context={actions} empty={<div className="empty-state"><SlidersHorizontal/><h3>No hay resultados.</h3><p>Crea un subgrupo y configura los campos de su ficha técnica.</p></div>}/>}
     {(creating || editing) && (applications ? <ApplicationEditor initial={editing as VehicleApplication | null} onClose={() => { setCreating(false); setEditing(null); }} onSaved={saved}/> : <PartTypeEditor initial={editing as PartType | null} onClose={() => { setCreating(false); setEditing(null); }} onSaved={saved}/>)}
     {template && <TemplateEditor type={template} onClose={() => setTemplate(null)}/>}
   </section>;

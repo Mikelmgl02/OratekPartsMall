@@ -341,6 +341,15 @@ class APITests(Fresh, APITestCase):
         ref = OEMReference.objects.get(pk=(ref or self.ref).pk)
         return self.client.patch(self.url(ref), {'expected_version': ref.version, **payload}, format='json')
 
+    def test_the_list_sorts_on_whitelisted_columns(self):
+        upsert_reference('HYUNDAI', '28113-F2000', source_kind='manual', citation='LISTA')
+        upsert_reference('TOYOTA', '90915-YZZD2', source_kind='price_list', citation='LISTA 2026')
+        codes = lambda ordering: [row['code'] for row in self.client.get(URL, {'ordering': ordering}).data['results']]
+        self.assertEqual(codes(''), ['28113F2000', '1780130070', '90915YZZD2'])  # manufacturer, code
+        self.assertEqual(codes('-code'), ['90915YZZD2', '28113F2000', '1780130070'])
+        self.assertEqual(codes('status,code'), ['28113F2000', '1780130070', '90915YZZD2'])  # declared, inferred, verified
+        self.assertEqual(codes('password'), codes(''))  # unknown names are ignored
+
     def test_only_superusers(self):
         staff = User.objects.create_user('oem-ref-staff', 'oem-ref-staff@example.invalid', 'Example938!')
         for user in (None, staff):

@@ -7,6 +7,7 @@ from django.shortcuts import get_object_or_404
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
 from rest_framework import filters, generics, serializers
+from .list_ordering import StableOrdering
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -27,10 +28,11 @@ class PartTypeSerializer(serializers.ModelSerializer):
     category = UppercaseCharField(max_length=120)
     name = UppercaseCharField(max_length=120)
     part_count = serializers.IntegerField(read_only=True, default=0)
+    field_count = serializers.IntegerField(read_only=True, default=0, help_text='Campos de su plantilla técnica.')
 
     class Meta:
         model = PartType
-        fields = ['id', 'category', 'name', 'part_count']
+        fields = ['id', 'category', 'name', 'part_count', 'field_count']
         validators = []
 
     def validate(self, data):
@@ -72,10 +74,12 @@ class PartTypeSerializer(serializers.ModelSerializer):
 class PartTypeList(generics.ListCreateAPIView):
     permission_classes = [IsSuperuser]
     serializer_class = PartTypeSerializer
-    filter_backends = [filters.SearchFilter]
+    filter_backends = [filters.SearchFilter, StableOrdering]
     search_fields = ['category', 'name']
-    # Meta.ordering is ignored on GROUP BY queries; pages need an explicit, unique order.
-    queryset = PartType.objects.annotate(part_count=Count('parts', filter=Q(parts__merged_into__isnull=True))).order_by('category', 'name', 'id')
+    ordering_fields = ['category', 'name', 'part_count', 'field_count']
+    # Meta.ordering is ignored on GROUP BY queries; pages need an explicit, unique order. Two counted relations need distinct counts.
+    queryset = (PartType.objects.annotate(part_count=Count('parts', filter=Q(parts__merged_into__isnull=True), distinct=True),
+                                          field_count=Count('template__fields', distinct=True)).order_by('category', 'name', 'id'))
 
 
 class PartTypeDetail(generics.RetrieveUpdateAPIView):
@@ -202,8 +206,9 @@ class ApplicationSerializer(serializers.ModelSerializer):
 class ApplicationList(generics.ListCreateAPIView):
     permission_classes = [IsSuperuser]
     serializer_class = ApplicationSerializer
-    filter_backends = [filters.SearchFilter]
+    filter_backends = [filters.SearchFilter, StableOrdering]
     search_fields = ['make', 'model', 'generation', 'engine', 'trim', 'transmission', 'market']
+    ordering_fields = ['make', 'model', 'generation', 'year_from', 'year_to', 'engine', 'trim', 'transmission', 'market']
     queryset = Application.objects.all()
 
 

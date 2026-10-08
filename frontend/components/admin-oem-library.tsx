@@ -1,11 +1,14 @@
 'use client';
 
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
+import type { ColDef } from 'ag-grid-community';
+import type { CustomCellRendererProps } from 'ag-grid-react';
+import AdminServerGrid from './admin-server-grid';
 import { ArrowLeft, Check, ExternalLink, Library, LoaderCircle, Plus, Search, Trash2 } from 'lucide-react';
 import Modal from './modal';
 import { UppercaseInput, UppercaseTextarea } from './uppercase-field';
 import { ApiError, request } from '@/lib/types';
-import { OEMManualSourceKind, OEMReferenceAction, OEMReferenceConflict, OEMReferenceDetail, OEMReferencePage, OEMReferenceSource, OEMReferenceStatus,
+import { OEMManualSourceKind, OEMReference, OEMReferenceAction, OEMReferenceConflict, OEMReferenceDetail, OEMReferencePage, OEMReferenceSource, OEMReferenceStatus,
   OEMSourceKind, isLink, linkedViaLabels, manualSourceKinds, referenceStatusHints, referenceStatusLabels, sourceKindLabels } from '@/lib/oem-reference-types';
 
 const base = '/api/management/oem-references';
@@ -47,6 +50,40 @@ function sourceDetail(source: OEMReferenceSource) {
 const Status = ({ status }: { status: OEMReferenceStatus }) => <span className={`oem-ref-status ${status}`} title={referenceStatusHints[status]}>{referenceStatusLabels[status]}</span>;
 
 type View = { kind: 'list' } | { kind: 'add' } | { kind: 'detail'; id: string; notice?: string };
+type Cell = CustomCellRendererProps<OEMReference, unknown, { open: (id: string) => void }>;
+
+function CodeCell({ data }: Cell) {
+  return data ? <div className="admin-grid-stack"><strong>{data.code}</strong>{!!data.printed_forms.length && <small>{data.printed_forms.join(' · ')}</small>}{data.superseded_by && <small>REEMPLAZADO POR {data.superseded_by.code}</small>}</div> : null;
+}
+function MakerCell({ data }: Cell) {
+  return data ? <div className="admin-grid-stack"><strong>{data.manufacturer}</strong>{data.system && data.system !== data.manufacturer && <small>SISTEMA {data.system}</small>}</div> : null;
+}
+function FamilyCell({ data }: Cell) {
+  return data ? <div className="admin-grid-stack"><strong>{data.family || '—'}</strong><small>{data.part_type || 'SIN TIPO DE PIEZA'}</small></div> : null;
+}
+function SourcesCell({ data }: Cell) {
+  if (!data) return null;
+  return data.source_count ? <div className="oem-chips oem-ref-kinds">{(Object.entries(data.source_kinds) as [OEMSourceKind, number][]).map(([kind, count]) => <span key={kind}>{sourceKindLabels[kind]}{count > 1 ? ` × ${count}` : ''}</span>)}</div> : <span className="admin-grid-muted">SIN FUENTES</span>;
+}
+function LinkedCell({ data }: Cell) {
+  if (!data) return null;
+  return data.linked_count ? <div className="admin-grid-chips oem-linked">{data.linked_skus.slice(0, 3).map(sku => <span key={sku.id} className="oem-ref-sku">{sku.sku}</span>)}{data.linked_count > 3 && <span className="more">+{number(data.linked_count - 3)} MÁS</span>}</div> : <span className="admin-grid-muted">—</span>;
+}
+function OpenCell({ data, context }: Cell) {
+  return data ? <div className="admin-grid-actions"><button className="button soft small" aria-label={`Ver ${data.manufacturer} ${data.code}`} onClick={() => context.open(data.id)}>Ver detalle</button></div> : null;
+}
+const libraryOrdering: Record<string, string> = { code: 'code', manufacturer: 'manufacturer', family: 'family', status: 'status' };
+function libraryColumns(wide: boolean): ColDef<OEMReference>[] {
+  return [
+    { colId: 'code', headerName: 'Número OEM', width: 210, minWidth: 160, pinned: wide ? 'left' : undefined, cellRenderer: CodeCell, tooltipValueGetter: ({ data }) => data?.printed_forms.join(' · ') },
+    { colId: 'manufacturer', headerName: 'Fabricante', width: 150, cellRenderer: MakerCell },
+    { colId: 'family', headerName: 'Familia / tipo de pieza', flex: 1, minWidth: 190, cellRenderer: FamilyCell, tooltipValueGetter: ({ data }) => data?.description },
+    { colId: 'status', headerName: 'Estado', width: 130, cellRenderer: ({ data }: Cell) => data ? <Status status={data.status}/> : null },
+    { colId: 'sources', headerName: 'Fuentes', flex: 1, minWidth: 220, cellRenderer: SourcesCell },
+    { colId: 'linked', headerName: 'SKU vinculados', flex: 1, minWidth: 220, cellRenderer: LinkedCell, tooltipValueGetter: ({ data }) => data?.linked_skus.map(sku => sku.sku).join(' · ') },
+    { colId: 'open', headerName: 'Acciones', width: 140, pinned: wide ? 'right' : undefined, cellRenderer: OpenCell, suppressHeaderMenuButton: true, resizable: false },
+  ];
+}
 
 export default function OEMLibrary({ onClose }: { onClose: () => void }) {
   return <Modal title="Biblioteca OEM" wide className="suffix-modal oem-library" onClose={onClose}><OEMLibraryPanel/></Modal>;
@@ -56,21 +93,15 @@ export default function OEMLibrary({ onClose }: { onClose: () => void }) {
 export function OEMLibraryPanel() {
   const [view, setView] = useState<View>({ kind: 'list' });
   const [search, setSearch] = useState(''); const [query, setQuery] = useState(''); const [manufacturer, setManufacturer] = useState(''); const [status, setStatus] = useState('');
-  const [sourceKind, setSourceKind] = useState(''); const [linked, setLinked] = useState(''); const [page, setPage] = useState(1); const [revision, setRevision] = useState(0);
-  const [data, setData] = useState<OEMReferencePage | null>(null); const [error, setError] = useState('');
-  useEffect(() => { const timer = setTimeout(() => { setQuery(search.trim()); setPage(1); }, 300); return () => clearTimeout(timer); }, [search]);
-  useEffect(() => {
-    if (view.kind !== 'list') return;
-    let live = true;
-    const params = new URLSearchParams({ page: String(page) });
-    if (query) params.set('q', query); if (manufacturer) params.set('manufacturer', manufacturer); if (status) params.set('status', status);
-    if (sourceKind) params.set('source_kind', sourceKind); if (linked) params.set('linked', linked);
-    request<OEMReferencePage>(`${base}?${params}`).then(result => { if (live) { setData(result); setError(''); } }).catch(e => { if (live) { setData(null); setError(errorMessage(e)); } });
-    return () => { live = false; };
-  }, [view.kind, query, manufacturer, status, sourceKind, linked, page, revision]);
-  function filter(apply: () => void) { apply(); setPage(1); setError(''); }
-  function back() { setView({ kind: 'list' }); setRevision(v => v + 1); }
-  const counts = data?.counts;
+  const [sourceKind, setSourceKind] = useState(''); const [linked, setLinked] = useState('');
+  const [counts, setCounts] = useState<OEMReferencePage['counts'] | null>(null);
+  const [wide] = useState(() => typeof window === 'undefined' || window.innerWidth >= 900);
+  useEffect(() => { const timer = setTimeout(() => setQuery(search.trim()), 300); return () => clearTimeout(timer); }, [search]);
+  const params = useMemo(() => ({ q: query, manufacturer, status, source_kind: sourceKind, linked }), [query, manufacturer, status, sourceKind, linked]);
+  const columns = useMemo(() => libraryColumns(wide), [wide]);
+  const open = useMemo(() => ({ open: (id: string) => setView({ kind: 'detail', id }) }), []);
+  function filter(apply: () => void) { apply(); }
+  function back() { setView({ kind: 'list' }); }
   const filtered = Boolean(query || manufacturer || status || sourceKind || linked);
   return <div className="oem-panel">
     {view.kind === 'detail' ? <ReferenceDetail key={view.id} id={view.id} initialNotice={view.notice} onBack={back} onOpen={id => setView({ kind: 'detail', id })}/>
@@ -81,28 +112,15 @@ export function OEMLibraryPanel() {
           <button className="button primary" onClick={() => setView({ kind: 'add' })}><Plus size={16}/>Agregar número</button>
         </div>
         <div className="suffix-filters">
-          <label className="suffix-search"><Search size={16}/><span className="sr-only">Buscar número OEM</span><UppercaseInput value={search} onChange={e => { setSearch(e.target.value); setError(''); }} placeholder="NÚMERO, FORMA IMPRESA, DESCRIPCIÓN O TIPO" aria-label="Buscar número OEM"/></label>
+          <label className="suffix-search"><Search size={16}/><span className="sr-only">Buscar número OEM</span><UppercaseInput value={search} onChange={e => setSearch(e.target.value)} placeholder="NÚMERO, FORMA IMPRESA, DESCRIPCIÓN O TIPO" aria-label="Buscar número OEM"/></label>
           <label>FABRICANTE<select aria-label="Fabricante" value={manufacturer} onChange={e => filter(() => setManufacturer(e.target.value))}><option value="">TODOS</option>{Object.keys(counts?.manufacturer ?? {}).sort().map(name => <option key={name} value={name}>{name} ({number(counts!.manufacturer[name])})</option>)}</select></label>
           <label>ESTADO<select aria-label="Estado" value={status} onChange={e => filter(() => setStatus(e.target.value))}><option value="">TODOS</option>{statuses.map(key => <option key={key} value={key}>{referenceStatusLabels[key]}</option>)}</select></label>
           <label>FUENTE<select aria-label="Fuente" value={sourceKind} onChange={e => filter(() => setSourceKind(e.target.value))}><option value="">TODAS</option>{(Object.keys(sourceKindLabels) as OEMSourceKind[]).map(key => <option key={key} value={key}>{sourceKindLabels[key]}</option>)}</select></label>
           <label>SKU VINCULADOS<select aria-label="SKU vinculados" value={linked} onChange={e => filter(() => setLinked(e.target.value))}><option value="">TODOS</option><option value="true">CON SKU</option><option value="false">SIN SKU</option></select></label>
         </div>
-        {error && <div className="notice error" role="alert">{error}{!data && <button onClick={() => { setError(''); setRevision(v => v + 1); }}>Intentar de nuevo</button>}</div>}
-        {!data && !error && <div className="loading"><LoaderCircle className="spin" size={20}/>Cargando la biblioteca OEM…</div>}
-        {data && !data.results.length && <div className="empty-state"><Library size={30}/><h3>{filtered ? 'No hay números con estos filtros.' : 'La biblioteca OEM está vacía.'}</h3><p>{filtered ? 'Prueba con otra búsqueda o quita un filtro.' : 'Los alternos OEM del catálogo aparecen aquí solos; también puedes agregar un número con su fuente.'}</p></div>}
-        {!!data?.results.length && <div className="suffix-table-wrap"><table className="suffix-table oem-library-table">
-          <thead><tr><th>Número OEM</th><th>Fabricante</th><th>Familia / tipo de pieza</th><th>Estado</th><th>Fuentes</th><th>SKU vinculados</th><th>Acciones</th></tr></thead>
-          <tbody>{data.results.map(row => <tr key={row.id}>
-            <td data-label="Número OEM"><strong>{row.code}</strong>{!!row.printed_forms.length && <span>{row.printed_forms.join(' · ')}</span>}{row.superseded_by && <span>REEMPLAZADO POR {row.superseded_by.code}</span>}</td>
-            <td data-label="Fabricante">{row.manufacturer}{row.system && row.system !== row.manufacturer && <span>SISTEMA {row.system}</span>}</td>
-            <td data-label="Familia / tipo de pieza">{row.family || '—'}<span>{row.part_type || 'SIN TIPO DE PIEZA'}</span></td>
-            <td data-label="Estado"><Status status={row.status}/></td>
-            <td data-label="Fuentes">{row.source_count ? <div className="oem-chips oem-ref-kinds">{(Object.entries(row.source_kinds) as [OEMSourceKind, number][]).map(([kind, count]) => <span key={kind}>{sourceKindLabels[kind]}{count > 1 ? ` × ${count}` : ''}</span>)}</div> : 'SIN FUENTES'}</td>
-            <td data-label="SKU vinculados">{row.linked_count ? <>{row.linked_skus.slice(0, 3).map(sku => <span key={sku.id} className="oem-ref-sku">{sku.sku}</span>)}{row.linked_count > 3 && <span>+{number(row.linked_count - 3)} MÁS</span>}</> : '—'}</td>
-            <td data-label="Acciones"><button className="button soft small" aria-label={`Ver ${row.manufacturer} ${row.code}`} onClick={() => setView({ kind: 'detail', id: row.id })}>Ver detalle</button></td>
-          </tr>)}</tbody>
-        </table></div>}
-        {data && <div className="pagination"><span>{number(data.count)} {data.count === 1 ? 'resultado' : 'resultados'}</span><div><button className="button soft small" disabled={!data.previous} onClick={() => setPage(page - 1)}>Anterior</button><span>Página {page}</span><button className="button soft small" disabled={!data.next} onClick={() => setPage(page + 1)}>Siguiente</button></div></div>}
+        <AdminServerGrid<OEMReference> storageKey="admin-oem-library" label="Números OEM" path={base} params={params} columns={columns} rowId={row => row.id}
+          ordering={libraryOrdering} revision={0} rowHeight={66} context={open} onPage={page => setCounts((page as OEMReferencePage).counts)} className="suffix-table-wrap oem-library-table"
+          empty={<div className="empty-state"><Library size={30}/><h3>{filtered ? 'No hay números con estos filtros.' : 'La biblioteca OEM está vacía.'}</h3><p>{filtered ? 'Prueba con otra búsqueda o quita un filtro.' : 'Los alternos OEM del catálogo aparecen aquí solos; también puedes agregar un número con su fuente.'}</p></div>}/>
         <p className="form-footnote">Los alternos OEM del catálogo (buscador OEM, Revisión OEM, editor de inventario y búsquedas con IA aprobadas) se reflejan aquí solos; al retirar el alterno se retira su fuente.</p>
       </>}
   </div>;

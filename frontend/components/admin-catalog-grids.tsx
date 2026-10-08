@@ -53,7 +53,7 @@ export function catalogColumns(wide: boolean): ColDef<ManagedPart>[] {
     { colId: 'sku', headerName: 'SKU interno', width: 214, minWidth: 170, pinned: wide ? 'left' : undefined, cellRenderer: SkuCell, tooltipValueGetter: ({ data }) => data?.sku },
     { colId: 'description', headerName: 'Descripción', valueGetter: ({ data }) => describe(data), flex: 1.2, minWidth: 200, cellClass: 'admin-grid-text', tooltipValueGetter: ({ data }) => describe(data) },
     { colId: 'codes', headerName: 'Alternos', cellRenderer: CodesCell, flex: 1, minWidth: 230, tooltipValueGetter: ({ data }) => codeText(data) },
-    { colId: 'stock', headerName: 'Existencias', valueGetter: ({ data }) => data?.stock_record_count ?? null, valueFormatter: ({ value }) => value === null ? '' : number(value), width: 112, type: 'rightAligned', cellClass: 'admin-grid-number' },
+    { colId: 'stock', headerName: 'Existencias', valueGetter: ({ data }) => data?.stock_record_count ?? null, valueFormatter: ({ value }) => value === null ? '' : number(value), width: 112, type: 'rightAligned', cellClass: ['ag-right-aligned-cell', 'admin-grid-number'] },
     { colId: 'active', headerName: 'Estado', width: 100, cellRenderer: ActiveCell },
     { colId: 'subgroup', headerName: 'Grupo / subgrupo', valueGetter: ({ data }) => [data?.category, data?.subcategory].filter(Boolean).join(' / ') || '—', width: 190, cellClass: 'admin-grid-text muted', tooltipValueGetter: ({ data }) => [data?.category, data?.subcategory].filter(Boolean).join(' / ') },
     { colId: 'actions', headerName: 'Acciones', width: 214, pinned: wide ? 'right' : undefined, cellRenderer: PartActions, suppressHeaderMenuButton: true, resizable: false },
@@ -81,7 +81,7 @@ export const stockColumns: ColDef<ManagedStockItem>[] = [
   { colId: 'codigo', headerName: 'Código / marca', flex: 1, minWidth: 190, cellRenderer: StockCodeCell, tooltipValueGetter: ({ data }) => data?.description },
   { colId: 'part', headerName: 'SKU interno', flex: 1, minWidth: 190, cellRenderer: LinkedSkuCell },
   { colId: 'invent', headerName: 'ID del proveedor', field: 'supplier_invent_id', width: 160, cellClass: 'admin-grid-text' },
-  { colId: 'available', headerName: 'Disponibles', field: 'available_quantity', valueFormatter: ({ value }) => number(value), width: 124, type: 'rightAligned', cellClass: 'admin-grid-number' },
+  { colId: 'available', headerName: 'Disponibles', field: 'available_quantity', valueFormatter: ({ value }) => number(value), width: 124, type: 'rightAligned', cellClass: ['ag-right-aligned-cell', 'admin-grid-number'] },
   { colId: 'reserved', headerName: 'Reservadas', field: 'reserved_quantity', valueFormatter: ({ value }) => number(value), width: 120, type: 'rightAligned' },
   { colId: 'match', headerName: 'Coincidencia', width: 210, cellRenderer: MatchCell },
 ];

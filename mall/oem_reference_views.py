@@ -274,6 +274,19 @@ def plan(ref, data, user):
     return supersede
 
 
+SORTABLE = {'code': ('code',), 'manufacturer': ('manufacturer', 'code'), 'status': ('status',), 'family': ('family',),
+            'part_type': ('part_type',), 'updated_at': ('updated_at',)}
+
+
+def ordering(value):
+    """Grid sorting from ?ordering= (unknown names ignored), always ending in a unique order so page-sized blocks stay stable."""
+    fields = []
+    for item in (value or '').split(','):
+        name = item.strip().lstrip('-')
+        fields += [('-' if item.strip().startswith('-') else '') + field for field in SORTABLE.get(name, ())]
+    return [*fields, 'manufacturer', 'code', 'id'] if fields else ['manufacturer', 'code']
+
+
 class OEMReferenceList(APIView):
     permission_classes = [IsSuperuser]
 
@@ -283,6 +296,7 @@ class OEMReferenceList(APIView):
         OpenApiParameter('status', OpenApiTypes.STR, enum=values(REFERENCE_STATUSES)),
         OpenApiParameter('source_kind', OpenApiTypes.STR, enum=values(SOURCE_KINDS), description='Con al menos una fuente de ese tipo.'),
         OpenApiParameter('linked', OpenApiTypes.STR, enum=['true', 'false'], description='true: algún SKU del catálogo lleva el número; false: ninguno.'),
+        OpenApiParameter('ordering', OpenApiTypes.STR, description='Orden del grid, separado por comas, con - para descendente: code, manufacturer, status, family, part_type, updated_at.'),
         OpenApiParameter('page', OpenApiTypes.INT)],
         description='Biblioteca de números OEM (forma compacta) con sus fuentes y los SKU del catálogo que los llevan, más conteos por estado y fabricante.')
     def get(self, request):
@@ -308,7 +322,7 @@ class OEMReferenceList(APIView):
             rows = rows.annotate(pair=orf.reference_pair())
             rows = rows.filter(orf.linked_q()) if linked == 'true' else rows.exclude(orf.linked_q())
         paginator = PageNumberPagination()
-        page = decorate(paginator.paginate_queryset(rows.order_by('manufacturer', 'code'), request, view=self))
+        page = decorate(paginator.paginate_queryset(rows.order_by(*ordering(params.get('ordering', ''))), request, view=self))
         every = OEMReference.objects.order_by()
         status = dict(every.values('status').annotate(n=Count('pk')).values_list('status', 'n'))
         counts = {'status': status, 'manufacturer': dict(every.values('manufacturer').annotate(n=Count('pk')).values_list('manufacturer', 'n')),

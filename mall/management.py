@@ -5,6 +5,7 @@ from django.db.models import Count, F, Q, Value
 from django.db.models.functions import Greatest
 from django.utils import timezone
 from rest_framework import filters, generics, permissions, serializers
+from .list_ordering import StableOrdering
 from rest_framework.authtoken.models import Token
 from rest_framework.exceptions import ValidationError
 
@@ -377,17 +378,6 @@ class ManagedAlternateSerializer(serializers.ModelSerializer):
                 return super().update(instance, validated_data)
         except IntegrityError:
             raise serializers.ValidationError('Este alterno ya está registrado.')
-
-
-class StableOrdering(filters.OrderingFilter):
-    """Grid sorting (?ordering=-stock_record_count,sku) on the listed fields only, always ending in the primary key: equal values
-    keep one order, so the grid's page-sized blocks never repeat or skip a row while it scrolls."""
-
-    def get_ordering(self, request, queryset, view):
-        ordering = super().get_ordering(request, queryset, view)
-        if ordering and not {'id', '-id', 'pk', '-pk'} & set(ordering):
-            ordering = [*ordering, 'id']
-        return ordering
 
 
 class CatalogList(SuperuserMixin, generics.ListCreateAPIView):

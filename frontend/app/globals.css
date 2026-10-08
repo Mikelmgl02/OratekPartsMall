@@ -2022,3 +2022,6 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 /* Basket summary: the same lime pill actions as the result cards and the buy box */
 .basket-page-summary .button { border-radius:22px; }
 .basket-page-summary .button.primary { min-height:44px; font-weight:700; }
+.admin-grid .admin-grid-text.strong { color:var(--ink); font-weight:600; }
+.admin-grid .oem-chips { flex-wrap:nowrap; overflow:hidden; }
+.admin-grid .oem-linked .oem-ref-sku { padding:3px 7px; border-radius:5px; background:#f0f4e9; color:#4f6342; font-size:11px; font-weight:600; }
