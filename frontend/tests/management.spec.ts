@@ -94,7 +94,7 @@ test('superuser creates catalog codes, reviews stock, and manages alternos insid
     await page.getByRole('button', { name: 'Guardar SKU', exact: true }).click();
     await expect(page.getByRole('dialog')).not.toBeVisible();
     await page.reload();
-    await expect(page.getByRole('cell', { name: partName, exact: true })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Inventario interno' }).getByText(partName, { exact: true })).toBeVisible();
 
     await page.getByRole('button', { name: 'Crear SKU', exact: true }).click();
     await page.getByLabel('SKU interno', { exact: true }).fill('Duplicate should not be saved');
@@ -111,9 +111,9 @@ test('superuser creates catalog codes, reviews stock, and manages alternos insid
     await page.getByRole('combobox', { name: 'SKU del catálogo', exact: true }).selectOption({ label: partName });
     await page.getByRole('combobox', { name: 'Estado de coincidencia', exact: true }).selectOption('matched');
     await page.getByRole('button', { name: 'Guardar coincidencia', exact: true }).click();
-    const stockRow = page.getByRole('row').filter({ has: page.getByRole('cell', { name: stableId, exact: true }) });
+    const stockRow = page.getByRole('row').filter({ has: page.getByRole('gridcell', { name: stableId, exact: true }) });
     await expect(stockRow.getByText('Vinculado', { exact: true })).toBeVisible();
-    await expect(stockRow.getByRole('cell', { name: partName, exact: true })).toBeVisible();
+    await expect(stockRow.getByText(partName, { exact: true })).toBeVisible();
     const currentStock = await (await supplierContext.request.get(`/api/market/accounts/${accountId}/inventory?search=${stableId}`)).json();
     expect(currentStock.results[0].id).toBe(itemId);
     expect(currentStock.results[0].reported_quantity).toBe(7);
@@ -122,7 +122,7 @@ test('superuser creates catalog codes, reviews stock, and manages alternos insid
     await page.getByRole('link', { name: 'Alternos', exact: true }).click();
     await page.getByLabel('Buscar alternos').fill(partName);
     // The code created in the SKU editor is already in the alternos library.
-    await expect(page.getByRole('cell', { name: code, exact: true })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Alternos' }).getByText(code, { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Crear alterno', exact: true }).click();
     await page.getByLabel('Buscar SKU interno', { exact: true }).fill(partName);
     await expect(page.getByRole('combobox', { name: 'SKU interno', exact: true }).locator('option')).toHaveCount(2);
@@ -138,7 +138,7 @@ test('superuser creates catalog codes, reviews stock, and manages alternos insid
     await page.getByLabel('Código alterno', { exact: true }).fill(editedAlternateCode.toLowerCase());
     await page.getByLabel('Marca del código (opcional)', { exact: true }).fill('other-qa');
     await page.getByRole('button', { name: 'Guardar alterno', exact: true }).click();
-    await expect(page.getByRole('cell', { name: editedAlternateCode, exact: true })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Alternos' }).getByText(editedAlternateCode, { exact: true })).toBeVisible();
     await page.getByRole('link', { name: 'Inventario', exact: true }).click();
     await page.getByLabel('Buscar repuestos').fill(partName);
     await page.getByRole('button', { name: `Editar SKU ${partName}`, exact: true }).click();
@@ -171,7 +171,8 @@ test('superuser creates catalog codes, reviews stock, and manages alternos insid
     await page.screenshot({ path: '/tmp/motionpartes-native-catalog-mobile.png' });
     await page.getByLabel('SKU activo', { exact: true }).uncheck();
     await page.getByRole('button', { name: 'Guardar SKU', exact: true }).click();
-    await expect(page.getByRole('row').filter({ has: page.getByRole('cell', { name: partName, exact: true }) }).getByText('Inactivo', { exact: true })).toBeVisible();
+    // The search leaves only this SKU; its pinned SKU column and its Estado cell render as separate grid row parts.
+    await expect(page.getByRole('region', { name: 'Inventario interno' }).getByText('Inactivo', { exact: true })).toBeVisible();
   } finally { await supplierContext.close(); }
 });
 
@@ -213,7 +214,8 @@ test('superuser previews Excel imports, fixes errors, and imports grouped SKUs a
   expect(after.id).toBe(existing.id); expect(after.name).toBe('NOMBRE ACTUALIZADO'); expect(after.description).toBe('CONSERVAR');
   expect(after.codes).toEqual([{ code: `${existingSku}-OLD`, brand: '' }]);
   await page.getByLabel('Buscar repuestos', { exact: true }).fill(newSku);
-  await expect(page.getByRole('cell', { name: `${newSku} REPUESTO IMPORTADO`, exact: true })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Inventario interno' }).getByText(newSku, { exact: true })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Inventario interno' }).getByText('REPUESTO IMPORTADO', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Importar Excel', exact: true }).click();
   await page.getByLabel('Archivo Excel', { exact: true }).setInputFiles({ name: 'inventario.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: valid });
   await page.getByRole('button', { name: 'Revisar archivo', exact: true }).click();
@@ -560,7 +562,7 @@ test('sidebar opens catalog and alternos, preserves links on reload, and collaps
   await expect(page).toHaveURL(/seccion=inventario/);
   await expect(page.getByRole('heading', { name: 'Inventario', exact: true })).toBeVisible();
   await page.getByLabel('Buscar repuestos', { exact: true }).fill(process.env.E2E_USERNAME!);
-  await expect(page.getByRole('cell', { name: `${process.env.E2E_USERNAME!.toUpperCase()} ${process.env.E2E_USERNAME}`, exact: true })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Inventario interno' }).getByText(process.env.E2E_USERNAME!.toUpperCase(), { exact: true }).first()).toBeVisible();
   await page.getByRole('button', { name: 'Existencias por proveedor', exact: true }).click();
   await expect(page.getByLabel('Buscar existencias')).toBeVisible();
   await navigation.getByRole('link', { name: 'Alternos', exact: true }).click();

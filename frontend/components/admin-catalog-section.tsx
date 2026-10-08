@@ -1,10 +1,10 @@
 'use client';
 
-import { referenceLabel } from '@/lib/reference-label';
-
-import { useEffect, useState } from 'react';
-import { Boxes, BrainCircuit, Check, Combine, FileSpreadsheet, FileWarning, Images, Layers3, Library, LoaderCircle, Pencil, Plus, Repeat2, Search, Tags, Wand2, Warehouse, Wrench } from 'lucide-react';
-import { CatalogGroupingCandidate, CatalogImportIssuePage, ManagedAlternate, ManagedPart, ManagedStockItem, Page, request } from '@/lib/types';
+import { useEffect, useMemo, useState } from 'react';
+import { Boxes, BrainCircuit, Check, Combine, FileSpreadsheet, FileWarning, Layers3, Library, LoaderCircle, Plus, Repeat2, Search, Tags, Wand2, Warehouse } from 'lucide-react';
+import { CatalogGroupingCandidate, CatalogImportIssuePage, ManagedAlternate, ManagedPart, ManagedStockItem, request } from '@/lib/types';
+import AdminServerGrid from './admin-server-grid';
+import { alternateColumns, alternateOrdering, CatalogGridActions, catalogColumns, catalogOrdering, stockColumns, stockOrdering } from './admin-catalog-grids';
 import { AlternateEditor, MatchEditor, PartEditor, RemoveAlternate } from './admin-catalog-editors';
 import { UppercaseInput } from './uppercase-field';
 import CatalogImport from './admin-catalog-import';
@@ -19,8 +19,6 @@ import OEMRuns from './admin-oem-runs';
 import { PartTechnicalEditor } from './part-technical';
 
 type Kind = 'catalog' | 'inventory' | 'alternates';
-type Row = ManagedPart | ManagedStockItem | ManagedAlternate;
-const ALTERNATES_SHOWN = 4;
 
 export default function AdminCatalogSection({ section }: { section: 'inventory' | 'alternates' }) {
   const [technicalPart, setTechnicalPart] = useState<ManagedPart | null>(null);
@@ -82,35 +80,27 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
 }
 
 function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditAlternate, onEditMatch, onRemoveAlternate }: { onTechnical: (part: ManagedPart) => void; onImages: (part: ManagedPart) => void; kind: Kind; revision: number; onEditPart: (part: ManagedPart) => void; onEditAlternate: (alternate: ManagedAlternate) => void; onEditMatch: (item: ManagedStockItem) => void; onRemoveAlternate: (alternate: ManagedAlternate) => void }) {
-  const [data, setData] = useState<Page<Row> | null>(null);
   const [oemFilter, setOemFilter] = useState('');
-  const [search, setSearch] = useState(''); const [query, setQuery] = useState(''); const [page, setPage] = useState(1);
-  const [error, setError] = useState(''); const [retry, setRetry] = useState(0);
-  useEffect(() => { const timer = setTimeout(() => { setQuery(search.trim()); setPage(1); }, 300); return () => clearTimeout(timer); }, [search]);
-  useEffect(() => {
-    let cancelled = false; setData(null); setError('');
-    request<Page<Row>>(`/api/management/${kind}?search=${encodeURIComponent(query)}&page=${page}${kind === 'catalog' && oemFilter ? `&is_OEM=${oemFilter}` : ''}`).then(result => { if (!cancelled) setData(result); }).catch(error => { if (!cancelled) setError(error instanceof Error ? error.message : 'No se pudo cargar la información.'); });
-    return () => { cancelled = true; };
-  }, [kind, query, page, revision, retry, oemFilter]);
+  const [search, setSearch] = useState(''); const [query, setQuery] = useState('');
+  const [count, setCount] = useState<number | null>(null);
+  // Columns pin to the sides only where there is room for them next to the scrolling middle.
+  const [wide] = useState(() => typeof window === 'undefined' || window.innerWidth >= 900);
+  useEffect(() => { const timer = setTimeout(() => setQuery(search.trim()), 300); return () => clearTimeout(timer); }, [search]);
+  const actions = useMemo<CatalogGridActions>(() => ({ onEditPart, onTechnical, onImages, onEditAlternate, onRemoveAlternate, onEditMatch }), [onEditPart, onTechnical, onImages, onEditAlternate, onRemoveAlternate, onEditMatch]);
+  const params = useMemo(() => ({ search: query, is_OEM: kind === 'catalog' ? oemFilter : '' }), [query, oemFilter, kind]);
+  const partColumns = useMemo(() => catalogColumns(wide), [wide]);
+  const codeColumns = useMemo(() => alternateColumns(wide), [wide]);
   const label = kind === 'catalog' ? 'Buscar repuestos' : kind === 'inventory' ? 'Buscar existencias' : 'Buscar alternos';
+  const filtered = !!(query || oemFilter);
+  const empty = <div className="empty-state">{kind === 'alternates' ? <Repeat2 size={30}/> : <Boxes size={30}/>}<h3>{filtered ? 'No encontramos resultados.' : kind === 'alternates' ? 'Todavía no hay alternos registrados.' : kind === 'catalog' ? 'Todavía no hay SKU en el inventario interno.' : 'Todavía no hay existencias reportadas.'}</h3><p>{filtered ? 'Prueba con otra búsqueda o filtro.' : kind === 'alternates' ? 'Selecciona Crear alterno para agregar un código a un SKU interno.' : kind === 'catalog' ? 'Selecciona Crear SKU para agregarlo junto con sus alternos.' : 'Los registros aparecerán cuando los proveedores publiquen su inventario.'}</p></div>;
   return <>
     <div className="inventory-filters">
       <div className="catalog-search admin-search"><Search size={19}/><label className="sr-only" htmlFor="catalog-admin-search">{label}</label><UppercaseInput id="catalog-admin-search" value={search} onChange={event => setSearch(event.target.value)} placeholder={kind === 'catalog' ? 'SKU, nombre o código alterno…' : kind === 'inventory' ? 'Proveedor, marca o código del repuesto…' : 'SKU interno, código alterno o marca…'}/></div>
-      {kind === 'catalog' && <label className="inventory-filter-select"><span>Tipo de SKU</span><select aria-label="Tipo de SKU" value={oemFilter} onChange={event => { setOemFilter(event.target.value); setPage(1); }}><option value="">TODOS</option><option value="true">OEM</option><option value="false">SIN MARCAR COMO OEM</option></select></label>}
-      {data && <span className="inventory-count">{data.count.toLocaleString('es-PA')} {data.count === 1 ? 'resultado' : 'resultados'}</span>}
+      {kind === 'catalog' && <label className="inventory-filter-select"><span>Tipo de SKU</span><select aria-label="Tipo de SKU" value={oemFilter} onChange={event => setOemFilter(event.target.value)}><option value="">TODOS</option><option value="true">OEM</option><option value="false">SIN MARCAR COMO OEM</option></select></label>}
+      <span className="inventory-count" aria-live="polite">{count === null ? <><LoaderCircle className="spin" size={13}/>Cargando…</> : `${count.toLocaleString('es-PA')} ${count === 1 ? 'resultado' : 'resultados'}`}</span>
     </div>
-    {error && <div className="notice error" role="alert">{error}<button onClick={() => setRetry(value => value + 1)}>Intentar de nuevo</button></div>}
-    {!data && !error && <div className="loading"><LoaderCircle className="spin" size={20}/>Cargando {kind === 'alternates' ? 'alternos' : 'inventario'}…</div>}
-    {data && !data.results.length && <div className="empty-state">{kind === 'alternates' ? <Repeat2 size={30}/> : <Boxes size={30}/>}<h3>{query || oemFilter ? 'No encontramos resultados.' : kind === 'alternates' ? 'Todavía no hay alternos registrados.' : kind === 'catalog' ? 'Todavía no hay SKU en el inventario interno.' : 'Todavía no hay existencias reportadas.'}</h3><p>{query || oemFilter ? 'Prueba con otra búsqueda o filtro.' : kind === 'alternates' ? 'Selecciona Crear alterno para agregar un código a un SKU interno.' : kind === 'catalog' ? 'Selecciona Crear SKU para agregarlo junto con sus alternos.' : 'Los registros aparecerán cuando los proveedores publiquen su inventario.'}</p></div>}
-    {!!data?.results.length && <div className="table-scroll"><table className="admin-catalog-table">
-      <thead>{kind === 'catalog' ? <tr><th>SKU interno / nombre</th><th>Alternos</th><th>Estado</th><th className="number-cell">Existencias</th><th className="actions-cell">Acciones</th></tr> : kind === 'inventory' ? <tr><th>Proveedor</th><th>Código / marca</th><th>SKU interno</th><th>ID del proveedor</th><th>Disponibles</th><th>Reservadas</th><th>Coincidencia</th></tr> : <tr><th>SKU interno</th><th>Código alterno</th><th>Marca del código</th><th>Acciones</th></tr>}</thead>
-      <tbody>{data?.results.map(row => {
-        if (kind === 'catalog') { const part = row as ManagedPart; const identity = `${part.is_OEM ? 'MAIN OEM' : part.identity?.ref_type === 'company' ? `MAIN INTERNO · ${part.identity.brand}` : 'MAIN INTERNO'}${!part.is_OEM ? part.identity?.status === 'choose_oem' ? ' · ELEGIR OEM' : ' · OEM PENDIENTE' : ''}`; const shown = part.codes.slice(0, ALTERNATES_SHOWN); const hidden = part.codes.slice(ALTERNATES_SHOWN);
-          return <tr key={part.id}><td className="sku-cell"><strong>{part.sku}</strong><span className={`sku-identity ${part.is_OEM ? 'oem' : part.identity?.status === 'choose_oem' ? 'choose' : 'pending'}`}>{identity}</span>{part.name && part.name !== part.sku && <span>{part.name}</span>}{(part.category || part.subcategory) && <span className="sku-category">{[part.category, part.subcategory].filter(Boolean).join(' / ')}</span>}</td><td><div className="admin-role-list">{part.codes.length ? <>{shown.map(code => <span key={`${code.brand}:${code.code}`} title={code.brand || 'Todas las marcas'}>{code.code} · {referenceLabel(code)}</span>)}{!!hidden.length && <span className="more" title={hidden.map(code => `${code.code} · ${referenceLabel(code)}`).join('\n')}>+{hidden.length} más</span>}</> : <span className="none">Solo el código del SKU</span>}</div></td><td><span className={`status ${part.active ? 'matched' : ''}`}>{part.active ? 'Activo' : 'Inactivo'}</span></td><td className="number-cell">{part.stock_record_count}</td><td className="actions-cell"><div className="admin-row-actions"><button className="button soft small" aria-label={`Editar SKU ${part.sku}`} onClick={() => onEditPart(part)}><Pencil size={13} aria-hidden="true"/>Editar</button><button className="button ghost small" aria-label={`Ficha técnica de ${part.sku}`} onClick={() => onTechnical(part)}><Wrench size={13} aria-hidden="true"/>Ficha técnica</button><button className="button ghost small" aria-label={`Imágenes de ${part.sku}`} onClick={() => onImages(part)}><Images size={13} aria-hidden="true"/>Imágenes ({part.images?.length || 0})</button></div></td></tr>; }
-        if (kind === 'inventory') { const item = row as ManagedStockItem; return <tr key={item.id}><td><strong>{item.supplier_name}</strong><span>{item.source === 'apiag' ? 'apiag-cloud' : 'Carga manual'}</span></td><td><strong>{item.codigo}</strong><span>{item.brand}</span></td><td><strong>{item.part_sku || 'Sin vincular'}</strong>{item.part_name && item.part_name !== item.part_sku && <span>{item.part_name}</span>}</td><td>{item.supplier_invent_id}</td><td className="number-cell">{item.available_quantity}</td><td className="number-cell">{item.reserved_quantity}</td><td><div className="admin-match-actions"><span className={`status ${item.matching_status}`}>{{matched: 'Vinculado', pending: 'Pendiente', review: 'Por revisar'}[item.matching_status]}</span><button className="button text small" aria-label={`Revisar coincidencia ${item.supplier_name} ${item.supplier_invent_id}`} onClick={() => onEditMatch(item)}>Revisar</button></div></td></tr>; }
-        const alternate = row as ManagedAlternate; return <tr key={alternate.id}><td><strong>{alternate.part_sku}</strong>{alternate.part_name && alternate.part_name !== alternate.part_sku && <span>{alternate.part_name}</span>}</td><td><strong>{alternate.code}</strong><span>{referenceLabel(alternate)}</span>{alternate.reference_source && <span>{alternate.reference_source}</span>}</td><td>{alternate.brand || 'Todas las marcas'}</td><td><div className="admin-row-actions"><button className="button soft small" aria-label={`Editar alterno ${alternate.code}`} onClick={() => onEditAlternate(alternate)}>Editar</button><button className="button text small danger-text" aria-label={`Retirar alterno ${alternate.code}`} onClick={() => onRemoveAlternate(alternate)}>Retirar</button></div></td></tr>;
-      })}</tbody>
-    </table></div>}
-    {data && <div className="pagination"><span>{data.count} {data.count === 1 ? 'resultado' : 'resultados'}</span><div><button className="button soft small" disabled={!data.previous} onClick={() => setPage(page - 1)}>Anterior</button><span>Página {page}</span><button className="button soft small" disabled={!data.next} onClick={() => setPage(page + 1)}>Siguiente</button></div></div>}
+    {kind === 'catalog' ? <AdminServerGrid<ManagedPart> storageKey="admin-catalog" label="Inventario interno" path="/api/management/catalog" params={params} columns={partColumns} rowId={part => part.id} ordering={catalogOrdering} revision={revision} rowHeight={64} context={actions} empty={empty} onCount={setCount}/>
+      : kind === 'inventory' ? <AdminServerGrid<ManagedStockItem> storageKey="admin-stock" label="Existencias por proveedor" path="/api/management/inventory" params={params} columns={stockColumns} rowId={item => String(item.id)} ordering={stockOrdering} revision={revision} rowHeight={58} context={actions} empty={empty} onCount={setCount}/>
+      : <AdminServerGrid<ManagedAlternate> storageKey="admin-alternates" label="Alternos" path="/api/management/alternates" params={params} columns={codeColumns} rowId={alternate => String(alternate.id)} ordering={alternateOrdering} revision={revision} rowHeight={58} context={actions} empty={empty} onCount={setCount}/>}
   </>;
 }

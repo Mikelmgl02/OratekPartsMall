@@ -1,12 +1,13 @@
 'use client';
 
 import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
-import { CellSelectionModule, ClipboardModule, ColumnMenuModule, ContextMenuModule, ExcelExportModule, LicenseManager } from 'ag-grid-enterprise';
+import { CellSelectionModule, ClipboardModule, ColumnMenuModule, ContextMenuModule, ExcelExportModule, LicenseManager, ServerSideRowModelApiModule, ServerSideRowModelModule } from 'ag-grid-enterprise';
 import { AG_GRID_LOCALE_ES } from '@ag-grid-community/locale';
 
 const license = process.env.NEXT_PUBLIC_AG_GRID_LICENSE_KEY;
 if (license) LicenseManager.setLicenseKey(license);
-ModuleRegistry.registerModules([AllCommunityModule, CellSelectionModule, ClipboardModule, ColumnMenuModule, ContextMenuModule, ExcelExportModule]);
+ModuleRegistry.registerModules([AllCommunityModule, CellSelectionModule, ClipboardModule, ColumnMenuModule, ContextMenuModule, ExcelExportModule,
+  ServerSideRowModelModule, ServerSideRowModelApiModule]);
 
 export const gridLocale = AG_GRID_LOCALE_ES;
 export const motionGridTheme = themeQuartz.withParams({

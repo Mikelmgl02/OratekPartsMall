@@ -1782,3 +1782,38 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .admin-catalog-table td:nth-child(3) { white-space:nowrap; }
 .sku-cell>span.sku-identity { white-space:nowrap; }
 .inventory-view-tabs { overflow-x:auto; scrollbar-width:none; } .inventory-view-tabs button { white-space:nowrap; flex-shrink:0; }
+
+/* Admin server-side grids (AG Grid Enterprise SSRM): inventario interno, existencias por proveedor, alternos */
+.admin-grid-shell { display:flex; flex-direction:column; gap:10px; min-width:0; }
+.admin-grid { position:relative; }
+.admin-grid .ag-cell { line-height:1.35; }
+.admin-grid .ag-header-cell-text { font-size:10px; font-weight:600; letter-spacing:.6px; text-transform:uppercase; }
+.admin-grid .ag-row-hover .ag-cell { background:#fafcf6; }
+.admin-grid .admin-grid-text { color:#5f6f55; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:block; line-height:var(--admin-row-height, 56px); }
+.admin-grid .admin-grid-text.muted { color:#8d9b80; font-size:11px; }
+.admin-grid .admin-grid-number { color:var(--ink); font-weight:600; }
+.admin-grid-stack { display:flex; flex-direction:column; justify-content:center; gap:4px; min-width:0; }
+.admin-grid-stack strong { color:var(--ink); font-size:13px; font-weight:600; letter-spacing:.2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.admin-grid-stack small { color:#8d9b80; font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.admin-grid-stack .sku-identity { align-self:flex-start; padding:2px 7px; border-radius:5px; font-size:9px; font-weight:600; letter-spacing:.3px; white-space:nowrap; }
+.admin-grid-muted { color:#a8b39b; font-size:11px; }
+.admin-grid-chips { display:flex; align-items:center; gap:5px; min-width:0; overflow:hidden; }
+.admin-grid-chips>span { display:inline-flex; flex-direction:column; gap:1px; flex-shrink:0; padding:4px 8px; border-radius:6px; background:#f0f4e9; color:#4f6342; font-size:11px; font-weight:600; line-height:1.25; }
+.admin-grid-chips>span small { font-size:8px; font-weight:500; color:#86977a; letter-spacing:.3px; }
+.admin-grid-chips>span.more { flex-direction:row; align-items:center; background:transparent; border:1px dashed #d4dcc8; color:#7d8f6c; font-weight:500; }
+.admin-grid-actions { display:flex; align-items:center; justify-content:flex-end; gap:6px; width:100%; }
+.admin-grid-actions.start { justify-content:flex-start; gap:10px; }
+.admin-grid-actions .button.small { min-height:32px; padding:6px 10px; gap:6px; font-size:11px; }
+.admin-grid .ag-cell .status { line-height:1; }
+.admin-grid-empty { position:absolute; inset:43px 1px 1px; display:grid; place-items:center; background:#fff; border-radius:0 0 10px 10px; }
+.admin-grid-empty .empty-state { border:0; padding:18px; }
+.inventory-count { display:inline-flex; align-items:center; gap:6px; }
+.admin-grid .ag-header-cell-menu-button { opacity:0; transition:opacity .15s; }
+.admin-grid .ag-header-cell:hover .ag-header-cell-menu-button,.admin-grid .ag-header-cell:focus-within .ag-header-cell-menu-button { opacity:1; }
+.admin-grid-codes { display:flex; align-items:center; gap:6px; min-width:0; width:100%; }
+.admin-grid-codes .admin-grid-chips { flex:1 1 auto; }
+.admin-grid-chips>span { flex-direction:row; padding:4px 8px; font-size:11px; font-weight:600; white-space:nowrap; }
+.admin-grid-chips>span.oem { background:#e6f2d5; color:#45682c; }
+.admin-grid-chips>span.company { background:#f1efe6; color:#6f6545; }
+.admin-grid-chips>span.unknown { background:#f1f3ee; color:#6f7a68; }
+.admin-grid-codes>.more { flex-shrink:0; padding:3px 7px; border-radius:6px; border:1px dashed #cfd8c2; color:#6f8160; font-size:10px; font-weight:600; }

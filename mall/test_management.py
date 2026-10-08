@@ -253,6 +253,21 @@ class ManagementTests(APITestCase):
         self.assertEqual(alternates.data['results'][0]['code'], 'ABC-123')
         self.assertEqual(self.client.get('/api/v1/management/alternates/?search=ACME').data['count'], 1)
 
+    def test_grid_sorting_is_whitelisted_and_stable(self):
+        parts = [Part.objects.create(sku=sku, name=sku) for sku in ['C-SKU', 'A-SKU', 'B-SKU']]
+        for index, part in enumerate(parts):
+            for n in range(index):
+                SupplierItem.objects.create(supplier=self.account, supplier_invent_id=f'{part.sku}-{n}', part=part, codigo=part.sku, brand='X', source='upload',
+                                            reported_quantity=n + 1, reserved_quantity=3)
+        skus = lambda url: [row['sku'] for row in self.client.get(url).data['results']]
+        self.assertEqual(skus('/api/v1/management/catalog/?ordering=sku'), ['A-SKU', 'B-SKU', 'C-SKU'])
+        self.assertEqual(skus('/api/v1/management/catalog/?ordering=-stock_record_count'), ['B-SKU', 'A-SKU', 'C-SKU'])
+        self.assertEqual(skus('/api/v1/management/catalog/?ordering=-sku'), ['C-SKU', 'B-SKU', 'A-SKU'])
+        self.assertEqual(skus('/api/v1/management/catalog/?ordering=password'), ['A-SKU', 'B-SKU', 'C-SKU'])  # not listed: default order
+        stock = self.client.get('/api/v1/management/inventory/?ordering=-available').data['results']
+        self.assertEqual([row['available_quantity'] for row in stock], [0, 0, 0])  # 1-3, 1-3, 2-3: never below zero
+        self.assertEqual(self.client.get('/api/v1/management/alternates/?ordering=-code').status_code, 200)
+
     def test_account_roles_and_employee_access_can_be_managed(self):
         created = self.client.post('/api/v1/management/accounts/', {'name': 'Nueva empresa', 'roles': ['supplier_wholesale', 'client_business']}, format='json')
         self.assertEqual(created.status_code, 201)

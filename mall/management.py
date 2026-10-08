@@ -1,7 +1,8 @@
 from datetime import timedelta
 
 from django.db import IntegrityError, transaction
-from django.db.models import Count, Q
+from django.db.models import Count, F, Q, Value
+from django.db.models.functions import Greatest
 from django.utils import timezone
 from rest_framework import filters, generics, permissions, serializers
 from rest_framework.authtoken.models import Token
@@ -378,10 +379,22 @@ class ManagedAlternateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('Este alterno ya está registrado.')
 
 
+class StableOrdering(filters.OrderingFilter):
+    """Grid sorting (?ordering=-stock_record_count,sku) on the listed fields only, always ending in the primary key: equal values
+    keep one order, so the grid's page-sized blocks never repeat or skip a row while it scrolls."""
+
+    def get_ordering(self, request, queryset, view):
+        ordering = super().get_ordering(request, queryset, view)
+        if ordering and not {'id', '-id', 'pk', '-pk'} & set(ordering):
+            ordering = [*ordering, 'id']
+        return ordering
+
+
 class CatalogList(SuperuserMixin, generics.ListCreateAPIView):
     serializer_class = ManagedPartSerializer
-    filter_backends = [filters.SearchFilter]
+    filter_backends = [filters.SearchFilter, StableOrdering]
     search_fields = ['sku', 'name', 'description', 'codes__code', 'codes__brand']
+    ordering_fields = ['sku', 'name', 'description', 'category', 'subcategory', 'active', 'is_OEM', 'stock_record_count']
     queryset = Part.objects.filter(merged_into__isnull=True).annotate(stock_record_count=Count('supplier_items', distinct=True)).prefetch_related('codes', 'images').order_by('sku', 'id')
 
     def get_queryset(self):
@@ -402,9 +415,13 @@ class CatalogDetail(SuperuserMixin, generics.RetrieveUpdateAPIView):
 
 class InventoryList(SuperuserMixin, generics.ListAPIView):
     serializer_class = ManagedInventorySerializer
-    filter_backends = [filters.SearchFilter]
+    filter_backends = [filters.SearchFilter, StableOrdering]
     search_fields = ['codigo', 'brand', 'supplier_invent_id', 'supplier__name', 'part__sku', 'part__name']
-    queryset = SupplierItem.objects.select_related('supplier', 'part').order_by('supplier__name', 'codigo', 'id')
+    ordering_fields = ['supplier__name', 'codigo', 'brand', 'part__sku', 'supplier_invent_id', 'available', 'reserved_quantity', 'matching_status']
+    # available mirrors SupplierItem.available_quantity (never below zero) so the grid can sort by it.
+    queryset = (SupplierItem.objects.select_related('supplier', 'part')
+                .annotate(available=Greatest(F('reported_quantity') - F('reserved_quantity'), Value(0)))
+                .order_by('supplier__name', 'codigo', 'id'))
 
 
 class InventoryDetail(SuperuserMixin, generics.RetrieveUpdateAPIView):
@@ -415,8 +432,9 @@ class InventoryDetail(SuperuserMixin, generics.RetrieveUpdateAPIView):
 
 class AlternateList(SuperuserMixin, generics.ListCreateAPIView):
     serializer_class = ManagedAlternateSerializer
-    filter_backends = [filters.SearchFilter]
+    filter_backends = [filters.SearchFilter, StableOrdering]
     search_fields = ['part__sku', 'part__name', 'code', 'brand']
+    ordering_fields = ['part__sku', 'code', 'brand', 'ref_type']
     queryset = PartCode.objects.select_related('part').order_by('part__sku', 'code', 'brand', 'id')
 
 
