@@ -21,7 +21,7 @@ from mall.catalog_suffix_views import CompanySuffixes, SuffixDetail, SuffixList
 from mall.oem_finder_views import OEMApplyHaltView, OEMRunDetail, OEMRunList, OEMRunRevert, OEMRunSpotCheck
 from mall.oem_review_views import OEMReviewBulk, OEMReviewBulkStep, OEMReviewDecide, OEMReviewList, OEMReviewSummary
 from mall.oem_auto_views import OEMPendingApply, OEMPendingList, OEMPendingPreview, OEMPendingSendToReview
-from mall.oem_reference_views import OEMReferenceItem, OEMReferenceList
+from mall.oem_reference_views import OEMReferenceItem, OEMReferenceList, PartOEMEquivalents
 from mall.catalog_media import CatalogImages, CatalogImageDetail, CatalogImageOrder
 from mall.catalog_grouping_suggestions import CatalogGroupingList, CatalogGroupingClassify
 from mall.supplier_import import SupplierInventoryImport, SupplierInventoryImportTemplate, SupplierInventoryImportJobView, SupplierInventoryImportErrors
@@ -63,6 +63,7 @@ urlpatterns = [
     path('api/v1/management/catalog/import/jobs/<uuid:pk>/', CatalogImportJobView.as_view()),
     path('api/v1/management/catalog/import/jobs/<uuid:pk>/classification/', CatalogClassification.as_view()),
     path('api/v1/management/catalog/<uuid:pk>/oem-lookup/', CatalogOEMLookup.as_view()),
+    path('api/v1/management/catalog/<uuid:pk>/oem-equivalents/', PartOEMEquivalents.as_view()),
     path('api/v1/management/catalog/suffixes/', SuffixList.as_view()),
     path('api/v1/management/catalog/suffixes/<path:token>/', SuffixDetail.as_view()),
     path('api/v1/management/catalog/company-suffixes/', CompanySuffixes.as_view()),

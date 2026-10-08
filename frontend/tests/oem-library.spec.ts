@@ -27,7 +27,10 @@ function derive(sources: OEMReferenceSource[]): OEMReferenceStatus {
 function reference(id: string, manufacturer: string, code: string, patch: Partial<OEMReferenceDetail>): OEMReferenceDetail {
   const row: OEMReferenceDetail = { id, manufacturer, code, printed_forms: [], system: '', family: '', part_type: '', description: '', applications: '', status: 'inferred',
     status_label: 'Inferido', dispute_note: '', superseded_by: null, notes: '', source_count: 0, source_kinds: {}, linked_skus: [], linked_count: 0, created_by: null,
-    updated_by: null, created_at: stamp, updated_at: stamp, version: 1, sources: [], supersedes: [], ...patch };
+    updated_by: null, created_at: stamp, updated_at: stamp, version: 1, sources: [], supersedes: [], cross_reference_count: 0, cross_reference_preview: [],
+    cross_references: [], ...patch };
+  row.cross_reference_count = row.cross_references.length;
+  row.cross_reference_preview = row.cross_references.slice(0, 3);
   return summarize(row);
 }
 
@@ -52,7 +55,9 @@ async function fixture(page: Page) {
     [ids.mitsubishi]: reference(ids.mitsubishi, 'MITSUBISHI', 'MR968365', { printed_forms: ['MR-968365'], system: 'MITSU_OLD', part_type: 'BASE AMORT',
       sources: [source(2, 'ai_lookup', 'https://parts.example/MR968365', { approved: true })] }),
     [ids.honda]: reference(ids.honda, 'HONDA', '19200PNA003', { printed_forms: ['19200-PNA-003'], system: 'HONDA', family: '19200', part_type: 'BOMBA AGUA',
-      sources: [source(3, 'aftermarket_catalog', 'GMB 2025 P. 81')] }),
+      sources: [source(3, 'aftermarket_catalog', 'GMB 2025 P. 81')], linked_count: 1,
+      linked_skus: [{ id: '05000000-0000-4000-8000-000000000002', sku: '19200-PNA-003-NPW', is_OEM: false, active: true, via: 'sku_name', code: '19200-PNA-003-NPW' }],
+      cross_references: [{ id: 1, brand: 'AISIN', code: 'WPH-016', citations: ['GMB 2025 · pág. 81'] }, { id: 2, brand: 'GMB', code: 'GWHO-49A', citations: ['GMB 2025 · pág. 81'] }] }),
   };
   const unexpected: string[] = [], lists: URLSearchParams[] = [], posts: Record<string, unknown>[] = [], patches: { id: string; body: Record<string, unknown> }[] = [];
   await page.route('**/api/**', route => { unexpected.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`); return route.fulfill({ status: 404, json: { detail: 'Ruta no prevista' } }); });
@@ -135,6 +140,7 @@ for (const width of [1440, 390]) {
     await expect(table.getByText('BUSCADOR OEM', { exact: true })).toBeVisible();
     await expect(table.getByText('INFERIDO', { exact: true })).toBeVisible();
     await expect(table.getByText('CATÁLOGO DE REPUESTO', { exact: true })).toBeVisible();
+    await expect(table.getByText('GMB GWHO-49A', { exact: true })).toBeVisible();  // aftermarket codes filed under the number
     await fitsWidth(page);
     expect(await dialog.locator('.suffix-table-wrap').evaluate(el => el.scrollWidth > el.clientWidth)).toBe(false);
     await page.screenshot({ path: `/tmp/motionpartes-oem-library-${width}.png` });
@@ -157,8 +163,17 @@ for (const width of [1440, 390]) {
     await expect(sources.getByText('CORRIDA 2 · REGLA current · v2', { exact: true })).toBeVisible();
     await expect(sources.getByRole('button', { name: /^Quitar fuente/ })).toHaveCount(0);  // automatic sources follow the catalog
     await expect(dialog.getByRole('region', { name: 'SKU vinculados' }).getByText('SKU PRINCIPAL · MAIN OEM', { exact: true })).toBeVisible();
+    await expect(dialog.getByRole('region', { name: 'Equivalencias de posventa' }).getByText('Ningún catálogo de marca de repuesto imprime equivalencias de este número.', { exact: true })).toBeVisible();
     await fitsWidth(page);
     await page.screenshot({ path: `/tmp/motionpartes-oem-reference-${width}.png` });
+    await dialog.getByRole('button', { name: 'Volver a la biblioteca', exact: true }).click();
+    await dialog.getByLabel('Buscar número OEM', { exact: true }).fill('');
+    await dialog.getByRole('button', { name: 'Ver HONDA 19200PNA003', exact: true }).click();
+    const codes = dialog.getByRole('region', { name: 'Equivalencias de posventa' });
+    await expect(codes.getByRole('heading', { name: 'Equivalencias de posventa (2)', exact: true })).toBeVisible();
+    await expect(codes.getByText('GMB GWHO-49A', { exact: true })).toBeVisible();
+    await expect(dialog.getByRole('region', { name: 'SKU vinculados' }).getByText('NOMBRE DEL SKU', { exact: true })).toBeVisible();
+    await fitsWidth(page);
     await dialog.getByRole('button', { name: 'Volver a la biblioteca', exact: true }).click();
     await expect(dialog.getByRole('button', { name: 'Ver TOYOTA 1780130070', exact: true })).toBeVisible();
     expect(mock.unexpected).toEqual([]);

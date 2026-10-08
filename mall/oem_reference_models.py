@@ -5,6 +5,10 @@ spellings printed in sources stay as evidence in printed_forms. OEMReferenceSour
 list, a catalog page, an approved OEM alterno of the catalog, an OEM finder run...), deduplicated by (reference, kind, citation).
 The status follows the sources (mall.oem_reference.derived_status) unless someone disputes the number. Every save takes the next
 row version. Rows never hold prices, stock or SKUs: the catalog SKUs that carry a number are computed on read.
+
+OEMCrossReference is an aftermarket code printed as an equivalent of one number (AISIN WPT-111 = TOYOTA 1610029155): it belongs to
+the number, not to a SKU. PartOEMLink ties a SKU to a number besides its OEM alternos (the number its own code names, or one a
+supplier catalog printed for the item matched to it), so the SKU reaches the number's aftermarket codes (mall.oem_links).
 """
 import uuid
 
@@ -21,6 +25,8 @@ SOURCE_KINDS = [('price_list', 'Lista de precios de distribuidor'), ('manufactur
                 ('aftermarket_catalog', 'Catálogo de marca de repuesto'), ('ai_lookup', 'Búsqueda OEM con IA'),
                 ('supplier_declaration', 'Declaración de proveedor'), ('catalog_approval', 'Aprobación en el catálogo'),
                 ('oem_finder', 'Buscador OEM'), ('manual', 'Registro manual')]
+# How a SKU is tied to a number besides its OEM alternos (PartOEMLink).
+LINK_SOURCES = [('sku_name', 'Nombre del SKU'), ('catalog', 'Catálogo de marca de repuesto')]
 # Sources a person registers (and may remove); the others follow the catalog's OEM alternos and are never edited by hand.
 MANUAL_KINDS = ('manual', 'price_list', 'manufacturer_catalog', 'aftermarket_catalog', 'supplier_declaration')
 AUTOMATIC_KINDS = ('catalog_approval', 'oem_finder', 'ai_lookup')
@@ -121,3 +127,68 @@ class OEMReferenceSource(models.Model):
     @property
     def removable(self):
         return self.kind in MANUAL_KINDS
+
+
+def citation_list(citations, *more):
+    """Distinct non-blank citations in first-seen order, each cut to 500 characters."""
+    out = []
+    for text in [*(citations or []), *more]:
+        text = str(text or '').strip()[:500]
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+class OEMCrossReference(models.Model):
+    """An aftermarket code printed as an equivalent of one OEM number (AISIN WPT-111 = TOYOTA 1610029155). It belongs to the number:
+    every SKU linked to the number shows it, duplicate SKUs share it and grouping SKUs moves nothing. One row per (number, brand,
+    compact code); citations lists every source that prints it."""
+    reference = models.ForeignKey(OEMReference, on_delete=models.CASCADE, related_name='cross_references', verbose_name='referencia OEM')
+    brand = models.CharField(max_length=120, verbose_name='marca')
+    code = models.CharField(max_length=120, verbose_name='código')
+    number = models.CharField(max_length=120, verbose_name='código compacto')  # letters and digits only: the lookup key
+    citations = models.JSONField(default=list, blank=True, verbose_name='citas')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='fecha de registro')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='última actualización')
+
+    class Meta:
+        verbose_name = 'equivalencia de posventa'
+        verbose_name_plural = 'equivalencias de posventa'
+        ordering = ['brand', 'number', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['reference', 'brand', 'number'], name='oem_cross_reference_unique'),
+            models.CheckConstraint(condition=Q(number__regex=r'^[0-9A-Z]+$'), name='oem_cross_reference_number_compact'),
+            models.CheckConstraint(condition=Q(brand=Upper('brand')) & ~Q(brand=''), name='oem_cross_reference_brand_upper'),
+        ]
+        indexes = [models.Index(fields=['number'], name='oem_cross_reference_number_idx')]
+
+    def __str__(self):
+        return f'{self.brand} {self.code} = {self.reference}'
+
+    def save(self, *args, **kwargs):
+        self.brand, self.code = manufacturer_name(self.brand), ' '.join(str(self.code or '').upper().split())
+        self.number, self.citations = compact(self.code), citation_list(self.citations)
+        super().save(*args, **kwargs)
+
+
+class PartOEMLink(models.Model):
+    """A catalog SKU's OEM number besides its OEM alternos: the number its own code names (16100-79445-NPW -> TOYOTA 1610079445) or
+    one a supplier catalog printed for the item matched to it. The SKU then shows the number's aftermarket codes. A link never makes
+    the number the SKU's MAIN: only the OEM finder and Revisión OEM change MAINs."""
+    part = models.ForeignKey('mall.Part', on_delete=models.CASCADE, related_name='oem_links', verbose_name='repuesto del catálogo')
+    reference = models.ForeignKey(OEMReference, on_delete=models.CASCADE, related_name='part_links', verbose_name='referencia OEM')
+    source = models.CharField(max_length=12, choices=LINK_SOURCES, verbose_name='origen')
+    citations = models.JSONField(default=list, blank=True, verbose_name='citas')  # catalog links: page and catalog item
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='fecha de registro')
+
+    class Meta:
+        verbose_name = 'vínculo de SKU con número OEM'
+        verbose_name_plural = 'vínculos de SKU con números OEM'
+        ordering = ['part', 'reference', 'source']
+        constraints = [
+            models.UniqueConstraint(fields=['part', 'reference', 'source'], name='part_oem_link_unique'),
+            models.CheckConstraint(condition=Q(source__in=values(LINK_SOURCES)), name='part_oem_link_valid_source'),
+        ]
+
+    def __str__(self):
+        return f'{self.part_id} → {self.reference} · {self.get_source_display()}'

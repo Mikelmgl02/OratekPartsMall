@@ -1,6 +1,7 @@
 """Superuser API of the OEM reference library: list with search, filters and counts; create or merge a number written in any form
-with its first source; one reference with its sources, linked SKUs and supersession; edits and actions under the version the
-reviewer saw (409 with the current reference otherwise). Repeating an action that is already in place returns the reference unchanged.
+with its first source; one reference with its sources, linked SKUs, aftermarket codes and supersession; edits and actions under the
+version the reviewer saw (409 with the current reference otherwise). Repeating an action that is already in place returns the
+reference unchanged. A catalog SKU's OEM numbers and the aftermarket codes it reaches through them are read-only here.
 """
 from collections import Counter
 
@@ -17,14 +18,18 @@ from rest_framework.views import APIView
 from . import oem_reference as orf
 from .catalog_suffix_models import values
 from .management import IsSuperuser, UppercaseCharField
-from .oem_reference_models import (MANUAL_KINDS, REFERENCE_STATUSES, SOURCE_KINDS, OEMReference, OEMReferenceSource, compact,
-                                   manufacturer_name)
+from .models import Part
+from .oem_links import part_equivalents
+from .oem_links import tables_ready as oem_links_ready
+from .oem_reference_models import (LINK_SOURCES, MANUAL_KINDS, REFERENCE_STATUSES, SOURCE_KINDS, OEMCrossReference, OEMReference,
+                                   OEMReferenceSource, compact, manufacturer_name)
 
 REFERENCE_LOCK = 724631112  # pg advisory lock key of supersession edits (matching 724631109, quote assistant 724631110, suffixes 724631111)
 ACTIONS = ['edit', 'add_source', 'remove_source', 'dispute', 'clear_dispute', 'set_superseded_by', 'clear_superseded_by']
 EDITABLE = ('description', 'part_type', 'applications', 'notes')
 MANUAL_CHOICES = [(kind, label) for kind, label in SOURCE_KINDS if kind in MANUAL_KINDS]
-VIA = ['sku', 'oem', 'company', 'unknown']
+VIA = ['sku', 'oem', 'company', 'unknown', *values(LINK_SOURCES)]
+CROSS_PREVIEW = 3
 CONFLICT = 'La referencia cambió desde que la revisaste. Revisa sus valores actuales antes de continuar.'
 MAX_CHAIN = 50
 
@@ -35,7 +40,7 @@ class OEMReferenceUnavailable(APIException):
 
 
 def require_tables():
-    if not orf.tables_ready():
+    if not orf.tables_ready() or not oem_links_ready():
         raise OEMReferenceUnavailable()
 
 
@@ -51,8 +56,18 @@ class OEMLinkedSKU(serializers.Serializer):
     sku = serializers.CharField()
     is_OEM = serializers.BooleanField()
     active = serializers.BooleanField()
-    via = serializers.ChoiceField(choices=VIA, help_text='sku: el SKU principal es el número; oem, company o unknown: un alterno de ese tipo.')
+    via = serializers.ChoiceField(choices=VIA, help_text='sku: el SKU principal es el número; oem, company o unknown: un alterno de ese tipo; '
+                                                       'sku_name: el código del SKU nombra el número; catalog: un catálogo de marca de repuesto lo vinculó.')
     code = serializers.CharField(help_text='Como lo escribe el catálogo.')
+
+
+class OEMCrossReferenceRow(serializers.ModelSerializer):
+    citations = serializers.ListField(child=serializers.CharField(), read_only=True, help_text='Fuentes que imprimen la equivalencia (catálogo y página).')
+
+    class Meta:
+        model = OEMCrossReference
+        fields = ['id', 'brand', 'code', 'citations']
+        read_only_fields = fields
 
 
 class OEMReferenceSourceRow(serializers.ModelSerializer):
@@ -78,22 +93,46 @@ class OEMReferenceRow(serializers.ModelSerializer):
     source_kinds = serializers.DictField(child=serializers.IntegerField(), read_only=True, help_text='Fuentes por tipo.')
     linked_skus = OEMLinkedSKU(many=True, read_only=True, help_text=f'Hasta {orf.LINKED_LIMIT} SKU del catálogo que llevan el número.')
     linked_count = serializers.IntegerField(read_only=True)
+    cross_reference_count = serializers.IntegerField(read_only=True, help_text='Códigos de marcas de repuesto equivalentes al número.')
+    cross_reference_preview = OEMCrossReferenceRow(many=True, read_only=True, help_text=f'Los primeros {CROSS_PREVIEW}, por marca y código.')
 
     class Meta:
         model = OEMReference
         fields = ['id', 'manufacturer', 'code', 'printed_forms', 'system', 'family', 'part_type', 'description', 'applications', 'status',
                   'status_label', 'dispute_note', 'superseded_by', 'notes', 'source_count', 'source_kinds', 'linked_skus', 'linked_count',
-                  'created_by', 'updated_by', 'created_at', 'updated_at', 'version']
+                  'cross_reference_count', 'cross_reference_preview', 'created_by', 'updated_by', 'created_at', 'updated_at', 'version']
         read_only_fields = fields
 
 
 class OEMReferenceDetail(OEMReferenceRow):
     sources = OEMReferenceSourceRow(many=True, read_only=True)
     supersedes = OEMReferenceLink(many=True, read_only=True, help_text='Números que este reemplaza.')
+    cross_references = OEMCrossReferenceRow(many=True, read_only=True, source='cross_reference_rows',
+                                            help_text='Todos los códigos de marcas de repuesto equivalentes al número.')
 
     class Meta(OEMReferenceRow.Meta):
-        fields = OEMReferenceRow.Meta.fields + ['sources', 'supersedes']
+        fields = OEMReferenceRow.Meta.fields + ['sources', 'supersedes', 'cross_references']
         read_only_fields = fields
+
+
+class PartOEMNumber(serializers.Serializer):
+    reference = OEMReferenceLink()
+    via = serializers.ListField(child=serializers.ChoiceField(choices=['oem', *values(LINK_SOURCES)]),
+                                help_text='oem: un alterno OEM del SKU; sku_name: el código del SKU nombra el número; catalog: un catálogo lo vinculó.')
+    citations = serializers.ListField(child=serializers.CharField(), help_text='Catálogo, página y artículo de los vínculos por catálogo.')
+
+
+class PartCrossReference(serializers.Serializer):
+    brand = serializers.CharField()
+    code = serializers.CharField()
+    citations = serializers.ListField(child=serializers.CharField())
+    numbers = serializers.ListField(child=serializers.UUIDField(), help_text='Los números OEM del SKU que tienen esta equivalencia.')
+    on_sku = serializers.BooleanField(help_text='El SKU también guarda este código como alterno propio.')
+
+
+class PartOEMEquivalentsResponse(serializers.Serializer):
+    numbers = PartOEMNumber(many=True)
+    cross_references = PartCrossReference(many=True)
 
 
 class OEMReferenceCounts(serializers.Serializer):
@@ -162,13 +201,19 @@ def rows_query():
             .prefetch_related(Prefetch('sources', queryset=OEMReferenceSource.objects.select_related('created_by').order_by('created_at', 'id'))))
 
 
-def decorate(refs):
-    """Source summary and linked SKUs for a page of references: two catalog queries for the whole page, none per row."""
+def decorate(refs, *, all_cross_references=False):
+    """Source summary, linked SKUs and aftermarket codes for a page of references: four queries for the whole page, none per row."""
     linked = orf.linked_parts(refs)
+    codes = {ref.pk: [] for ref in refs}
+    for row in OEMCrossReference.objects.filter(reference_id__in=list(codes)).order_by('brand', 'number', 'pk'):
+        codes[row.reference_id].append(row)
     for ref in refs:
         sources = list(ref.sources.all())
         ref.source_count, ref.source_kinds = len(sources), dict(Counter(source.kind for source in sources))
         ref.linked_skus, ref.linked_count = linked[ref.pk][:orf.LINKED_LIMIT], len(linked[ref.pk])
+        ref.cross_reference_count, ref.cross_reference_preview = len(codes[ref.pk]), codes[ref.pk][:CROSS_PREVIEW]
+        if all_cross_references:
+            ref.cross_reference_rows = codes[ref.pk]
     return refs
 
 
@@ -176,7 +221,7 @@ def detail(pk):
     ref = rows_query().prefetch_related('supersedes').filter(pk=pk).first()
     if ref is None:
         raise NotFound('Ese número no está en la biblioteca OEM.')
-    return OEMReferenceDetail(decorate([ref])[0]).data
+    return OEMReferenceDetail(decorate([ref], all_cross_references=True)[0]).data
 
 
 def save(ref, user, **fields):
@@ -376,3 +421,17 @@ class OEMReferenceItem(APIView):
                     return Response({'detail': CONFLICT, 'reference': detail(ref.pk)}, status=409)
                 apply()
         return Response(detail(ref.pk))
+
+
+class PartOEMEquivalents(APIView):
+    permission_classes = [IsSuperuser]
+
+    @extend_schema(operation_id='v1_management_catalog_oem_equivalents', responses=PartOEMEquivalentsResponse,
+                   description='Solo lectura: los números OEM de un SKU del catálogo (sus alternos OEM, el número que nombra su código y los que un '
+                               'catálogo de marca de repuesto le vinculó) y los códigos de marcas de repuesto equivalentes a esos números.')
+    def get(self, request, pk):
+        require_tables()
+        part = Part.objects.filter(pk=pk).first()
+        if part is None:
+            raise NotFound('Ese SKU no está en el catálogo.')
+        return Response(PartOEMEquivalentsResponse(part_equivalents(part)).data)

@@ -11,6 +11,16 @@ when the item prints measurements, its subgrupo template gains those fields and 
 alternos only on SKUs already marked OEM: on any other SKU reconcile_identities would promote a sole sourced OEM alterno to MAIN
 outside the OEM finder's canary and review. Nothing is overwritten: a code owned by another SKU, a different stored measurement or
 another subgrupo is reported and left alone. Re-running a file changes nothing.
+
+The aftermarket codes an item prints (its own code and the competitor codes) are also filed under each of its OEM numbers as
+OEMCrossReference rows, whether or not a SKU carries the number, and every SKU linked to the item, duplicates included, is tied to
+those numbers (PartOEMLink, source catalog) when the makes agree. A number the catalog prints for two or more different parts (an
+inner and an outer joint of one drive shaft, a row the extract misread) says nothing about which part replaces it: it files no codes
+and ties no SKU, and a SKU matched to an item only through such numbers is tied to none of the item's numbers. Variants of one part
+(GWT-116A and GWT-116AH) count as one. A drive-shaft assembly number listed for a CV component files nothing either. After an apply
+the name links of every SKU are refreshed (mall.oem_links), since new numbers may name existing SKUs. These rows are derived from the
+extracts and the importer only adds to them: after changing these rules, empty OEMCrossReference and the catalog links and re-run
+every extract.
 """
 import argparse
 import json
@@ -71,12 +81,16 @@ INTEGER_KEYS = {'holes', 'bolts', 'outer_splines', 'inner_splines', 'abs_teeth',
 BOOLEAN_KEYS = {'vented', 'wear_indicator', 'abs', 'with_abs', 'with_sensor'}
 YES, NO = {'YES', 'SI', 'SÍ', 'TRUE', 'Y', '+', 'X'}, {'NO', 'FALSE', 'N', '-'}
 SAMPLE = 40
-# Catalog manufacturers the OEM finder's make tokens do not name, mapped to the finder's canonical make.
-EXTRA_MAKES = {'SEAT': 'VAG', 'CUPRA': 'VAG', 'MINI': 'BMW', 'MERCURY': 'FORD', 'GM': 'CHEVROLET'}
 
 
 def compact(value):
     return re.sub(r'[^0-9A-Z]', '', (value or '').upper())
+
+
+def one_part(codes):
+    """The codes name one part: the shortest is a prefix of every other and the rest is at most three letters (GWT-116A, GWT-116AH)."""
+    keys = sorted({compact(code) for code in codes}, key=len)
+    return all(key.startswith(keys[0]) and re.fullmatch(r'[A-Z]{0,3}', key[len(keys[0]):]) for key in keys)
 
 
 def fold(text):
@@ -134,6 +148,19 @@ class CatalogImport:
         self.brand = self.catalog['brand'].strip().upper()
         self.report = {'catalog': self.catalog['key'], 'title': self.catalog['title'], 'items': len(self.items), 'counts': Counter(),
                        'reasons': Counter(), 'samples': defaultdict(list)}
+        self._oem_rows, self._shared, self.clean = None, None, {}
+
+    def shared_numbers(self):
+        """Compact OEM numbers this catalog prints for two or more of its parts that are not variants of one part."""
+        if self._shared is None:
+            parts = defaultdict(set)
+            for item in self.items:
+                if (item.get('brand_code') or '').strip():
+                    for o in item.get('oem', []):
+                        parts[compact(o['code'])].add(item['brand_code'])
+            self._shared = {number for number, codes in parts.items() if len(codes) > 1 and not one_part(codes)}
+            self.report['counts']['shared_numbers'] = len(self._shared)
+        return self._shared
 
     def note(self, bucket, value):
         if len(self.report['samples'][bucket]) < SAMPLE:
@@ -221,6 +248,8 @@ class CatalogImport:
                 links_by_part[pid].add(n)
                 links_by_item[n].add(pid)
                 keys_by_link[(pid, n)] = (oem_keys | brand_keys) & self.part_keys(pid)
+                # Matched through the item's own codes or a number only this part of the catalog prints: the item's numbers are the SKU's.
+                self.clean[(pid, n)] = bool(keys_by_link[(pid, n)] & (brand_keys | (oem_keys - self.shared_numbers())))
                 if found:
                     self.targets[(pid, n)] = found
                 rc[f'link_{method}'] += 1
@@ -239,6 +268,11 @@ class CatalogImport:
             for n in sorted(items):
                 self.links.append((pid, n, len(links_by_item[n]) > 1))
         rc['linked_parts'] = len(self.links)
+        for pid, n, _ in self.links:
+            if not self.clean[(pid, n)]:
+                rc['matches_through_shared_numbers'] += 1
+                self.note('shared_number_matches', {'sku': self.finder.by_id[self.fid[str(pid)]]['sku'], 'item': self.items[n]['brand_code'],
+                                                    'numbers': sorted(keys_by_link[(pid, n)])})
         rc['items_linked'] = len({n for _, n, _ in self.links})
         rc['duplicate_part_items'] = sum(1 for n, pids in links_by_item.items() if len(pids) > 1)
         for n, pids in links_by_item.items():
@@ -253,18 +287,36 @@ class CatalogImport:
         own = set(MAKE_SYSTEMS.get(manufacturer, ([], []))[0])
         return any((h['system'], h.get('lexkey')) in ASSEMBLY_CLASSES for h in system_hits(code.strip().upper(), self.finder.table) if h['system'] in own)
 
+    def listed_assembly(self, item, oem):
+        """The OEM number is a drive-shaft assembly printed next to a CV component, not the component's own number."""
+        return (item['product_type'].startswith('cv_') and item['product_type'] != 'cv_axle'
+                and self.is_assembly(oem['manufacturer'].strip().upper(), oem['code']))
+
+    def aftermarket_codes(self, item):
+        """(brand, code, citation) the item prints as equivalents of its OEM numbers: the catalog's own code and the competitor codes."""
+        codes = []
+        if (item.get('brand_code') or '').strip():
+            codes.append((self.brand, item['brand_code'], citation(self.catalog, (item.get('pages') or [None])[0])))
+        for xr in item.get('cross_refs', []):
+            if xr.get('brand') and xr.get('code'):
+                codes.append((xr['brand'], xr['code'], citation(self.catalog, xr.get('page'))))
+        return codes
+
     def oem_rows(self):
+        if self._oem_rows is not None:
+            return self._oem_rows
         rows = {}
         for item in self.items:
             pt = TAXONOMY.get(item['product_type'])
+            codes = self.aftermarket_codes(item)
             for o in item.get('oem', []):
                 key = (o['manufacturer'].strip().upper(), compact(o['code']))
                 if not key[0] or not 1 <= len(key[1]) <= 60:
                     continue
-                assembly = item['product_type'].startswith('cv_') and item['product_type'] != 'cv_axle' and self.is_assembly(key[0], o['code'])
+                assembly = self.listed_assembly(item, o)
                 row = rows.setdefault(key, {'printed': set(), 'pages': set(), 'brand_codes': set(), 'product_types': set(), 'assembly': assembly,
                                             'description': 'SEMIEJE (EJE COMPLETO)' if assembly else item.get('name_es') or '',
-                                            'part_type': 'SEMIEJES' if assembly else pt[1] if pt else '', 'apps': []})
+                                            'part_type': 'SEMIEJES' if assembly else pt[1] if pt else '', 'apps': [], 'cross': {}})
                 row['printed'].add(o['code'].strip().upper())
                 row['pages'].add(o.get('page'))
                 if item.get('brand_code'):
@@ -274,6 +326,14 @@ class CatalogImport:
                     text = application_text(a)
                     if text and text not in row['apps'] and len(row['apps']) < 8:
                         row['apps'].append(text)
+                if assembly:  # the component's codes do not replace the whole drive shaft
+                    continue
+                if key[1] in self.shared_numbers():
+                    self.report['counts']['cross_reference_shared_skipped'] += len(codes)
+                    continue
+                for brand, code, cite in codes:
+                    row['cross'].setdefault((brand, code), set()).add(cite)
+        self._oem_rows = rows
         return rows
 
     def write_oem_table(self, apply):
@@ -296,6 +356,34 @@ class CatalogImport:
                                            'applications': '; '.join(row['apps'])})
             except ValueError as error:
                 self.report['reasons'][f'oem_invalid:{error}'] += 1
+
+    def library_ids(self, keys):
+        """{(manufacturer, compact code): reference id} of the numbers already in the library (manufacturers compared as stored)."""
+        from .oem_reference_models import OEMReference, manufacturer_name
+        from .oem_links import chunks
+        wanted, found = {(manufacturer_name(manufacturer), number): (manufacturer, number) for manufacturer, number in keys}, {}
+        for chunk in chunks(sorted({number for _, number in keys})):
+            for pk, manufacturer, number in OEMReference.objects.filter(code__in=chunk).values_list('pk', 'manufacturer', 'code'):
+                if (manufacturer, number) in wanted:
+                    found[wanted[(manufacturer, number)]] = pk
+        return found
+
+    def write_cross_references(self, apply):
+        """Every aftermarket code under each OEM number of its item, whether or not a SKU carries the number. A dry run counts the codes
+        of a number the library does not hold yet as new."""
+        from .oem_links import store_cross_references
+        rows, rc = self.oem_rows(), self.report['counts']
+        refs = self.library_ids(set(rows))
+        entries, pending = {}, set()
+        for key, row in rows.items():
+            for (brand, code), cites in row['cross'].items():
+                if key in refs:
+                    entries[(refs[key], brand, code)] = sorted(cites)
+                elif re.search(r'\d', compact(code)):
+                    pending.add((key, brand.strip().upper(), compact(code)))
+        counts = store_cross_references(entries, apply=apply)
+        rc['cross_reference_new'] = counts['new'] + len(pending)
+        rc['cross_reference_present'] = counts['present'] + counts['cited']
 
     # ------------------------------------------------------------------ alternos and technical sheets
     def owned_elsewhere(self, code, pid):
@@ -416,6 +504,7 @@ class CatalogImport:
     def write_links(self, apply):
         from django.db import transaction
         from .models import Part
+        self.catalog_links = defaultdict(set)  # (pid, (manufacturer, number)) -> citations, written by write_catalog_links
         for pid, n, duplicate in self.links:
             item = self.items[n]
             pages = item.get('pages') or [None]
@@ -425,6 +514,7 @@ class CatalogImport:
                 part = (Part.objects.select_for_update() if apply else Part.objects).get(pk=pid)
                 if not part.active or part.merged_into_id:
                     continue
+                self.link_numbers(pid, n, item, cite)
                 if not duplicate:  # a code has one owner: duplicate SKUs of one item need Agrupar SKU first
                     self.add_code(pid, item['brand_code'], self.brand, 'company', cite, apply, 'brand_code')
                     for xr in item.get('cross_refs', []):
@@ -437,17 +527,39 @@ class CatalogImport:
                                 self.add_code(pid, o['code'], o['manufacturer'], 'oem', citation(self.catalog, o.get('page')), apply, 'oem_alterno')
                 self.sheet(part, item, apply, self.targets.get((pid, n)))
 
+    def link_numbers(self, pid, n, item, cite):
+        """Tie the SKU to the OEM numbers its item prints, duplicates of one item included (the numbers have no single owner), when it
+        matched the item cleanly; never to a number the catalog prints for other parts too, one the SKU's makes rule out or an
+        assembly number listed for a component."""
+        if not self.clean.get((pid, n)):
+            return
+        groups = {g for g in map(self.make_group, self.finder.parsed[self.fid[str(pid)]]['makes']) if g}
+        for o in item.get('oem', []):
+            key = (o['manufacturer'].strip().upper(), compact(o['code']))
+            if not key[0] or not 1 <= len(key[1]) <= 60 or key[1] in self.shared_numbers() or self.listed_assembly(item, o):
+                continue
+            if not groups or self.make_group(o['manufacturer']) in groups:
+                self.catalog_links[(str(pid), key)].add(f"{cite} · {item['brand_code']}")
+
+    def write_catalog_links(self, apply):
+        from .oem_links import store_catalog_links
+        rc = self.report['counts']
+        refs = self.library_ids({key for _, key in self.catalog_links})
+        entries, pending = {}, 0
+        for (pid, key), cites in self.catalog_links.items():
+            if key in refs:
+                entries[(pid, refs[key])] = sorted(cites)
+            else:
+                pending += 1  # dry run: the number itself is new
+        counts = store_catalog_links(entries, apply=apply)
+        rc['catalog_link_new'] = counts['new'] + pending
+        rc['catalog_link_present'] = counts['present'] + counts['cited']
+
     @staticmethod
     def make_group(make):
-        """The OEM finder's make group for a catalog manufacturer or a SKU make, through the finder's own make tokens: VOLKSWAGEN,
-        AUDI and SEAT -> VAG, MERCEDES-BENZ -> MB, JEEP and DODGE -> MOPAR, CADILLAC -> GM. '' when there is no make evidence: the
-        finder lumps PEUGEOT, VOLVO, OPEL... together as OTHER, which says nothing about agreement."""
-        from .oem_finder import MAKE_GROUP, MAKE_TOKENS
-        make = (make or '').strip().upper()
-        tokens = [make, *re.split(r'[^0-9A-Z]+', make)]
-        canonical = next((MAKE_TOKENS.get(x) or EXTRA_MAKES.get(x) for x in tokens if x in MAKE_TOKENS or x in EXTRA_MAKES), make)
-        group = MAKE_GROUP.get(canonical, canonical)
-        return '' if group == 'OTHER' else group
+        """The OEM finder's make group for a catalog manufacturer or a SKU make (mall.oem_links.make_group)."""
+        from .oem_links import make_group
+        return make_group(make)
 
 
 def catalog_citations(datasets=()):
@@ -494,6 +606,7 @@ def build_indexes(finder, imported=()):
 def run(paths, *, apply=False, report_path=None, stdout=None):
     from .catalog_suffixes import suffix_table
     from .oem_finder import OEMFinder, load_snapshot, matching_lock
+    from .oem_links import refresh_name_links
     stdout = stdout or sys.stdout
     started = time.monotonic()
     datasets = [json.load(open(path, encoding='utf-8')) for path in paths]
@@ -506,7 +619,9 @@ def run(paths, *, apply=False, report_path=None, stdout=None):
             job = CatalogImport(data, finder, indexes)
             job.plan()
             job.write_oem_table(apply)
+            job.write_cross_references(apply)
             job.write_links(apply)
+            job.write_catalog_links(apply)
             report = job.report
             report['counts'] = dict(report['counts'])
             report['reasons'] = dict(report['reasons'])
@@ -518,18 +633,23 @@ def run(paths, *, apply=False, report_path=None, stdout=None):
                          f"alternos de marca {c.get('brand_code_new', 0)} (+{c.get('cross_ref_new', 0)} de competidores, "
                          f"{c.get('brand_code_conflict', 0) + c.get('cross_ref_conflict', 0)} en conflicto) · alternos OEM {c.get('oem_alterno_new', 0)} · "
                          f"subgrupos asignados {c.get('subgroups_assigned', 0)} · medidas {c.get('specs_new', 0)} "
-                         f"({c.get('specs_conflict', 0)} en conflicto)\n")
-        return reports
+                         f"({c.get('specs_conflict', 0)} en conflicto) · equivalencias de posventa {c.get('cross_reference_new', 0)} nuevas · "
+                         f"vínculos de SKU por catálogo {c.get('catalog_link_new', 0)} nuevos\n")
+        # New numbers may name SKUs that no catalog item matched (16100-79445-NPW -> TOYOTA 1610079445).
+        names = refresh_name_links(apply=apply)
+        stdout.write(f"{'Aplicado' if apply else 'Simulación'} · vínculos por nombre del SKU: {names['links']} "
+                     f"({names['new']} nuevos, {names['removed']} retirados)\n")
+        return reports, names
 
     if apply:
         with matching_lock() as acquired:
             if not acquired:
                 stdout.write('El análisis de coincidencias está en curso; vuelve a intentarlo cuando termine.\n')
                 return None
-            reports = execute()
+            reports, names = execute()
     else:
-        reports = execute()
-    result = {'mode': 'apply' if apply else 'dry_run', 'seconds': round(time.monotonic() - started, 1), 'catalogs': reports}
+        reports, names = execute()
+    result = {'mode': 'apply' if apply else 'dry_run', 'seconds': round(time.monotonic() - started, 1), 'catalogs': reports, 'name_links': names}
     if report_path:
         with open(report_path, 'w', encoding='utf-8') as handle:
             json.dump(result, handle, ensure_ascii=False, indent=1, default=str)

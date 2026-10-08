@@ -2042,3 +2042,17 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .admin-grid .admin-grid-text.strong { color:var(--ink); font-weight:600; }
 .admin-grid .oem-chips { flex-wrap:nowrap; overflow:hidden; }
 .admin-grid .oem-linked .oem-ref-sku { padding:3px 7px; border-radius:5px; background:#f0f4e9; color:#4f6342; font-size:11px; font-weight:600; }
+
+/* Alternos step 2a: aftermarket codes filed under the OEM number, read-only in the SKU editor and in Biblioteca OEM */
+.part-oem-equivalents { display:grid; gap:10px; background:#fbfcf8; }
+.part-oem-equivalents>h3 { display:flex; align-items:center; gap:8px; margin:0; font-size:12px; color:#667c54; font-weight:600; }
+.part-oem-equivalents>h3 small { padding:2px 6px; border-radius:4px; background:#eef2e6; color:#6f8160; font-size:9px; letter-spacing:.4px; }
+.part-oem-equivalents>p { margin:0; font-size:11px; line-height:1.7; color:#8b9b7b; }
+.part-oem-numbers,.part-oem-codes { margin:0; padding:0; list-style:none; }
+.part-oem-numbers { display:grid; gap:6px; }
+.part-oem-numbers li { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 10px; font-size:12px; color:#405238; }
+.part-oem-numbers span { font-size:10px; color:#6f7f62; }
+.part-oem-codes { display:flex; flex-wrap:wrap; gap:6px; }
+.part-oem-codes li { display:inline-flex; align-items:center; gap:6px; padding:4px 8px; border-radius:6px; background:#f1efe6; color:#6f6545; font-size:11px; font-weight:600; cursor:help; }
+.part-oem-codes li small { font-size:9px; font-weight:500; color:#8a8064; }
+.oem-ref-cross li span { overflow-wrap:anywhere; }

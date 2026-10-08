@@ -5,6 +5,7 @@ import { LoaderCircle, Plus, Trash2 } from 'lucide-react';
 import Modal from './modal';
 import PartTypePicker from './part-type-picker';
 import OEMReferenceLookup from './oem-reference-lookup';
+import PartOEMEquivalentsSection from './part-oem-equivalents';
 import { UppercaseInput, UppercaseTextarea } from './uppercase-field';
 import { PartReference, ManagedAlternate, ManagedPart, ManagedStockItem, Page, request } from '@/lib/types';
 
@@ -56,6 +57,7 @@ export function PartEditor({ part, onClose, onSaved }: { part: ManagedPart | nul
       <button type="button" className="button soft small" onClick={() => setCodes(rows => [...rows, { key: nextKey.current++, brand: '', code: '', ref_type: 'unknown', reference_source: '' }])}><Plus size={15}/>Agregar código</button>
       <p>Registra equivalencias verificadas. Una aplicación parecida, una variante o un kit no bastan para considerarlas la misma pieza.</p>
     </fieldset>
+    {part && <PartOEMEquivalentsSection partId={part.id}/>}
     <label className="admin-checkbox"><input name="active" type="checkbox" defaultChecked={part?.active ?? true}/>SKU activo</label><p className="form-footnote">El SKU agrupa repuestos idénticos de distintas marcas y proveedores. Las existencias se conservan por artículo del proveedor.</p>
     <FormError error={error}/><SaveButton busy={busy}>Guardar SKU</SaveButton>
   </form></Modal>;

@@ -25,3 +25,8 @@ class MallConfig(AppConfig):
         pre_save.connect(partcode_pre_save, sender=PartCode, dispatch_uid='oem_reference_pre_save')
         post_save.connect(partcode_saved, sender=PartCode, dispatch_uid='oem_reference_save')
         post_delete.connect(partcode_deleted, sender=PartCode, dispatch_uid='oem_reference_delete')
+
+        # A renamed, created or grouped SKU refreshes the link to the OEM number its own code names; never breaks the Part write.
+        from .oem_links import part_pre_save, part_saved
+        pre_save.connect(part_pre_save, sender=Part, dispatch_uid='oem_links_pre_save')
+        post_save.connect(part_saved, sender=Part, dispatch_uid='oem_links_save')

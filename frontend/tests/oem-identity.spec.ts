@@ -9,6 +9,7 @@ for (const width of [1440, 390]) {
   let payload:any;
   await page.route(/\/api\/management\/catalog(?:\?.*)?$/,route=>route.fulfill({json:{count:1,results:[part]}}));
   await page.route('**/api/management/catalog/import/issues?**',route=>route.fulfill({json:{count:0,pending_count:0,results:[]}}));
+  await page.route(`**/api/management/catalog/${part.id}/oem-equivalents`,route=>route.fulfill({json:{numbers:[],cross_references:[]}}));
   await page.route(`**/api/management/catalog/${part.id}/oem-lookup`,route=>route.fulfill({json:{cached:true,metrics:{total_tokens:0},note:'REVISAR FUENTES',sources:[{url:'https://example.com/catalog',title:'CATÁLOGO'}],search_suggestions:'',references:[{code:'43460-TEST',brand:'TOYOTA',ref_type:'oem',relationship:'equivalent',source_url:'https://example.com/catalog',reference_source:'https://example.com/catalog',reason:'PIEZA INDIVIDUAL'},{code:'43410-ASSEMBLY',brand:'TOYOTA',ref_type:'oem',relationship:'component',source_url:'https://example.com/assembly',reference_source:'https://example.com/assembly',reason:'CONJUNTO COMPLETO'}]}}));
   await page.route(`**/api/management/catalog/${part.id}`,route=>{payload=route.request().postDataJSON();return route.fulfill({json:{...part,...payload,sku:'43460-TEST'}});});
   await page.goto('/administracion?seccion=inventario');
@@ -51,6 +52,7 @@ for (const width of [1440, 390]) {
     return route.fulfill({json:{count:show?1:0,results:show?[part]:[]}});
   });
   await page.route('**/api/management/catalog/import/issues?**',route=>route.fulfill({json:{count:0,pending_count:0,results:[]}}));
+  await page.route(`**/api/management/catalog/${part.id}/oem-equivalents`,route=>route.fulfill({json:{numbers:[],cross_references:[]}}));
   await page.route(`**/api/management/catalog/${part.id}`,route=>{
     payload=route.request().postDataJSON();part={...part,...payload};return route.fulfill({json:part});
   });

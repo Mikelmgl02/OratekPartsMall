@@ -400,7 +400,7 @@ class APITests(Fresh, APITestCase):
             PartCode.objects.create(part=Part.objects.create(sku=f'ALT-{n}'), code=f'90385T{n:04d}', brand='', ref_type='unknown')
         many, data = listing()
         self.assertEqual(few, many)
-        self.assertLessEqual(many, 10)
+        self.assertLessEqual(many, 11)  # page-level only: linked SKUs (3 queries) and aftermarket codes (1) for the whole page
         row = next(r for r in data['results'] if r['code'] == '90385T0007')
         self.assertEqual(sorted((s['sku'], s['via'], s['code']) for s in row['linked_skus']), [('90385-T0007', 'sku', '90385-T0007'), ('ALT-7', 'unknown', '90385T0007')])
         other = Part.objects.create(sku='OTRO-1')

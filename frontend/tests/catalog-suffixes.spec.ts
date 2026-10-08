@@ -33,6 +33,7 @@ async function fixture(page: Page, { parts = [] as ManagedPart[], company = { su
   await page.route(/\/api\/management\/(roles|catalog\/import\/issues|part-types)(?:\?.*)?$/, route => route.fulfill({ json: route.request().url().includes('/roles') ? [] : empty }));
   await page.route(/\/api\/management\/catalog(?:\?.*)?$/, route => route.fulfill({ json: { ...empty, count: parts.length, results: parts } }));
   await page.route('**/api/management/catalog/company-suffixes', route => route.fulfill({ json: company }));
+  await page.route(/\/api\/management\/catalog\/[0-9a-f-]{36}\/oem-equivalents$/, route => route.fulfill({ json: { numbers: [], cross_references: [] } }));
   await page.route(/\/api\/management\/catalog\/suffixes(?:\?.*)?$/, route => {
     const params = new URL(route.request().url()).searchParams;
     lists.push(params);
