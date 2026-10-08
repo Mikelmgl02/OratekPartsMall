@@ -68,8 +68,8 @@ test('suppliers edit and paste private prices, save them with expected revisions
   await expect(page.getByRole('tab', { name: 'Precios', exact: true })).toHaveAttribute('aria-selected', 'true');
   const section = page.getByRole('region', { name: 'Precios del proveedor', exact: true });
   await expect(section.getByRole('note')).toContainText('Estos precios son privados: nunca se muestran en el catálogo');
-  await expect(section.locator('.price-list-table tbody tr').first()).toContainText('GENERAL');
-  await expect(section.locator('.price-list-table tbody tr').first()).toContainText('Predeterminada');
+  await expect(section.locator('.price-list-table .ag-center-cols-container [role="row"]').first()).toContainText('GENERAL');
+  await expect(section.locator('.price-list-table .ag-center-cols-container [role="row"]').first()).toContainText('Predeterminada');
   await expect(cell(page, itemA, 'price:GENERAL')).toContainText('15.00');
   await expect(cell(page, itemB, 'price:GENERAL')).toHaveText('Sin precio');
   await type(page, itemA, 'price:MAYORISTA', '13,5');

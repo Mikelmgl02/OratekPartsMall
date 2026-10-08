@@ -1,5 +1,9 @@
 'use client';
-import { useCallback, useEffect, useId, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
+import type { ColDef } from 'ag-grid-community';
+import type { CustomCellRendererProps } from 'ag-grid-react';
+import ClientGrid from './client-grid';
+import ServerGrid from './server-grid';
 import dynamic from 'next/dynamic';
 import { Calculator, Download, FileSpreadsheet, History, ListPlus, LoaderCircle, LockKeyhole, Pencil, RefreshCw, Scale, Search, SlidersHorizontal, Star, Tags, Upload, Users, X } from 'lucide-react';
 import Modal from './modal';
@@ -28,6 +32,30 @@ function initialView(): { tab: PricingTab; client: string | null } {
   return { tab: match ? match[0] : 'lists', client: match?.[0] === 'clients' && client && uuid.test(client) ? client : null };
 }
 const failure = (error: unknown, fallback: string) => error instanceof TypeError ? 'Se perdió la conexión. Inténtalo de nuevo.' : error instanceof Error ? error.message : fallback;
+
+type ListCell = CustomCellRendererProps<PriceList, unknown, { edit: (list: PriceList) => void }>;
+const rightCell = ['ag-right-aligned-cell'];
+function listColumns(canConfigure: boolean): ColDef<PriceList>[] {
+  return [
+    { colId: 'code', headerName: 'Código', width: 150, cellRenderer: ({ data }: ListCell) => data ? <div className="admin-grid-stack"><strong>{data.code}</strong>{!data.active && <small>Archivada</small>}</div> : null },
+    { colId: 'name', headerName: 'Nombre', field: 'name', flex: 1, minWidth: 180, cellClass: 'admin-grid-text strong' },
+    { colId: 'currency', headerName: 'Moneda', field: 'currency', width: 100, cellClass: 'admin-grid-text' },
+    { colId: 'default', headerName: 'Predeterminada', width: 160, cellRenderer: ({ data }: ListCell) => data ? data.is_default ? <span className="price-list-default"><Star size={13}/>Predeterminada</span> : <span className="admin-grid-muted">—</span> : null },
+    { colId: 'priced', headerName: 'Artículos con precio', field: 'priced_count', valueFormatter: ({ value }) => Number(value ?? 0).toLocaleString('es-PA'), width: 195, type: 'rightAligned', cellClass: rightCell },
+    { colId: 'missing', headerName: 'Sin precio', field: 'missing_count', valueFormatter: ({ value }) => Number(value ?? 0).toLocaleString('es-PA'), width: 120, type: 'rightAligned', cellClass: rightCell },
+    { colId: 'updated', headerName: 'Actualizada', valueGetter: ({ data }) => data ? date(data.updated_at) : '', width: 180, cellClass: 'admin-grid-text muted' },
+    ...(canConfigure ? [{ colId: 'edit', headerName: '', width: 70, sortable: false, resizable: false, suppressHeaderMenuButton: true,
+      cellRenderer: ({ data, context }: ListCell) => data ? <button type="button" className="icon-button" aria-label={`Editar lista ${data.code}`} onClick={() => context.edit(data)}><Pencil size={16}/></button> : null } as ColDef<PriceList>] : []),
+  ];
+}
+const historyColumns: ColDef<PricingAuditEntry>[] = [
+  { colId: 'date', headerName: 'Fecha', valueGetter: ({ data }) => data ? date(data.created_at) : '', width: 180, cellClass: 'admin-grid-text muted' },
+  { colId: 'kind', headerName: 'Tipo', valueGetter: ({ data }) => data ? kindLabels[data.kind] || data.kind : '', width: 210, cellClass: 'admin-grid-text strong' },
+  { colId: 'detail', headerName: 'Detalle', valueGetter: ({ data }) => data ? auditDetail(data) : '', flex: 1, minWidth: 240, cellClass: 'admin-grid-text', tooltipValueGetter: ({ data }) => data ? auditDetail(data) : '' },
+  { colId: 'actor', headerName: 'Usuario', valueGetter: ({ data }) => data?.actor.name ?? '', width: 170, cellClass: 'admin-grid-text' },
+  { colId: 'order', headerName: 'Orden', valueGetter: ({ data }) => data?.order?.reference ?? '—', width: 150, cellClass: 'admin-grid-text' },
+  { colId: 'client', headerName: 'Cliente', valueGetter: ({ data }) => data?.client?.name ?? '—', width: 180, cellClass: 'admin-grid-text' },
+];
 
 // Supplier-only: the whole section reads the account's private pricing endpoints and never renders on client screens.
 export default function SupplierPricing({ account }: { account: Account }) {
@@ -81,10 +109,8 @@ export default function SupplierPricing({ account }: { account: Account }) {
       {!lists && !error ? <div className="loading"><LoaderCircle className="spin"/>Cargando tus listas de precios…</div> : lists && <>
         {!lists.can_configure && <p className="supplier-pricing-readonly">Pide a un administrador de tu cuenta que cambie esta configuración.</p>}
         {!lists.results.length ? <div className="empty-state compact"><Tags size={30}/><h3>Crea tu primera lista de precios.</h3><p>Será tu lista predeterminada: sus precios se sugieren automáticamente al preparar cada cotización.</p></div>
-          : <div className="table-scroll"><table className="price-list-table"><thead><tr><th>Código</th><th>Nombre</th><th>Moneda</th><th>Predeterminada</th><th>Artículos con precio</th><th>Sin precio</th><th>Actualizada</th>{lists.can_configure && <th><span className="sr-only">Acciones</span></th>}</tr></thead>
-            <tbody>{lists.results.map(list => <tr key={list.id} className={list.active ? '' : 'archived'}><td><strong>{list.code}</strong>{!list.active && <small>Archivada</small>}</td><td>{list.name}</td><td>{list.currency}</td>
-              <td>{list.is_default ? <span className="price-list-default"><Star size={13}/>Predeterminada</span> : '—'}</td><td className="number-cell">{list.priced_count}</td><td className="number-cell">{list.missing_count}</td><td>{date(list.updated_at)}</td>
-              {lists.can_configure && <td><button type="button" className="icon-button" aria-label={`Editar lista ${list.code}`} onClick={() => setEditing(list)}><Pencil size={16}/></button></td>}</tr>)}</tbody></table></div>}
+          : <ClientGrid<PriceList> label="Listas de precios" rows={lists.results} columns={listColumns(lists.can_configure)} rowId={list => list.id} rowHeight={54} maxRows={8}
+              className="price-list-table" context={{ edit: (list: PriceList) => setEditing(list) }} gridProps={{ getRowClass: ({ data }) => data && !data.active ? 'archived' : undefined }}/>}
         <PriceGrid account={account} lists={lists.results} canConfigure={lists.can_configure} reload={gridReload} onSaved={() => void load()}/>
       </>}
     </div>}
@@ -169,26 +195,14 @@ function auditDetail(entry: PricingAuditEntry) {
 function PricingHistory({ account }: { account: Account }) {
   const [search, setSearch] = useState('');
   const [applied, setApplied] = useState('');
-  const [page, setPage] = useState(1);
-  const [data, setData] = useState<Page<PricingAuditEntry> | null>(null);
-  const [error, setError] = useState('');
   const [revision, setRevision] = useState(0);
-  useEffect(() => { const timer = setTimeout(() => { if (search.trim() !== applied) { setApplied(search.trim()); setPage(1); } }, 350); return () => clearTimeout(timer); }, [search, applied]);
-  useEffect(() => {
-    let cancelled = false; setData(null); setError('');
-    const query = new URLSearchParams({ page: String(page), ...(applied ? { search: applied } : {}) });
-    request<Page<PricingAuditEntry>>(`/api/market/accounts/${account.id}/pricing/history?${query}`).then(value => { if (!cancelled) setData(value); })
-      .catch(caught => { if (!cancelled) setError(failure(caught, 'No se pudo cargar el historial.')); });
-    return () => { cancelled = true; };
-  }, [account.id, applied, page, revision]);
+  useEffect(() => { const timer = setTimeout(() => setApplied(search.trim()), 350); return () => clearTimeout(timer); }, [search]);
+  const params = useMemo(() => ({ search: applied }), [applied]);
   return <>
     <div className="supplier-pricing-heading"><div><h2>Historial</h2><p>Cambios de precios y listas, borradores y cotizaciones de tu cuenta. Solo lo ve tu equipo.</p></div>
       <button type="button" className="button soft small" onClick={() => setRevision(value => value + 1)}><RefreshCw size={15}/>Actualizar</button></div>
     <div className="supplier-requests-search price-grid-search"><Search size={18}/><input aria-label="Buscar en el historial" value={search} maxLength={200} placeholder="Orden, cliente, usuario o tipo…" autoComplete="off" onChange={event => setSearch(event.target.value)}/>{search && <button type="button" className="icon-button" aria-label="Limpiar búsqueda del historial" onClick={() => setSearch('')}><X size={16}/></button>}</div>
-    {error && <div className="notice error" role="alert">{error}</div>}
-    {!data && !error ? <div className="loading"><LoaderCircle className="spin"/>Cargando el historial…</div> : data && (!data.results.length ? <p className="empty-state compact">Todavía no hay cambios registrados.</p>
-      : <ol className="pricing-audit-list" aria-label="Historial de precios">{data.results.map(entry => <li key={entry.id}><div><strong>{kindLabels[entry.kind] || entry.kind}</strong><span>{auditDetail(entry)}</span></div>
-        <small>{date(entry.created_at)} · {entry.actor.name}{entry.order ? ` · Orden ${entry.order.reference}` : ''}{entry.client ? ` · ${entry.client.name}` : ''}</small></li>)}</ol>)}
-    {data && <div className="pagination"><span>{data.count} {data.count === 1 ? 'registro' : 'registros'}</span><div><button type="button" className="button soft small" disabled={!data.previous} onClick={() => setPage(value => value - 1)}>Anterior</button><span>Página {page}</span><button type="button" className="button soft small" disabled={!data.next} onClick={() => setPage(value => value + 1)}>Siguiente</button></div></div>}
+    <ServerGrid<PricingAuditEntry> storageKey="supplier-pricing-history" label="Historial de precios" path={`/api/market/accounts/${account.id}/pricing/history`} params={params} columns={historyColumns}
+      rowId={entry => String(entry.id)} ordering={{}} revision={revision} rowHeight={54} empty={<p className="empty-state compact">{applied ? 'No hay cambios para esta búsqueda.' : 'Todavía no hay cambios registrados.'}</p>}/>
   </>;
 }

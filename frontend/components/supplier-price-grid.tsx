@@ -1,10 +1,10 @@
 'use client';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { History, LoaderCircle, RefreshCw, RotateCcw, Save, Search, X } from 'lucide-react';
-import { AgGridReact, type CustomCellRendererProps } from 'ag-grid-react';
-import type { ColDef, GetRowIdParams, ValueSetterParams } from 'ag-grid-community';
+import { type CustomCellRendererProps } from 'ag-grid-react';
+import ServerGrid from './server-grid';
+import type { ColDef, GridApi, ValueSetterParams } from 'ag-grid-community';
 import Modal from './modal';
-import { gridLocale, motionGridTheme } from '@/lib/ag-grid';
 import { decimal, moneyFormatter, priceCents } from '@/lib/money';
 import { Account, ApiError, Page, request } from '@/lib/types';
 import type { ItemPricingInput, PriceChangeInput, PriceHistoryEntry, PriceList, PriceRow, PriceWriteConflict, PriceWriteResult } from '@/lib/pricing-types';
@@ -13,7 +13,6 @@ type Status = '' | 'priced' | 'missing' | 'below_floor';
 // Cells are keyed discount_group, floor_price or price:<CODE>; edits keep what the supplier typed until it is saved.
 type Edits = Map<string, Record<string, string>>;
 const statuses: { value: Status; label: string }[] = [{ value: '', label: 'Todos' }, { value: 'priced', label: 'Con precio' }, { value: 'missing', label: 'Sin precio' }, { value: 'below_floor', label: 'Bajo el mínimo' }];
-const rowId = ({ data }: GetRowIdParams<PriceRow>) => data.supplier_item_id;
 const date = (value: string) => new Date(value).toLocaleString('es-PA', { timeZone: 'America/Panama', dateStyle: 'medium', timeStyle: 'short' });
 const failure = (error: unknown, fallback: string) => error instanceof TypeError ? 'Se perdió la conexión. Tus cambios siguen en pantalla; vuelve a guardarlos.' : error instanceof Error ? error.message : fallback;
 const BATCH = 500;
@@ -49,9 +48,8 @@ export default function SupplierPriceGrid({ account, lists, canConfigure, reload
   const [applied, setApplied] = useState('');
   const [status, setStatus] = useState<Status>('');
   const [filterList, setFilterList] = useState(fallbackList?.id || '');
-  const [page, setPage] = useState(1);
   const [revision, setRevision] = useState(0);
-  const [data, setData] = useState<Page<PriceRow> | null>(null);
+  const [count, setCount] = useState<number | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [saving, setSaving] = useState(false);
@@ -60,23 +58,15 @@ export default function SupplierPriceGrid({ account, lists, canConfigure, reload
   const base = useRef(new Map<string, PriceRow>());
   const edits = useRef<Edits>(new Map());
   const [, setEditRevision] = useState(0);
-  const grid = useRef<AgGridReact<PriceRow>>(null);
+  const grid = useRef<GridApi<PriceRow> | null>(null);
   const editable = canConfigure && !saving;
-  useEffect(() => { const timer = setTimeout(() => { if (search.trim() !== applied) { setApplied(search.trim()); setPage(1); } }, 350); return () => clearTimeout(timer); }, [search, applied]);
+  useEffect(() => { const timer = setTimeout(() => { if (search.trim() !== applied) setApplied(search.trim()); }, 350); return () => clearTimeout(timer); }, [search, applied]);
   useEffect(() => { if (!active.some(list => list.id === filterList)) setFilterList(fallbackList?.id || ''); }, [active, filterList, fallbackList]);
-  useEffect(() => {
-    let cancelled = false; setError('');
-    const query = new URLSearchParams({ page: String(page) });
-    if (applied) query.set('search', applied);
-    if (status) query.set('status', status);
-    if (status && filterList) query.set('list', filterList);
-    request<Page<PriceRow>>(`/api/market/accounts/${account.id}/prices?${query}`).then(value => {
-      if (cancelled) return;
-      for (const row of value.results) base.current.set(row.supplier_item_id, row);
-      setData(value);
-    }).catch(caught => { if (!cancelled) setError(failure(caught, 'No se pudieron cargar tus precios.')); });
-    return () => { cancelled = true; };
-  }, [account.id, applied, status, filterList, page, revision, reload]);
+  // The grid loads 100 rows per block (the prices page size); every row seen keeps its last server values for the edits.
+  const params = useMemo(() => ({ search: applied, status, list: status && filterList ? filterList : '' }), [applied, status, filterList]);
+  const firstReload = useRef(reload);
+  useEffect(() => { if (reload !== firstReload.current) { firstReload.current = reload; setRevision(value => value + 1); } }, [reload]);
+  const remember = useCallback((page: Page<PriceRow>) => { for (const row of page.results) base.current.set(row.supplier_item_id, row); }, []);
   const pending = [...edits.current.values()].reduce((sum, edit) => sum + Object.keys(edit).length, 0);
   const wrong = [...edits.current.values()].reduce((sum, edit) => sum + Object.entries(edit).filter(([key, value]) => invalid(key, value)).length, 0);
   useEffect(() => {
@@ -85,7 +75,7 @@ export default function SupplierPriceGrid({ account, lists, canConfigure, reload
     window.addEventListener('beforeunload', warn);
     return () => window.removeEventListener('beforeunload', warn);
   }, [pending]);
-  const refresh = () => { setEditRevision(value => value + 1); grid.current?.api?.refreshCells({ force: true }); };
+  const refresh = () => { setEditRevision(value => value + 1); grid.current?.refreshCells({ force: true }); };
   const cell = useCallback((row: PriceRow | undefined, key: string) => {
     const edit = row && edits.current.get(row.supplier_item_id);
     return edit && key in edit ? edit[key] : serverValue(row && base.current.get(row.supplier_item_id) || row, key);
@@ -132,10 +122,11 @@ export default function SupplierPriceGrid({ account, lists, canConfigure, reload
   const defaultColumn = useMemo<ColDef<PriceRow>>(() => ({ sortable: false, resizable: true, cellDataType: false, wrapHeaderText: true, autoHeaderHeight: true }), []);
   function adopt(rows: PriceRow[]) {
     for (const row of rows) base.current.set(row.supplier_item_id, row);
-    setData(value => value && { ...value, results: value.results.map(row => base.current.get(row.supplier_item_id) || row) });
+    // Only rows already loaded change in place; the others arrive fresh when scrolled to.
+    grid.current?.applyServerSideTransaction({ update: rows });
   }
   async function save() {
-    grid.current?.api?.stopEditing();
+    grid.current?.stopEditing();
     if (!pending || wrong || saving) return;
     const byCode = Object.fromEntries(lists.map(list => [list.code, list]));
     // One request per batch of up to 500 prices and 500 items; each is all-or-nothing on the server.
@@ -185,30 +176,26 @@ export default function SupplierPriceGrid({ account, lists, canConfigure, reload
     finally { setSaving(false); refresh(); if (saved) onSaved(); }
   }
   function discard() { edits.current.clear(); setNotice(''); setError(''); refresh(); }
-  const rows = data?.results || [];
   return <div className="price-grid-panel" aria-label="Precios por artículo" role="region">
     <div className="panel-heading"><div><h3>Precios por artículo</h3><p>{canConfigure ? 'Selecciona una celda y escribe, o pega un rango copiado de Excel · Una celda vacía quita el precio' : 'Solo lectura'}</p></div>
       <button type="button" className="button text" onClick={() => setRevision(value => value + 1)}><RefreshCw size={15}/>Actualizar</button></div>
     <div className="price-grid-controls">
       <div className="supplier-requests-search price-grid-search"><Search size={18}/><input aria-label="Buscar artículos" value={search} maxLength={200} placeholder="Código, ID, marca o línea…" autoComplete="off" onChange={event => setSearch(event.target.value)}/>{search && <button type="button" className="icon-button" aria-label="Limpiar búsqueda de artículos" onClick={() => setSearch('')}><X size={16}/></button>}</div>
-      <div className="supplier-request-filters" role="group" aria-label="Filtrar precios">{statuses.map(item => <button type="button" key={item.value} aria-pressed={status === item.value} className={status === item.value ? 'selected' : ''} onClick={() => { setStatus(item.value); setPage(1); }}>{item.label}</button>)}</div>
-      {active.length > 1 && status && <label className="price-grid-list">Lista<select value={filterList} onChange={event => { setFilterList(event.target.value); setPage(1); }}>{active.map(list => <option key={list.id} value={list.id}>{list.code}</option>)}</select></label>}
+      <div className="supplier-request-filters" role="group" aria-label="Filtrar precios">{statuses.map(item => <button type="button" key={item.value} aria-pressed={status === item.value} className={status === item.value ? 'selected' : ''} onClick={() => setStatus(item.value)}>{item.label}</button>)}</div>
+      {active.length > 1 && status && <label className="price-grid-list">Lista<select value={filterList} onChange={event => setFilterList(event.target.value)}>{active.map(list => <option key={list.id} value={list.id}>{list.code}</option>)}</select></label>}
     </div>
     {notice && <div className="notice success" role="status">{notice}</div>}
     {error && <div className="notice error" role="alert">{error}</div>}
-    {!data && !error ? <div className="loading"><LoaderCircle className="spin"/>Cargando tus precios…</div> : <>
-      {!rows.length ? <p className="empty-state compact">{applied || status ? 'No hay artículos para estos filtros.' : 'Tu inventario todavía no tiene artículos. Carga primero sus existencias.'}</p>
-        : <div className="quotation-grid price-grid" style={{ height: Math.min(620, rows.length * 56 + 64) }}>
-          <AgGridReact<PriceRow> ref={grid} theme={motionGridTheme} localeText={gridLocale} rowData={rows} columnDefs={columns} defaultColDef={defaultColumn} getRowId={rowId}
-            stopEditingWhenCellsLoseFocus cellSelection={canConfigure} suppressClipboardPaste={!editable} ensureDomOrder suppressColumnVirtualisation enableBrowserTooltips loadThemeGoogleFonts={false}/>
-        </div>}
-      {canConfigure && <div className="price-grid-actions">
-        <span>{wrong ? 'Corrige las celdas marcadas para guardar.' : pending ? `${pending} ${pending === 1 ? 'cambio sin guardar' : 'cambios sin guardar'}` : 'Sin cambios pendientes'}</span>
-        <button type="button" className="button soft small" disabled={!pending || saving} onClick={discard}><RotateCcw size={14}/>Descartar</button>
-        <button type="button" className="button primary small" disabled={!pending || !!wrong || saving} onClick={() => void save()}>{saving ? <LoaderCircle size={14} className="spin"/> : <Save size={14}/>}Guardar cambios ({pending})</button>
-      </div>}
-      {data && <div className="pagination"><span>{data.count} {data.count === 1 ? 'artículo' : 'artículos'}</span><div><button type="button" className="button soft small" disabled={!data.previous} onClick={() => setPage(value => value - 1)}>Anterior</button><span>Página {page}</span><button type="button" className="button soft small" disabled={!data.next} onClick={() => setPage(value => value + 1)}>Siguiente</button></div></div>}
-    </>}
+    <ServerGrid<PriceRow> storageKey="supplier-prices" label="Tabla de precios" path={`/api/market/accounts/${account.id}/prices`} params={params} columns={columns}
+      rowId={row => row.supplier_item_id} ordering={{}} revision={revision} rowHeight={56} pageSize={100} onPage={remember} onCount={setCount} onReady={api => { grid.current = api; }}
+      className="price-grid" gridProps={{ defaultColDef: defaultColumn, stopEditingWhenCellsLoseFocus: true, cellSelection: canConfigure, suppressClipboardPaste: !editable }}
+      empty={<p className="empty-state compact">{applied || status ? 'No hay artículos para estos filtros.' : 'Tu inventario todavía no tiene artículos. Carga primero sus existencias.'}</p>}/>
+    {canConfigure && <div className="price-grid-actions">
+      <span>{wrong ? 'Corrige las celdas marcadas para guardar.' : pending ? `${pending} ${pending === 1 ? 'cambio sin guardar' : 'cambios sin guardar'}` : 'Sin cambios pendientes'}</span>
+      {count !== null && <small className="price-grid-count">{count.toLocaleString('es-PA')} {count === 1 ? 'artículo' : 'artículos'}</small>}
+      <button type="button" className="button soft small" disabled={!pending || saving} onClick={discard}><RotateCcw size={14}/>Descartar</button>
+      <button type="button" className="button primary small" disabled={!pending || !!wrong || saving} onClick={() => void save()}>{saving ? <LoaderCircle size={14} className="spin"/> : <Save size={14}/>}Guardar cambios ({pending})</button>
+    </div>}
     {historyRow && <PriceHistory account={account} row={historyRow} lists={lists} onClose={() => setHistoryRow(null)}/>}
   </div>;
 }

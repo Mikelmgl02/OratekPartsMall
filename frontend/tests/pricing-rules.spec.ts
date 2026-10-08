@@ -86,7 +86,7 @@ test('a supplier configures a client private profile and its own discount from P
   await page.goto(`/?vista=proveedor&seccion=precios&cuenta=${supplierId}&pestana=clientes`);
   const section = page.getByRole('region', { name: 'Precios del proveedor', exact: true });
   await expect(section.getByRole('tab', { name: 'Clientes', exact: true })).toHaveAttribute('aria-selected', 'true');
-  const table = section.getByRole('table', { name: 'Clientes', exact: true });
+  const table = section.getByRole('region', { name: 'Clientes', exact: true });
   await expect(table.getByRole('row').nth(1)).toContainText('TALLER CENTRAL');
   await expect(table.getByRole('row').nth(1)).toContainText('Sin perfil comercial');
   await expect(table.getByRole('row').nth(1)).toContainText('GENERAL (predeterminada)');
@@ -120,12 +120,12 @@ test('a supplier configures a client private profile and its own discount from P
   await expect(form).toHaveCount(0);
   expect(ruleWrites).toEqual([{ operation_id: any, name: 'FILTROS TALLER', scope: 'client', client_id: clientId, target: 'line', target_value: 'FILTROS', item_id: null,
     kind: 'discount', value: '10.00', currency: '', min_quantity: 1, valid_from: null, valid_until: null, note: '' }]);
-  const ownRules = profileSection.getByRole('table', { name: 'Reglas de este cliente', exact: true });
+  const ownRules = profileSection.getByRole('region', { name: 'Reglas de este cliente', exact: true });
   await expect(ownRules.getByRole('row').nth(1)).toContainText('FILTROS TALLER');
   await expect(ownRules.getByRole('row').nth(1)).toContainText('Línea FILTROS');
   await expect(ownRules.getByRole('row').nth(1)).toContainText('Descuento 10 %');
   await profileSection.getByText('Reglas generales que también aplican (1)').click();
-  await expect(profileSection.getByRole('table', { name: 'Reglas generales', exact: true })).toContainText('PROMO KSM OCTUBRE');
+  await expect(profileSection.getByRole('region', { name: 'Reglas generales', exact: true })).toContainText('PROMO KSM OCTUBRE');
   await profileSection.getByRole('button', { name: 'Volver a clientes', exact: true }).click();
   await expect(table.getByRole('row').nth(1)).toContainText('C-00123');
   await expect(table.getByRole('row').nth(1)).toContainText('MAYORISTA');
@@ -201,7 +201,7 @@ test('rules: a net price for one item with its example, an edit that reloads on 
   const section = page.getByRole('region', { name: 'Precios del proveedor', exact: true });
   const panel = section.getByRole('tabpanel', { name: 'Reglas', exact: true });
   await expect(panel).toContainText('Gana la regla más específica: cliente › todos; artículo › línea › marca › todos; mayor cantidad mínima.');
-  const table = panel.getByRole('table', { name: 'Reglas comerciales', exact: true });
+  const table = panel.getByRole('region', { name: 'Reglas comerciales', exact: true });
   await expect(table.getByRole('row').nth(1)).toContainText('PROMO KSM OCTUBRE');
   await expect(table.getByRole('row').nth(1)).toContainText('Todos tus clientes');
   await expect(table.getByRole('row').nth(1)).toContainText('Vigente');

@@ -1,5 +1,8 @@
 'use client';
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
+import type { ColDef } from 'ag-grid-community';
+import type { CustomCellRendererProps } from 'ag-grid-react';
+import ClientGrid from './client-grid';
 import { Archive, ArchiveRestore, LoaderCircle, PackageSearch, Pencil, Plus, Scale, Search, X } from 'lucide-react';
 import Modal from './modal';
 import { UppercaseInput } from './uppercase-field';
@@ -26,26 +29,49 @@ export function ruleWindow(rule: Pick<PricingRule, 'valid_from' | 'valid_until'>
   return rule.valid_from ? `Desde el ${day(rule.valid_from)}` : rule.valid_until ? `Hasta el ${day(rule.valid_until)}` : 'Siempre';
 }
 
+type RuleActions = { canConfigure: boolean; busy: boolean; confirming: string | null; setConfirming: (id: string | null) => void;
+  onEdit?: (rule: PricingRule) => void; onArchive?: (rule: PricingRule) => void; onRestore?: (rule: PricingRule) => void };
+// Read by the action cells through React context, so the archive confirmation re-renders them.
+const RuleActionsContext = createContext<RuleActions | null>(null);
+type RuleCell = CustomCellRendererProps<PricingRule>;
+function RuleNameCell({ data }: RuleCell) {
+  return data ? <div className="admin-grid-stack"><strong>{data.name}</strong>{data.note && <small>{data.note}</small>}</div> : null;
+}
+function RuleTargetCell({ data }: RuleCell) {
+  return data ? <div className="admin-grid-stack"><strong>{ruleTarget(data)}</strong>{data.item && <small>{data.item.supplier_invent_id}{data.item.brand ? ` · ${data.item.brand}` : ''}</small>}</div> : null;
+}
+function RuleActionsCell({ data: rule }: RuleCell) {
+  const actions = useContext(RuleActionsContext);
+  if (!rule || !actions) return null;
+  const { busy, confirming, setConfirming, onEdit, onArchive, onRestore } = actions;
+  return <div className="pricing-rule-actions">{confirming === rule.id ? <span className="pricing-rule-confirm">¿Archivar?<button type="button" disabled={busy} onClick={() => { setConfirming(null); onArchive?.(rule); }}>Sí, archivar</button>
+    <button type="button" onClick={() => setConfirming(null)}>No</button></span> : <>
+    {rule.active && onEdit && <button type="button" className="icon-button" aria-label={`Editar regla ${rule.name}`} disabled={busy} onClick={() => onEdit(rule)}><Pencil size={15}/></button>}
+    {rule.active && onArchive && <button type="button" className="icon-button" aria-label={`Archivar regla ${rule.name}`} disabled={busy} onClick={() => setConfirming(rule.id)}><Archive size={15}/></button>}
+    {!rule.active && onRestore && <button type="button" className="icon-button" aria-label={`Reactivar regla ${rule.name}`} disabled={busy} onClick={() => onRestore(rule)}><ArchiveRestore size={15}/></button>}</>}</div>;
+}
+
 export function RuleTable({ rules, canConfigure, showClient = true, busy = false, onEdit, onArchive, onRestore, label }: {
   rules: PricingRule[]; canConfigure: boolean; showClient?: boolean; busy?: boolean; label: string;
   onEdit?: (rule: PricingRule) => void; onArchive?: (rule: PricingRule) => void; onRestore?: (rule: PricingRule) => void;
 }) {
   const [confirming, setConfirming] = useState<string | null>(null);
-  const actions = canConfigure && (onEdit || onArchive || onRestore);
-  return <div className="table-scroll"><table className="pricing-rule-table" aria-label={label}><thead><tr><th>Nombre</th>{showClient && <th>Aplica a</th>}<th>Artículos</th><th>Acción</th>
-    <th>Desde</th><th>Vigencia</th><th>Estado</th>{actions && <th><span className="sr-only">Acciones</span></th>}</tr></thead>
-    <tbody>{rules.map(rule => <tr key={rule.id} className={rule.active ? '' : 'archived'}>
-      <td><strong>{rule.name}</strong>{rule.note && <small>{rule.note}</small>}</td>
-      {showClient && <td>{rule.client ? rule.client.name : 'Todos tus clientes'}</td>}
-      <td>{ruleTarget(rule)}{rule.item && <small>{rule.item.supplier_invent_id}{rule.item.brand ? ` · ${rule.item.brand}` : ''}</small>}</td>
-      <td>{ruleAction(rule)}</td><td className="number-cell">{rule.min_quantity === 1 ? '1 unidad' : `${rule.min_quantity} unidades`}</td><td>{ruleWindow(rule)}</td>
-      <td><span className={`pricing-rule-state ${rule.validity}`}>{validityLabels[rule.validity]}</span></td>
-      {actions && <td className="pricing-rule-actions">{confirming === rule.id ? <span className="pricing-rule-confirm">¿Archivar?<button type="button" disabled={busy} onClick={() => { setConfirming(null); onArchive?.(rule); }}>Sí, archivar</button>
-        <button type="button" onClick={() => setConfirming(null)}>No</button></span> : <>
-        {rule.active && onEdit && <button type="button" className="icon-button" aria-label={`Editar regla ${rule.name}`} disabled={busy} onClick={() => onEdit(rule)}><Pencil size={15}/></button>}
-        {rule.active && onArchive && <button type="button" className="icon-button" aria-label={`Archivar regla ${rule.name}`} disabled={busy} onClick={() => setConfirming(rule.id)}><Archive size={15}/></button>}
-        {!rule.active && onRestore && <button type="button" className="icon-button" aria-label={`Reactivar regla ${rule.name}`} disabled={busy} onClick={() => onRestore(rule)}><ArchiveRestore size={15}/></button>}</>}</td>}
-    </tr>)}</tbody></table></div>;
+  const actions = canConfigure && Boolean(onEdit || onArchive || onRestore);
+  const columns = useMemo<ColDef<PricingRule>[]>(() => [
+    { colId: 'name', headerName: 'Nombre', flex: 1.2, minWidth: 190, cellRenderer: RuleNameCell },
+    ...(showClient ? [{ colId: 'client', headerName: 'Aplica a', valueGetter: ({ data }: { data?: PricingRule }) => data?.client ? data.client.name : 'Todos tus clientes', width: 180, cellClass: 'admin-grid-text' } as ColDef<PricingRule>] : []),
+    { colId: 'target', headerName: 'Artículos', flex: 1, minWidth: 170, cellRenderer: RuleTargetCell },
+    { colId: 'action', headerName: 'Acción', valueGetter: ({ data }) => data ? ruleAction(data) : '', width: 170, cellClass: 'admin-grid-text strong' },
+    { colId: 'min', headerName: 'Desde', valueGetter: ({ data }) => data ? data.min_quantity === 1 ? '1 unidad' : `${data.min_quantity} unidades` : '', width: 120, type: 'rightAligned', cellClass: ['ag-right-aligned-cell'] },
+    { colId: 'window', headerName: 'Vigencia', valueGetter: ({ data }) => data ? ruleWindow(data) : '', width: 190, cellClass: 'admin-grid-text muted' },
+    { colId: 'state', headerName: 'Estado', width: 130, cellRenderer: ({ data }: RuleCell) => data ? <span className={`pricing-rule-state ${data.validity}`}>{validityLabels[data.validity]}</span> : null },
+    ...(actions ? [{ colId: 'actions', headerName: '', width: 190, sortable: false, cellRenderer: RuleActionsCell, suppressHeaderMenuButton: true, resizable: false } as ColDef<PricingRule>] : []),
+  ], [showClient, actions]);
+  const value = useMemo<RuleActions>(() => ({ canConfigure, busy, confirming, setConfirming, onEdit, onArchive, onRestore }), [canConfigure, busy, confirming, onEdit, onArchive, onRestore]);
+  return <RuleActionsContext.Provider value={value}>
+    <ClientGrid<PricingRule> label={label} rows={rules} columns={columns} rowId={rule => rule.id} rowHeight={58} maxRows={10} className="pricing-rule-grid"
+      gridProps={{ getRowClass: ({ data }) => data && !data.active ? 'archived' : undefined }}/>
+  </RuleActionsContext.Provider>;
 }
 
 // Archive and reactivate share the compare-and-set of rule edits: a stale revision reloads the list instead of overwriting.

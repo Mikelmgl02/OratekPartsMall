@@ -151,7 +151,7 @@ test('suppliers review an ERP price file, confirm big changes and new lists, app
   await dialog.getByRole('button', { name: 'Cerrar', exact: true }).click();
   await expect(dialog).toHaveCount(0);
   await expect(section.getByRole('status').filter({ hasText: 'Importación de precios completada: 1500 nuevos, 1 actualizados y 0 eliminados. 1 filas pendientes' })).toBeVisible();
-  await expect(section.locator('.price-list-table tbody tr')).toHaveCount(2);
+  await expect(section.locator('.price-list-table .ag-center-cols-container [role="row"]')).toHaveCount(2);
   await expect(section.locator('.price-list-table')).toContainText('NIVEL_A');
   await expect.poll(() => gridReads.length).toBeGreaterThan(reads);
   await expect(section.locator(`.price-grid .ag-row[row-id="${itemA}"] .ag-cell[col-id="price:GENERAL"]`)).toContainText('16.00');
