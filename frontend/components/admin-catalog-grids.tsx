@@ -10,6 +10,7 @@ export type CatalogGridActions = {
   onEditPart: (part: ManagedPart) => void; onTechnical: (part: ManagedPart) => void; onImages: (part: ManagedPart) => void;
   onEditAlternate: (alternate: ManagedAlternate) => void; onRemoveAlternate: (alternate: ManagedAlternate) => void; onEditMatch: (item: ManagedStockItem) => void;
   onCodesChanged: (partId: string) => void; onSplit: (part: ManagedPart) => void; onMerge: (parts: ManagedPart[]) => void;
+  onMarkOEM: (parts: ManagedPart[], mode: 'mark' | 'unmark') => void;
 };
 // Codes pasted into the Alternos cell (comma, semicolon or line separated) wait here until the grid saves them one by one.
 export const pastedCodes = new WeakMap<ManagedPart, string[]>();
@@ -77,19 +78,25 @@ export function selectedParts(api: GridApi<ManagedPart>): ManagedPart[] {
   return [...rows.values()];
 }
 // Right click on a SKU: group it with others (the selected rows, when the click falls inside a selection of several) or split the
-// SKUs grouped into it; the grid's own items (copy, paste, export) follow.
+// SKUs grouped into it, mark it (or them) as OEM or take the mark off; the grid's own items (copy, paste, export) follow.
 const menuIcon = (name: string) => `<span class="ag-icon ag-icon-${name}" unselectable="on" role="presentation"></span>`;
 export function catalogContextMenu(params: GetContextMenuItemsParams<ManagedPart, CatalogGridActions>): (DefaultMenuItem | MenuItemDef<ManagedPart, CatalogGridActions>)[] {
   const part = params.node?.data, defaults = params.defaultItems ?? [];
   if (!part) return defaults;
   const chosen = selectedParts(params.api), many = chosen.length > 1 && chosen.some(row => row.id === part.id);
   const merged = part.merged_count ?? 0;
+  const targets = (many ? chosen : [part]).slice(0, 200), plain = targets.filter(row => !row.is_OEM), oems = targets.filter(row => row.is_OEM);
   return [
     many ? { name: `Agrupar ${chosen.length > MERGE_LIMIT ? `más de ${MERGE_LIMIT}` : chosen.length} SKU seleccionados…`, icon: menuIcon('linked'), disabled: chosen.length > MERGE_LIMIT,
              tooltip: chosen.length > MERGE_LIMIT ? `Selecciona hasta ${MERGE_LIMIT} SKU.` : undefined, action: () => params.context.onMerge(chosen) }
       : { name: `Agrupar ${part.sku} con…`, icon: menuIcon('linked'), action: () => params.context.onMerge([part]) },
     { name: merged ? `Separar SKU agrupados (${merged})` : 'Separar SKU agrupados', icon: menuIcon('unlinked'), disabled: !merged,
       tooltip: merged ? undefined : 'Este SKU no tiene SKU agrupados.', action: () => params.context.onSplit(part) },
+    'separator',
+    { name: plain.length > 1 ? `Marcar ${plain.length} SKU como OEM…` : 'Marcar como OEM…', icon: menuIcon('tick'), disabled: !plain.length,
+      tooltip: plain.length ? undefined : 'Ya es MAIN OEM.', action: () => params.context.onMarkOEM(plain, 'mark') },
+    ...(oems.length ? [{ name: oems.length > 1 ? `Quitar marca OEM a ${oems.length} SKU…` : 'Quitar marca OEM…', icon: menuIcon('cross'),
+      action: () => params.context.onMarkOEM(oems, 'unmark') }] : []),
     ...(defaults.length ? ['separator' as const, ...defaults] : []),
   ];
 }

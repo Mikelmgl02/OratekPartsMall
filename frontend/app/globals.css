@@ -2161,3 +2161,13 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .oem-status-editor>.button { justify-self:start; }
 /* Biblioteca OEM's side panel: the library stays in view behind it (dimmed, not blurred), rows and scroll exactly where they were */
 .modal.oem-drawer::backdrop { background:#14201a2e; backdrop-filter:none; }
+/* Marcar como OEM (the grid's right click): one card per SKU with the make of its number */
+.oem-mark-row { gap:8px; }
+.oem-mark-row .grouping-select span { font-weight:600; color:#405238; }
+.oem-mark-description { margin:0; color:#637455; font-size:11px; line-height:1.6; overflow-wrap:anywhere; }
+.oem-mark-make,.oem-mark-citation { display:flex; flex-direction:column; gap:6px; max-width:320px; color:#637455; font-size:11px; }
+.oem-mark-make input,.oem-mark-citation input { padding:9px 10px; border:1px solid var(--line); border-radius:7px; background:white; color:var(--ink); font-size:12px; }
+.oem-mark-citation { max-width:none; }
+.oem-mark-warning { color:#8a5a14; font-size:11px; line-height:1.5; }
+.oem-mark-blocked { color:#a05845; font-size:11px; font-weight:600; }
+.oem-mark-note { color:#5f7d3f; font-size:11px; font-weight:600; }

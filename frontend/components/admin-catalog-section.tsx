@@ -15,6 +15,7 @@ import ImportIssues from './admin-import-issues';
 import CatalogGrouping from './admin-catalog-grouping';
 import CatalogSplit from './admin-catalog-split';
 import CatalogMergeWith from './admin-catalog-merge';
+import CatalogMarkOEM, { OEMMarkMode } from './admin-catalog-oem-mark';
 import InventoryAssistant from './admin-inventory-assistant';
 import CatalogImages from './admin-catalog-images';
 import SmartMatching from './admin-smart-matching';
@@ -52,6 +53,7 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
   // Separar SKU: null opens its list, a SKU opens that SKU's split.
   const [splitTarget, setSplitTarget] = useState<{ id: string; sku: string } | null | undefined>();
   const [mergeParts, setMergeParts] = useState<ManagedPart[] | null>(null);  // Agrupar con…, from the grid's right click
+  const [oemMark, setOemMark] = useState<{ mode: OEMMarkMode; parts: ManagedPart[] } | null>(null);  // Marcar como OEM / Quitar marca OEM
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [pendingIssueCount, setPendingIssueCount] = useState<number | null>(null);
   const [notice, setNotice] = useState(''); const [revision, setRevision] = useState(0);
@@ -92,7 +94,7 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
     </div>}
     {notice && <div className="notice success admin-notice" role="status"><Check size={16}/>{notice}</div>}
     {kind === 'alternates' && reviewView ? <AlternateReview onCount={setReviewCount} onChanged={reviewChanged}/>
-      : <Collection onTechnical={setTechnicalPart} onImages={setImagePart} key={kind} kind={kind} revision={revision} onEditPart={setPartEditor} onEditAlternate={setAlternateEditor} onEditMatch={setMatchEditor} onRemoveAlternate={setRemoveAlternate} onSplit={setSplitTarget} onMerge={setMergeParts}/>}
+      : <Collection onTechnical={setTechnicalPart} onImages={setImagePart} key={kind} kind={kind} revision={revision} onEditPart={setPartEditor} onEditAlternate={setAlternateEditor} onEditMatch={setMatchEditor} onRemoveAlternate={setRemoveAlternate} onSplit={setSplitTarget} onMerge={setMergeParts} onMarkOEM={(parts, mode) => setOemMark({ parts, mode })}/>}
     <p className="admin-footnote">{kind === 'alternates' && reviewView ? 'Conservar marca el código como confirmado por ti y la limpieza de copias nunca lo retira. Retirar lo quita del SKU. Los clientes siguen viendo los códigos que llegan por número OEM.' : kind === 'alternates' ? 'Los alternos de un SKU también aparecen en su editor de inventario interno. Cada artículo del proveedor mantiene su propio inventario e historial.' : kind === 'catalog' ? 'El SKU maestro no tiene marca. Sus referencias identifican piezas equivalentes; los artículos del proveedor conservan sus propios códigos y existencias.' : 'Los registros conservan el ID de inventario de cada proveedor y su vínculo con el SKU interno.'}</p>
     {matchingOpen && <SmartMatching onClose={()=>setMatchingOpen(false)} onSaved={()=>saved('Coincidencias actualizadas.')} onOpenSuffixes={token => { setSuffixSearch(token); setSuffixesOpen(true); }} onOpenGrouping={family => { setGroupingFamily(family); setGroupingOpen(true); }}/>}
     {suffixesOpen && <CatalogSuffixes initialSearch={suffixSearch} onClose={()=>{ setSuffixesOpen(false); setSuffixSearch(''); setRevision(value => value + 1); }}/>}
@@ -104,6 +106,8 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
     {importOpen && <CatalogImport onClose={() => { setImportOpen(false); setRevision(value => value + 1); }} onSaved={summary => { setImportOpen(false); saved(`Importación completada: ${summary.created_skus} SKU nuevos, ${summary.updated_skus} SKU actualizados y ${summary.added_codes} alternos nuevos.${summary.rejected_rows ? ` ${summary.rejected_rows} ${summary.rejected_rows === 1 ? 'fila pendiente' : 'filas pendientes'} de corregir en «Errores de importación».` : summary.skipped_rows ? ` ${summary.skipped_rows} ${summary.skipped_rows === 1 ? 'fila excluida' : 'filas excluidas'}.` : ''}`); }}/>} 
     {issuesOpen && <ImportIssues onClose={() => { setIssuesOpen(false); setRevision(value => value + 1); }} onSaved={() => saved('Fila corregida y guardada en el inventario interno.')}/>}
     {splitTarget !== undefined && <CatalogSplit part={splitTarget} onClose={() => setSplitTarget(undefined)} onChanged={saved}/>}
+    {oemMark && <CatalogMarkOEM key={`${oemMark.mode}:${oemMark.parts.map(part => part.id).join()}`} mode={oemMark.mode} parts={oemMark.parts} onClose={() => setOemMark(null)}
+      onSaved={text => { setOemMark(null); saved(text); }}/>}
     {mergeParts && <CatalogMergeWith key={mergeParts.map(part => part.id).join()} parts={mergeParts} onClose={() => setMergeParts(null)} onSaved={text => { setMergeParts(null); saved(text); }}/>}
     {groupingOpen && <CatalogGrouping initialFamily={groupingFamily} onClose={() => { setGroupingOpen(false); setGroupingFamily(null); }} onSaved={(targetSku, count) => saved(`${count} ${count === 1 ? 'SKU agrupado' : 'SKU agrupados'} bajo ${targetSku}.`)}/>}
     {assistantOpen && <InventoryAssistant onClose={()=>setAssistantOpen(false)} onSaved={()=>saved('Clasificación de inventario actualizada desde el asistente IA.')}/>}
@@ -113,7 +117,7 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
   </section>;
 }
 
-function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditAlternate, onEditMatch, onRemoveAlternate, onSplit, onMerge }: { onTechnical: (part: ManagedPart) => void; onImages: (part: ManagedPart) => void; kind: Kind; revision: number; onEditPart: (part: ManagedPart) => void; onEditAlternate: (alternate: ManagedAlternate) => void; onEditMatch: (item: ManagedStockItem) => void; onRemoveAlternate: (alternate: ManagedAlternate) => void; onSplit: (part: { id: string; sku: string }) => void; onMerge: (parts: ManagedPart[]) => void }) {
+function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditAlternate, onEditMatch, onRemoveAlternate, onSplit, onMerge, onMarkOEM }: { onTechnical: (part: ManagedPart) => void; onImages: (part: ManagedPart) => void; kind: Kind; revision: number; onEditPart: (part: ManagedPart) => void; onEditAlternate: (alternate: ManagedAlternate) => void; onEditMatch: (item: ManagedStockItem) => void; onRemoveAlternate: (alternate: ManagedAlternate) => void; onSplit: (part: { id: string; sku: string }) => void; onMerge: (parts: ManagedPart[]) => void; onMarkOEM: (parts: ManagedPart[], mode: OEMMarkMode) => void }) {
   const [oemFilter, setOemFilter] = useState('');
   const [search, setSearch] = useState(''); const [query, setQuery] = useState('');
   const [count, setCount] = useState<number | null>(null);
@@ -140,8 +144,8 @@ function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditA
   }, [editing, subgroups, setCellStatus]);
   const onCodesChanged = useCallback((partId: string) => { refreshRows([partId]).catch(error => setCellStatus({ kind: 'error', text: errorText(error) })); }, [refreshRows, setCellStatus]);
   const actions = useMemo<CatalogGridActions>(() => ({ onEditPart, onTechnical, onImages, onEditAlternate, onRemoveAlternate, onEditMatch, onCodesChanged,
-    onSplit: (part: ManagedPart) => onSplit({ id: part.id, sku: part.sku }), onMerge }),
-    [onEditPart, onTechnical, onImages, onEditAlternate, onRemoveAlternate, onEditMatch, onCodesChanged, onSplit, onMerge]);
+    onSplit: (part: ManagedPart) => onSplit({ id: part.id, sku: part.sku }), onMerge, onMarkOEM }),
+    [onEditPart, onTechnical, onImages, onEditAlternate, onRemoveAlternate, onEditMatch, onCodesChanged, onSplit, onMerge, onMarkOEM]);
   const params = useMemo(() => ({ search: query, is_OEM: kind === 'catalog' ? oemFilter : '' }), [query, oemFilter, kind]);
   const edit = useMemo(() => editing && subgroups ? { subgroups, isSaving } : null, [editing, subgroups, isSaving]);
   const partColumns = useMemo(() => catalogColumns(wide, edit), [wide, edit]);
