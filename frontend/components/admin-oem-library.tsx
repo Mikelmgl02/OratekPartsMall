@@ -72,7 +72,7 @@ function LinkedCell({ data }: Cell) {
 function CrossCell({ data }: Cell) {
   if (!data) return null;
   const hidden = data.cross_reference_count - data.cross_reference_preview.length;
-  return data.cross_reference_count ? <div className="admin-grid-chips">{data.cross_reference_preview.map(code => <span key={code.id} className="company">{code.brand} {code.code}</span>)}{hidden > 0 && <span className="more">+{number(hidden)} MÁS</span>}</div> : <span className="admin-grid-muted">—</span>;
+  return data.cross_reference_count ? <div className="admin-grid-chips">{data.cross_reference_preview.map(code => <span key={code.id} className="company">{code.brand} {code.code}</span>)}{hidden > 0 && <span className="more">+{number(hidden)} MÁS</span>}</div> : <span className="admin-grid-muted">Sin alternos</span>;
 }
 function OpenCell({ data, context }: Cell) {
   return data ? <div className="admin-grid-actions"><button className="button soft small" aria-label={`Ver ${data.manufacturer} ${data.code}`} onClick={() => context.open(data.id)}>Ver detalle</button></div> : null;
@@ -82,11 +82,13 @@ function libraryColumns(wide: boolean): ColDef<OEMReference>[] {
   return [
     { colId: 'code', headerName: 'Número OEM', width: 210, minWidth: 160, pinned: wide ? 'left' : undefined, cellRenderer: CodeCell, tooltipValueGetter: ({ data }) => data?.printed_forms.join(' · ') },
     { colId: 'manufacturer', headerName: 'Fabricante', width: 150, cellRenderer: MakerCell },
+    // The number's aftermarket alternos and the SKUs that carry it come first, where they show without scrolling on a laptop.
+    { colId: 'cross', headerName: 'Alternos', headerTooltip: 'Códigos de posventa que los catálogos de marca de repuesto imprimen para este número', flex: 1, minWidth: 230,
+      cellRenderer: CrossCell, tooltipValueGetter: ({ data }) => data?.cross_reference_preview.map(code => `${code.brand} ${code.code}`).join(' · ') },
+    { colId: 'linked', headerName: 'SKU vinculados', flex: 1, minWidth: 200, cellRenderer: LinkedCell, tooltipValueGetter: ({ data }) => data?.linked_skus.map(sku => sku.sku).join(' · ') },
     { colId: 'family', headerName: 'Familia / tipo de pieza', flex: 1, minWidth: 190, cellRenderer: FamilyCell, tooltipValueGetter: ({ data }) => data?.description },
     { colId: 'status', headerName: 'Estado', width: 130, cellRenderer: ({ data }: Cell) => data ? <Status status={data.status}/> : null },
     { colId: 'sources', headerName: 'Fuentes', flex: 1, minWidth: 220, cellRenderer: SourcesCell },
-    { colId: 'linked', headerName: 'SKU vinculados', flex: 1, minWidth: 220, cellRenderer: LinkedCell, tooltipValueGetter: ({ data }) => data?.linked_skus.map(sku => sku.sku).join(' · ') },
-    { colId: 'cross', headerName: 'Equivalencias de posventa', flex: 1, minWidth: 230, cellRenderer: CrossCell, tooltipValueGetter: ({ data }) => data?.cross_reference_preview.map(code => `${code.brand} ${code.code}`).join(' · ') },
     { colId: 'open', headerName: 'Acciones', width: 140, pinned: wide ? 'right' : undefined, cellRenderer: OpenCell, suppressHeaderMenuButton: true, resizable: false },
   ];
 }
@@ -124,10 +126,11 @@ export function OEMLibraryPanel() {
           <label>FUENTE<select aria-label="Fuente" value={sourceKind} onChange={e => filter(() => setSourceKind(e.target.value))}><option value="">TODAS</option>{(Object.keys(sourceKindLabels) as OEMSourceKind[]).map(key => <option key={key} value={key}>{sourceKindLabels[key]}</option>)}</select></label>
           <label>SKU VINCULADOS<select aria-label="SKU vinculados" value={linked} onChange={e => filter(() => setLinked(e.target.value))}><option value="">TODOS</option><option value="true">CON SKU</option><option value="false">SIN SKU</option></select></label>
         </div>
-        <ServerGrid<OEMReference> storageKey="admin-oem-library" label="Números OEM" path={base} params={params} columns={columns} rowId={row => row.id}
+        {/* A new storage key: a layout saved before Alternos moved forward would keep it off screen. */}
+        <ServerGrid<OEMReference> storageKey="admin-oem-library-2" label="Números OEM" path={base} params={params} columns={columns} rowId={row => row.id}
           ordering={libraryOrdering} revision={0} rowHeight={66} context={open} onPage={page => setCounts((page as OEMReferencePage).counts)} className="suffix-table-wrap oem-library-table"
           empty={<div className="empty-state"><Library size={30}/><h3>{filtered ? 'No hay números con estos filtros.' : 'La biblioteca OEM está vacía.'}</h3><p>{filtered ? 'Prueba con otra búsqueda o quita un filtro.' : 'Los alternos OEM del catálogo aparecen aquí solos; también puedes agregar un número con su fuente.'}</p></div>}/>
-        <p className="form-footnote">Los alternos OEM del catálogo (buscador OEM, Revisión OEM, editor de inventario y búsquedas con IA aprobadas) se reflejan aquí solos; al retirar el alterno se retira su fuente. Las equivalencias de posventa vienen de los catálogos de marca de repuesto y pertenecen al número: cada SKU vinculado las muestra.</p>
+        <p className="form-footnote">Los alternos OEM del catálogo (buscador OEM, Revisión OEM, editor de inventario y búsquedas con IA aprobadas) se reflejan aquí solos; al retirar el alterno se retira su fuente. Los alternos de posventa vienen de los catálogos de marca de repuesto y pertenecen al número: cada SKU vinculado los muestra.</p>
       </>}
   </div>;
 }
@@ -239,9 +242,9 @@ function ReferenceDetail({ id, initialNotice = '', onBack, onOpen }: { id: strin
           : <p>Ningún SKU del catálogo lleva este número: ni como SKU principal, ni como alterno, ni por su nombre o un catálogo.</p>}
         {row.linked_count > row.linked_skus.length && <p>Se muestran {number(row.linked_skus.length)} de {number(row.linked_count)}.</p>}
       </section>
-      <section className="suffix-editor-section" aria-label="Equivalencias de posventa"><h4>Equivalencias de posventa ({number(row.cross_references.length)})</h4>
+      <section className="suffix-editor-section" aria-label="Alternos de posventa"><h4>Alternos de posventa ({number(row.cross_references.length)})</h4>
         {row.cross_references.length ? <ul className="oem-ref-skus oem-ref-cross">{row.cross_references.map(code => <li key={code.id}><strong>{code.brand} {code.code}</strong>{code.citations.map(text => <span key={text}>{text}</span>)}</li>)}</ul>
-          : <p>Ningún catálogo de marca de repuesto imprime equivalencias de este número.</p>}
+          : <p>Ningún catálogo de marca de repuesto imprime alternos de este número.</p>}
         <p>Códigos de marcas de repuesto que los catálogos imprimen como equivalentes de este número. Pertenecen al número, no a un SKU: cada SKU vinculado los muestra, también los SKU duplicados.</p>
       </section>
       <section className="suffix-editor-section" aria-label="Reemplazos"><h4>Reemplazos</h4>

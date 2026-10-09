@@ -163,14 +163,14 @@ for (const width of [1440, 390]) {
     await expect(sources.getByText('CORRIDA 2 · REGLA current · v2', { exact: true })).toBeVisible();
     await expect(sources.getByRole('button', { name: /^Quitar fuente/ })).toHaveCount(0);  // automatic sources follow the catalog
     await expect(dialog.getByRole('region', { name: 'SKU vinculados' }).getByText('SKU PRINCIPAL · MAIN OEM', { exact: true })).toBeVisible();
-    await expect(dialog.getByRole('region', { name: 'Equivalencias de posventa' }).getByText('Ningún catálogo de marca de repuesto imprime equivalencias de este número.', { exact: true })).toBeVisible();
+    await expect(dialog.getByRole('region', { name: 'Alternos de posventa' }).getByText('Ningún catálogo de marca de repuesto imprime alternos de este número.', { exact: true })).toBeVisible();
     await fitsWidth(page);
     await page.screenshot({ path: `/tmp/motionpartes-oem-reference-${width}.png` });
     await dialog.getByRole('button', { name: 'Volver a la biblioteca', exact: true }).click();
     await dialog.getByLabel('Buscar número OEM', { exact: true }).fill('');
     await dialog.getByRole('button', { name: 'Ver HONDA 19200PNA003', exact: true }).click();
-    const codes = dialog.getByRole('region', { name: 'Equivalencias de posventa' });
-    await expect(codes.getByRole('heading', { name: 'Equivalencias de posventa (2)', exact: true })).toBeVisible();
+    const codes = dialog.getByRole('region', { name: 'Alternos de posventa' });
+    await expect(codes.getByRole('heading', { name: 'Alternos de posventa (2)', exact: true })).toBeVisible();
     await expect(codes.getByText('GMB GWHO-49A', { exact: true })).toBeVisible();
     await expect(dialog.getByRole('region', { name: 'SKU vinculados' }).getByText('NOMBRE DEL SKU', { exact: true })).toBeVisible();
     await fitsWidth(page);
