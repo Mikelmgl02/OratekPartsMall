@@ -2177,3 +2177,10 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .sku-open { min-width:0; padding:0; border:0; background:none; color:inherit; font:inherit; text-align:left; cursor:pointer; }
 .sku-open strong { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .sku-open:hover strong,.sku-open:focus-visible strong { color:#46632d; text-decoration:underline; text-underline-offset:3px; }
+/* The SKU editor's tabs: General, Ficha técnica, Alternos (they stay in view while the panel scrolls) */
+.editor-tabs { position:sticky; top:-25px; z-index:2; margin:-6px -25px 18px; padding:8px 25px 0; background:#fbfcf8; }
+.editor-tabs button:disabled { opacity:.45; cursor:not-allowed; }
+.editor-tab-count { margin-left:6px; padding:1px 7px; border-radius:999px; background:#e6f2d5; color:#45682c; font-size:10px; font-weight:700; }
+.editor-tab-panel { display:flex; flex-direction:column; gap:16px; min-width:0; }
+.editor-tab-panel[hidden],.catalog-editor[hidden] { display:none; }  /* their own display would otherwise beat the hidden attribute */
+@media (max-width:600px) { .editor-tabs { top:-20px; margin:-6px -20px 16px; padding:8px 20px 0; } }

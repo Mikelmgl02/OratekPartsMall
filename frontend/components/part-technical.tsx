@@ -1,30 +1,38 @@
 'use client';
 
 import { FormEvent, useEffect, useState } from 'react';
-import { LoaderCircle, Plus, Trash2 } from 'lucide-react';
+import { Check, LoaderCircle, Plus, Trash2 } from 'lucide-react';
 import { ManagedPart, Page, request } from '@/lib/types';
 import { ApplicationLink, SpecificationValue, TechnicalSheet, VehicleApplication, applicationLabel } from '@/lib/technical-types';
-import Modal from './modal';
 import { UppercaseInput, UppercaseTextarea } from './uppercase-field';
 import { TechnicalError } from './admin-technical';
 
 const message = (e: unknown) => e instanceof Error ? e.message : 'No se pudo cargar la ficha técnica.';
 
-export function PartTechnicalEditor({ part, onClose, onSaved }: { part: ManagedPart; onClose: () => void; onSaved: () => void }) {
+// A SKU's Ficha técnica, the SKU editor's tab: the fields of its subgroup's template and its vehicle applications, saved on their own.
+// It stays open after saving (the fresh sheet comes back, so the next save carries its new revision). pending: why the template
+// shown may change (a group or subgroup changed in General and not saved yet).
+export function PartTechnicalForm({ part, pending = '' }: { part: ManagedPart; pending?: string }) {
   const [sheet, setSheet] = useState<TechnicalSheet | null>(null); const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [retry, setRetry] = useState(0);
+  const [saved, setSaved] = useState('');
   const [values, setValues] = useState<Record<string, SpecificationValue>>({}); const [links, setLinks] = useState<ApplicationLink[]>([]);
   useEffect(() => { let live = true; setError(''); request<TechnicalSheet>(`/api/management/catalog/${part.id}/technical`).then(s => { if (live) { setSheet(s); setValues(s.values); setLinks(s.applications); } }).catch(e => { if (live) setError(message(e)); }); return () => { live = false; }; }, [part.id, retry]);
-  function value(key: string, patch: Partial<SpecificationValue>) { setValues(v => ({ ...v, [key]: { ...v[key], value: v[key]?.value ?? null, ...patch } })); }
-  function link(index: number, patch: Partial<ApplicationLink>) { setLinks(ls => ls.map((l, i) => i === index ? { ...l, ...patch } : l)); }
+  function value(key: string, patch: Partial<SpecificationValue>) { setSaved(''); setValues(v => ({ ...v, [key]: { ...v[key], value: v[key]?.value ?? null, ...patch } })); }
+  function link(index: number, patch: Partial<ApplicationLink>) { setSaved(''); setLinks(ls => ls.map((l, i) => i === index ? { ...l, ...patch } : l)); }
   async function submit(e: FormEvent) {
-    e.preventDefault(); if (!sheet) return; setError(''); setBusy(true);
-    try { await request(`/api/management/catalog/${part.id}/technical`, { method: 'PATCH', body: JSON.stringify({ revision: sheet.revision, part_type: sheet.part_type?.id ?? null, template_revision: sheet.template?.revision ?? null, values, applications: links.map(l => ({ ...l, application: l.application.id })) }) }); onSaved(); }
+    e.preventDefault(); if (!sheet) return; setError(''); setSaved(''); setBusy(true);
+    try {
+      const fresh = await request<TechnicalSheet>(`/api/management/catalog/${part.id}/technical`, { method: 'PATCH', body: JSON.stringify({ revision: sheet.revision, part_type: sheet.part_type?.id ?? null, template_revision: sheet.template?.revision ?? null, values, applications: links.map(l => ({ ...l, application: l.application.id })) }) });
+      setSheet(fresh); setValues(fresh.values); setLinks(fresh.applications); setSaved('Ficha técnica y aplicaciones guardadas.');
+    }
     catch (e) { setError(message(e)); } finally { setBusy(false); }
   }
-  return <Modal title={`Ficha técnica · ${part.sku}`} onClose={onClose} wide><form className="stack-form technical-editor" autoComplete="off" onSubmit={submit}>
+  return <form className="stack-form technical-editor" autoComplete="off" onSubmit={submit} aria-label={`Ficha técnica de ${part.sku}`}>
+    {pending && <div className="notice" role="status">{pending}</div>}
+    {saved && <div className="notice success" role="status"><Check size={16}/>{saved}</div>}
     <TechnicalError error={error}/>{error && <button type="button" className="button soft small" onClick={() => { setSheet(null); setRetry(v => v + 1); }}>Recargar ficha</button>}
     {!sheet && !error && <div className="loading"><LoaderCircle className="spin"/>Cargando ficha técnica…</div>}
-    {sheet && <><p>{sheet.part_type ? `${sheet.part_type.category} / ${sheet.part_type.name}` : 'Asigna grupo y subgrupo desde Editar SKU para cargar su plantilla.'}</p><fieldset disabled={busy} className="technical-fields"><legend className="sr-only">Datos técnicos y aplicaciones</legend>
+    {sheet && <><p>{sheet.part_type ? `${sheet.part_type.category} / ${sheet.part_type.name}` : 'Asigna grupo y subgrupo en General y guarda el SKU para cargar su plantilla.'}</p><fieldset disabled={busy} className="technical-fields"><legend className="sr-only">Datos técnicos y aplicaciones</legend>
       {!sheet.template?.fields.length && <div className="notice">Este subgrupo todavía no tiene campos técnicos configurados. Puedes definirlos en Administración → Plantillas técnicas.</div>}
       {Array.from(new Set(sheet.template?.fields.map(f => f.section))).map(section => <section className="technical-field-card" key={section}><h3>{section}</h3><div className="technical-form-grid">{sheet.template?.fields.filter(f => f.section === section).map(field => <div className="technical-value" key={field.key}><label>{field.label}{field.unit ? ` (${field.unit})` : ''}{field.required ? ' · NECESARIO' : ''}
         {field.kind === 'boolean' ? <select value={values[field.key]?.value === true ? 'true' : values[field.key]?.value === false ? 'false' : ''} onChange={e => value(field.key, { value: e.target.value === '' ? null : e.target.value === 'true' })}><option value="">SIN ESPECIFICAR</option><option value="true">SÍ</option><option value="false">NO</option></select> : field.kind === 'choice' ? <select value={String(values[field.key]?.value ?? '')} onChange={e => value(field.key, { value: e.target.value })}><option value="">SIN ESPECIFICAR</option>{field.options.map(o => <option key={o}>{o}</option>)}</select> : field.kind === 'text' ? <UppercaseInput maxLength={2000} value={String(values[field.key]?.value ?? '')} onChange={e => value(field.key, { value: e.target.value })} placeholder="SIN ESPECIFICAR"/> : <input type="text" inputMode={field.kind === 'integer' ? 'numeric' : 'decimal'} autoComplete="off" value={String(values[field.key]?.value ?? '')} onChange={e => value(field.key, { value: e.target.value })} placeholder="SIN ESPECIFICAR"/>}
@@ -34,7 +42,7 @@ export function PartTechnicalEditor({ part, onClose, onSaved }: { part: ManagedP
         <ApplicationPicker onAdd={a => setLinks(ls => [...ls, { application: a, position: '', notes: '', source: '', verified: false }])} selected={links.filter(l => !l.position).map(l => l.application.id)}/>
       </section>
     </fieldset><p className="form-footnote">Deja vacíos los datos desconocidos. Puedes completar la ficha en varias sesiones. Los datos de este SKU deben ser comunes a sus repuestos equivalentes.</p><button className="button primary" disabled={busy}>{busy ? 'Guardando…' : 'Guardar ficha técnica'}</button></>}
-  </form></Modal>;
+  </form>;
 }
 
 function ApplicationPicker({ selected, onAdd }: { selected: string[]; onAdd: (application: VehicleApplication) => void }) {

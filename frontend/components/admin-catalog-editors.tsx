@@ -1,11 +1,12 @@
 'use client';
 
-import { FormEvent, useEffect, useRef, useState } from 'react';
+import { FormEvent, useEffect, useId, useRef, useState } from 'react';
 import { LoaderCircle, Plus, Trash2 } from 'lucide-react';
 import Modal from './modal';
 import PartTypePicker from './part-type-picker';
 import OEMReferenceLookup from './oem-reference-lookup';
 import PartOEMEquivalentsSection from './part-oem-equivalents';
+import { PartTechnicalForm } from './part-technical';
 import { UppercaseInput, UppercaseTextarea } from './uppercase-field';
 import { PartReference, ManagedAlternate, ManagedPart, ManagedStockItem, Page, request } from '@/lib/types';
 
@@ -20,7 +21,17 @@ function SaveButton({ busy, disabled, children }: { busy: boolean; disabled?: bo
   return <button className="button primary full" disabled={busy || disabled}>{busy && <LoaderCircle size={16} className="spin"/>}{busy ? 'Guardando…' : children}</button>;
 }
 
-export function PartEditor({ part, onClose, onSaved }: { part: ManagedPart | null; onClose: () => void; onSaved: (part: ManagedPart) => void }) {
+export type EditorTab = 'general' | 'specs' | 'codes';
+const EDITOR_TABS: [EditorTab, string][] = [['general', 'General'], ['specs', 'Ficha técnica'], ['codes', 'Alternos']];
+
+// The SKU editor, a side panel in three tabs. General and Alternos are one form (Guardar SKU sends both); the Ficha técnica saves on its
+// own and loads the first time its tab opens. A field the browser refuses in a hidden tab brings its tab forward.
+export function PartEditor({ part, initialTab = 'general', onClose, onSaved }: { part: ManagedPart | null; initialTab?: EditorTab; onClose: () => void; onSaved: (part: ManagedPart) => void }) {
+  const first: EditorTab = part ? initialTab : 'general';
+  const [tab, setTab] = useState<EditorTab>(first);
+  const [visited, setVisited] = useState<Set<EditorTab>>(() => new Set([first]));
+  const tabs = useId();
+  function open(next: EditorTab) { setTab(next); setVisited(current => new Set(current).add(next)); }
   const [isOEM, setIsOEM] = useState(part?.is_OEM ?? false);
   const [category, setCategory] = useState(part?.category || '');
   const [subcategory, setSubcategory] = useState(part?.subcategory || '');
@@ -36,32 +47,49 @@ export function PartEditor({ part, onClose, onSaved }: { part: ManagedPart | nul
     try { onSaved(await request<ManagedPart>(`${base}/catalog${part ? `/${part.id}` : ''}`, { method: part ? 'PATCH' : 'POST', body: JSON.stringify(payload) })); }
     catch (error) { setError(message(error)); } finally { setBusy(false); }
   }
+  const filled = codes.filter(row => row.code.trim()).length;
+  const subgroupChanged = !!part && (category !== (part.category || '') || subcategory !== (part.subcategory || ''));
+  const panel = (key: EditorTab) => ({ role: 'tabpanel', id: `${tabs}-${key}`, 'aria-labelledby': `${tabs}-${key}-tab`, 'data-tab': key, hidden: tab !== key, className: 'editor-tab-panel' });
   // A side panel over the grid, which stays as it was (rows and scroll position) behind it.
-  return <Modal title={part ? `Editar SKU · ${part.sku}` : 'Crear SKU'} onClose={onClose} wide drawer className="side-panel"><form autoComplete="off" className="stack-form catalog-editor" onSubmit={submit}>
-    <div className="form-row"><label>SKU principal (MAIN)<UppercaseInput name="internal_sku" defaultValue={part?.sku} onChange={() => setIsOEM(false)} required maxLength={200} placeholder="Ej.: 58411-1R000"/></label><label>Nombre del repuesto (opcional)<UppercaseInput name="part_label" defaultValue={part?.name} maxLength={200} placeholder="Ej.: Disco de freno delantero"/></label></div>
-    <label className="admin-checkbox"><input type="checkbox" name="is_OEM" checked={isOEM} onChange={event => setIsOEM(event.target.checked)}/>EL SKU PRINCIPAL ES OEM</label>
-    <p className="form-footnote">Marca esta opción cuando hayas identificado el código principal como OEM. Sin marcar significa interno, de empresa o aún sin verificar. Cada alterno conserva su propio tipo de referencia.</p>
-    <label>Descripción<UppercaseTextarea aria-label="Descripción" name="part_details" defaultValue={part?.description} rows={3} placeholder="Características, aplicación o medidas del repuesto"/></label>
-    <div className="form-row"><label>Grupo (opcional)<UppercaseInput name="part_category" value={category} onChange={e => setCategory(e.target.value)} maxLength={120} placeholder="EJ.: FRENOS"/></label><label>Subgrupo / tipo de repuesto (opcional)<UppercaseInput name="part_subcategory" value={subcategory} onChange={e => setSubcategory(e.target.value)} maxLength={120} placeholder="EJ.: DISCOS DE FRENO"/></label></div>
-    <PartTypePicker onSelect={type => { setCategory(type.category); setSubcategory(type.name); }}/>
-    <p className="form-footnote">El subgrupo define los campos de la ficha técnica. Guarda el SKU y abre Ficha técnica para completar sus medidas y aplicaciones.</p>
-    <section className="notice oem-preference"><strong>MAIN basado en una referencia OEM</strong><p>Usamos el OEM verificado como código principal y conservamos los códigos de empresa como alternos. El ID del repuesto y las existencias de los proveedores se mantienen.</p>
-      <label>OEM para el MAIN<select aria-label="OEM para el MAIN" value={mainReference} onChange={event => setMainReference(event.target.value)}><option value="auto">AUTOMÁTICO · CONSERVAR OEM ACTUAL O USAR EL ÚNICO VERIFICADO</option>{codes.filter(row => row.ref_type === 'oem' && row.code.trim() && row.brand.trim() && row.reference_source.trim()).map(row => <option key={row.key} value={row.key}>{row.code} · {row.brand}</option>)}</select></label>
-      <p className="form-footnote">Al promover una referencia OEM verificada, el MAIN se marca como OEM automáticamente. Si hay varios OEM, elige el principal. Una referencia a un conjunto completo no demuestra que la pieza individual sea equivalente.</p>
-    </section>
-    {part && <OEMReferenceLookup part={part} onAdd={references => setCodes(existing => { const pairs = new Set(existing.map(row => `${row.brand}:${row.code}`)); return [...existing, ...references.filter(row => !pairs.has(`${row.brand}:${row.code}`)).map(row => ({...row, ref_type: row.ref_type || 'oem', reference_source: row.reference_source || '', key: nextKey.current++}))]; })}/>}
-    <fieldset className="catalog-codes"><legend>Biblioteca de equivalencias del SKU maestro</legend><p>Agrega referencias OEM y de fabricantes que identifiquen la misma pieza, aunque sus códigos sean distintos. El fabricante pertenece a la referencia; los artículos y las existencias de cada proveedor se gestionan por separado.</p>
-      {codes.map((row, index) => <div className="catalog-reference-entry" key={row.key}>
-        <div className="catalog-code-row"><label>{row.ref_type === 'company' ? 'Empresa / fabricante' : 'Fabricante del código'} {index + 1}{row.ref_type === 'company' ? '' : ' (opcional)'}<UppercaseInput aria-label={`Marca del código ${index + 1}`} name={`part_code_maker_${row.key}`} value={row.brand} onChange={event => changeCode(row.key, 'brand', event.target.value)} required={row.ref_type === 'company'} maxLength={120} placeholder="EJ.: TOYOTA, FEBEST, NIBK"/></label><label>Código {index + 1}<UppercaseInput name={`part_code_value_${row.key}`} value={row.code} onChange={event => changeCode(row.key, 'code', event.target.value)} required={!!row.brand.trim()} maxLength={120} placeholder="EJ.: 51712-1R000"/></label><button type="button" className="icon-button danger-text" aria-label={`Quitar código ${index + 1}`} onClick={() => { setCodes(rows => rows.filter(code => code.key !== row.key)); if (mainReference === String(row.key)) setMainReference('auto'); }}><Trash2 size={17}/></button></div>
-        <div className="form-row"><label>Tipo de referencia {index + 1}<select aria-label={`Tipo de referencia ${index + 1}`} value={row.ref_type} onChange={event => { changeCode(row.key, 'ref_type', event.target.value); if (mainReference === String(row.key)) setMainReference('auto'); }}><option value="unknown">SIN CLASIFICAR</option><option value="oem">OEM</option><option value="company">EMPRESA / FABRICANTE</option></select></label><label>Fuente de la equivalencia {index + 1}<input autoComplete="off" maxLength={500} value={row.reference_source} onChange={event => changeCode(row.key, 'reference_source', event.target.value)} placeholder="Catálogo, ficha técnica o enlace"/></label></div>
-      </div>)}
-      <button type="button" className="button soft small" onClick={() => setCodes(rows => [...rows, { key: nextKey.current++, brand: '', code: '', ref_type: 'unknown', reference_source: '' }])}><Plus size={15}/>Agregar código</button>
-      <p>Registra equivalencias verificadas. Una aplicación parecida, una variante o un kit no bastan para considerarlas la misma pieza.</p>
-    </fieldset>
-    {part && <PartOEMEquivalentsSection partId={part.id}/>}
-    <label className="admin-checkbox"><input name="active" type="checkbox" defaultChecked={part?.active ?? true}/>SKU activo</label><p className="form-footnote">El SKU agrupa repuestos idénticos de distintas marcas y proveedores. Las existencias se conservan por artículo del proveedor.</p>
-    <FormError error={error}/><SaveButton busy={busy}>Guardar SKU</SaveButton>
-  </form></Modal>;
+  return <Modal title={part ? `Editar SKU · ${part.sku}` : 'Crear SKU'} onClose={onClose} wide drawer className="side-panel">
+    <div className="inventory-view-tabs editor-tabs" role="tablist" aria-label="Secciones del SKU">{EDITOR_TABS.map(([key, label]) =>
+      <button key={key} type="button" role="tab" id={`${tabs}-${key}-tab`} aria-controls={`${tabs}-${key}`} aria-selected={tab === key} className={tab === key ? 'selected' : ''}
+        disabled={key === 'specs' && !part} title={key === 'specs' && !part ? 'Guarda el SKU para completar su ficha técnica.' : undefined} onClick={() => open(key)}>
+        {label}{key === 'codes' && filled > 0 && <span className="editor-tab-count">{filled}</span>}</button>)}</div>
+    <form autoComplete="off" className="stack-form catalog-editor" hidden={tab === 'specs'} onSubmit={submit}
+      onInvalidCapture={event => { const key = (event.target as HTMLElement).closest<HTMLElement>('[data-tab]')?.dataset.tab as EditorTab | undefined; if (key && key !== tab) open(key); }}>
+      <div {...panel('general')}>
+      <div className="form-row"><label>SKU principal (MAIN)<UppercaseInput name="internal_sku" defaultValue={part?.sku} onChange={() => setIsOEM(false)} required maxLength={200} placeholder="Ej.: 58411-1R000"/></label><label>Nombre del repuesto (opcional)<UppercaseInput name="part_label" defaultValue={part?.name} maxLength={200} placeholder="Ej.: Disco de freno delantero"/></label></div>
+      <label className="admin-checkbox"><input type="checkbox" name="is_OEM" checked={isOEM} onChange={event => setIsOEM(event.target.checked)}/>EL SKU PRINCIPAL ES OEM</label>
+      <p className="form-footnote">Marca esta opción cuando hayas identificado el código principal como OEM. Sin marcar significa interno, de empresa o aún sin verificar. Cada alterno conserva su propio tipo de referencia.</p>
+      <label>Descripción<UppercaseTextarea aria-label="Descripción" name="part_details" defaultValue={part?.description} rows={3} placeholder="Características, aplicación o medidas del repuesto"/></label>
+      <div className="form-row"><label>Grupo (opcional)<UppercaseInput name="part_category" value={category} onChange={e => setCategory(e.target.value)} maxLength={120} placeholder="EJ.: FRENOS"/></label><label>Subgrupo / tipo de repuesto (opcional)<UppercaseInput name="part_subcategory" value={subcategory} onChange={e => setSubcategory(e.target.value)} maxLength={120} placeholder="EJ.: DISCOS DE FRENO"/></label></div>
+      <PartTypePicker onSelect={type => { setCategory(type.category); setSubcategory(type.name); }}/>
+      <p className="form-footnote">El subgrupo define los campos de la ficha técnica: guarda el SKU y complétala en la pestaña Ficha técnica.</p>
+      <section className="notice oem-preference"><strong>MAIN basado en una referencia OEM</strong><p>Usamos el OEM verificado como código principal y conservamos los códigos de empresa como alternos. El ID del repuesto y las existencias de los proveedores se mantienen.</p>
+        <label>OEM para el MAIN<select aria-label="OEM para el MAIN" value={mainReference} onChange={event => setMainReference(event.target.value)}><option value="auto">AUTOMÁTICO · CONSERVAR OEM ACTUAL O USAR EL ÚNICO VERIFICADO</option>{codes.filter(row => row.ref_type === 'oem' && row.code.trim() && row.brand.trim() && row.reference_source.trim()).map(row => <option key={row.key} value={row.key}>{row.code} · {row.brand}</option>)}</select></label>
+        <p className="form-footnote">Al promover una referencia OEM verificada, el MAIN se marca como OEM automáticamente. Si hay varios OEM, elige el principal. Una referencia a un conjunto completo no demuestra que la pieza individual sea equivalente.</p>
+      </section>
+      <label className="admin-checkbox"><input name="active" type="checkbox" defaultChecked={part?.active ?? true}/>SKU activo</label><p className="form-footnote">El SKU agrupa repuestos idénticos de distintas marcas y proveedores. Las existencias se conservan por artículo del proveedor.</p>
+      </div>
+      <div {...panel('codes')}>
+      {part && <OEMReferenceLookup part={part} onAdd={references => setCodes(existing => { const pairs = new Set(existing.map(row => `${row.brand}:${row.code}`)); return [...existing, ...references.filter(row => !pairs.has(`${row.brand}:${row.code}`)).map(row => ({...row, ref_type: row.ref_type || 'oem', reference_source: row.reference_source || '', key: nextKey.current++}))]; })}/>}
+      <fieldset className="catalog-codes"><legend>Biblioteca de equivalencias del SKU maestro</legend><p>Agrega referencias OEM y de fabricantes que identifiquen la misma pieza, aunque sus códigos sean distintos. El fabricante pertenece a la referencia; los artículos y las existencias de cada proveedor se gestionan por separado.</p>
+        {codes.map((row, index) => <div className="catalog-reference-entry" key={row.key}>
+          <div className="catalog-code-row"><label>{row.ref_type === 'company' ? 'Empresa / fabricante' : 'Fabricante del código'} {index + 1}{row.ref_type === 'company' ? '' : ' (opcional)'}<UppercaseInput aria-label={`Marca del código ${index + 1}`} name={`part_code_maker_${row.key}`} value={row.brand} onChange={event => changeCode(row.key, 'brand', event.target.value)} required={row.ref_type === 'company'} maxLength={120} placeholder="EJ.: TOYOTA, FEBEST, NIBK"/></label><label>Código {index + 1}<UppercaseInput name={`part_code_value_${row.key}`} value={row.code} onChange={event => changeCode(row.key, 'code', event.target.value)} required={!!row.brand.trim()} maxLength={120} placeholder="EJ.: 51712-1R000"/></label><button type="button" className="icon-button danger-text" aria-label={`Quitar código ${index + 1}`} onClick={() => { setCodes(rows => rows.filter(code => code.key !== row.key)); if (mainReference === String(row.key)) setMainReference('auto'); }}><Trash2 size={17}/></button></div>
+          <div className="form-row"><label>Tipo de referencia {index + 1}<select aria-label={`Tipo de referencia ${index + 1}`} value={row.ref_type} onChange={event => { changeCode(row.key, 'ref_type', event.target.value); if (mainReference === String(row.key)) setMainReference('auto'); }}><option value="unknown">SIN CLASIFICAR</option><option value="oem">OEM</option><option value="company">EMPRESA / FABRICANTE</option></select></label><label>Fuente de la equivalencia {index + 1}<input autoComplete="off" maxLength={500} value={row.reference_source} onChange={event => changeCode(row.key, 'reference_source', event.target.value)} placeholder="Catálogo, ficha técnica o enlace"/></label></div>
+        </div>)}
+        <button type="button" className="button soft small" onClick={() => setCodes(rows => [...rows, { key: nextKey.current++, brand: '', code: '', ref_type: 'unknown', reference_source: '' }])}><Plus size={15}/>Agregar código</button>
+        <p>Registra equivalencias verificadas. Una aplicación parecida, una variante o un kit no bastan para considerarlas la misma pieza.</p>
+      </fieldset>
+      {part && <PartOEMEquivalentsSection partId={part.id}/>}
+      </div>
+      <FormError error={error}/><SaveButton busy={busy}>Guardar SKU</SaveButton>
+    </form>
+    {part && visited.has('specs') && <div {...panel('specs')}>
+      <PartTechnicalForm part={part} pending={subgroupChanged ? 'Cambiaste el grupo o subgrupo en General: guarda el SKU para cargar la plantilla del nuevo subgrupo.' : ''}/>
+    </div>}
+  </Modal>;
 }
 
 function PartPicker({ label, value, initial, onChange, exclude }: { label: string; value: string; initial?: Choice; onChange: (value: string) => void; exclude?: string }) {

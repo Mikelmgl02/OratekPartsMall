@@ -59,6 +59,8 @@ for (const size of [{ name: 'desktop', width: 1440, height: 1000 }, { name: 'mob
     await dialog.getByLabel('Condiciones de aplicación').fill('SOLO CON ABS');
     await dialog.getByLabel('Compatibilidad verificada').check();
     await dialog.getByRole('button', { name: 'Guardar ficha técnica' }).click();
+    await expect(dialog.getByRole('status').filter({ hasText: 'Ficha técnica y aplicaciones guardadas.' })).toBeVisible();  // the panel stays open
+    await dialog.getByRole('button', { name: 'Cerrar ventana' }).click();
     await expect(dialog).not.toBeVisible();
     await page.reload();
     await page.getByLabel('Buscar repuestos', { exact: true }).fill(suffix);

@@ -18,6 +18,7 @@ for (const width of [1440, 390]) {
     await page.goto('/administracion?seccion=inventario');
     await page.getByRole('button',{name:`Editar SKU ${part.sku}`,exact:true}).click();
     const dialog=page.getByRole('dialog');
+    await dialog.getByRole('tab',{name:/^Alternos/}).click();
     await expect(dialog.getByText('Biblioteca de equivalencias del SKU maestro',{exact:true})).toBeVisible();
     await expect(dialog.getByLabel('Tipo de referencia 1',{exact:true})).toHaveValue('oem');
     await expect(dialog.getByLabel('Fuente de la equivalencia 1',{exact:true})).toHaveValue('CATÁLOGO VERIFICADO');

@@ -153,6 +153,7 @@ test('the OEM lookup reads company suffixes from the suffix table', async ({ pag
   await page.goto('/administracion?seccion=inventario');
   await page.getByRole('button', { name: `Editar SKU ${part.sku}`, exact: true }).click();
   const dialog = page.getByRole('dialog');
+  await dialog.getByRole('tab', { name: /^Alternos/ }).click();
   await dialog.getByText('Buscar referencias OEM con IA', { exact: true }).click();
   await expect(dialog.getByLabel('Empresa del código', { exact: true })).toHaveValue('ACME CORP');
   await expect(dialog.getByLabel('Código de empresa', { exact: true })).toHaveValue('ABC-123456');

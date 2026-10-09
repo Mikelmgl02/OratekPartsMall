@@ -16,6 +16,7 @@ for (const width of [1440, 390]) {
   await expect(page.getByText('MAIN INTERNO · FEBEST · OEM PENDIENTE',{exact:true})).toBeVisible();
   await page.getByRole('button',{name:`Editar SKU ${part.sku}`,exact:true}).click();
   const dialog=page.getByRole('dialog');
+  await dialog.getByRole('tab',{name:/^Alternos/}).click();
   await expect(dialog.getByLabel('Tipo de referencia 1',{exact:true})).toHaveValue('company');
   await dialog.getByText('Buscar referencias OEM con IA',{exact:true}).click();
   await dialog.getByRole('button',{name:'Buscar OEM',exact:true}).click();
@@ -28,6 +29,7 @@ for (const width of [1440, 390]) {
   await dialog.getByRole('checkbox',{name:/Verifiqué en las fuentes/}).check();
   await add.click();
   await expect(dialog.getByLabel('Código 2',{exact:true})).toHaveValue('43460-TEST');
+  await dialog.getByRole('tab',{name:'General',exact:true}).click();
   await dialog.getByLabel('OEM para el MAIN',{exact:true}).selectOption({label:'43460-TEST · TOYOTA'});
   expect(await dialog.evaluate(el=>el.scrollWidth>el.clientWidth)).toBe(false);
   await page.screenshot({path:`/tmp/motionpartes-oem-${width}.png`});

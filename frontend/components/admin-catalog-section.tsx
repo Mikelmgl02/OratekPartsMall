@@ -8,7 +8,7 @@ import { useGridEdits } from '@/lib/use-grid-edits';
 import ServerGrid from './server-grid';
 import { alternateColumns, alternateOrdering, CatalogGridActions, catalogColumns, catalogContextMenu, catalogFieldColumns, catalogOrdering, parseSubgroup, pastedCodes,
   stockColumns, stockOrdering } from './admin-catalog-grids';
-import { AlternateEditor, MatchEditor, PartEditor, RemoveAlternate } from './admin-catalog-editors';
+import { AlternateEditor, EditorTab, MatchEditor, PartEditor, RemoveAlternate } from './admin-catalog-editors';
 import { UppercaseInput } from './uppercase-field';
 import CatalogImport from './admin-catalog-import';
 import ImportIssues from './admin-import-issues';
@@ -24,13 +24,11 @@ import OEMLibrary from './admin-oem-library';
 import OEMRuns from './admin-oem-runs';
 import AlternateReview from './admin-alternate-review';
 import type { AlternateReviewList } from '@/lib/oem-reference-types';
-import { PartTechnicalEditor } from './part-technical';
 
 type Kind = 'catalog' | 'inventory' | 'alternates';
 const errorText = (error: unknown) => error instanceof Error ? error.message : 'No se pudo guardar el cambio. Inténtalo de nuevo.';
 
 export default function AdminCatalogSection({ section }: { section: 'inventory' | 'alternates' }) {
-  const [technicalPart, setTechnicalPart] = useState<ManagedPart | null>(null);
   const [matchingOpen, setMatchingOpen] = useState(false);
   const [suffixesOpen, setSuffixesOpen] = useState(false);
   const [suffixSearch, setSuffixSearch] = useState('');
@@ -43,7 +41,10 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
   const [reviewView, setReviewView] = useState(false);
   const [reviewCount, setReviewCount] = useState<number | null>(null);
   const kind: Kind = section === 'alternates' ? 'alternates' : stockView ? 'inventory' : 'catalog';
-  const [partEditor, setPartEditor] = useState<ManagedPart | null | undefined>();
+  // The SKU editor's side panel (null part: Crear SKU) and the tab it opens on: Ficha opens its Ficha técnica.
+  const [partEditor, setPartEditor] = useState<{ part: ManagedPart | null; tab: EditorTab } | undefined>();
+  const editPart = useCallback((part: ManagedPart) => setPartEditor({ part, tab: 'general' }), []);
+  const editTechnical = useCallback((part: ManagedPart) => setPartEditor({ part, tab: 'specs' }), []);
   const [alternateEditor, setAlternateEditor] = useState<ManagedAlternate | null | undefined>();
   const [matchEditor, setMatchEditor] = useState<ManagedStockItem | null>(null);
   const [removeAlternate, setRemoveAlternate] = useState<ManagedAlternate | null>(null);
@@ -79,7 +80,7 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
   const reviewChanged = useCallback(() => setRevision(value => value + 1), []);
   function saved(text: string) { setRevision(value => value + 1); setNotice(text); }
   return <section className="inventory-panel admin-panel" aria-label={section === 'inventory' ? 'Inventario' : 'Alternos'}>
-    <div className="admin-toolbar inventory-header"><div><h2>{section === 'inventory' ? 'Inventario' : 'Alternos'}</h2><p>{section === 'inventory' ? 'SKU internos que agrupan repuestos idénticos y existencias por proveedor.' : 'Biblioteca de referencias OEM y de fabricantes equivalentes a cada SKU maestro.'}</p></div>{kind !== 'inventory' && !(kind === 'alternates' && reviewView) && <div className="admin-toolbar-actions">{kind === 'catalog' && <button className="button soft" onClick={() => setImportOpen(true)}><FileSpreadsheet size={17}/>Importar Excel</button>}<button className="button primary" onClick={() => { if (kind === 'alternates') setAlternateEditor(null); else setPartEditor(null); }}><Plus size={17}/>{kind === 'alternates' ? 'Crear alterno' : 'Crear SKU'}</button></div>}</div>
+    <div className="admin-toolbar inventory-header"><div><h2>{section === 'inventory' ? 'Inventario' : 'Alternos'}</h2><p>{section === 'inventory' ? 'SKU internos que agrupan repuestos idénticos y existencias por proveedor.' : 'Biblioteca de referencias OEM y de fabricantes equivalentes a cada SKU maestro.'}</p></div>{kind !== 'inventory' && !(kind === 'alternates' && reviewView) && <div className="admin-toolbar-actions">{kind === 'catalog' && <button className="button soft" onClick={() => setImportOpen(true)}><FileSpreadsheet size={17}/>Importar Excel</button>}<button className="button primary" onClick={() => { if (kind === 'alternates') setAlternateEditor(null); else setPartEditor({ part: null, tab: 'general' }); }}><Plus size={17}/>{kind === 'alternates' ? 'Crear alterno' : 'Crear SKU'}</button></div>}</div>
     {section === 'inventory' && <>
       <div className="inventory-view-tabs" role="group" aria-label="Vistas de inventario"><button className={!stockView ? 'selected' : ''} aria-pressed={!stockView} onClick={() => setStockView(false)}><Boxes size={15} aria-hidden="true"/>Inventario interno</button><button className={stockView ? 'selected' : ''} aria-pressed={stockView} onClick={() => setStockView(true)}><Warehouse size={15} aria-hidden="true"/>Existencias por proveedor</button></div>
       <div className="inventory-tools" role="group" aria-label="Herramientas del inventario">
@@ -94,15 +95,15 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
     </div>}
     {notice && <div className="notice success admin-notice" role="status"><Check size={16}/>{notice}</div>}
     {kind === 'alternates' && reviewView ? <AlternateReview onCount={setReviewCount} onChanged={reviewChanged}/>
-      : <Collection onTechnical={setTechnicalPart} onImages={setImagePart} key={kind} kind={kind} revision={revision} onEditPart={setPartEditor} onEditAlternate={setAlternateEditor} onEditMatch={setMatchEditor} onRemoveAlternate={setRemoveAlternate} onSplit={setSplitTarget} onMerge={setMergeParts} onMarkOEM={(parts, mode) => setOemMark({ parts, mode })}/>}
+      : <Collection onTechnical={editTechnical} onImages={setImagePart} key={kind} kind={kind} revision={revision} onEditPart={editPart} onEditAlternate={setAlternateEditor} onEditMatch={setMatchEditor} onRemoveAlternate={setRemoveAlternate} onSplit={setSplitTarget} onMerge={setMergeParts} onMarkOEM={(parts, mode) => setOemMark({ parts, mode })}/>}
     <p className="admin-footnote">{kind === 'alternates' && reviewView ? 'Conservar marca el código como confirmado por ti y la limpieza de copias nunca lo retira. Retirar lo quita del SKU. Los clientes siguen viendo los códigos que llegan por número OEM.' : kind === 'alternates' ? 'Los alternos de un SKU también aparecen en su editor de inventario interno. Cada artículo del proveedor mantiene su propio inventario e historial.' : kind === 'catalog' ? 'El SKU maestro no tiene marca. Sus referencias identifican piezas equivalentes; los artículos del proveedor conservan sus propios códigos y existencias.' : 'Los registros conservan el ID de inventario de cada proveedor y su vínculo con el SKU interno.'}</p>
     {matchingOpen && <SmartMatching onClose={()=>setMatchingOpen(false)} onSaved={()=>saved('Coincidencias actualizadas.')} onOpenSuffixes={token => { setSuffixSearch(token); setSuffixesOpen(true); }} onOpenGrouping={family => { setGroupingFamily(family); setGroupingOpen(true); }}/>}
     {suffixesOpen && <CatalogSuffixes initialSearch={suffixSearch} onClose={()=>{ setSuffixesOpen(false); setSuffixSearch(''); setRevision(value => value + 1); }}/>}
     {oemLibraryOpen && <OEMLibrary onClose={()=>setOemLibraryOpen(false)}/>}
     {oemRunsOpen && <OEMRuns onClose={()=>setOemRunsOpen(false)} onChanged={()=>setRevision(value => value + 1)}/>}
-    {technicalPart && <PartTechnicalEditor part={technicalPart} onClose={() => setTechnicalPart(null)} onSaved={() => { setTechnicalPart(null); saved('Ficha técnica y aplicaciones guardadas.'); }}/>}
     {imagePart && <CatalogImages part={imagePart} onClose={() => setImagePart(null)} onChanged={() => setRevision(value => value + 1)}/>}
-    {partEditor !== undefined && <PartEditor part={partEditor} onClose={() => setPartEditor(undefined)} onSaved={() => { setPartEditor(undefined); saved('SKU y alternos guardados.'); }}/>}
+    {partEditor !== undefined && <PartEditor key={partEditor.part?.id ?? 'new'} part={partEditor.part} initialTab={partEditor.tab} onClose={() => setPartEditor(undefined)}
+      onSaved={() => { setPartEditor(undefined); saved('SKU y alternos guardados.'); }}/>}
     {importOpen && <CatalogImport onClose={() => { setImportOpen(false); setRevision(value => value + 1); }} onSaved={summary => { setImportOpen(false); saved(`Importación completada: ${summary.created_skus} SKU nuevos, ${summary.updated_skus} SKU actualizados y ${summary.added_codes} alternos nuevos.${summary.rejected_rows ? ` ${summary.rejected_rows} ${summary.rejected_rows === 1 ? 'fila pendiente' : 'filas pendientes'} de corregir en «Errores de importación».` : summary.skipped_rows ? ` ${summary.skipped_rows} ${summary.skipped_rows === 1 ? 'fila excluida' : 'filas excluidas'}.` : ''}`); }}/>} 
     {issuesOpen && <ImportIssues onClose={() => { setIssuesOpen(false); setRevision(value => value + 1); }} onSaved={() => saved('Fila corregida y guardada en el inventario interno.')}/>}
     {splitTarget !== undefined && <CatalogSplit part={splitTarget} onClose={() => setSplitTarget(undefined)} onChanged={saved}/>}
