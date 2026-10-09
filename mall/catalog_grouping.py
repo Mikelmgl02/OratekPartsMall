@@ -130,6 +130,11 @@ def merge_catalog_parts(*, actor, target_sku, source_skus, category='', subcateg
         collision = other_skus.first()
         if collision:
             raise ValidationError({'detail': f'El código {collision.sku} identifica otro SKU. Corrige su asignación antes de unificar.'})
+        # What each source brings (its earlier merges' rows included), kept on the merge so Separar SKU can give it back exactly.
+        owner = {part.pk: str(part.pk) for part in sources} | {part.pk: str(part.merged_into_id) for part in children}
+        brought = {str(part.pk): {'codes': [], 'items': [], 'images': []} for part in sources}
+        for row in source_codes:
+            brought[owner[row.part_id]]['codes'].append({'brand': row.brand, 'code': row.code})
         summary['codes_transferred'] = PartCode.objects.filter(pk__in=[row.pk for row in source_codes]).update(part=target)
         for source in sources:
             alias, created = PartCode.objects.get_or_create(part=target, brand='', code=source.sku,
@@ -140,7 +145,8 @@ def merge_catalog_parts(*, actor, target_sku, source_skus, category='', subcateg
             summary['sku_aliases_created'] += int(created)
         # Only the catalog link changes. Inventory ID, codigo, brand, stock
         # counters, matching status, timestamps and ledger remain intact.
-        list(SupplierItem.objects.select_for_update().filter(part_id__in=retired_ids).order_by('pk').values_list('pk', flat=True))
+        for pk, part_id in SupplierItem.objects.select_for_update().filter(part_id__in=retired_ids).order_by('pk').values_list('pk', 'part_id'):
+            brought[owner[part_id]]['items'].append(str(pk))
         summary['supplier_items_relinked'] = SupplierItem.objects.filter(part_id__in=retired_ids).update(part=target)
         updated, removed = _merge_alternates(retired_ids, target)
         summary['historical_alternates_updated'] = updated
@@ -151,13 +157,14 @@ def merge_catalog_parts(*, actor, target_sku, source_skus, category='', subcateg
         position = maximum + 1 if maximum is not None else 0
         images = list(PartImage.objects.filter(part_id__in=retired_ids).order_by('part_id', 'position', 'created_at', 'id'))
         for offset, image in enumerate(images):
+            brought[owner[image.part_id]]['images'].append(str(image.pk))
             image.part = target
             image.position = position + offset
         PartImage.objects.bulk_update(images, ['part', 'position'])
         summary['images_transferred'] = len(images)
         Part.objects.filter(pk__in=retired_ids).update(active=False, merged_into=target)
         merge = CatalogMerge.objects.create(actor=actor, target=target,
-                                           sources=[{'id': str(part.pk), 'sku': part.sku} for part in sources], summary=summary)
+                                           sources=[{'id': str(part.pk), 'sku': part.sku, **brought[str(part.pk)]} for part in sources], summary=summary)
     metadata_fields = []
     for field, value in [('category', category), ('subcategory', subcategory)]:
         if value and getattr(target, field) != value:

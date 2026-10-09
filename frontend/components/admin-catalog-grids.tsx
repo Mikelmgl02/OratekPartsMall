@@ -1,5 +1,5 @@
 'use client';
-import type { ColDef, SuppressKeyboardEventParams } from 'ag-grid-community';
+import type { ColDef, DefaultMenuItem, GetContextMenuItemsParams, GridApi, MenuItemDef, SuppressKeyboardEventParams } from 'ag-grid-community';
 import type { CustomCellRendererProps } from 'ag-grid-react';
 import { Images, Pencil, SearchCheck, Trash2, Ungroup, Wrench } from 'lucide-react';
 import { referenceLabel } from '@/lib/reference-label';
@@ -9,7 +9,7 @@ import CodesEditor from './admin-codes-editor';
 export type CatalogGridActions = {
   onEditPart: (part: ManagedPart) => void; onTechnical: (part: ManagedPart) => void; onImages: (part: ManagedPart) => void;
   onEditAlternate: (alternate: ManagedAlternate) => void; onRemoveAlternate: (alternate: ManagedAlternate) => void; onEditMatch: (item: ManagedStockItem) => void;
-  onCodesChanged: (partId: string) => void; onSplit: (part: ManagedPart) => void;
+  onCodesChanged: (partId: string) => void; onSplit: (part: ManagedPart) => void; onMerge: (parts: ManagedPart[]) => void;
 };
 // Codes pasted into the Alternos cell (comma, semicolon or line separated) wait here until the grid saves them one by one.
 export const pastedCodes = new WeakMap<ManagedPart, string[]>();
@@ -62,6 +62,37 @@ function PartActions({ data, context }: Cell<ManagedPart>) {
   </div>;
 }
 export const catalogOrdering: Record<string, string> = { sku: 'sku', description: 'description', subgroup: 'category,subcategory', active: 'active', stock: 'stock_record_count' };
+export const MERGE_LIMIT = 51;  // a main SKU and the 50 others one merge takes (catalog/grouping/merge)
+// The rows the grid's cell selection covers (drag or Shift+click over several rows), at most the merge limit.
+export function selectedParts(api: GridApi<ManagedPart>): ManagedPart[] {
+  const rows = new Map<string, ManagedPart>();
+  for (const range of api.getCellRanges() ?? []) {
+    if (!range.startRow || !range.endRow) continue;
+    const [from, to] = [range.startRow.rowIndex, range.endRow.rowIndex].sort((a, b) => a - b);
+    for (let index = from; index <= to && rows.size <= MERGE_LIMIT; index++) {
+      const data = api.getDisplayedRowAtIndex(index)?.data;
+      if (data) rows.set(data.id, data);
+    }
+  }
+  return [...rows.values()];
+}
+// Right click on a SKU: group it with others (the selected rows, when the click falls inside a selection of several) or split the
+// SKUs grouped into it; the grid's own items (copy, paste, export) follow.
+const menuIcon = (name: string) => `<span class="ag-icon ag-icon-${name}" unselectable="on" role="presentation"></span>`;
+export function catalogContextMenu(params: GetContextMenuItemsParams<ManagedPart, CatalogGridActions>): (DefaultMenuItem | MenuItemDef<ManagedPart, CatalogGridActions>)[] {
+  const part = params.node?.data, defaults = params.defaultItems ?? [];
+  if (!part) return defaults;
+  const chosen = selectedParts(params.api), many = chosen.length > 1 && chosen.some(row => row.id === part.id);
+  const merged = part.merged_count ?? 0;
+  return [
+    many ? { name: `Agrupar ${chosen.length > MERGE_LIMIT ? `más de ${MERGE_LIMIT}` : chosen.length} SKU seleccionados…`, icon: menuIcon('linked'), disabled: chosen.length > MERGE_LIMIT,
+             tooltip: chosen.length > MERGE_LIMIT ? `Selecciona hasta ${MERGE_LIMIT} SKU.` : undefined, action: () => params.context.onMerge(chosen) }
+      : { name: `Agrupar ${part.sku} con…`, icon: menuIcon('linked'), action: () => params.context.onMerge([part]) },
+    { name: merged ? `Separar SKU agrupados (${merged})` : 'Separar SKU agrupados', icon: menuIcon('unlinked'), disabled: !merged,
+      tooltip: merged ? undefined : 'Este SKU no tiene SKU agrupados.', action: () => params.context.onSplit(part) },
+    ...(defaults.length ? ['separator' as const, ...defaults] : []),
+  ];
+}
 // edit: Editar celdas is on (the catalog's group / subgroup labels, and whether a batch is being saved); null keeps the grid
 // read-only. Description, group / subgroup and status edit in place (EssaMobileApp's batch: see admin-catalog-section), alternos in
 // their popup; the SKU code keeps the dialog, since renaming a MAIN has side effects.

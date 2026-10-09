@@ -72,8 +72,9 @@ def separation_warnings(families):
 
 # ---------------------------------------------------------------- what each row most likely belonged to
 def merge_history(target, children):
-    """({retired SKU id: the merge that retired it}, merges): when, by whom, automatic or reviewed, why, and the alternos the SKU had
-    then when the matching worker merged it (None when nothing recorded them)."""
+    """({retired SKU id: the merge that retired it}, merges): when, by whom, automatic or reviewed, why, and what the SKU brought: the
+    alternos, stock rows and photos the merge recorded (merges since Separar SKU), or the alternos in the matching worker's snapshot
+    (codes None when nothing recorded them)."""
     ids = {str(child.pk) for child in children}
     merges = list(CatalogMerge.objects.filter(target_id__in=[target.pk, *ids]).select_related('actor').order_by('created_at'))
     decisions = {}
@@ -89,10 +90,11 @@ def merge_history(target, children):
             pk = str(source.get('id'))
             if pk not in ids or pk in history:
                 continue
-            snapshot = snapshots.get(pk)
+            recorded = source if 'codes' in source else snapshots.get(pk)
             history[pk] = {'merged_at': merge.created_at, 'merged_by': merge.actor.username, 'automatic': merge.actor.username == SERVICE_ACCOUNT,
                            'method': METHODS.get(method, method) if decision else 'Agrupar SKU',
-                           'codes': [{'brand': code.get('brand', ''), 'code': code.get('code', '')} for code in snapshot.get('codes', [])] if snapshot else None}
+                           'codes': [{'brand': code.get('brand', ''), 'code': code.get('code', '')} for code in recorded.get('codes', [])] if recorded else None,
+                           'items': [str(item) for item in source.get('items', [])], 'images': [str(image) for image in source.get('images', [])]}
     return history, merges
 
 
@@ -104,17 +106,22 @@ def code_returns(code, child, history):
 
 
 class Owners:
-    """The restored SKU a row most likely came from ('' for the canonical SKU). A code a snapshot lists goes to the SKU merged first
-    (its first owner); a stock row to the SKU its supplier code names; a photo to the SKU in its storage path."""
+    """The restored SKU a row most likely came from ('' for the canonical SKU). A row the merge recorded goes to the SKU that brought it,
+    and a code a snapshot lists to the SKU merged first (its first owner); otherwise a stock row goes to the SKU its supplier code names
+    and a photo to the SKU in its storage path."""
 
     def __init__(self, children, history):
         late = timezone.now()
         ordered = sorted(children, key=lambda child: (history.get(str(child.pk), {}).get('merged_at') or late, child.sku))
         self.ids = [str(child.pk) for child in ordered]
         self.skus = {normalized_reference(child.sku): str(child.pk) for child in ordered}
-        self.snapshot, self.numbers, self.company, self.company_numbers = {}, {}, {}, {}
+        self.snapshot, self.numbers, self.company, self.company_numbers, self.items, self.images = {}, {}, {}, {}, {}, {}
         for child in ordered:
             pk = str(child.pk)
+            for item in history.get(pk, {}).get('items') or []:
+                self.items.setdefault(item, pk)
+            for image in history.get(pk, {}).get('images') or []:
+                self.images.setdefault(image, pk)
             for code in history.get(pk, {}).get('codes') or []:
                 self.snapshot.setdefault((code['brand'], code['code']), pk)
                 self.numbers.setdefault(normalized_reference(code['code']), pk)
@@ -134,6 +141,8 @@ class Owners:
         return self.snapshot.get((code.brand, code.code)) or self.company.get((code.brand, number), ''), ''
 
     def item(self, item):
+        if str(item.pk) in self.items:
+            return self.items[str(item.pk)]
         number = normalized_reference(item.codigo)
         brand = (item.brand or '').strip().upper()
         return (self.skus.get(number) or self.numbers.get(number) or self.company.get((brand, number))
@@ -141,7 +150,7 @@ class Owners:
 
     def image(self, image):
         name = image.image.name or ''
-        return next((pk for pk in self.ids if f'/{pk}/' in name), '')
+        return self.images.get(str(image.pk)) or next((pk for pk in self.ids if f'/{pk}/' in name), '')
 
 
 def split_plan(target):

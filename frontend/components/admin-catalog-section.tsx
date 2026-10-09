@@ -6,14 +6,15 @@ import { Boxes, BrainCircuit, Check, ClipboardCheck, Combine, FileSpreadsheet, F
 import { CatalogGroupingCandidate, CatalogImportIssuePage, ManagedAlternate, ManagedPart, ManagedStockItem, Page, request } from '@/lib/types';
 import { patchRows } from '@/lib/grid-flash';
 import ServerGrid from './server-grid';
-import { alternateColumns, alternateOrdering, CatalogGridActions, catalogColumns, catalogFieldColumns, catalogOrdering, parseSubgroup, pastedCodes, stockColumns,
-  stockOrdering } from './admin-catalog-grids';
+import { alternateColumns, alternateOrdering, CatalogGridActions, catalogColumns, catalogContextMenu, catalogFieldColumns, catalogOrdering, parseSubgroup, pastedCodes,
+  stockColumns, stockOrdering } from './admin-catalog-grids';
 import { AlternateEditor, MatchEditor, PartEditor, RemoveAlternate } from './admin-catalog-editors';
 import { UppercaseInput } from './uppercase-field';
 import CatalogImport from './admin-catalog-import';
 import ImportIssues from './admin-import-issues';
 import CatalogGrouping from './admin-catalog-grouping';
 import CatalogSplit from './admin-catalog-split';
+import CatalogMergeWith from './admin-catalog-merge';
 import InventoryAssistant from './admin-inventory-assistant';
 import CatalogImages from './admin-catalog-images';
 import SmartMatching from './admin-smart-matching';
@@ -55,6 +56,7 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
   const [groupingOpen, setGroupingOpen] = useState(false);
   // Separar SKU: null opens its list, a SKU opens that SKU's split.
   const [splitTarget, setSplitTarget] = useState<{ id: string; sku: string } | null | undefined>();
+  const [mergeParts, setMergeParts] = useState<ManagedPart[] | null>(null);  // Agrupar con…, from the grid's right click
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [pendingIssueCount, setPendingIssueCount] = useState<number | null>(null);
   const [notice, setNotice] = useState(''); const [revision, setRevision] = useState(0);
@@ -95,7 +97,7 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
     </div>}
     {notice && <div className="notice success admin-notice" role="status"><Check size={16}/>{notice}</div>}
     {kind === 'alternates' && reviewView ? <AlternateReview onCount={setReviewCount} onChanged={reviewChanged}/>
-      : <Collection onTechnical={setTechnicalPart} onImages={setImagePart} key={kind} kind={kind} revision={revision} onEditPart={setPartEditor} onEditAlternate={setAlternateEditor} onEditMatch={setMatchEditor} onRemoveAlternate={setRemoveAlternate} onSplit={setSplitTarget}/>}
+      : <Collection onTechnical={setTechnicalPart} onImages={setImagePart} key={kind} kind={kind} revision={revision} onEditPart={setPartEditor} onEditAlternate={setAlternateEditor} onEditMatch={setMatchEditor} onRemoveAlternate={setRemoveAlternate} onSplit={setSplitTarget} onMerge={setMergeParts}/>}
     <p className="admin-footnote">{kind === 'alternates' && reviewView ? 'Conservar marca el código como confirmado por ti y la limpieza de copias nunca lo retira. Retirar lo quita del SKU. Los clientes siguen viendo los códigos que llegan por número OEM.' : kind === 'alternates' ? 'Los alternos de un SKU también aparecen en su editor de inventario interno. Cada artículo del proveedor mantiene su propio inventario e historial.' : kind === 'catalog' ? 'El SKU maestro no tiene marca. Sus referencias identifican piezas equivalentes; los artículos del proveedor conservan sus propios códigos y existencias.' : 'Los registros conservan el ID de inventario de cada proveedor y su vínculo con el SKU interno.'}</p>
     {matchingOpen && <SmartMatching onClose={()=>setMatchingOpen(false)} onSaved={()=>saved('Coincidencias actualizadas.')} onOpenSuffixes={token => { setSuffixSearch(token); setSuffixesOpen(true); }} onOpenGrouping={family => { setGroupingFamily(family); setGroupingOpen(true); }}/>}
     {suffixesOpen && <CatalogSuffixes initialSearch={suffixSearch} onClose={()=>{ setSuffixesOpen(false); setSuffixSearch(''); setRevision(value => value + 1); }}/>}
@@ -107,6 +109,7 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
     {importOpen && <CatalogImport onClose={() => { setImportOpen(false); setRevision(value => value + 1); }} onSaved={summary => { setImportOpen(false); saved(`Importación completada: ${summary.created_skus} SKU nuevos, ${summary.updated_skus} SKU actualizados y ${summary.added_codes} alternos nuevos.${summary.rejected_rows ? ` ${summary.rejected_rows} ${summary.rejected_rows === 1 ? 'fila pendiente' : 'filas pendientes'} de corregir en «Errores de importación».` : summary.skipped_rows ? ` ${summary.skipped_rows} ${summary.skipped_rows === 1 ? 'fila excluida' : 'filas excluidas'}.` : ''}`); }}/>} 
     {issuesOpen && <ImportIssues onClose={() => { setIssuesOpen(false); setRevision(value => value + 1); }} onSaved={() => saved('Fila corregida y guardada en el inventario interno.')}/>}
     {splitTarget !== undefined && <CatalogSplit part={splitTarget} onClose={() => setSplitTarget(undefined)} onChanged={saved}/>}
+    {mergeParts && <CatalogMergeWith key={mergeParts.map(part => part.id).join()} parts={mergeParts} onClose={() => setMergeParts(null)} onSaved={text => { setMergeParts(null); saved(text); }}/>}
     {groupingOpen && <CatalogGrouping initialFamily={groupingFamily} onClose={() => { setGroupingOpen(false); setGroupingFamily(null); }} onSaved={(targetSku, count) => saved(`${count} ${count === 1 ? 'SKU agrupado' : 'SKU agrupados'} bajo ${targetSku}.`)}/>}
     {assistantOpen && <InventoryAssistant onClose={()=>setAssistantOpen(false)} onSaved={()=>saved('Clasificación de inventario actualizada desde el asistente IA.')}/>}
     {alternateEditor !== undefined && <AlternateEditor alternate={alternateEditor} onClose={() => setAlternateEditor(undefined)} onSaved={() => { setAlternateEditor(undefined); saved('Alterno guardado.'); }}/>}
@@ -115,7 +118,7 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
   </section>;
 }
 
-function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditAlternate, onEditMatch, onRemoveAlternate, onSplit }: { onTechnical: (part: ManagedPart) => void; onImages: (part: ManagedPart) => void; kind: Kind; revision: number; onEditPart: (part: ManagedPart) => void; onEditAlternate: (alternate: ManagedAlternate) => void; onEditMatch: (item: ManagedStockItem) => void; onRemoveAlternate: (alternate: ManagedAlternate) => void; onSplit: (part: { id: string; sku: string }) => void }) {
+function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditAlternate, onEditMatch, onRemoveAlternate, onSplit, onMerge }: { onTechnical: (part: ManagedPart) => void; onImages: (part: ManagedPart) => void; kind: Kind; revision: number; onEditPart: (part: ManagedPart) => void; onEditAlternate: (alternate: ManagedAlternate) => void; onEditMatch: (item: ManagedStockItem) => void; onRemoveAlternate: (alternate: ManagedAlternate) => void; onSplit: (part: { id: string; sku: string }) => void; onMerge: (parts: ManagedPart[]) => void }) {
   const [oemFilter, setOemFilter] = useState('');
   const [search, setSearch] = useState(''); const [query, setQuery] = useState('');
   const [count, setCount] = useState<number | null>(null);
@@ -150,7 +153,8 @@ function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditA
   }, [busy]);
   const onCodesChanged = useCallback((partId: string) => { refreshRows([partId]).catch(error => setCellStatus({ kind: 'error', text: errorText(error) })); }, [refreshRows]);
   const actions = useMemo<CatalogGridActions>(() => ({ onEditPart, onTechnical, onImages, onEditAlternate, onRemoveAlternate, onEditMatch, onCodesChanged,
-    onSplit: (part: ManagedPart) => onSplit({ id: part.id, sku: part.sku }) }), [onEditPart, onTechnical, onImages, onEditAlternate, onRemoveAlternate, onEditMatch, onCodesChanged, onSplit]);
+    onSplit: (part: ManagedPart) => onSplit({ id: part.id, sku: part.sku }), onMerge }),
+    [onEditPart, onTechnical, onImages, onEditAlternate, onRemoveAlternate, onEditMatch, onCodesChanged, onSplit, onMerge]);
   const params = useMemo(() => ({ search: query, is_OEM: kind === 'catalog' ? oemFilter : '' }), [query, oemFilter, kind]);
   const isSaving = useCallback(() => saving.current, []);
   const edit = useMemo(() => editing && subgroups ? { subgroups, isSaving } : null, [editing, subgroups, isSaving]);
@@ -221,7 +225,8 @@ function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditA
     if (flushTimer.current) clearTimeout(flushTimer.current);
     flushTimer.current = setTimeout(() => void flush(), BATCH_MS);
   }, [flush, pasteCodes]);
-  const editProps = useMemo(() => ({ onCellValueChanged, stopEditingWhenCellsLoseFocus: true, undoRedoCellEditing: true, undoRedoCellEditingLimit: 20 }), [onCellValueChanged]);
+  const catalogGridProps = useMemo(() => ({ onCellValueChanged, stopEditingWhenCellsLoseFocus: true, undoRedoCellEditing: true, undoRedoCellEditingLimit: 20,
+    getContextMenuItems: catalogContextMenu }), [onCellValueChanged]);
   // Delta polling: the rows on screen, re-read while the page is visible and nothing is being edited or saved.
   useEffect(() => {
     if (kind !== 'catalog') return;
@@ -257,7 +262,7 @@ function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditA
       {cellStatus && cellStatus.kind !== 'error' && <span className={`inventory-edit-status ${cellStatus.kind}`} role="status">{cellStatus.text}</span>}</p>}
     {cellStatus?.kind === 'error' && <div className="notice error" role="alert">{cellStatus.text}<button type="button" onClick={() => setCellStatus(null)}>Cerrar</button></div>}
     {kind === 'catalog' ? <ServerGrid<ManagedPart> storageKey="admin-catalog" label="Inventario interno" path="/api/management/catalog" params={params} columns={partColumns} rowId={part => part.id} ordering={catalogOrdering} revision={revision} rowHeight={64} context={actions} empty={empty} onCount={setCount}
-      gridProps={editProps} onReady={api => { grid.current = api; }}/>
+      gridProps={catalogGridProps} onReady={api => { grid.current = api; }}/>
       : kind === 'inventory' ? <ServerGrid<ManagedStockItem> storageKey="admin-stock" label="Existencias por proveedor" path="/api/management/inventory" params={params} columns={stockColumns} rowId={item => String(item.id)} ordering={stockOrdering} revision={revision} rowHeight={58} context={actions} empty={empty} onCount={setCount}/>
       : <ServerGrid<ManagedAlternate> storageKey="admin-alternates" label="Alternos" path="/api/management/alternates" params={params} columns={codeColumns} rowId={alternate => String(alternate.id)} ordering={alternateOrdering} revision={revision} rowHeight={58} context={actions} empty={empty} onCount={setCount}/>}
   </>;

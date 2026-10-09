@@ -4,7 +4,7 @@ from .catalog_split import pair
 from .catalog_split_models import CatalogSeparation, CatalogSplit
 from .matching_engine import reconcile_catalog
 from .matching_queue import matching_work
-from .models import Account, CatalogMerge, Part, PartCode, User
+from .models import Account, CatalogMerge, Part, PartCode, SupplierItem, User
 from .oem_reference import upsert_reference
 from .oem_reference_models import PartOEMLink
 from .services import ingest_inventory
@@ -152,3 +152,22 @@ class CatalogSplitTests(APITestCase):
         self.assertEqual(self.client.get(URL, {'ids': str(parent.pk)}).json()['results'][0]['merged_count'], 3)
         edited = self.client.post(f'{URL}bulk-edit/', {'rows': [{'id': str(parent.pk), 'description': 'TAMBOR KIA PICANTO 04-11 TRAS'}]}, format='json')
         self.assertEqual(edited.json()['updated'][0]['merged_count'], 3)  # a grid edit keeps the badge
+
+    def test_a_merge_by_hand_records_what_each_sku_brought_so_its_split_is_exact(self):
+        main = Part.objects.create(sku='43512-60150', description='DISCO FRENO DEL TOY LAND CRUISER')
+        other = Part.objects.create(sku='DF-4512', description='DISCO FRENO DEL TOY LAND CRUISER')
+        PartCode.objects.create(part=other, brand='GMB', code='GD-4512', ref_type='company')
+        item = ingest_inventory(supplier=self.supplier, actor=self.admin, data={'update_id': 'X-1', 'supplier_invent_id': 'X-1', 'codigo': 'ZX 77',
+                                'brand': '', 'description': 'DISCO', 'source': 'upload', 'quantity': 3})
+        SupplierItem.objects.filter(pk=item.pk).update(part=other, matching_status='matched')  # a code that names neither SKU
+        merged = self.client.post(f'{URL}grouping/merge/', {'target_sku': main.sku, 'source_skus': [other.sku]}, format='json')
+        self.assertEqual(merged.status_code, 200, merged.content)
+        self.assertEqual(CatalogMerge.objects.get().sources, [{'id': str(other.pk), 'sku': 'DF-4512', 'codes': [{'brand': 'GMB', 'code': 'GD-4512'}],
+                                                              'items': [str(item.pk)], 'images': []}])
+        plan = self.plan(main)
+        self.assertEqual(plan['children'][0]['codes'], [{'brand': 'GMB', 'code': 'GD-4512'}])
+        self.assertEqual({code['code']: code['suggested'] for code in plan['codes']}['GD-4512'], str(other.pk))
+        self.assertEqual([entry['suggested'] for entry in plan['items']], [str(other.pk)])
+        response = self.split(main, self.restore(plan, 'DF-4512'))
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(list(SupplierItem.objects.filter(part=other).values_list('pk', flat=True)), [item.pk])

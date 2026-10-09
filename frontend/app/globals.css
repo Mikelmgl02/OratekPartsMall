@@ -2138,3 +2138,15 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .split-image { display:flex; flex-direction:column; gap:6px; margin:0; min-width:0; }
 .split-image img { width:100%; aspect-ratio:1; object-fit:cover; border:1px solid var(--line); border-radius:8px; background:#f6f7f3; }
 @media (max-width:600px) { .split-row { grid-template-columns:minmax(0,1fr); } .split-filters .inventory-filter-select { width:100%; } }
+/* Agrupar con… (the grid's right click): pick the principal SKU, add others by search */
+.merge-editor { display:flex; flex-direction:column; gap:16px; min-width:0; }
+.merge-editor>h3 { font-size:15px; }
+.merge-member-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.merge-member .grouping-select input { width:17px; height:17px; accent-color:#617d44; flex-shrink:0; }
+.merge-add { display:flex; flex-direction:column; gap:8px; min-width:0; }
+.merge-add .admin-search { flex:none; max-width:none; margin-bottom:0; }
+.merge-results { display:flex; flex-direction:column; border:1px solid var(--line); border-radius:9px; background:white; }
+.merge-result { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:9px 14px; }
+.merge-result+.merge-result { border-top:1px solid var(--line); }
+.merge-result>.button { flex-shrink:0; }
+.merge-empty { padding:12px 14px; color:#7c8b6f; font-size:11px; }
