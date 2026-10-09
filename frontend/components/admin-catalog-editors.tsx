@@ -36,7 +36,8 @@ export function PartEditor({ part, onClose, onSaved }: { part: ManagedPart | nul
     try { onSaved(await request<ManagedPart>(`${base}/catalog${part ? `/${part.id}` : ''}`, { method: part ? 'PATCH' : 'POST', body: JSON.stringify(payload) })); }
     catch (error) { setError(message(error)); } finally { setBusy(false); }
   }
-  return <Modal title={part ? `Editar SKU · ${part.sku}` : 'Crear SKU'} onClose={onClose} wide><form autoComplete="off" className="stack-form catalog-editor" onSubmit={submit}>
+  // A side panel over the grid, which stays as it was (rows and scroll position) behind it.
+  return <Modal title={part ? `Editar SKU · ${part.sku}` : 'Crear SKU'} onClose={onClose} wide drawer className="side-panel"><form autoComplete="off" className="stack-form catalog-editor" onSubmit={submit}>
     <div className="form-row"><label>SKU principal (MAIN)<UppercaseInput name="internal_sku" defaultValue={part?.sku} onChange={() => setIsOEM(false)} required maxLength={200} placeholder="Ej.: 58411-1R000"/></label><label>Nombre del repuesto (opcional)<UppercaseInput name="part_label" defaultValue={part?.name} maxLength={200} placeholder="Ej.: Disco de freno delantero"/></label></div>
     <label className="admin-checkbox"><input type="checkbox" name="is_OEM" checked={isOEM} onChange={event => setIsOEM(event.target.checked)}/>EL SKU PRINCIPAL ES OEM</label>
     <p className="form-footnote">Marca esta opción cuando hayas identificado el código principal como OEM. Sin marcar significa interno, de empresa o aún sin verificar. Cada alterno conserva su propio tipo de referencia.</p>

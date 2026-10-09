@@ -201,7 +201,7 @@ export function OEMLibraryPanel() {
           gridProps={gridProps} onReady={api => { grid.current = api; }}
           empty={<div className="empty-state"><Library size={30}/><h3>{filtered ? 'No hay números con estos filtros.' : 'La biblioteca OEM está vacía.'}</h3><p>{filtered ? 'Prueba con otra búsqueda o quita un filtro.' : 'Los alternos OEM del catálogo aparecen aquí solos; también puedes agregar un número con su fuente.'}</p></div>}/>
         <p className="form-footnote">Los alternos OEM del catálogo (buscador OEM, Revisión OEM, editor de inventario y búsquedas con IA aprobadas) se reflejan aquí solos; al retirar el alterno se retira su fuente. Los alternos de posventa vienen de los catálogos de marca de repuesto y pertenecen al número: cada SKU vinculado los muestra.</p>
-    {panel && <Modal title={panel.kind === 'add' ? 'Agregar número OEM' : 'Número OEM'} drawer className="oem-drawer" onClose={() => setPanel(null)}>
+    {panel && <Modal title={panel.kind === 'add' ? 'Agregar número OEM' : 'Número OEM'} drawer className="side-panel" onClose={() => setPanel(null)}>
       {panel.kind === 'detail' ? <ReferenceDetail key={panel.id} id={panel.id} initialNotice={panel.notice} onOpen={id => setPanel({ kind: 'detail', id })} onChanged={rowChanged}/>
         : <AddReference onSaved={(id, created) => { setRevision(value => value + 1); setPanel({ kind: 'detail', id, notice: created ? 'Número agregado a la biblioteca.' : 'El número ya estaba en la biblioteca: se unieron la forma escrita y la fuente.' }); }}/>}
     </Modal>}

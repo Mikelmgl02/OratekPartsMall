@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { CellValueChangedEvent, GridApi } from 'ag-grid-community';
+import type { CellDoubleClickedEvent, CellValueChangedEvent, GridApi } from 'ag-grid-community';
 import { Boxes, BrainCircuit, Check, ClipboardCheck, Combine, FileSpreadsheet, FileWarning, Layers3, Library, LoaderCircle, PencilLine, Plus, Repeat2, Search, Tags, Ungroup, Wand2, Warehouse } from 'lucide-react';
 import { CatalogGroupingCandidate, CatalogImportIssuePage, ManagedAlternate, ManagedPart, ManagedStockItem, Page, request } from '@/lib/types';
 import { useGridEdits } from '@/lib/use-grid-edits';
@@ -176,7 +176,9 @@ function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditA
     else if (column === 'active') queue(part.id, { active: part.active }, { active: event.oldValue });
   }, [queue, pasteCodes]);
   const catalogGridProps = useMemo(() => ({ onCellValueChanged, stopEditingWhenCellsLoseFocus: true, undoRedoCellEditing: true, undoRedoCellEditingLimit: 20,
-    getContextMenuItems: catalogContextMenu }), [onCellValueChanged]);
+    getContextMenuItems: catalogContextMenu,
+    onCellDoubleClicked: (event: CellDoubleClickedEvent<ManagedPart>) => { if (event.column.getColId() === 'sku' && event.data) onEditPart(event.data); } }),
+    [onCellValueChanged, onEditPart]);
   function toggleEditing() {
     grid.current?.stopEditing();
     void flush();

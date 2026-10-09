@@ -2159,8 +2159,10 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .oem-status-reason { display:flex; flex-direction:column; gap:6px; color:#637455; font-size:11px; }
 .oem-status-reason textarea { width:100%; padding:8px 10px; border:1px solid #dce4d2; border-radius:7px; font-size:12px; resize:vertical; }
 .oem-status-editor>.button { justify-self:start; }
-/* Biblioteca OEM's side panel: the library stays in view behind it (dimmed, not blurred), rows and scroll exactly where they were */
-.modal.oem-drawer::backdrop { background:#14201a2e; backdrop-filter:none; }
+/* Admin side panels (the SKU editor, Biblioteca OEM's detail): the grid stays in view behind them, dimmed but not blurred, with its rows
+   and scroll exactly where they were. A wide one fits the SKU editor's equivalences table. */
+.modal.drawer.side-panel::backdrop { background:#14201a2e; backdrop-filter:none; }
+.modal.drawer.wide { width:min(770px,100%); }
 /* Marcar como OEM (the grid's right click): one card per SKU with the make of its number */
 .oem-mark-row { gap:8px; }
 .oem-mark-row .grouping-select span { font-weight:600; color:#405238; }
@@ -2171,3 +2173,7 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .oem-mark-warning { color:#8a5a14; font-size:11px; line-height:1.5; }
 .oem-mark-blocked { color:#a05845; font-size:11px; font-weight:600; }
 .oem-mark-note { color:#5f7d3f; font-size:11px; font-weight:600; }
+/* The SKU code in the Inventario grid opens the SKU editor */
+.sku-open { min-width:0; padding:0; border:0; background:none; color:inherit; font:inherit; text-align:left; cursor:pointer; }
+.sku-open strong { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sku-open:hover strong,.sku-open:focus-visible strong { color:#46632d; text-decoration:underline; text-underline-offset:3px; }

@@ -35,8 +35,10 @@ function SkuCell({ data, context }: Cell<ManagedPart>) {
   if (!data) return null;
   const tone = data.is_OEM ? 'oem' : data.identity?.status === 'choose_oem' ? 'choose' : 'pending';
   const merged = data.merged_count ?? 0;
-  // The SKUs a grouping retired into this one: the badge opens Separar SKU on it.
-  return <div className="admin-grid-stack"><div className="sku-line"><strong>{data.sku}</strong>{merged > 0 && <button type="button" className="sku-merged"
+  // The code opens the SKU editor (so does a double click anywhere in the cell); the badge, the SKUs a grouping retired into this one,
+  // opens Separar SKU on it.
+  return <div className="admin-grid-stack"><div className="sku-line"><button type="button" className="sku-open" title="Abrir el editor del SKU"
+      onClick={() => context.onEditPart(data)}><strong>{data.sku}</strong></button>{merged > 0 && <button type="button" className="sku-merged"
       aria-label={`${merged} ${merged === 1 ? 'SKU agrupado' : 'SKU agrupados'} en ${data.sku}: separar`} title="SKU agrupados en este SKU · clic para separarlos"
       onClick={() => context.onSplit(data)}><Ungroup size={11} aria-hidden="true"/>{merged}</button>}</div>
     <span className={`sku-identity ${tone}`}>{identityText(data)}</span></div>;
