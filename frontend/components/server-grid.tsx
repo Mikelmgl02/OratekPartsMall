@@ -63,6 +63,10 @@ export default function ServerGrid<T>({ storageKey, label, path, params, columns
   const [fill, setFill] = useState<number | null>(null);
   const [count, setCount] = useState<number | null>(null);
   const [error, setError] = useState('');
+  // Popups (cell editors, menus, selects) open on the page rather than inside the grid frame, so a short grid (a search that leaves a row
+  // or two) never clips them; in a dialog they open in the dialog, whose top layer would otherwise cover them.
+  const [popupParent, setPopupParent] = useState<HTMLElement | null>(null);
+  useLayoutEffect(() => { setPopupParent(frame.current?.closest('dialog') ?? document.body); }, []);
   // The datasource reads the current filters from refs: AG Grid keeps one datasource and asks it again after a refresh.
   const current = useRef({ params, ordering, generation: 0 });
   current.current.params = params; current.current.ordering = ordering;
@@ -139,7 +143,8 @@ export default function ServerGrid<T>({ storageKey, label, path, params, columns
       <AgGridReact<T> ref={grid} theme={motionGridTheme} localeText={gridLocale} rowModelType="serverSide" serverSideDatasource={datasource}
         cacheBlockSize={pageSize} maxBlocksInCache={40} blockLoadDebounceMillis={80} getRowId={({ data }: GetRowIdParams<T>) => rowId(data)}
         columnDefs={columnDefs} defaultColDef={defaultColumn} rowHeight={rowHeight} context={context} initialState={initialState} onStateUpdated={remember}
-        cellSelection enableBrowserTooltips ensureDomOrder suppressColumnVirtualisation loadThemeGoogleFonts={false} onGridReady={event => onReady?.(event.api)} {...gridProps}/>
+        cellSelection enableBrowserTooltips ensureDomOrder suppressColumnVirtualisation loadThemeGoogleFonts={false} popupParent={popupParent}
+        onGridReady={event => onReady?.(event.api)} {...gridProps}/>
       {count === 0 && <div className="admin-grid-empty">{empty}</div>}
     </div>
   </div>;

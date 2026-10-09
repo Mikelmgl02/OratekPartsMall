@@ -22,7 +22,8 @@ from mall.catalog_suffix_views import CompanySuffixes, SuffixDetail, SuffixList
 from mall.oem_finder_views import OEMApplyHaltView, OEMRunDetail, OEMRunList, OEMRunRevert, OEMRunSpotCheck
 from mall.oem_review_views import OEMReviewBulk, OEMReviewBulkStep, OEMReviewDecide, OEMReviewList, OEMReviewSummary
 from mall.oem_auto_views import OEMPendingApply, OEMPendingList, OEMPendingPreview, OEMPendingSendToReview
-from mall.oem_reference_views import OEMReferenceItem, OEMReferenceList, PartOEMEquivalents
+from mall.oem_reference_views import (OEMReferenceBulkEdit, OEMReferenceCrossReference, OEMReferenceCrossReferences, OEMReferenceItem, OEMReferenceList,
+                                     OEMReferencePartTypes, PartOEMEquivalents)
 from mall.alternate_review import AlternateReviewItem, AlternateReviewList
 from mall.catalog_media import CatalogImages, CatalogImageDetail, CatalogImageOrder
 from mall.catalog_grouping_suggestions import CatalogGroupingList, CatalogGroupingClassify
@@ -92,7 +93,11 @@ urlpatterns = [
     path('api/v1/management/oem-review/bulk/<int:pk>/', OEMReviewBulkStep.as_view()),
     path('api/v1/management/oem-review/<int:pk>/', OEMReviewDecide.as_view()),
     path('api/v1/management/oem-references/', OEMReferenceList.as_view()),
+    path('api/v1/management/oem-references/part-types/', OEMReferencePartTypes.as_view()),
+    path('api/v1/management/oem-references/bulk-edit/', OEMReferenceBulkEdit.as_view()),
     path('api/v1/management/oem-references/<uuid:pk>/', OEMReferenceItem.as_view()),
+    path('api/v1/management/oem-references/<uuid:pk>/cross-references/', OEMReferenceCrossReferences.as_view()),
+    path('api/v1/management/oem-references/<uuid:pk>/cross-references/<int:code_id>/', OEMReferenceCrossReference.as_view()),
     path('api/v1/management/matching/', MatchingOverview.as_view()),
     path('api/v1/management/matching/<uuid:pk>/', MatchingReview.as_view()),
     path('api/v1/management/inventory/', management.InventoryList.as_view()),

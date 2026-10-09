@@ -3,6 +3,7 @@ with its first source; one reference with its sources, linked SKUs, aftermarket 
 version the reviewer saw (409 with the current reference otherwise). Repeating an action that is already in place returns the
 reference unchanged. A catalog SKU's OEM numbers and the aftermarket codes it reaches through them are read-only here.
 """
+import uuid
 from collections import Counter
 
 from django.db import connection, transaction
@@ -21,8 +22,8 @@ from .management import IsSuperuser, UppercaseCharField
 from .models import Part
 from .oem_links import MIN_SEARCH, part_equivalents
 from .oem_links import tables_ready as oem_links_ready
-from .oem_reference_models import (LINK_SOURCES, MANUAL_KINDS, REFERENCE_STATUSES, SOURCE_KINDS, OEMCrossReference, OEMReference,
-                                   OEMReferenceSource, compact, manufacturer_name)
+from .oem_reference_models import (LINK_SOURCES, MANUAL_KINDS, REFERENCE_STATUSES, SOURCE_KINDS, OEMCrossReference, OEMCrossReferenceRetired,
+                                   OEMReference, OEMReferenceSource, citation_list, compact, manufacturer_name)
 
 REFERENCE_LOCK = 724631112  # pg advisory lock key of supersession edits (matching 724631109, quote assistant 724631110, suffixes 724631111)
 ACTIONS = ['edit', 'add_source', 'remove_source', 'dispute', 'clear_dispute', 'set_superseded_by', 'clear_superseded_by']
@@ -32,6 +33,8 @@ VIA = ['sku', 'oem', 'company', 'unknown', *values(LINK_SOURCES)]
 CROSS_PREVIEW = 3
 CONFLICT = 'La referencia cambió desde que la revisaste. Revisa sus valores actuales antes de continuar.'
 MAX_CHAIN = 50
+MAX_ROW_IDS = 100
+MAX_BULK_ROWS = 500
 
 
 class OEMReferenceUnavailable(APIException):
@@ -320,7 +323,7 @@ def plan(ref, data, user):
 
 
 SORTABLE = {'code': ('code',), 'manufacturer': ('manufacturer', 'code'), 'status': ('status',), 'family': ('family',),
-            'part_type': ('part_type',), 'updated_at': ('updated_at',)}
+            'part_type': ('part_type',), 'description': ('description',), 'updated_at': ('updated_at',)}
 
 
 def ordering(value):
@@ -342,12 +345,18 @@ class OEMReferenceList(APIView):
         OpenApiParameter('status', OpenApiTypes.STR, enum=values(REFERENCE_STATUSES)),
         OpenApiParameter('source_kind', OpenApiTypes.STR, enum=values(SOURCE_KINDS), description='Con al menos una fuente de ese tipo.'),
         OpenApiParameter('linked', OpenApiTypes.STR, enum=['true', 'false'], description='true: algún SKU del catálogo lleva el número; false: ninguno.'),
-        OpenApiParameter('ordering', OpenApiTypes.STR, description='Orden del grid, separado por comas, con - para descendente: code, manufacturer, status, family, part_type, updated_at.'),
+        OpenApiParameter('ordering', OpenApiTypes.STR, description='Orden del grid, separado por comas, con - para descendente: code, manufacturer, status, family, part_type, description, updated_at.'),
+        OpenApiParameter('ids', OpenApiTypes.STR, description=f'Hasta {MAX_ROW_IDS} referencias separadas por comas: las filas que un grid vuelve a leer.'),
         OpenApiParameter('page', OpenApiTypes.INT)],
         description='Biblioteca de números OEM (forma compacta) con sus fuentes y los SKU del catálogo que los llevan, más conteos por estado y fabricante.')
     def get(self, request):
         require_tables()
         params, rows = request.query_params, rows_query()
+        if params.get('ids'):  # the rows a grid shows, re-read to patch what changed elsewhere
+            try:
+                rows = rows.filter(pk__in=[uuid.UUID(value.strip()) for value in params['ids'].split(',') if value.strip()][:MAX_ROW_IDS])
+            except ValueError:
+                raise ValidationError({'ids': 'Usa identificadores de referencia separados por comas.'})
         text = ' '.join(params.get('q', '').upper().split())
         if text:
             match = Q(printed_forms__icontains=text) | Q(description__icontains=text) | Q(part_type__icontains=text)
@@ -440,3 +449,137 @@ class PartOEMEquivalents(APIView):
         if part is None:
             raise NotFound('Ese SKU no está en el catálogo.')
         return Response(PartOEMEquivalentsResponse(part_equivalents(part)).data)
+
+
+def list_rows(ids):
+    """References as the library grid lists them (sources, linked SKUs, aftermarket codes), for the given ids."""
+    return OEMReferenceRow(decorate(list(rows_query().filter(pk__in=list(ids)).order_by('manufacturer', 'code'))), many=True).data
+
+
+def part_types():
+    return sorted(set(OEMReference.objects.exclude(part_type='').values_list('part_type', flat=True).distinct()))
+
+
+class OEMPartTypes(serializers.Serializer):
+    results = serializers.ListField(child=serializers.CharField())
+
+
+class OEMReferencePartTypes(APIView):
+    permission_classes = [IsSuperuser]
+
+    @extend_schema(operation_id='v1_management_oem_reference_part_types', responses=OEMPartTypes,
+                   description='Los tipos de pieza de la biblioteca OEM: los que Editar celdas ofrece (un tipo nuevo se escribe en el detalle del número).')
+    def get(self, request):
+        require_tables()
+        return Response({'results': part_types()})
+
+
+class OEMBulkEditRow(serializers.Serializer):
+    id = serializers.UUIDField()
+    expected_version = serializers.IntegerField(min_value=1, help_text='La versión que el grid mostraba; si cambió, no se guarda nada (409).')
+    description = UppercaseCharField(max_length=300, required=False, allow_blank=True)
+    part_type = UppercaseCharField(max_length=60, required=False, allow_blank=True)
+
+
+class OEMBulkEditRequest(serializers.Serializer):
+    rows = OEMBulkEditRow(many=True, allow_empty=False, max_length=MAX_BULK_ROWS)
+
+
+class OEMBulkEditResponse(serializers.Serializer):
+    updated = OEMReferenceRow(many=True)
+
+
+class OEMBulkEditConflict(serializers.Serializer):
+    detail = serializers.CharField()
+    rows = OEMReferenceRow(many=True, help_text='Las referencias como están ahora.')
+
+
+class OEMReferenceBulkEdit(APIView):
+    """Biblioteca OEM's Editar celdas: descriptions and part types of several numbers saved together, all or none, each under the version
+    the grid showed (the edit action of OEMReferenceItem, so the same rules)."""
+    permission_classes = [IsSuperuser]
+
+    @extend_schema(operation_id='v1_management_oem_reference_bulk_edit', request=OEMBulkEditRequest, responses={
+        200: OEMBulkEditResponse, 409: OpenApiResponse(OEMBulkEditConflict, description='Otra persona cambió alguna referencia: no se guardó nada.')},
+        description='Guarda juntos los cambios de descripción y tipo de pieza de varios números OEM: si uno falla o cambió desde que se mostró, no se guarda ninguno.')
+    def post(self, request):
+        require_tables()
+        data = OEMBulkEditRequest(data=request.data)
+        data.is_valid(raise_exception=True)
+        rows = data.validated_data['rows']
+        known = set(part_types())
+        with transaction.atomic():
+            refs = {ref.pk: ref for ref in OEMReference.objects.select_for_update().filter(pk__in=[row['id'] for row in rows]).order_by('pk')}
+            if len(refs) != len({row['id'] for row in rows}):
+                raise ValidationError({'detail': 'Uno de los números ya no está en la biblioteca OEM. Vuelve a cargar la tabla.'})
+            stale = [refs[row['id']] for row in rows if refs[row['id']].version != row['expected_version']]
+            if stale:
+                names = ', '.join(f'{ref.manufacturer} {ref.code}' for ref in stale[:5])
+                return Response({'detail': f'No se guardó ningún cambio: otra persona cambió {names} mientras editabas. Revisa sus valores actuales.',
+                                 'rows': list_rows(ref.pk for ref in stale)}, status=409)
+            for row in rows:
+                fields = {field: row[field] for field in ('description', 'part_type') if field in row}
+                if fields.get('part_type') and fields['part_type'] not in known:
+                    raise ValidationError({'detail': f'No se guardó ningún cambio: {fields["part_type"]} no es un tipo de pieza de la biblioteca. '
+                                                     'Escribe un tipo nuevo en el detalle del número.'})
+                apply = plan(refs[row['id']], {'action': 'edit', **fields}, request.user)
+                if apply is not None:
+                    apply()
+        return Response({'updated': list_rows(refs)})
+
+
+class OEMCrossReferenceInput(serializers.Serializer):
+    brand = UppercaseCharField(max_length=120, help_text='La marca de repuesto (AISIN, GMB, FEBEST...).')
+    code = UppercaseCharField(max_length=120)
+
+
+class OEMReferenceCrossReferences(APIView):
+    """An aftermarket code added by hand to a number (Biblioteca OEM, Alternos): it takes a manual citation, and a code retired before
+    comes back."""
+    permission_classes = [IsSuperuser]
+
+    @extend_schema(operation_id='v1_management_oem_cross_reference_create', request=OEMCrossReferenceInput, responses={201: OEMCrossReferenceRow},
+                   description='Agrega a mano un alterno de posventa al número; todos los SKU vinculados lo muestran.')
+    def post(self, request, pk):
+        require_tables()
+        data = OEMCrossReferenceInput(data=request.data)
+        data.is_valid(raise_exception=True)
+        brand, code = manufacturer_name(data.validated_data['brand']), ' '.join(data.validated_data['code'].split())
+        number = compact(code)
+        if not brand:
+            raise ValidationError({'brand': 'Indica la marca del código.'})
+        if not number or not any(char.isdigit() for char in number):
+            raise ValidationError({'code': 'El código necesita al menos un dígito.'})
+        with transaction.atomic():
+            ref = OEMReference.objects.select_for_update().filter(pk=pk).first()
+            if ref is None:
+                raise NotFound('Ese número no está en la biblioteca OEM.')
+            if brand == ref.manufacturer:
+                raise ValidationError({'brand': f'Un código de {brand} es un número OEM, no un alterno de posventa: usa «Reemplazado por» en el detalle.'})
+            OEMCrossReferenceRetired.objects.filter(reference=ref, brand=brand, number=number).delete()
+            cite = f'Registro manual · {request.user.username}'
+            row = OEMCrossReference.objects.filter(reference=ref, brand=brand, number=number).first()
+            if row is None:
+                row = OEMCrossReference.objects.create(reference=ref, brand=brand, code=code, citations=[cite])
+            elif cite not in row.citations:
+                row.citations = citation_list(row.citations, cite)
+                row.save(update_fields=['citations', 'updated_at'])
+        return Response(OEMCrossReferenceRow(row).data, status=201)
+
+
+class OEMReferenceCrossReference(APIView):
+    """Retire an aftermarket code from a number: every linked SKU stops showing it, and no catalog import files it again."""
+    permission_classes = [IsSuperuser]
+
+    @extend_schema(operation_id='v1_management_oem_cross_reference_retire', responses={204: None},
+                   description='Retira el alterno de posventa del número; la importación de catálogos no lo vuelve a agregar (agregarlo a mano lo recupera).')
+    def delete(self, request, pk, code_id):
+        require_tables()
+        with transaction.atomic():
+            row = OEMCrossReference.objects.select_for_update().filter(pk=code_id, reference_id=pk).first()
+            if row is None:
+                raise NotFound('Ese alterno ya no está en el número.')
+            OEMCrossReferenceRetired.objects.update_or_create(reference_id=pk, brand=row.brand, number=row.number,
+                                                              defaults={'code': row.code, 'citations': row.citations, 'retired_by': request.user})
+            row.delete()
+        return Response(status=204)

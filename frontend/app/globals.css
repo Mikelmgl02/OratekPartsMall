@@ -2150,3 +2150,14 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .merge-result+.merge-result { border-top:1px solid var(--line); }
 .merge-result>.button { flex-shrink:0; }
 .merge-empty { padding:12px 14px; color:#7c8b6f; font-size:11px; }
+/* Biblioteca OEM, Editar celdas: the Alternos and Estado popups */
+.codes-editor-add .oem-alternos-add { grid-column:1 / -1; justify-content:center; }
+.oem-retire { display:flex; flex-direction:column; gap:8px; margin:0; padding:9px 11px; border-radius:8px; background:#fdf1ec; color:#7d3a2a; font-size:11px; line-height:1.5; }
+.oem-retire p { margin:0; }
+.oem-retire div { display:flex; flex-wrap:wrap; gap:8px; }
+.oem-status-note { margin:0; color:#33452c; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+.oem-status-reason { display:flex; flex-direction:column; gap:6px; color:#637455; font-size:11px; }
+.oem-status-reason textarea { width:100%; padding:8px 10px; border:1px solid #dce4d2; border-radius:7px; font-size:12px; resize:vertical; }
+.oem-status-editor>.button { justify-self:start; }
+/* Biblioteca OEM's side panel: the library stays in view behind it (dimmed, not blurred), rows and scroll exactly where they were */
+.modal.oem-drawer::backdrop { background:#14201a2e; backdrop-filter:none; }

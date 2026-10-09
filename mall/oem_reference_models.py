@@ -171,6 +171,23 @@ class OEMCrossReference(models.Model):
         super().save(*args, **kwargs)
 
 
+class OEMCrossReferenceRetired(models.Model):
+    """An aftermarket code a superuser retired from a number (Biblioteca OEM): the supplier catalog import never files it again, and
+    adding it by hand brings it back. It keeps what the code had (spelling and citations) for the record."""
+    reference = models.ForeignKey(OEMReference, on_delete=models.CASCADE, related_name='retired_cross_references', verbose_name='referencia OEM')
+    brand = models.CharField(max_length=120, verbose_name='marca')
+    number = models.CharField(max_length=120, verbose_name='código compacto')
+    code = models.CharField(max_length=120, verbose_name='código')
+    citations = models.JSONField(default=list, blank=True, verbose_name='citas')
+    retired_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    retired_at = models.DateTimeField(auto_now_add=True, verbose_name='retirado el')
+
+    class Meta:
+        verbose_name = 'equivalencia de posventa retirada'
+        verbose_name_plural = 'equivalencias de posventa retiradas'
+        constraints = [models.UniqueConstraint(fields=['reference', 'brand', 'number'], name='oem_cross_reference_retired_unique')]
+
+
 class PartOEMLink(models.Model):
     """A catalog SKU's OEM number besides its OEM alternos: the number its own code names (16100-79445-NPW -> TOYOTA 1610079445) or
     one a supplier catalog printed for the item matched to it. The SKU then shows the number's aftermarket codes. A link never makes

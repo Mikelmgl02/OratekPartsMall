@@ -1,13 +1,15 @@
 'use client';
 
-import { FormEvent, useEffect, useMemo, useState } from 'react';
-import type { ColDef } from 'ag-grid-community';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { CellValueChangedEvent, ColDef, GridApi, SuppressKeyboardEventParams } from 'ag-grid-community';
 import type { CustomCellRendererProps } from 'ag-grid-react';
 import ServerGrid from './server-grid';
-import { ArrowLeft, Check, ExternalLink, Library, LoaderCircle, Plus, Search, Trash2 } from 'lucide-react';
+import { Check, ExternalLink, Library, LoaderCircle, PencilLine, Plus, Search, Trash2 } from 'lucide-react';
 import Modal from './modal';
 import { UppercaseInput, UppercaseTextarea } from './uppercase-field';
 import { ApiError, request } from '@/lib/types';
+import { useGridEdits } from '@/lib/use-grid-edits';
+import { OEMAlternosEditor, OEMGridContext, OEMStatusEditor } from './admin-oem-cell-editors';
 import { OEMManualSourceKind, OEMReference, OEMReferenceAction, OEMReferenceConflict, OEMReferenceDetail, OEMReferencePage, OEMReferenceSource, OEMReferenceStatus,
   OEMSourceKind, isLink, linkedViaLabels, manualSourceKinds, referenceStatusHints, referenceStatusLabels, sourceKindLabels } from '@/lib/oem-reference-types';
 
@@ -49,8 +51,15 @@ function sourceDetail(source: OEMReferenceSource) {
 }
 const Status = ({ status }: { status: OEMReferenceStatus }) => <span className={`oem-ref-status ${status}`} title={referenceStatusHints[status]}>{referenceStatusLabels[status]}</span>;
 
-type View = { kind: 'list' } | { kind: 'add' } | { kind: 'detail'; id: string; notice?: string };
-type Cell = CustomCellRendererProps<OEMReference, unknown, { open: (id: string) => void }>;
+// The side panel over the library: the grid underneath stays mounted, so its scroll position and rows are where they were.
+type Panel = { kind: 'add' } | { kind: 'detail'; id: string; notice?: string };
+type Cell = CustomCellRendererProps<OEMReference, unknown, OEMGridContext>;
+// A row field and the column that shows it: what flashes when a fresh row comes in.
+const oemFieldColumns: Record<string, string> = { description: 'description', part_type: 'family', family: 'family', status: 'status', status_label: 'status',
+  dispute_note: 'status', cross_reference_count: 'cross', cross_reference_preview: 'cross', linked_count: 'linked', linked_skus: 'linked', source_count: 'sources',
+  source_kinds: 'sources', manufacturer: 'manufacturer', system: 'manufacturer', code: 'code', printed_forms: 'code', superseded_by: 'code' };
+// Enter and Tab belong to a popup's own fields while it is open (the grid would otherwise close it and move to another cell).
+const keepKeys = ({ editing, event }: SuppressKeyboardEventParams<OEMReference>) => editing && (event.key === 'Enter' || event.key === 'Tab');
 
 function CodeCell({ data }: Cell) {
   return data ? <div className="admin-grid-stack"><strong>{data.code}</strong>{!!data.printed_forms.length && <small>{data.printed_forms.join(' · ')}</small>}{data.superseded_by && <small>REEMPLAZADO POR {data.superseded_by.code}</small>}</div> : null;
@@ -77,17 +86,42 @@ function CrossCell({ data }: Cell) {
 function OpenCell({ data, context }: Cell) {
   return data ? <div className="admin-grid-actions"><button className="button soft small" aria-label={`Ver ${data.manufacturer} ${data.code}`} onClick={() => context.open(data.id)}>Ver detalle</button></div> : null;
 }
-const libraryOrdering: Record<string, string> = { code: 'code', manufacturer: 'manufacturer', family: 'family', status: 'status' };
-function libraryColumns(wide: boolean): ColDef<OEMReference>[] {
+const libraryOrdering: Record<string, string> = { code: 'code', manufacturer: 'manufacturer', family: 'family', status: 'status', description: 'description' };
+// edit: Editar celdas is on (the library's part types, and whether a batch is being saved); null keeps the grid read-only. Part type and
+// description save in batches (lib/use-grid-edits), status and alternos in their popups.
+type OEMEdit = { partTypes: string[]; isSaving: () => boolean };
+function libraryColumns(wide: boolean, edit: OEMEdit | null = null): ColDef<OEMReference>[] {
+  const editing = edit !== null;
+  const editable = () => editing && !edit.isSaving();
+  const cue = { 'editable-cell-active': editable };
+  const title = (text: string) => editing ? `${text} ✎` : text;
   return [
     { colId: 'code', headerName: 'Número OEM', width: 210, minWidth: 160, pinned: wide ? 'left' : undefined, cellRenderer: CodeCell, tooltipValueGetter: ({ data }) => data?.printed_forms.join(' · ') },
     { colId: 'manufacturer', headerName: 'Fabricante', width: 150, cellRenderer: MakerCell },
     // The number's aftermarket alternos and the SKUs that carry it come first, where they show without scrolling on a laptop.
-    { colId: 'cross', headerName: 'Alternos', headerTooltip: 'Códigos de posventa que los catálogos de marca de repuesto imprimen para este número', flex: 1, minWidth: 230,
-      cellRenderer: CrossCell, tooltipValueGetter: ({ data }) => data?.cross_reference_preview.map(code => `${code.brand} ${code.code}`).join(' · ') },
+    // Always opens (read-only without Editar celdas) so every code can be read and copied.
+    { colId: 'cross', headerName: title('Alternos'), headerTooltip: 'Códigos de posventa que los catálogos de marca de repuesto imprimen para este número', flex: 1, minWidth: 230,
+      cellRenderer: CrossCell, tooltipValueGetter: ({ data }) => data?.cross_reference_preview.map(code => `${code.brand} ${code.code}`).join(' · '),
+      valueGetter: ({ data }) => data?.cross_reference_count ?? 0, valueSetter: () => false, cellClassRules: cue, editable: true, cellEditor: OEMAlternosEditor,
+      cellEditorPopup: true, cellEditorPopupPosition: 'under', cellEditorParams: { readOnly: !editing }, suppressKeyboardEvent: keepKeys },
     { colId: 'linked', headerName: 'SKU vinculados', flex: 1, minWidth: 200, cellRenderer: LinkedCell, tooltipValueGetter: ({ data }) => data?.linked_skus.map(sku => sku.sku).join(' · ') },
-    { colId: 'family', headerName: 'Familia / tipo de pieza', flex: 1, minWidth: 190, cellRenderer: FamilyCell, tooltipValueGetter: ({ data }) => data?.description },
-    { colId: 'status', headerName: 'Estado', width: 130, cellRenderer: ({ data }: Cell) => data ? <Status status={data.status}/> : null },
+    // The part type, one of the library's (a paste of anything else is ignored; a new type is written in the number's detail), or blank.
+    { colId: 'family', headerName: title('Familia / tipo de pieza'), flex: 1, minWidth: 190, cellRenderer: FamilyCell, valueGetter: ({ data }) => data?.part_type ?? '',
+      cellDataType: false, cellClassRules: cue, editable,
+      valueSetter: ({ data, newValue }) => {
+        const value = String(newValue ?? '').trim().toUpperCase();
+        if ((value && !edit?.partTypes.includes(value)) || data.part_type === value) return false;
+        data.part_type = value;
+        return true;
+      },
+      cellEditor: 'agRichSelectCellEditor', cellEditorPopup: true,
+      cellEditorParams: { values: ['', ...(edit?.partTypes ?? [])], allowTyping: true, filterList: true, searchType: 'matchAny', highlightMatch: true, valueListMaxHeight: 320,
+                          formatValue: (value: string) => value || 'SIN TIPO DE PIEZA' } },
+    { colId: 'description', headerName: title('Descripción'), field: 'description', flex: 1.2, minWidth: 220, cellClass: 'admin-grid-text', cellClassRules: cue,
+      valueFormatter: ({ value }) => value || '—', tooltipField: 'description', cellDataType: false, editable, cellEditor: 'agTextCellEditor' },
+    { colId: 'status', headerName: title('Estado'), width: 130, cellRenderer: ({ data }: Cell) => data ? <Status status={data.status}/> : null,
+      valueGetter: ({ data }) => data?.status ?? '', valueSetter: () => false, cellClassRules: cue, editable, cellEditor: OEMStatusEditor, cellEditorPopup: true,
+      cellEditorPopupPosition: 'under', suppressKeyboardEvent: keepKeys },
     { colId: 'sources', headerName: 'Fuentes', flex: 1, minWidth: 220, cellRenderer: SourcesCell },
     { colId: 'open', headerName: 'Acciones', width: 140, pinned: wide ? 'right' : undefined, cellRenderer: OpenCell, suppressHeaderMenuButton: true, resizable: false },
   ];
@@ -99,25 +133,56 @@ export default function OEMLibrary({ onClose }: { onClose: () => void }) {
 
 // The library body: the Inventario toolbar shows it in a modal, the OEM admin section inline.
 export function OEMLibraryPanel() {
-  const [view, setView] = useState<View>({ kind: 'list' });
+  const [panel, setPanel] = useState<Panel | null>(null);
+  const [revision, setRevision] = useState(0);
   const [search, setSearch] = useState(''); const [query, setQuery] = useState(''); const [manufacturer, setManufacturer] = useState(''); const [status, setStatus] = useState('');
   const [sourceKind, setSourceKind] = useState(''); const [linked, setLinked] = useState('');
   const [counts, setCounts] = useState<OEMReferencePage['counts'] | null>(null);
   const [wide] = useState(() => typeof window === 'undefined' || window.innerWidth >= 900);
+  // Editar celdas, as in Inventario (lib/use-grid-edits): part types and descriptions save together under the version each row showed,
+  // the saved cells flash, a refused batch puts every cell back, and the rows on screen are re-read so changes made elsewhere arrive.
+  const [editing, setEditing] = useState(false);
+  const [partTypes, setPartTypes] = useState<string[] | null>(null);
+  const grid = useRef<GridApi<OEMReference> | null>(null);
+  const reread = useCallback((ids: string[]) => request<OEMReferencePage>(`${base}?ids=${ids.join(',')}`).then(page => page.results), []);
+  const save = useCallback((rows: Record<string, unknown>[]) => request<{ updated: OEMReference[] }>(`${base}/bulk-edit`, { method: 'POST', body: JSON.stringify({ rows }) })
+    .then(result => result.updated), []);
+  const { status: cellStatus, setStatus: setCellStatus, isSaving, refreshRows, queue, flush } = useGridEdits<OEMReference>({ grid, fieldColumns: oemFieldColumns,
+    reread, save, cueColumns: ['cross', 'family', 'description', 'status'], poll: true, noun: { one: 'número', many: 'números' } });
   useEffect(() => { const timer = setTimeout(() => setQuery(search.trim()), 300); return () => clearTimeout(timer); }, [search]);
+  useEffect(() => {
+    if (!editing || partTypes) return;
+    let live = true;
+    request<{ results: string[] }>(`${base}/part-types`).then(result => { if (live) setPartTypes(result.results); })
+      .catch(error => { if (live) { setEditing(false); setCellStatus({ kind: 'error', text: errorMessage(error) }); } });
+    return () => { live = false; };
+  }, [editing, partTypes, setCellStatus]);
   const params = useMemo(() => ({ q: query, manufacturer, status, source_kind: sourceKind, linked }), [query, manufacturer, status, sourceKind, linked]);
-  const columns = useMemo(() => libraryColumns(wide), [wide]);
-  const open = useMemo(() => ({ open: (id: string) => setView({ kind: 'detail', id }) }), []);
+  const edit = useMemo(() => editing && partTypes ? { partTypes, isSaving } : null, [editing, partTypes, isSaving]);
+  const columns = useMemo(() => libraryColumns(wide, edit), [wide, edit]);
+  const open = useMemo<OEMGridContext>(() => ({ open: (id: string) => setPanel({ kind: 'detail', id }),
+    onRowChanged: (id: string) => { refreshRows([id]).catch(error => setCellStatus({ kind: 'error', text: errorMessage(error) })); } }), [refreshRows, setCellStatus]);
+  const onCellValueChanged = useCallback((event: CellValueChangedEvent<OEMReference>) => {
+    if (!['edit', 'paste', 'undo', 'redo'].includes(String(event.source)) || !event.data) return;  // grid patches never save back
+    const row = event.data, column = event.column.getColId();
+    if (column === 'family') queue(row.id, { expected_version: row.version, part_type: row.part_type }, { part_type: event.oldValue ?? '' });
+    else if (column === 'description') queue(row.id, { expected_version: row.version, description: row.description }, { description: event.oldValue ?? '' });
+  }, [queue]);
+  const gridProps = useMemo(() => ({ onCellValueChanged, stopEditingWhenCellsLoseFocus: true, undoRedoCellEditing: true, undoRedoCellEditingLimit: 20,
+    onGridPreDestroyed: () => { grid.current = null; } }), [onCellValueChanged]);
+  function toggleEditing() {
+    grid.current?.stopEditing();
+    void flush();
+    setEditing(value => !value); setCellStatus(null);
+  }
   function filter(apply: () => void) { apply(); }
-  function back() { setView({ kind: 'list' }); }
+  const rowChanged = useCallback((id: string) => { refreshRows([id]).catch(() => 0); }, [refreshRows]);
   const filtered = Boolean(query || manufacturer || status || sourceKind || linked);
   return <div className="oem-panel">
-    {view.kind === 'detail' ? <ReferenceDetail key={view.id} id={view.id} initialNotice={view.notice} onBack={back} onOpen={id => setView({ kind: 'detail', id })}/>
-      : view.kind === 'add' ? <AddReference onBack={back} onSaved={(id, created) => setView({ kind: 'detail', id, notice: created ? 'Número agregado a la biblioteca.' : 'El número ya estaba en la biblioteca: se unieron la forma escrita y la fuente.' })}/> : <>
         <p className="modal-description">Números OEM guardados como hechos con su procedencia, independientes de los SKU. Cada número se guarda compacto, solo letras y dígitos (17801-30070 → 1780130070), y conserva las formas impresas en sus fuentes. El estado sigue a las fuentes: verificado, declarado o inferido, salvo que lo marques en disputa.</p>
         <div className="oem-library-bar">
           {counts && <p className="suffix-counts" aria-label="Resumen de la biblioteca">BIBLIOTECA: {number(counts.total)} {counts.total === 1 ? 'NÚMERO' : 'NÚMEROS'} · {statuses.map(key => `${number(counts.status[key] ?? 0)} ${counts.status[key] === 1 ? referenceStatusLabels[key] : plural[key]}`).join(' · ')}</p>}
-          <button className="button primary" onClick={() => setView({ kind: 'add' })}><Plus size={16}/>Agregar número</button>
+          <button className="button primary" onClick={() => setPanel({ kind: 'add' })}><Plus size={16}/>Agregar número</button>
         </div>
         <div className="suffix-filters">
           <label className="suffix-search"><Search size={16}/><span className="sr-only">Buscar número OEM</span><UppercaseInput value={search} onChange={e => setSearch(e.target.value)} placeholder="NÚMERO, FORMA IMPRESA, DESCRIPCIÓN, TIPO O CÓDIGO DE REPUESTO" aria-label="Buscar número OEM"/></label>
@@ -125,17 +190,25 @@ export function OEMLibraryPanel() {
           <label>ESTADO<select aria-label="Estado" value={status} onChange={e => filter(() => setStatus(e.target.value))}><option value="">TODOS</option>{statuses.map(key => <option key={key} value={key}>{referenceStatusLabels[key]}</option>)}</select></label>
           <label>FUENTE<select aria-label="Fuente" value={sourceKind} onChange={e => filter(() => setSourceKind(e.target.value))}><option value="">TODAS</option>{(Object.keys(sourceKindLabels) as OEMSourceKind[]).map(key => <option key={key} value={key}>{sourceKindLabels[key]}</option>)}</select></label>
           <label>SKU VINCULADOS<select aria-label="SKU vinculados" value={linked} onChange={e => filter(() => setLinked(e.target.value))}><option value="">TODOS</option><option value="true">CON SKU</option><option value="false">SIN SKU</option></select></label>
+          <button type="button" className={`inventory-edit-toggle${editing ? ' selected' : ''}`} aria-pressed={editing} onClick={toggleEditing}><PencilLine size={15} aria-hidden="true"/>{editing ? 'Editando celdas' : 'Editar celdas'}</button>
         </div>
+        {editing && <p className="inventory-edit-hint">{partTypes ? 'Escribe sobre una celda punteada o haz doble clic; también puedes pegar desde Excel. Tipo de pieza y descripción se guardan juntos al soltar y las celdas que cambian destellan; si otra persona cambió el número, se recarga sin guardar. Esc cancela, Ctrl+Z deshace. Doble clic en Alternos para agregar o retirar códigos, y en Estado para marcar o quitar una disputa.' : 'Cargando tipos de pieza…'}
+          {cellStatus && cellStatus.kind !== 'error' && <span className={`inventory-edit-status ${cellStatus.kind}`} role="status">{cellStatus.text}</span>}</p>}
+        {cellStatus?.kind === 'error' && <div className="notice error" role="alert">{cellStatus.text}<button type="button" onClick={() => setCellStatus(null)}>Cerrar</button></div>}
         {/* A new storage key: a layout saved before Alternos moved forward would keep it off screen. */}
         <ServerGrid<OEMReference> storageKey="admin-oem-library-2" label="Números OEM" path={base} params={params} columns={columns} rowId={row => row.id}
-          ordering={libraryOrdering} revision={0} rowHeight={66} context={open} onPage={page => setCounts((page as OEMReferencePage).counts)} className="suffix-table-wrap oem-library-table"
+          ordering={libraryOrdering} revision={revision} rowHeight={66} context={open} onPage={page => setCounts((page as OEMReferencePage).counts)} className="suffix-table-wrap oem-library-table"
+          gridProps={gridProps} onReady={api => { grid.current = api; }}
           empty={<div className="empty-state"><Library size={30}/><h3>{filtered ? 'No hay números con estos filtros.' : 'La biblioteca OEM está vacía.'}</h3><p>{filtered ? 'Prueba con otra búsqueda o quita un filtro.' : 'Los alternos OEM del catálogo aparecen aquí solos; también puedes agregar un número con su fuente.'}</p></div>}/>
         <p className="form-footnote">Los alternos OEM del catálogo (buscador OEM, Revisión OEM, editor de inventario y búsquedas con IA aprobadas) se reflejan aquí solos; al retirar el alterno se retira su fuente. Los alternos de posventa vienen de los catálogos de marca de repuesto y pertenecen al número: cada SKU vinculado los muestra.</p>
-      </>}
+    {panel && <Modal title={panel.kind === 'add' ? 'Agregar número OEM' : 'Número OEM'} drawer className="oem-drawer" onClose={() => setPanel(null)}>
+      {panel.kind === 'detail' ? <ReferenceDetail key={panel.id} id={panel.id} initialNotice={panel.notice} onOpen={id => setPanel({ kind: 'detail', id })} onChanged={rowChanged}/>
+        : <AddReference onSaved={(id, created) => { setRevision(value => value + 1); setPanel({ kind: 'detail', id, notice: created ? 'Número agregado a la biblioteca.' : 'El número ya estaba en la biblioteca: se unieron la forma escrita y la fuente.' }); }}/>}
+    </Modal>}
   </div>;
 }
 
-function AddReference({ onBack, onSaved }: { onBack: () => void; onSaved: (id: string, created: boolean) => void }) {
+function AddReference({ onSaved }: { onSaved: (id: string, created: boolean) => void }) {
   const [kind, setKind] = useState<OEMManualSourceKind>('manual'); const [verified, setVerified] = useState(false);
   const [busy, setBusy] = useState(false); const [error, setError] = useState('');
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -149,8 +222,6 @@ function AddReference({ onBack, onSaved }: { onBack: () => void; onSaved: (id: s
     finally { setBusy(false); }
   }
   return <div className="suffix-editor oem-library-editor">
-    <button className="button text small" onClick={onBack}><ArrowLeft size={15}/>Volver a la biblioteca</button>
-    <div className="suffix-editor-heading"><h3>Agregar número OEM</h3></div>
     <p className="form-footnote">Escribe el número como aparece en la fuente (17801-30070, MR-968365): se guarda compacto y la forma escrita queda como evidencia. Si el número ya está en la biblioteca, se unen la forma escrita y la fuente sin duplicar nada.</p>
     {error && <div className="notice error" role="alert">{error}</div>}
     <form className="stack-form" onSubmit={submit} aria-label="Agregar número OEM">
@@ -170,14 +241,15 @@ function AddReference({ onBack, onSaved }: { onBack: () => void; onSaved: (id: s
   </div>;
 }
 
-function ReferenceDetail({ id, initialNotice = '', onBack, onOpen }: { id: string; initialNotice?: string; onBack: () => void; onOpen: (id: string) => void }) {
+// One number in the side panel; every change it saves refreshes the number's row in the grid underneath (onChanged).
+function ReferenceDetail({ id, initialNotice = '', onOpen, onChanged }: { id: string; initialNotice?: string; onOpen: (id: string) => void; onChanged: (id: string) => void }) {
   const [row, setRow] = useState<OEMReferenceDetail | null>(null); const [error, setError] = useState(''); const [notice, setNotice] = useState(initialNotice);
   const [busy, setBusy] = useState(''); const [retry, setRetry] = useState(0); const [kind, setKind] = useState<OEMManualSourceKind>('manual');
   useEffect(() => { let live = true; request<OEMReferenceDetail>(`${base}/${id}`).then(result => { if (live) setRow(result); }).catch(e => { if (live) setError(errorMessage(e)); }); return () => { live = false; }; }, [id, retry]);
   async function send(action: OEMReferenceAction, payload: Record<string, unknown>, text: string) {
     if (!row) return false;
     setBusy(action); setError(''); setNotice('');
-    try { setRow(await request<OEMReferenceDetail>(`${base}/${row.id}`, { method: 'PATCH', body: JSON.stringify({ action, ...payload, expected_version: row.version }) })); setNotice(text); return true; }
+    try { setRow(await request<OEMReferenceDetail>(`${base}/${row.id}`, { method: 'PATCH', body: JSON.stringify({ action, ...payload, expected_version: row.version }) })); setNotice(text); onChanged(row.id); return true; }
     catch (e) {
       const current = e instanceof ApiError && e.status === 409 ? (e.body as OEMReferenceConflict | undefined)?.reference : undefined;
       if (current) setRow(current);
@@ -191,7 +263,6 @@ function ReferenceDetail({ id, initialNotice = '', onBack, onOpen }: { id: strin
   const value = (values: FormData, key: string) => String(values.get(key) || '').trim();
   const target = row?.superseded_by;
   return <div className="suffix-editor oem-library-editor">
-    <button className="button text small" onClick={onBack}><ArrowLeft size={15}/>Volver a la biblioteca</button>
     {error && <div className="notice error" role="alert">{error}{!row && <button onClick={() => { setError(''); setRetry(v => v + 1); }}>Intentar de nuevo</button>}</div>}
     {notice && <div className="notice success" role="status"><Check size={16}/>{notice}</div>}
     {!row && !error && <div className="loading"><LoaderCircle className="spin" size={20}/>Cargando el número…</div>}

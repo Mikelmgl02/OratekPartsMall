@@ -17,7 +17,7 @@ from django.db import OperationalError, ProgrammingError, connection, transactio
 from django.db.models import Q
 from django.utils import timezone
 
-from .oem_reference_models import OEMCrossReference, OEMReference, PartOEMLink, citation_list, compact, manufacturer_name
+from .oem_reference_models import OEMCrossReference, OEMCrossReferenceRetired, OEMReference, PartOEMLink, citation_list, compact, manufacturer_name
 
 log = logging.getLogger(__name__)
 CHUNK = 5000
@@ -120,7 +120,8 @@ def refresh_name_links(part_ids=None, *, apply=True):
 
 def store_cross_references(entries, *, apply=True):
     """entries: {(reference id, brand, code): citations}. One row per (number, brand, compact code): a new code is created and a known
-    one gains the citations it lacks. A code without a digit or a brand is skipped. Returns {'new', 'cited', 'present'}."""
+    one gains the citations it lacks. A code without a digit or a brand, or one a superuser retired from the number, is skipped.
+    Returns {'new', 'cited', 'present'}."""
     plan = {}
     for (ref_id, brand, code), citations in entries.items():
         brand, code = manufacturer_name(brand), ' '.join(str(code or '').upper().split())
@@ -133,6 +134,9 @@ def store_cross_references(entries, *, apply=True):
     for chunk in chunks(sorted({ref_id for ref_id, _, _ in plan})):
         for row in OEMCrossReference.objects.filter(reference_id__in=chunk).only('pk', 'reference_id', 'brand', 'number', 'citations'):
             existing[(str(row.reference_id), row.brand, row.number)] = row
+        # A code a superuser retired from the number stays retired, whatever catalog prints it again.
+        for key in OEMCrossReferenceRetired.objects.filter(reference_id__in=chunk).values_list('reference_id', 'brand', 'number'):
+            plan.pop((str(key[0]), key[1], key[2]), None)
     new, cited, now = [], [], timezone.now()
     for key, entry in sorted(plan.items()):
         row = existing.get(key)

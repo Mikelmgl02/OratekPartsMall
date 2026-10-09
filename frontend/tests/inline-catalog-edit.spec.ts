@@ -174,7 +174,8 @@ test('the edit toggle and the Alternos popup fit a phone screen', async ({ page 
   await cell(page, ids.pump, 'codes').dblclick();
   const popup = page.getByRole('dialog', { name: 'Alternos de BOMBA-1' });
   await expect(popup.getByRole('button', { name: 'Agregar' })).toBeVisible();
-  const grid = (await page.getByRole('region', { name: 'Inventario interno' }).boundingBox())!, box = (await popup.boundingBox())!;
-  expect(box.x).toBeGreaterThanOrEqual(grid.x);  // a grid popup is clipped by the grid: it must fit inside it
-  expect(box.x + box.width).toBeLessThanOrEqual(grid.x + grid.width);
+  const box = (await popup.boundingBox())!;  // popups open on the page: whole on screen, without widening it
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(390);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
 });

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CellValueChangedEvent, GridApi } from 'ag-grid-community';
 import { Boxes, BrainCircuit, Check, ClipboardCheck, Combine, FileSpreadsheet, FileWarning, Layers3, Library, LoaderCircle, PencilLine, Plus, Repeat2, Search, Tags, Ungroup, Wand2, Warehouse } from 'lucide-react';
 import { CatalogGroupingCandidate, CatalogImportIssuePage, ManagedAlternate, ManagedPart, ManagedStockItem, Page, request } from '@/lib/types';
-import { patchRows } from '@/lib/grid-flash';
+import { useGridEdits } from '@/lib/use-grid-edits';
 import ServerGrid from './server-grid';
 import { alternateColumns, alternateOrdering, CatalogGridActions, catalogColumns, catalogContextMenu, catalogFieldColumns, catalogOrdering, parseSubgroup, pastedCodes,
   stockColumns, stockOrdering } from './admin-catalog-grids';
@@ -26,12 +26,7 @@ import type { AlternateReviewList } from '@/lib/oem-reference-types';
 import { PartTechnicalEditor } from './part-technical';
 
 type Kind = 'catalog' | 'inventory' | 'alternates';
-type CellStatus = { kind: 'saving' | 'saved' | 'error'; text: string };
-const editedColumns: Record<string, string> = { description: 'Descripción', subgroup: 'Grupo / subgrupo', active: 'Estado' };
 const errorText = (error: unknown) => error instanceof Error ? error.message : 'No se pudo guardar el cambio. Inténtalo de nuevo.';
-const BATCH_MS = 500;  // edits collect this long after the last one, then save together
-const POLL_MS = 15000;  // the visible rows are re-read this often, so changes made elsewhere show (and flash)
-type PendingEdit = { fields: Record<string, unknown>; restore: Partial<ManagedPart> };
 
 export default function AdminCatalogSection({ section }: { section: 'inventory' | 'alternates' }) {
   const [technicalPart, setTechnicalPart] = useState<ManagedPart | null>(null);
@@ -124,16 +119,16 @@ function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditA
   const [count, setCount] = useState<number | null>(null);
   // Columns pin to the sides only where there is room for them next to the scrolling middle.
   const [wide] = useState(() => typeof window === 'undefined' || window.innerWidth >= 900);
-  // Editar celdas, as EssaMobileApp's inventory grid: edits and pastes collect for BATCH_MS and save as one batch, all rows or none;
-  // the saved rows come back into the grid and the cells that changed flash. No cell opens while a batch is saving, and a refused batch
-  // puts every one of its cells back. The visible rows are re-read every POLL_MS, so changes made elsewhere arrive (and flash) too.
+  // Editar celdas, as EssaMobileApp's inventory grid (lib/use-grid-edits): edits and pastes save together, the saved cells flash, a
+  // refused batch puts every cell back, and the rows on screen are re-read so changes made elsewhere arrive (and flash) too.
   const [editing, setEditing] = useState(false);
   const [subgroups, setSubgroups] = useState<string[] | null>(null);
-  const [cellStatus, setCellStatus] = useState<CellStatus | null>(null);
   const grid = useRef<GridApi<ManagedPart> | null>(null);
-  const saving = useRef(false);
-  const pending = useRef(new Map<string, PendingEdit>());
-  const flushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reread = useCallback((ids: string[]) => request<Page<ManagedPart>>(`/api/management/catalog?ids=${ids.join(',')}`).then(page => page.results), []);
+  const save = useCallback((rows: Record<string, unknown>[]) => request<{ updated: ManagedPart[] }>('/api/management/catalog/bulk-edit', { method: 'POST',
+    body: JSON.stringify({ rows }) }).then(result => result.updated), []);
+  const { status: cellStatus, setStatus: setCellStatus, isSaving, refreshRows, queue, flush } = useGridEdits<ManagedPart>({ grid, fieldColumns: catalogFieldColumns,
+    reread, save, cueColumns: ['description', 'subgroup', 'active', 'codes'], poll: kind === 'catalog', noun: { one: 'SKU', many: 'SKU' } });
   useEffect(() => { const timer = setTimeout(() => setQuery(search.trim()), 300); return () => clearTimeout(timer); }, [search]);
   useEffect(() => {
     if (!editing || subgroups) return;
@@ -142,51 +137,14 @@ function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditA
       .then(result => { if (live) setSubgroups(result.results.map(row => `${row.category} / ${row.subcategory}`)); })
       .catch(error => { if (live) { setEditing(false); setCellStatus({ kind: 'error', text: errorText(error) }); } });
     return () => { live = false; };
-  }, [editing, subgroups]);
-  const busy = useCallback(() => saving.current || pending.current.size > 0 || !!grid.current?.getEditingCells().length, []);
-  // Re-read rows and patch what changed; quiet skips it while the user is editing (a poll must never move a cell under the cursor).
-  const refreshRows = useCallback(async (ids: string[], quiet = false) => {
-    if (!ids.length || !grid.current) return 0;
-    const page = await request<Page<ManagedPart>>(`/api/management/catalog?ids=${ids.slice(0, 100).join(',')}`);
-    if (!grid.current || (quiet && busy())) return 0;
-    return patchRows(grid.current, page.results, catalogFieldColumns);
-  }, [busy]);
-  const onCodesChanged = useCallback((partId: string) => { refreshRows([partId]).catch(error => setCellStatus({ kind: 'error', text: errorText(error) })); }, [refreshRows]);
+  }, [editing, subgroups, setCellStatus]);
+  const onCodesChanged = useCallback((partId: string) => { refreshRows([partId]).catch(error => setCellStatus({ kind: 'error', text: errorText(error) })); }, [refreshRows, setCellStatus]);
   const actions = useMemo<CatalogGridActions>(() => ({ onEditPart, onTechnical, onImages, onEditAlternate, onRemoveAlternate, onEditMatch, onCodesChanged,
     onSplit: (part: ManagedPart) => onSplit({ id: part.id, sku: part.sku }), onMerge }),
     [onEditPart, onTechnical, onImages, onEditAlternate, onRemoveAlternate, onEditMatch, onCodesChanged, onSplit, onMerge]);
   const params = useMemo(() => ({ search: query, is_OEM: kind === 'catalog' ? oemFilter : '' }), [query, oemFilter, kind]);
-  const isSaving = useCallback(() => saving.current, []);
   const edit = useMemo(() => editing && subgroups ? { subgroups, isSaving } : null, [editing, subgroups, isSaving]);
   const partColumns = useMemo(() => catalogColumns(wide, edit), [wide, edit]);
-  const setSaving = useCallback((value: boolean) => {
-    saving.current = value;
-    grid.current?.refreshCells({ columns: ['description', 'subgroup', 'active', 'codes'], force: true });  // the editable cue follows
-  }, []);
-  const flush = useCallback(async () => {
-    if (flushTimer.current) clearTimeout(flushTimer.current);
-    flushTimer.current = null;
-    const batch = new Map(pending.current);
-    pending.current.clear();
-    if (!batch.size) return;
-    const api = grid.current;
-    // Compared with each cell's value before the batch, so the edited cells flash once the server keeps them.
-    const before = new Map([...batch].map(([id, entry]) => [id, { ...(api?.getRowNode(id)?.data ?? {}), ...entry.restore }]));
-    setSaving(true);
-    setCellStatus({ kind: 'saving', text: `Guardando ${batch.size} SKU…` });
-    try {
-      const result = await request<{ updated: ManagedPart[] }>('/api/management/catalog/bulk-edit', { method: 'POST',
-        body: JSON.stringify({ rows: [...batch].map(([id, entry]) => ({ id, ...entry.fields })) }) });
-      if (grid.current) {
-        for (const row of result.updated) { const node = grid.current.getRowNode(row.id); if (node?.data) node.setData({ ...node.data, ...before.get(row.id) } as ManagedPart); }
-        patchRows(grid.current, result.updated, catalogFieldColumns);
-      }
-      setCellStatus({ kind: 'saved', text: `${result.updated.length} ${result.updated.length === 1 ? 'SKU guardado' : 'SKU guardados'}.` });
-    } catch (error) {
-      for (const [id, entry] of batch) { const node = grid.current?.getRowNode(id); if (node?.data) node.setData({ ...node.data, ...entry.restore }); }
-      setCellStatus({ kind: 'error', text: errorText(error) });
-    } finally { setSaving(false); }
-  }, [setSaving]);
   const pasteCodes = useCallback(async (part: ManagedPart, codes: string[]) => {
     setCellStatus({ kind: 'saving', text: `Agregando ${codes.length} ${codes.length === 1 ? 'alterno' : 'alternos'} a ${part.sku}…` });
     const failed: string[] = [];
@@ -198,7 +156,7 @@ function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditA
     const added = codes.length - failed.length;
     setCellStatus(failed.length ? { kind: 'error', text: `${part.sku}: ${added} ${added === 1 ? 'alterno agregado' : 'alternos agregados'}; no se agregaron ${failed.join(' · ')}` }
       : { kind: 'saved', text: `${part.sku}: ${added} ${added === 1 ? 'alterno agregado' : 'alternos agregados'}.` });
-  }, [refreshRows]);
+  }, [refreshRows, setCellStatus]);
   const onCellValueChanged = useCallback((event: CellValueChangedEvent<ManagedPart>) => {
     if (!['edit', 'paste', 'undo', 'redo'].includes(String(event.source))) return;  // grid patches never save back
     const part = event.data, column = event.column.getColId();
@@ -209,42 +167,15 @@ function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditA
       if (codes.length) void pasteCodes(part, codes);
       return;
     }
-    if (!(column in editedColumns)) return;
-    const entry = pending.current.get(part.id) ?? { fields: {}, restore: {} };
-    if (column === 'description') {
-      entry.fields.description = part.description;
-      if (!('description' in entry.restore)) entry.restore.description = event.oldValue ?? '';
-    } else if (column === 'subgroup') {
-      Object.assign(entry.fields, { category: part.category, subcategory: part.subcategory });
-      if (!('category' in entry.restore)) Object.assign(entry.restore, parseSubgroup(event.oldValue));
-    } else {
-      entry.fields.active = part.active;
-      if (!('active' in entry.restore)) entry.restore.active = event.oldValue;
-    }
-    pending.current.set(part.id, entry);
-    if (flushTimer.current) clearTimeout(flushTimer.current);
-    flushTimer.current = setTimeout(() => void flush(), BATCH_MS);
-  }, [flush, pasteCodes]);
+    if (column === 'description') queue(part.id, { description: part.description }, { description: event.oldValue ?? '' });
+    else if (column === 'subgroup') queue(part.id, { category: part.category, subcategory: part.subcategory }, parseSubgroup(event.oldValue));
+    else if (column === 'active') queue(part.id, { active: part.active }, { active: event.oldValue });
+  }, [queue, pasteCodes]);
   const catalogGridProps = useMemo(() => ({ onCellValueChanged, stopEditingWhenCellsLoseFocus: true, undoRedoCellEditing: true, undoRedoCellEditingLimit: 20,
     getContextMenuItems: catalogContextMenu }), [onCellValueChanged]);
-  // Delta polling: the rows on screen, re-read while the page is visible and nothing is being edited or saved.
-  useEffect(() => {
-    if (kind !== 'catalog') return;
-    const poll = () => {
-      const api = grid.current;
-      if (!api || document.visibilityState !== 'visible' || busy()) return;
-      const ids = api.getRenderedNodes().map(node => node.data?.id).filter((id): id is string => !!id);
-      refreshRows([...new Set(ids)], true).catch(() => 0);  // a failed poll waits for the next one
-    };
-    const timer = setInterval(poll, POLL_MS);
-    const wake = () => { if (document.visibilityState === 'visible') poll(); };
-    document.addEventListener('visibilitychange', wake);
-    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', wake); };
-  }, [kind, busy, refreshRows]);
-  useEffect(() => () => { if (pending.current.size) void flush(); }, [flush]);  // leaving the page still saves what was typed
   function toggleEditing() {
     grid.current?.stopEditing();
-    if (pending.current.size) void flush();
+    void flush();
     setEditing(value => !value); setCellStatus(null);
   }
   const codeColumns = useMemo(() => alternateColumns(wide), [wide]);
