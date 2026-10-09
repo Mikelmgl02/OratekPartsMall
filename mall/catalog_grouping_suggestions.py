@@ -33,7 +33,8 @@ def suggested_families():
         'id', 'sku', 'is_OEM', 'name', 'description', 'category', 'subcategory').order_by('sku')}
     bases = {base for sku in parts if (base := supplier_base(sku))}
     blocked = set(Part.objects.filter(sku__in=bases).values_list('sku', flat=True)) | set(PartCode.objects.filter(code__in=bases).values_list('code', flat=True))
-    return family_candidates(parts, blocked)
+    from .catalog_split import separation_warnings
+    return separation_warnings(family_candidates(parts, blocked))
 
 
 class CatalogGroupingList(APIView):

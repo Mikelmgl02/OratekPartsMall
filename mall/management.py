@@ -192,11 +192,12 @@ class ManagedPartSerializer(serializers.ModelSerializer):
     codes = ManagedCodeSerializer(many=True, required=False)
     part_type = serializers.PrimaryKeyRelatedField(queryset=PartType.objects.all(), required=False, allow_null=True)
     stock_record_count = serializers.IntegerField(read_only=True, default=0)
+    merged_count = serializers.IntegerField(read_only=True, default=0, help_text='SKU agrupados en este SKU (Separar SKU los devuelve).')
 
     class Meta:
         model = Part
-        fields = ['id', 'sku', 'is_OEM', 'name', 'description', 'category', 'subcategory', 'part_type', 'active', 'codes', 'stock_record_count', 'images', 'identity', 'main_reference']
-        read_only_fields = ['id', 'stock_record_count']
+        fields = ['id', 'sku', 'is_OEM', 'name', 'description', 'category', 'subcategory', 'part_type', 'active', 'codes', 'stock_record_count', 'merged_count', 'images', 'identity', 'main_reference']
+        read_only_fields = ['id', 'stock_record_count', 'merged_count']
 
     def validate_sku(self, sku):
         parts = Part.objects.filter(sku__iexact=sku)
@@ -397,12 +398,32 @@ class CatalogSearch(filters.SearchFilter):
         return matched | queryset.filter(library) if library is not None else matched
 
 
+def catalog_queryset():
+    """The Inventario grid's rows: canonical SKUs with their supplier stock rows counted."""
+    return Part.objects.filter(merged_into__isnull=True).annotate(stock_record_count=Count('supplier_items', distinct=True)).prefetch_related(
+        'codes', 'images').order_by('sku', 'id')
+
+
+def with_merged_counts(parts):
+    """The SKUs grouped into each of these rows (merged_count), in one query for the page instead of a subquery per catalog row."""
+    parts = list(parts)
+    counts = dict(Part.objects.filter(merged_into__in=[part.pk for part in parts]).order_by().values('merged_into')
+                  .annotate(total=Count('pk')).values_list('merged_into', 'total'))
+    for part in parts:
+        part.merged_count = counts.get(part.pk, 0)
+    return parts
+
+
 class CatalogList(SuperuserMixin, generics.ListCreateAPIView):
     serializer_class = ManagedPartSerializer
     filter_backends = [CatalogSearch, StableOrdering]
     search_fields = ['sku', 'name', 'description', 'codes__code', 'codes__brand']
     ordering_fields = ['sku', 'name', 'description', 'category', 'subcategory', 'active', 'is_OEM', 'stock_record_count']
-    queryset = Part.objects.filter(merged_into__isnull=True).annotate(stock_record_count=Count('supplier_items', distinct=True)).prefetch_related('codes', 'images').order_by('sku', 'id')
+    queryset = catalog_queryset()
+
+    def paginate_queryset(self, queryset):
+        page = super().paginate_queryset(queryset)
+        return None if page is None else with_merged_counts(page)
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -509,7 +530,8 @@ class CatalogBulkEdit(SuperuserMixin, APIView):
         if errors:
             return Response({'detail': 'No se guardó ningún cambio: ' + ' '.join(f"{e['sku'] or 'SKU'}: {e['detail']}" for e in errors),
                              'errors': errors}, status=400)
-        return Response({'updated': ManagedPartSerializer(saved, many=True, context={'request': request}).data})
+        rows = with_merged_counts(catalog_queryset().filter(pk__in=[part.pk for part in saved]))  # as the grid reads them, counts included
+        return Response({'updated': ManagedPartSerializer(rows, many=True, context={'request': request}).data})
 
 
 class TaxonomyPair(serializers.Serializer):

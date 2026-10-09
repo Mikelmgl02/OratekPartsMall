@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CellValueChangedEvent, GridApi } from 'ag-grid-community';
-import { Boxes, BrainCircuit, Check, ClipboardCheck, Combine, FileSpreadsheet, FileWarning, Layers3, Library, LoaderCircle, PencilLine, Plus, Repeat2, Search, Tags, Wand2, Warehouse } from 'lucide-react';
+import { Boxes, BrainCircuit, Check, ClipboardCheck, Combine, FileSpreadsheet, FileWarning, Layers3, Library, LoaderCircle, PencilLine, Plus, Repeat2, Search, Tags, Ungroup, Wand2, Warehouse } from 'lucide-react';
 import { CatalogGroupingCandidate, CatalogImportIssuePage, ManagedAlternate, ManagedPart, ManagedStockItem, Page, request } from '@/lib/types';
 import { patchRows } from '@/lib/grid-flash';
 import ServerGrid from './server-grid';
@@ -13,6 +13,7 @@ import { UppercaseInput } from './uppercase-field';
 import CatalogImport from './admin-catalog-import';
 import ImportIssues from './admin-import-issues';
 import CatalogGrouping from './admin-catalog-grouping';
+import CatalogSplit from './admin-catalog-split';
 import InventoryAssistant from './admin-inventory-assistant';
 import CatalogImages from './admin-catalog-images';
 import SmartMatching from './admin-smart-matching';
@@ -52,6 +53,8 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
   const [importOpen, setImportOpen] = useState(false);
   const [issuesOpen, setIssuesOpen] = useState(false);
   const [groupingOpen, setGroupingOpen] = useState(false);
+  // Separar SKU: null opens its list, a SKU opens that SKU's split.
+  const [splitTarget, setSplitTarget] = useState<{ id: string; sku: string } | null | undefined>();
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [pendingIssueCount, setPendingIssueCount] = useState<number | null>(null);
   const [notice, setNotice] = useState(''); const [revision, setRevision] = useState(0);
@@ -81,7 +84,7 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
     {section === 'inventory' && <>
       <div className="inventory-view-tabs" role="group" aria-label="Vistas de inventario"><button className={!stockView ? 'selected' : ''} aria-pressed={!stockView} onClick={() => setStockView(false)}><Boxes size={15} aria-hidden="true"/>Inventario interno</button><button className={stockView ? 'selected' : ''} aria-pressed={stockView} onClick={() => setStockView(true)}><Warehouse size={15} aria-hidden="true"/>Existencias por proveedor</button></div>
       <div className="inventory-tools" role="group" aria-label="Herramientas del inventario">
-        <div className="inventory-tool-group"><span>Calidad del catálogo</span><div>{!stockView && <button className="inventory-tool" onClick={() => setGroupingOpen(true)}><Layers3 size={15}/>Agrupar SKU</button>}<button className="inventory-tool" onClick={()=>setMatchingOpen(true)}><Combine size={15}/>Agrupación inteligente</button>{!stockView && <button className={`inventory-tool${pendingIssueCount ? ' attention' : ''}`} aria-label="Errores de importación" onClick={() => setIssuesOpen(true)}><FileWarning size={15}/>Errores de importación{!!pendingIssueCount && <span className="import-issues-count" aria-hidden="true">{pendingIssueCount}</span>}</button>}</div></div>
+        <div className="inventory-tool-group"><span>Calidad del catálogo</span><div>{!stockView && <button className="inventory-tool" onClick={() => setGroupingOpen(true)}><Layers3 size={15}/>Agrupar SKU</button>}{!stockView && <button className="inventory-tool" onClick={() => setSplitTarget(null)}><Ungroup size={15}/>Separar SKU</button>}<button className="inventory-tool" onClick={()=>setMatchingOpen(true)}><Combine size={15}/>Agrupación inteligente</button>{!stockView && <button className={`inventory-tool${pendingIssueCount ? ' attention' : ''}`} aria-label="Errores de importación" onClick={() => setIssuesOpen(true)}><FileWarning size={15}/>Errores de importación{!!pendingIssueCount && <span className="import-issues-count" aria-hidden="true">{pendingIssueCount}</span>}</button>}</div></div>
         <div className="inventory-tool-group"><span>OEM</span><div><button className="inventory-tool" onClick={()=>setOemLibraryOpen(true)}><Library size={15}/>Biblioteca OEM</button><button className="inventory-tool" onClick={()=>setOemRunsOpen(true)}><Wand2 size={15}/>Aplicación OEM</button><button className="inventory-tool" onClick={()=>setSuffixesOpen(true)}><Tags size={15}/>Sufijos</button></div></div>
         {!stockView && <div className="inventory-tool-group"><span>Asistencia</span><div><button type="button" className="inventory-tool" onClick={()=>setAssistantOpen(true)}><BrainCircuit size={15}/>Asistente IA</button></div></div>}
       </div>
@@ -92,7 +95,7 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
     </div>}
     {notice && <div className="notice success admin-notice" role="status"><Check size={16}/>{notice}</div>}
     {kind === 'alternates' && reviewView ? <AlternateReview onCount={setReviewCount} onChanged={reviewChanged}/>
-      : <Collection onTechnical={setTechnicalPart} onImages={setImagePart} key={kind} kind={kind} revision={revision} onEditPart={setPartEditor} onEditAlternate={setAlternateEditor} onEditMatch={setMatchEditor} onRemoveAlternate={setRemoveAlternate}/>}
+      : <Collection onTechnical={setTechnicalPart} onImages={setImagePart} key={kind} kind={kind} revision={revision} onEditPart={setPartEditor} onEditAlternate={setAlternateEditor} onEditMatch={setMatchEditor} onRemoveAlternate={setRemoveAlternate} onSplit={setSplitTarget}/>}
     <p className="admin-footnote">{kind === 'alternates' && reviewView ? 'Conservar marca el código como confirmado por ti y la limpieza de copias nunca lo retira. Retirar lo quita del SKU. Los clientes siguen viendo los códigos que llegan por número OEM.' : kind === 'alternates' ? 'Los alternos de un SKU también aparecen en su editor de inventario interno. Cada artículo del proveedor mantiene su propio inventario e historial.' : kind === 'catalog' ? 'El SKU maestro no tiene marca. Sus referencias identifican piezas equivalentes; los artículos del proveedor conservan sus propios códigos y existencias.' : 'Los registros conservan el ID de inventario de cada proveedor y su vínculo con el SKU interno.'}</p>
     {matchingOpen && <SmartMatching onClose={()=>setMatchingOpen(false)} onSaved={()=>saved('Coincidencias actualizadas.')} onOpenSuffixes={token => { setSuffixSearch(token); setSuffixesOpen(true); }} onOpenGrouping={family => { setGroupingFamily(family); setGroupingOpen(true); }}/>}
     {suffixesOpen && <CatalogSuffixes initialSearch={suffixSearch} onClose={()=>{ setSuffixesOpen(false); setSuffixSearch(''); setRevision(value => value + 1); }}/>}
@@ -103,6 +106,7 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
     {partEditor !== undefined && <PartEditor part={partEditor} onClose={() => setPartEditor(undefined)} onSaved={() => { setPartEditor(undefined); saved('SKU y alternos guardados.'); }}/>}
     {importOpen && <CatalogImport onClose={() => { setImportOpen(false); setRevision(value => value + 1); }} onSaved={summary => { setImportOpen(false); saved(`Importación completada: ${summary.created_skus} SKU nuevos, ${summary.updated_skus} SKU actualizados y ${summary.added_codes} alternos nuevos.${summary.rejected_rows ? ` ${summary.rejected_rows} ${summary.rejected_rows === 1 ? 'fila pendiente' : 'filas pendientes'} de corregir en «Errores de importación».` : summary.skipped_rows ? ` ${summary.skipped_rows} ${summary.skipped_rows === 1 ? 'fila excluida' : 'filas excluidas'}.` : ''}`); }}/>} 
     {issuesOpen && <ImportIssues onClose={() => { setIssuesOpen(false); setRevision(value => value + 1); }} onSaved={() => saved('Fila corregida y guardada en el inventario interno.')}/>}
+    {splitTarget !== undefined && <CatalogSplit part={splitTarget} onClose={() => setSplitTarget(undefined)} onChanged={saved}/>}
     {groupingOpen && <CatalogGrouping initialFamily={groupingFamily} onClose={() => { setGroupingOpen(false); setGroupingFamily(null); }} onSaved={(targetSku, count) => saved(`${count} ${count === 1 ? 'SKU agrupado' : 'SKU agrupados'} bajo ${targetSku}.`)}/>}
     {assistantOpen && <InventoryAssistant onClose={()=>setAssistantOpen(false)} onSaved={()=>saved('Clasificación de inventario actualizada desde el asistente IA.')}/>}
     {alternateEditor !== undefined && <AlternateEditor alternate={alternateEditor} onClose={() => setAlternateEditor(undefined)} onSaved={() => { setAlternateEditor(undefined); saved('Alterno guardado.'); }}/>}
@@ -111,7 +115,7 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
   </section>;
 }
 
-function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditAlternate, onEditMatch, onRemoveAlternate }: { onTechnical: (part: ManagedPart) => void; onImages: (part: ManagedPart) => void; kind: Kind; revision: number; onEditPart: (part: ManagedPart) => void; onEditAlternate: (alternate: ManagedAlternate) => void; onEditMatch: (item: ManagedStockItem) => void; onRemoveAlternate: (alternate: ManagedAlternate) => void }) {
+function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditAlternate, onEditMatch, onRemoveAlternate, onSplit }: { onTechnical: (part: ManagedPart) => void; onImages: (part: ManagedPart) => void; kind: Kind; revision: number; onEditPart: (part: ManagedPart) => void; onEditAlternate: (alternate: ManagedAlternate) => void; onEditMatch: (item: ManagedStockItem) => void; onRemoveAlternate: (alternate: ManagedAlternate) => void; onSplit: (part: { id: string; sku: string }) => void }) {
   const [oemFilter, setOemFilter] = useState('');
   const [search, setSearch] = useState(''); const [query, setQuery] = useState('');
   const [count, setCount] = useState<number | null>(null);
@@ -145,8 +149,8 @@ function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditA
     return patchRows(grid.current, page.results, catalogFieldColumns);
   }, [busy]);
   const onCodesChanged = useCallback((partId: string) => { refreshRows([partId]).catch(error => setCellStatus({ kind: 'error', text: errorText(error) })); }, [refreshRows]);
-  const actions = useMemo<CatalogGridActions>(() => ({ onEditPart, onTechnical, onImages, onEditAlternate, onRemoveAlternate, onEditMatch, onCodesChanged }),
-    [onEditPart, onTechnical, onImages, onEditAlternate, onRemoveAlternate, onEditMatch, onCodesChanged]);
+  const actions = useMemo<CatalogGridActions>(() => ({ onEditPart, onTechnical, onImages, onEditAlternate, onRemoveAlternate, onEditMatch, onCodesChanged,
+    onSplit: (part: ManagedPart) => onSplit({ id: part.id, sku: part.sku }) }), [onEditPart, onTechnical, onImages, onEditAlternate, onRemoveAlternate, onEditMatch, onCodesChanged, onSplit]);
   const params = useMemo(() => ({ search: query, is_OEM: kind === 'catalog' ? oemFilter : '' }), [query, oemFilter, kind]);
   const isSaving = useCallback(() => saving.current, []);
   const edit = useMemo(() => editing && subgroups ? { subgroups, isSaving } : null, [editing, subgroups, isSaving]);

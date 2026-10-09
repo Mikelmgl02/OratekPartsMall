@@ -303,3 +303,4 @@ from .quote_assistant_models import QuoteAssistantRun, AIUsageRecord
 from .catalog_suffix_models import CatalogCodeSuffix, CatalogCodeSuffixChange
 from .oem_finder_models import OEMFinderRun, OEMReviewCase, OEMFinderChange, OEMApplyHalt, OEMReviewDecision, OEMAutoCandidate
 from .oem_reference_models import OEMReference, OEMReferenceSource, OEMCrossReference, PartOEMLink
+from .catalog_split_models import CatalogSplit, CatalogSeparation

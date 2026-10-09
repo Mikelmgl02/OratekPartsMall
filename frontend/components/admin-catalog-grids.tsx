@@ -1,7 +1,7 @@
 'use client';
 import type { ColDef, SuppressKeyboardEventParams } from 'ag-grid-community';
 import type { CustomCellRendererProps } from 'ag-grid-react';
-import { Images, Pencil, SearchCheck, Trash2, Wrench } from 'lucide-react';
+import { Images, Pencil, SearchCheck, Trash2, Ungroup, Wrench } from 'lucide-react';
 import { referenceLabel } from '@/lib/reference-label';
 import type { ManagedAlternate, ManagedPart, ManagedStockItem, PartReference } from '@/lib/types';
 import CodesEditor from './admin-codes-editor';
@@ -9,13 +9,13 @@ import CodesEditor from './admin-codes-editor';
 export type CatalogGridActions = {
   onEditPart: (part: ManagedPart) => void; onTechnical: (part: ManagedPart) => void; onImages: (part: ManagedPart) => void;
   onEditAlternate: (alternate: ManagedAlternate) => void; onRemoveAlternate: (alternate: ManagedAlternate) => void; onEditMatch: (item: ManagedStockItem) => void;
-  onCodesChanged: (partId: string) => void;
+  onCodesChanged: (partId: string) => void; onSplit: (part: ManagedPart) => void;
 };
 // Codes pasted into the Alternos cell (comma, semicolon or line separated) wait here until the grid saves them one by one.
 export const pastedCodes = new WeakMap<ManagedPart, string[]>();
 // A row field and the column that shows it: what flashes when a fresh row comes in.
 export const catalogFieldColumns: Record<string, string> = { description: 'description', name: 'description', category: 'subgroup', subcategory: 'subgroup',
-  active: 'active', codes: 'codes', stock_record_count: 'stock', sku: 'sku', is_OEM: 'sku', identity: 'sku' };
+  active: 'active', codes: 'codes', stock_record_count: 'stock', sku: 'sku', is_OEM: 'sku', identity: 'sku', merged_count: 'sku' };
 type Cell<T> = CustomCellRendererProps<T, unknown, CatalogGridActions>;
 const ALTERNATES_SHOWN = 4;
 const number = (value: number | null | undefined) => (value ?? 0).toLocaleString('es-PA');
@@ -30,10 +30,15 @@ export const parseSubgroup = (label: unknown) => { const [category = '', subcate
 const codeText = (part?: ManagedPart) => part?.codes.map(code => `${code.code} · ${referenceLabel(code)}`).join('\n') || '';
 
 // ---------------------------------------------------------------- Inventario interno
-function SkuCell({ data }: Cell<ManagedPart>) {
+function SkuCell({ data, context }: Cell<ManagedPart>) {
   if (!data) return null;
   const tone = data.is_OEM ? 'oem' : data.identity?.status === 'choose_oem' ? 'choose' : 'pending';
-  return <div className="admin-grid-stack"><strong>{data.sku}</strong><span className={`sku-identity ${tone}`}>{identityText(data)}</span></div>;
+  const merged = data.merged_count ?? 0;
+  // The SKUs a grouping retired into this one: the badge opens Separar SKU on it.
+  return <div className="admin-grid-stack"><div className="sku-line"><strong>{data.sku}</strong>{merged > 0 && <button type="button" className="sku-merged"
+      aria-label={`${merged} ${merged === 1 ? 'SKU agrupado' : 'SKU agrupados'} en ${data.sku}: separar`} title="SKU agrupados en este SKU · clic para separarlos"
+      onClick={() => context.onSplit(data)}><Ungroup size={11} aria-hidden="true"/>{merged}</button>}</div>
+    <span className={`sku-identity ${tone}`}>{identityText(data)}</span></div>;
 }
 function CodesCell({ data }: Cell<ManagedPart>) {
   if (!data) return null;

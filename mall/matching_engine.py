@@ -399,14 +399,22 @@ def reconcile_catalog(actor, *, stats=None):
     if stats is not None:
         stats['promoted_oems'] = promoted
     count = reconcile_catalog_references(actor)
+    from .catalog_split import pair, separated_pairs
+    apart = separated_pairs()  # SKUs a split separated (Separar SKU): never merged again here
     for base, family in catalog_families().items():
         # Keep long families intact. The merge service itself has no batch boundary.
         sources, target = family['sources'], family['target']
-        strong = not family['warnings'] and all(same_spec(s['description'], target['description']) for s in sources)
+        if target.get('id'):
+            sources = [s for s in sources if pair(s['id'], target['id']) not in apart]
+        if not sources:
+            continue
+        together = not any(pair(a['id'], b['id']) in apart for i, a in enumerate(sources) for b in sources[i + 1:])
+        strong = together and not family['warnings'] and all(same_spec(s['description'], target['description']) for s in sources)
         case = save_case(key=f'catalog:{base}', kind='catalog', sources=sources, candidates=[target], target=base,
                          method='base_and_spec' if strong else 'family_review',
                          reason='Código base completo y aplicación/especificaciones idénticas.' if strong else
-                         ' '.join(family['warnings']) or 'Confirma la aplicación de esta familia.')
+                         ' '.join(family['warnings']) or ('Confirma la aplicación de esta familia.' if together else
+                                                          'Incluye SKU que se separaron con Separar SKU. Confirma cuáles son el mismo repuesto.'))
         if strong and case.status == 'review':
             try:
                 apply_family(case, actor=actor, automatic=True)
@@ -423,6 +431,8 @@ def reconcile_catalog_references(actor):
     Only direct links are considered. Cycles and transitive chains require
     review, so a bad alias cannot silently collapse a connected component.
     """
+    from .catalog_split import pair, separated_pairs
+    apart = separated_pairs()  # SKUs a split separated (Separar SKU): never merged again here
     index = MatchIndex()
     aliases = defaultdict(set)
     for target in index.parts.values():
@@ -454,6 +464,10 @@ def reconcile_catalog_references(actor):
     source_ids = {source['id'] for source, _, _ in plans}
     count = 0
     for source, ids, direct in plans:
+        ids = {pk for pk in ids if pair(source['id'], pk) not in apart}
+        direct = direct & ids
+        if not ids:
+            continue
         candidates = sorted((index.parts[pk] for pk in ids), key=lambda row: row['sku'])
         target = candidates[0]
         strong = (len(candidates) == 1 and target['id'] not in source_ids and
