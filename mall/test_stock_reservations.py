@@ -1,9 +1,14 @@
+import io
 import uuid
 
+from django.db import IntegrityError, connection, transaction
+from django.test import TransactionTestCase
+from django.test.utils import CaptureQueriesContext
 from rest_framework.test import APITestCase
 
 from . import test_deals as deal_tests
 from . import test_supplier_import as import_tests
+from .check_stock_ledger import check, main, render
 from .models import StockEntry, SupplierItem
 from .request_models import StockReservation
 from .services import ingest_inventory
@@ -67,8 +72,8 @@ class StockReservationTests(APITestCase):
         self.assertEqual((reservation.item_id, reservation.order_id, reservation.quantity, reservation.status), (self.item_a.pk, order.pk, 3, 'open'))
         entry = StockEntry.objects.get(kind='reserve')
         self.assertEqual((entry.item_id, entry.quantity, entry.direction, entry.balance_type, entry.reserved_delta, entry.reserved_direction,
-                          entry.reported_after, entry.reserved_after, entry.reference, entry.actor),
-                         (self.item_a.pk, 3, 'credit', 'reservation', 3, 'credit', 10, 5, order.reference, self.buyer))
+                          entry.reported_after, entry.reserved_after, entry.reference, entry.actor, entry.reservation),
+                         (self.item_a.pk, 3, 'credit', 'reservation', 3, 'credit', 10, 5, order.reference, self.buyer, reservation))
         self.assertIn('SE RESERVARON 3 UNIDADES DEL INVENTARIO DEL PROVEEDOR.', order.events.last().description)
         # An API feed has nobody to ask: the reservations keep holding their units against the new count.
         ingest_inventory(supplier=self.supplier_a, actor=self.seller_a, data={'update_id': 'feed-1', 'supplier_invent_id': 'A-001',
@@ -108,9 +113,10 @@ class StockReservationTests(APITestCase):
                          [(first.reference, 'A-001')])
         settled = StockReservation.objects.get(status='settled')
         self.assertEqual((settled.settled_by, settled.settled_reference), (self.seller_a, f'excel-{job["job_id"]}-2'))
-        entry = StockEntry.objects.get(kind='settle')
-        self.assertEqual((entry.item_id, entry.quantity, entry.direction, entry.balance_type, entry.reserved_after, entry.reported_after),
-                         (self.item_a.pk, 3, 'debit', 'reservation', 5, 7))
+        entry = StockEntry.objects.get(kind='settle')  # the order's units leave the reserved count under its own reference
+        self.assertEqual((entry.item_id, entry.quantity, entry.direction, entry.balance_type, entry.reserved_after, entry.reported_after,
+                          entry.reference, entry.reservation),
+                         (self.item_a.pk, 3, 'debit', 'reservation', 5, 7, f'{first.reference} · excel-{job["job_id"]}-2', settled))
         self.assertEqual((done.data['applied_summary']['settled_units'], done.data['applied_summary']['held_units']), (3, 7))
         # The job keeps the answers: a resumed import shows them instead of asking again.
         answered = {entry['supplier_invent_id']: entry for entry in self.client.get(self.job_url(job)).data['reservations']}
@@ -135,3 +141,135 @@ class StockReservationTests(APITestCase):
         self.assertEqual(self.counts(self.item_a), (10, 5, 5))
         fresh = self.upload()
         self.assertEqual([entry['supplier_invent_id'] for entry in fresh['reservations']], ['A-001', 'A-002'])
+
+    def test_each_settled_order_gets_its_own_entry_and_a_count_below_the_orders_refuses_the_batch(self):
+        SupplierItem.objects.filter(pk=self.item_a.pk).update(reserved_quantity=0)  # the fixture's 2 units were never recorded
+        first, second = self.handshake(), self.handshake()
+        job = self.upload(a1=4, a2=10)
+        decisions = {order['id']: 'net' for entry in job['reservations'] for order in entry['orders']}
+        with CaptureQueriesContext(connection) as queries:
+            self.assertEqual(self.commit(job, decisions).status_code, 200)
+        # Settling locks the reservation rows only, never their orders (which a deal action locks before items).
+        locks = [query['sql'] for query in queries.captured_queries if 'FROM "mall_stockreservation"' in query['sql'] and 'FOR UPDATE' in query['sql']]
+        self.assertTrue(locks)
+        self.assertTrue(all(sql.endswith('FOR UPDATE OF "mall_stockreservation"') for sql in locks), locks)
+        moves = list(StockEntry.objects.filter(item=self.item_a, kind='settle').order_by('id').values_list(
+            'reference', 'quantity', 'reported_after', 'reserved_after', 'reservation__order'))
+        row = f'excel-{job["job_id"]}-2'
+        self.assertEqual(moves, [(f'{first.reference} · {row}', 3, 4, 3, first.pk), (f'{second.reference} · {row}', 3, 4, 0, second.pk)])
+        self.assertEqual(self.counts(self.item_a), (4, 0, 4))
+        self.assertEqual(check()['problems'], {})
+
+        third = self.handshake()
+        SupplierItem.objects.filter(pk=self.item_a2.pk).update(reserved_quantity=1)  # fewer than the 2 its open order holds
+        before = self.stock_snapshot()
+        job = self.upload(a1=4, a2=10)
+        refused = self.commit(job, {order['id']: 'net' for entry in job['reservations'] for order in entry['orders']})
+        self.assertEqual(refused.status_code, 422)
+        self.assertIn('no cuadran', refused.data['detail'])
+        self.assertEqual(self.stock_snapshot(), before)  # the whole batch rolled back, A-001 included
+        self.assertEqual(StockReservation.objects.get(order=third, item=self.item_a2).status, 'open')
+
+    def test_the_ledger_check_reconciles_a_deal_and_an_import_and_names_each_break(self):
+        SupplierItem.objects.filter(pk=self.item_a.pk).update(reserved_quantity=0)  # the fixture's 2 units were never recorded
+        first, second = self.handshake(), self.handshake()
+        job = self.upload(a1=7, a2=10)
+        ids = {(entry['supplier_invent_id'], order['reference']): order['id'] for entry in job['reservations'] for order in entry['orders']}
+        committed = self.commit(job, {ids['A-001', first.reference]: 'net', ids['A-001', second.reference]: 'gross',
+                                      ids['A-002', first.reference]: 'gross', ids['A-002', second.reference]: 'gross'})
+        self.assertEqual(committed.status_code, 200, committed.data)
+        self.assertEqual((self.counts(self.item_a), StockEntry.objects.filter(kind='settle').count()), ((7, 3, 4), 1))
+        result = check()
+        self.assertEqual((result['problems'], result['reservations']), ({}, 4))
+        output = io.StringIO()
+        self.assertEqual(main([], stdout=output), 0)
+        self.assertIn('Todo cuadra.', output.getvalue())
+
+        SupplierItem.objects.filter(pk=self.item_b.pk).update(reported_quantity=99)  # a count changed without an entry
+        StockEntry.objects.filter(item=self.item_a, kind='reserve').order_by('id').filter(
+            pk=StockEntry.objects.filter(item=self.item_a, kind='reserve').order_by('id').values('pk')[:1]).update(reserved_after=9)
+        StockReservation.objects.filter(order=second, item=self.item_a2).update(status='settled')  # settled without its entry
+        SupplierItem.objects.create(supplier=self.supplier_a, supplier_invent_id='SIN-HISTORIAL', codigo='X-1', source='upload', reported_quantity=4)
+        problems = check(examples=5)['problems']
+        # The edited balance breaks the link before it and the one after it.
+        self.assertEqual({kind: detail['count'] for kind, detail in problems.items()},
+                         {'chain': 2, 'final': 1, 'unrecorded': 1, 'reserved': 1, 'reservation': 1})
+        self.assertIn('B-001: el historial termina en 20/0, el artículo tiene 99/0', problems['final']['examples'])
+        self.assertIn(f'{second.reference} en A-002 (settled)', problems['reservation']['examples'][0])
+        output = io.StringIO()
+        self.assertEqual(main(['--examples', '1'], stdout=output), 1)
+        self.assertIn('- Artículos cuyo saldo no coincide con su historial: 1\n    B-001', output.getvalue())
+
+    def test_a_confirmation_takes_key_share_on_both_accounts_before_locking_items(self):
+        self.client.force_authenticate(self.buyer)
+        order = self.order()
+        self.review(order)
+        quotation = self.quote(order).data['quotation']
+        self.client.force_authenticate(self.buyer)
+        with CaptureQueriesContext(connection) as queries:
+            self.assertEqual(self.action(order, 'accept', quotation_id=quotation['id']).status_code, 200)
+        sql = [query['sql'] for query in queries.captured_queries]
+        share = next(index for index, text in enumerate(sql) if text.endswith('FOR KEY SHARE'))
+        items = next(index for index, text in enumerate(sql) if 'FROM "mall_supplieritem"' in text and 'FOR UPDATE' in text)
+        self.assertLess(share, items)  # an import or a send holding an account never waits for items this confirmation holds
+        self.assertIn(str(self.supplier_a.pk).replace('-', ''), sql[share].replace('-', ''))
+        self.assertIn(str(self.client_account.pk).replace('-', ''), sql[share].replace('-', ''))
+
+    def test_the_database_rejects_each_malformed_entry_by_its_own_rule(self):
+        self.handshake()
+        reservation = StockReservation.objects.filter(item=self.item_a).first()
+        base = {'item': self.item_a, 'actor': self.seller_a, 'reference': 'invalid', 'reported_after': 10, 'reserved_after': 5,
+                'kind': 'reserve', 'balance_type': 'reservation', 'quantity': 1, 'direction': 'credit', 'reserved_delta': 1,
+                'reserved_direction': 'credit', 'reservation': reservation}
+        cases = [
+            ({'kind': 'sync', 'balance_type': 'stock', 'reserved_delta': 0, 'reserved_direction': ''}, 'stock_entry_reservation_link'),
+            ({'kind': 'settle', 'direction': 'debit', 'reserved_direction': 'debit', 'reservation': None}, 'stock_entry_reservation_link'),
+            ({'kind': 'settle'}, 'stock_entry_kind_shape'),
+            ({'direction': 'debit', 'reserved_direction': 'debit'}, 'stock_entry_kind_shape'),
+            ({'kind': 'delivery'}, 'stock_entry_kind_shape'),
+            ({'kind': 'release', 'direction': 'debit'}, 'stock_entry_reservation_amount'),
+            ({'kind': 'release', 'direction': 'debit', 'reserved_direction': 'debit', 'reserved_delta': 2}, 'stock_entry_reservation_amount'),
+            ({'kind': 'sync', 'balance_type': 'stock', 'reserved_delta': 0, 'reserved_direction': '', 'reservation': None, 'quantity': 0},
+             'stock_entry_quantity_positive'),
+        ]
+        for changes, rule in cases:
+            with self.subTest(rule=rule, changes=changes), self.assertRaises(IntegrityError) as raised, transaction.atomic():
+                StockEntry.objects.create(**{**base, **changes})
+            self.assertIn(rule, str(raised.exception))
+        # The shapes no writer uses yet stay possible: a release with or without its reservation, a delivery of stock.
+        for changes in [{'kind': 'release', 'direction': 'debit', 'reserved_direction': 'debit'},
+                        {'kind': 'release', 'direction': 'debit', 'reserved_direction': 'debit', 'reservation': None},
+                        {'kind': 'delivery', 'balance_type': 'stock', 'direction': 'debit', 'reserved_delta': 0, 'reserved_direction': ''}]:
+            with self.subTest(accepted=changes), transaction.atomic():
+                StockEntry.objects.create(**{**base, **changes})
+                transaction.set_rollback(True)
+
+    def test_the_ledger_check_edges_items_at_zero_reserved_only_items_dates_and_the_examples_cap(self):
+        SupplierItem.objects.filter(pk=self.item_a.pk).update(reserved_quantity=0)  # the fixture's 2 units were never recorded
+        SupplierItem.objects.create(supplier=self.supplier_a, supplier_invent_id='EN-CERO', codigo='X-0', source='upload')
+        self.assertEqual(check()['problems'], {})  # an item created at zero writes no entry and is fine
+        SupplierItem.objects.create(supplier=self.supplier_a, supplier_invent_id='SOLO-RESERVA', codigo='X-2', source='upload', reserved_quantity=2)
+        self.assertEqual(check()['problems']['unrecorded']['examples'], ['SOLO-RESERVA: 0 existencias, 2 reservadas'])
+        SupplierItem.objects.filter(supplier_invent_id='SOLO-RESERVA').update(reserved_quantity=0)
+        ingest_inventory(supplier=self.supplier_a, actor=self.seller_a, data={'update_id': 'later', 'supplier_invent_id': 'A-001',
+                                                                             'codigo': '58411-1R000-G', 'brand': 'KSM', 'description': 'TAMBOR A-001',
+                                                                             'source': 'upload', 'quantity': 6})
+        first, later = StockEntry.objects.filter(item=self.item_a).order_by('id')
+        StockEntry.objects.filter(pk=later.pk).update(created_at=first.created_at.replace(year=first.created_at.year - 1))
+        result = check()
+        self.assertEqual((result['problems'], result['out_of_order']), ({}, 1))  # a clock step back is a warning, not a break
+        self.assertIn('Aviso: 1 movimientos tienen una fecha anterior', render(result))
+        for item in (self.item_a2, self.item_b):
+            SupplierItem.objects.filter(pk=item.pk).update(reported_quantity=77)
+        problems = check(examples=1)['problems']
+        self.assertEqual((problems['final']['count'], len(problems['final']['examples'])), (2, 1))
+
+
+class LedgerCheckSnapshotTests(TransactionTestCase):
+    """Outside a caller's transaction the check opens its own read-only REPEATABLE READ snapshot."""
+
+    def test_the_check_reads_one_read_only_snapshot(self):
+        self.assertFalse(connection.in_atomic_block)
+        with CaptureQueriesContext(connection) as queries:
+            self.assertEqual(check()['problems'], {})
+        self.assertEqual([query['sql'] for query in queries.captured_queries[:2]], ['BEGIN', 'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY'])

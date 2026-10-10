@@ -170,9 +170,12 @@ def stock_plan(supplier, rows, *, lock=False):
         aliases = []
         for offset in range(0, len(alias_ids), 2000):
             aliases.extend(PartCode.objects.select_for_update().filter(pk__in=alias_ids[offset:offset + 2000]).order_by('pk'))
-        for offset in range(0, len(identifiers), 2000):
+        # Supplier rows in global pk order too, the order a deal confirmation locks them in. Callers hold the supplier's account lock,
+        # which every item creator takes, so no row can appear between the read above and these locks.
+        item_ids = sorted(item.pk for item in items.values())
+        for offset in range(0, len(item_ids), 2000):
             items.update((item.supplier_invent_id, item) for item in SupplierItem.objects.select_for_update().filter(
-                supplier=supplier, supplier_invent_id__in=identifiers[offset:offset + 2000]).order_by('pk'))
+                pk__in=item_ids[offset:offset + 2000]).order_by('pk'))
     held = open_reservations(item.pk for item in items.values())  # units confirmed deals still hold (mall.stock_reservations)
     matching = {}
     for part in parts.values():

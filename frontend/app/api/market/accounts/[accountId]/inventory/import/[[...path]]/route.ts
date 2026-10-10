@@ -4,6 +4,13 @@ import { django, json, sessionToken, unavailable, validOrigin } from '@/lib/serv
 type Context = { params: Promise<{ accountId: string; path?: string[] }> };
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const spreadsheetType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const MAX_DECISIONS = 20000;
+
+function validDecisions(value: unknown): value is Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const entries = Object.entries(value);
+  return entries.length <= MAX_DECISIONS && entries.every(([key, answer]) => uuid.test(key) && typeof answer === 'string' && answer.length <= 10);
+}
 
 async function proxy(request: NextRequest, context: Context) {
   const { accountId, path = [] } = await context.params;
@@ -38,10 +45,13 @@ async function proxy(request: NextRequest, context: Context) {
       if (!(file instanceof File) || !file.name.toLowerCase().endsWith('.xlsx') || file.size > 5 * 1024 * 1024) return json({ detail: 'Selecciona un archivo .xlsx de hasta 5 MB.' }, 400);
       body = new FormData(); body.set('file', file);
     } else if (request.method === 'POST') {
-      let data: { batch_index?: unknown };
+      let data: { batch_index?: unknown; decisions?: unknown };
       try { data = await request.json(); } catch { return json({ detail: 'La solicitud no es válida.' }, 400); }
       if (typeof data.batch_index !== 'number' || !Number.isInteger(data.batch_index) || data.batch_index < 0) return json({ detail: 'El lote de importación no es válido.' }, 400);
-      body = JSON.stringify({ batch_index: data.batch_index });
+      // The supplier's answer for each confirmed order (reservation id -> net | gross); the API validates the answers themselves.
+      const decisions = data.decisions;
+      if (decisions !== undefined && !validDecisions(decisions)) return json({ detail: 'Las respuestas sobre los pedidos confirmados no son válidas.' }, 400);
+      body = JSON.stringify({ batch_index: data.batch_index, ...(decisions === undefined ? {} : { decisions }) });
     }
     const result = await django(route, { method: request.method, ...(body ? { body } : {}) }, token, path.length === 0 ? 120000 : 60000);
     return json(result.data, result.status);

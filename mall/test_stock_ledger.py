@@ -60,7 +60,14 @@ class PositiveStockLedgerTests(APITestCase):
     def test_database_rejects_negative_movements_and_invalid_directions(self):
         self.update('seed', 5)
         item = SupplierItem.objects.get()
-        for changes in [{'quantity': -1}, {'direction': 'bogus'}, {'reserved_delta': -1}, {'reserved_delta': 1, 'reserved_direction': ''}, {'reserved_delta': 0, 'reserved_direction': 'debit'}]:
+        # A sync moves the reported count only, by at least one unit; reservation entries move reserved units by their quantity and name
+        # their reservation (mall.test_stock_reservations covers the real ones).
+        for changes in [{'quantity': -1}, {'direction': 'bogus'}, {'reserved_delta': -1}, {'reserved_delta': 1, 'reserved_direction': ''}, {'reserved_delta': 0, 'reserved_direction': 'debit'},
+                        {'quantity': 0}, {'kind': 'bogus'}, {'reserved_delta': 1, 'reserved_direction': 'credit'},
+                        {'kind': 'reserve', 'balance_type': 'reservation', 'reserved_delta': 1, 'reserved_direction': 'credit'},
+                        {'kind': 'settle', 'balance_type': 'reservation', 'direction': 'credit', 'reserved_delta': 1, 'reserved_direction': 'credit'},
+                        {'kind': 'release', 'balance_type': 'reservation', 'direction': 'debit', 'reserved_delta': 2, 'reserved_direction': 'debit'},
+                        {'kind': 'release', 'balance_type': 'stock', 'direction': 'debit'}]:
             data = {'item': item, 'actor': self.user, 'kind': 'sync', 'quantity': 1, 'direction': 'credit', 'reported_after': 5, 'reserved_after': 0, 'reference': 'invalid'}
             data.update(changes)
             with self.subTest(changes=changes), self.assertRaises(IntegrityError), transaction.atomic():

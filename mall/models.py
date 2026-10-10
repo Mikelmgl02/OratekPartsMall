@@ -2,7 +2,7 @@ import uuid
 from django.contrib.auth.models import AbstractUser
 from django.conf import settings
 from django.db import models
-from django.db.models import Q
+from django.db.models import F, Q
 from django.db.models.functions import Lower
 from .media_storage import catalog_storage, catalog_image_path
 
@@ -264,14 +264,27 @@ class StockEntry(models.Model):
     reserved_after = models.PositiveIntegerField(verbose_name='saldo de unidades reservadas')
     actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, verbose_name='usuario responsable')
     reference = models.CharField(max_length=120, verbose_name='referencia')
+    # The confirmed order's reservation a reserve or settle entry moves (mall.stock_reservations).
+    reservation = models.ForeignKey('mall.StockReservation', on_delete=models.PROTECT, null=True, blank=True, related_name='entries',
+                                    verbose_name='reserva de pedido')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='fecha de creación')
     class Meta:
         verbose_name = 'movimiento de existencias'
         verbose_name_plural = 'movimientos de existencias'
+        # Every entry moves at least one unit of one balance. A sync moves the reported count only; reserve, release and settle move
+        # reserved units only, by their quantity, and point to the reservation they move (mall.check_stock_ledger replays them).
         constraints = [
             models.CheckConstraint(condition=Q(direction__in=['credit', 'debit']), name='stock_entry_valid_direction'),
             models.CheckConstraint(condition=Q(balance_type__in=['stock', 'reservation']), name='stock_entry_valid_balance_type'),
             models.CheckConstraint(condition=Q(reserved_delta=0, reserved_direction='') | Q(reserved_delta__gt=0, reserved_direction__in=['credit', 'debit']), name='stock_entry_reserved_direction'),
+            models.CheckConstraint(condition=Q(quantity__gte=1), name='stock_entry_quantity_positive'),
+            models.CheckConstraint(condition=Q(kind='sync', balance_type='stock', reserved_delta=0) | Q(kind='delivery', balance_type='stock')
+                                   | Q(kind='reserve', balance_type='reservation', direction='credit')
+                                   | Q(kind__in=['release', 'settle'], balance_type='reservation', direction='debit'), name='stock_entry_kind_shape'),
+            models.CheckConstraint(condition=Q(balance_type='stock') | Q(reserved_delta=F('quantity'), reserved_direction=F('direction')),
+                                   name='stock_entry_reservation_amount'),
+            models.CheckConstraint(condition=Q(kind__in=['reserve', 'settle'], reservation__isnull=False) | Q(kind='sync', reservation__isnull=True)
+                                   | Q(kind__in=['release', 'delivery']), name='stock_entry_reservation_link'),
         ]
 
 class InventoryUpdate(models.Model):

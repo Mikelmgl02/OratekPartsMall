@@ -375,3 +375,19 @@ test('on a phone one answer can cover every confirmed order, and the heads-up st
   await expect(dialog.getByRole('heading', { name: 'Importación completada', exact: true })).toBeVisible();
   expect(bodies).toEqual([{ batch_index: 0, decisions: { [orders[0].id]: 'net', [orders[1].id]: 'net' } }]);
 });
+
+// Through the real Next route (no browser mock): the API validates the batch body before it looks up the account, so an invalid answer
+// that reaches it comes back as a decisions error, while a dropped one would reach the account lookup (404). Nothing is written.
+test('the import proxy forwards the confirmed-order answers to the API', async ({ request }) => {
+  test.skip(!process.env.E2E_ADMIN_TOKEN, 'A session token is required to pass the proxy.');
+  const url = `/api/market/accounts/${accountId}/inventory/import/jobs/${jobId}`;
+  const headers = { Cookie: `partsmall_session=${process.env.E2E_ADMIN_TOKEN}`, Origin: 'http://localhost:8080', 'Content-Type': 'application/json' };
+  const reservation = orders[0].id;
+  const forwarded = await request.post(url, { headers, data: { batch_index: 0, decisions: { [reservation]: 'maybe' } } });
+  expect(forwarded.status()).toBe(400);
+  expect(Object.keys((await forwarded.json()).decisions)).toEqual([reservation]);
+  const refused = await request.post(url, { headers, data: { batch_index: 0, decisions: { 'not-a-reservation': 'net' } } });
+  expect((await refused.json()).detail).toBe('Las respuestas sobre los pedidos confirmados no son válidas.');
+  const plain = await request.post(url, { headers, data: { batch_index: 0 } });
+  expect(plain.status()).toBe(404);  // no answers: the API looks the account up and this one is not the caller's
+});

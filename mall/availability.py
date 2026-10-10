@@ -1,7 +1,7 @@
 """Supplier-only stock checks for quotations. Never writes stock and never reaches a client payload.
 
-Lock order (for the future reservation step): the SupplierRequest row first (callers already hold it), then SupplierItem
-rows in pk order. Never take the supplier Account lock after the order lock.
+Lock order (the reservation step, mall.stock_reservations): the SupplierRequest row first (callers already hold it), then KEY SHARE on
+the supplier's and client's Account rows, then SupplierItem rows in pk order. Never take an Account FOR UPDATE after the order lock.
 """
 from .models import SupplierItem
 from .quote_draft_models import DealQuotationAudit, DealQuotationLineAudit
