@@ -1171,6 +1171,10 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .deal-detail td > strong, .deal-detail td > span, .deal-detail td > small { display: block; }
 .deal-detail td > small { font-size: 12px; margin-top: 5px; color: var(--muted); }
 .deal-quote { border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+/* The quotation's lines (quote-lines-grid.tsx) sit flush under its heading, inside the card's own border. */
+.deal-quote .ag-root-wrapper { border:0; border-radius:0; }
+.deal-quote .quote-lines { border-bottom:1px solid var(--line); }
+.quote-lines .quote-amount { align-items:flex-end; }
 .deal-quote-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 18px; background: #f3f6f0; }
 .deal-quote-heading h3 { margin: 0 0 6px; font-size: 17px; }
 .deal-quote-heading small { font-size: 12px; color: var(--muted); }
@@ -2381,18 +2385,6 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .inbox-conversation-body { flex:1; min-height:0; display:flex; }
 .inbox-side { flex:0 0 var(--inbox-side,540px); min-width:0; min-height:0; overflow-y:auto; padding:14px 16px; background:#fcfdfa; }
 .inbox-side[hidden] { display:none; }
-.inbox-side .deal-quote th, .inbox-side .deal-quote td { padding:10px 8px; white-space:normal; vertical-align:top; }
-.inbox-side .deal-quote td:not(:first-child) { white-space:nowrap; }
-.inbox-side { container:inbox-side / inline-size; }
-/* Too narrow for four columns: each line stacks, the item above "2 × USD 86.50" and its amount. */
-@container inbox-side (max-width: 420px) {
-  .inbox-side .deal-quote thead { display:none; }
-  .inbox-side .deal-quote tr { display:grid; grid-template-columns:auto 1fr auto; align-items:baseline; gap:4px 6px; padding:12px 14px; border-bottom:1px solid #edf1e6; }
-  .inbox-side .deal-quote td { display:block; padding:0; border:0; }
-  .inbox-side .deal-quote td:first-child { grid-column:1 / -1; }
-  .inbox-side .deal-quote td:nth-child(3)::before { content:'× '; }
-  .inbox-side .deal-quote td:nth-child(4) { color:var(--ink); font-weight:600; }
-}
 .inbox-resizer { flex:0 0 9px; position:relative; cursor:col-resize; touch-action:none; outline:none; }
 .inbox-resizer::after { content:''; position:absolute; top:12px; bottom:12px; left:4px; width:1px; background:var(--line); transition:background .15s, width .15s, left .15s; }
 .inbox-resizer:hover::after,.inbox-resizer:focus-visible::after { left:3px; width:3px; border-radius:3px; background:#a9c27f; }

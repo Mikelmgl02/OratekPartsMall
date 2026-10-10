@@ -17,6 +17,7 @@ import { onDealNudge, realtimeLive } from '@/lib/realtime';
 
 const QuoteEditor = dynamic(() => import('./quotation-editor'), { ssr: false, loading: () => <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando editor de cotización…</div> });
 const DealLinesGrid = dynamic(() => import('./deal-lines-grid'), { ssr: false, loading: () => <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando artículos…</div> });
+const QuoteLinesGrid = dynamic(() => import('./quote-lines-grid'), { ssr: false, loading: () => <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando cotización…</div> });
 const ClientPricingProfile = dynamic(() => import('./client-pricing-profile'), { ssr: false, loading: () => <div className="loading"><LoaderCircle className="spin"/>Cargando perfil comercial…</div> });
 
 const date = (value: string) => new Date(value).toLocaleString('es-PA', { timeZone: 'America/Panama', dateStyle: 'medium', timeStyle: 'short' });
@@ -295,7 +296,7 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
 }
 
 export function QuoteView({ quote, historical = false }: { quote: Quotation; historical?: boolean }) {
-  return <section className={`deal-quote ${historical ? 'historical' : ''}`} aria-label={`${historical ? 'Cotización anterior' : 'Cotización vigente'} v${quote.revision}`}><div className="deal-quote-heading"><div><h3>Cotización v{quote.revision}</h3><small>Confirmada por el proveedor · {date(quote.supplier_confirmed_at)}</small></div><strong>{money(quote.total, quote.currency)}</strong></div><div className="table-scroll"><table><thead><tr><th>Artículo</th><th>Ofrecidas</th><th>Precio unitario</th><th>Importe</th></tr></thead><tbody>{quote.lines.map(line => <tr key={line.order_line_id}><td><strong>{line.codigo}</strong><small>{line.description}</small></td><td>{line.quantity === 0 ? 'No disponible' : line.quantity}</td><td>{money(line.unit_price, quote.currency)}</td><td>{money(line.total, quote.currency)}</td></tr>)}</tbody></table></div>{quote.terms && <div className="deal-terms"><h4>Condiciones</h4><p>{quote.terms}</p></div>}</section>;
+  return <section className={`deal-quote ${historical ? 'historical' : ''}`} aria-label={`${historical ? 'Cotización anterior' : 'Cotización vigente'} v${quote.revision}`}><div className="deal-quote-heading"><div><h3>Cotización v{quote.revision}</h3><small>Confirmada por el proveedor · {date(quote.supplier_confirmed_at)}</small></div><strong>{money(quote.total, quote.currency)}</strong></div><QuoteLinesGrid quote={quote} label={`Líneas de la cotización ${historical ? 'anterior ' : ''}v${quote.revision}`}/>{quote.terms && <div className="deal-terms"><h4>Condiciones</h4><p>{quote.terms}</p></div>}</section>;
 }
 
 const priceSources = { engine: 'Lista o regla', previous: 'Versión anterior', manual: 'Manual', none: 'Sin precio', unspecified: 'Sin especificar' };

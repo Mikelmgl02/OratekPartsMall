@@ -103,16 +103,16 @@ test('a supplier sets prices in the panel: viewing never opens the order, Fijar 
   await document.getByRole('button', { name: 'Fijar precios', exact: true }).click();
   await expect.poll(() => reviews).toEqual(['POST']);
   await expect(page.getByRole('group', { name: 'Secciones de la orden', exact: true }).getByRole('button', { name: 'Cotización', exact: true })).toHaveAttribute('aria-pressed', 'true');
-  await expect(document.locator('.quotation-grid')).toBeVisible();
+  await expect(document.locator('.quotation-grid[aria-label="Artículos de la cotización"]')).toBeVisible();
   await expect(document.getByRole('button', { name: /Confirmar y enviar cotización/ })).toBeVisible();
 });
 
 test('a supplier edits a sent quotation on the go, until the client confirms it', async ({ page }) => {
   const { document } = await panel(page, 'supplier', 'quoted', true);
   await expect(document).toContainText('Enviaste la cotización v1. Mientras el cliente no la confirme, puedes editarla y enviarle una nueva versión.');
-  await expect(document.locator('.quotation-grid')).toHaveCount(0);  // the editor opens only when asked
+  await expect(document.locator('.quotation-grid[aria-label="Artículos de la cotización"]')).toHaveCount(0);  // the editor opens only when asked
   await document.getByRole('group', { name: 'Decisiones', exact: true }).getByRole('button', { name: 'Editar cotización', exact: true }).click();
-  await expect(document.locator('.quotation-grid')).toBeVisible();
+  await expect(document.locator('.quotation-grid[aria-label="Artículos de la cotización"]')).toBeVisible();
   await expect(document.getByRole('button', { name: /Confirmar y enviar cotización/ })).toBeVisible();
   await expect(document.getByRole('region', { name: 'Cotización vigente v1', exact: true })).toContainText('USD 61.75');  // still what the client sees
 });

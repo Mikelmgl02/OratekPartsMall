@@ -313,7 +313,7 @@ test('the order header shows the pair profile; configuring the client makes the 
   });
   await page.route(route('pricing-rules'), request => request.fulfill({ json: { ...empty, can_configure: true } }));
   const content = page.locator('.deal-order-content');
-  const quote = (line: string, column: string) => content.locator(`.quotation-grid .ag-row[row-id="${line}"] .ag-cell[col-id="${column}"]`);
+  const quote = (line: string, column: string) => content.locator(`.quotation-grid[aria-label="Artículos de la cotización"] .ag-row[row-id="${line}"] .ag-cell[col-id="${column}"]`);
   await page.goto(`/proveedor/${supplierId}/ordenes/${orderId}`);
   const chip = content.getByLabel('Perfil comercial del cliente');
   await expect(chip).toContainText('Sin perfil comercial · se usa la lista GENERAL');

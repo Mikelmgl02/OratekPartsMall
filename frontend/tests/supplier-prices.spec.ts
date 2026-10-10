@@ -154,7 +154,7 @@ test('drafts arrive priced from the list, explain each price and apply suggestio
   await page.route(/\/api\/market\/accounts\/[^/]+\/deals\/[^/]+\/messages(?:\?.*)?$/, route => route.fulfill({ json: { results: [], cursor: 0, has_more: false, has_earlier: false } }));
   const drafts = await mockQuoteDrafts(page, () => order, { suggestions: { [lineA]: suggestion('15.00', { floor: '12.00' }), [lineB]: suggestion(null) } });
   const content = page.locator('.deal-order-content');
-  const quote = (line: string, column: string) => content.locator(`.quotation-grid .ag-row[row-id="${line}"] .ag-cell[col-id="${column}"]`);
+  const quote = (line: string, column: string) => content.locator(`.quotation-grid[aria-label="Artículos de la cotización"] .ag-row[row-id="${line}"] .ag-cell[col-id="${column}"]`);
   await page.goto(`/proveedor/${supplierId}/ordenes/${orderId}`);
   // Artículos shows the private suggested price with its origin.
   const lines = content.locator('.supplier-request-lines');

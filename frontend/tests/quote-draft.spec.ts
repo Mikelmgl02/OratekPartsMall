@@ -18,7 +18,7 @@ const content = (page: Page) => page.locator('.deal-order-content');
 // The wrapping label also names the textarea with its current value, so match it as a prefix.
 const termsField = (page: Page) => content(page).getByLabel('Condiciones de entrega y cotización');
 const draftStatus = (page: Page) => page.getByRole('status', { name: 'Estado del borrador', exact: true });
-const quoteCell = (page: Page, column: string, id = lineId) => content(page).locator(`.quotation-grid .ag-row[row-id="${id}"] .ag-cell[col-id="${column}"]`);
+const quoteCell = (page: Page, column: string, id = lineId) => content(page).locator(`.quotation-grid[aria-label="Artículos de la cotización"] .ag-row[row-id="${id}"] .ag-cell[col-id="${column}"]`);
 
 function line(id: string, codigo: string, quantity: number, stock: SupplierRequestLine['stock']): SupplierRequestLine {
   return { id, part_id: '66666666-6666-4666-8666-666666666666', supplier_item_id: '77777777-7777-4777-8777-777777777777', supplier_invent_id: `ID-${codigo}`,

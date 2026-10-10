@@ -15,7 +15,7 @@ const stamp = '2026-10-06T12:00:00Z';
 const empty = { count: 0, results: [], next: null, previous: null };
 const content = (page: Page) => page.locator('.deal-order-content');
 const panel = (page: Page) => content(page).getByRole('region', { name: 'Asistente de cotización (IA)', exact: true });
-const quoteCell = (page: Page, column: string, id = lineId) => content(page).locator(`.quotation-grid .ag-row[row-id="${id}"] .ag-cell[col-id="${column}"]`);
+const quoteCell = (page: Page, column: string, id = lineId) => content(page).locator(`.quotation-grid[aria-label="Artículos de la cotización"] .ag-row[row-id="${id}"] .ag-cell[col-id="${column}"]`);
 const any = expect.any(String);
 const question = '¿CONFIRMAS QUE ACEPTAS MARCA ALTERNA EN LA ZAPATA?';
 

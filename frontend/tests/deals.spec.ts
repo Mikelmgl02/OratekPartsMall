@@ -118,7 +118,7 @@ async function asClient(page: Page) {
   await page.getByRole('button', {name:'Ver enviada ORD-PRUEBA-001', exact:true}).click();
 }
 async function quoteTab(page: Page) { await dialog(page).getByRole('button', {name:'Cotización', exact:true}).click(); }
-const quoteCell = (page: Page, column: string, id = lineId) => dialog(page).locator(`.quotation-grid .ag-row[row-id="${id}"] .ag-cell[col-id="${column}"]`);
+const quoteCell = (page: Page, column: string, id = lineId) => dialog(page).locator(`.quotation-grid[aria-label="Artículos de la cotización"] .ag-row[row-id="${id}"] .ag-cell[col-id="${column}"]`);
 async function editQuote(page: Page, column: 'unit_price' | 'quantity', value: string, codigo = '58411-1R000-G', id = lineId) {
   await quoteCell(page, column, id).click();
   const input = dialog(page).getByLabel(`${column === 'unit_price' ? 'Precio' : 'Unidades ofrecidas'} de ${codigo}`, {exact:true});
