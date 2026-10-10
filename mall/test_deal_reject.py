@@ -1,6 +1,6 @@
 from rest_framework.test import APITestCase
 
-from .request_models import DealEvent, SupplierRequest
+from .request_models import DealEvent
 from . import test_deals as deal_tests
 
 
@@ -43,8 +43,10 @@ class DealRejectTests(APITestCase):
         current = order.quotations.get()
         self.assertEqual(self.reject(order, reason_code='found_elsewhere').status_code, 409)  # without naming it
         self.assertEqual(self.reject(order, quotation_id=str(current.pk)).status_code, 400)  # without a reason
-        self.assertEqual(self.reject(order, quotation_id=str(current.pk), reason_code='found_elsewhere').status_code, 200)
-        self.assertEqual(SupplierRequest.objects.get(pk=order.pk).status, 'cancelled')
+        self.assertEqual(self.reject(order, quotation_id=str(current.pk), reason_code='price_too_high').status_code, 200)
+        order.refresh_from_db()
+        self.assertEqual((order.status, order.cancel_reason), ('cancelled', 'price_too_high'))
+        self.assertEqual(DealEvent.objects.filter(order=order).latest('id').description, 'EL CLIENTE RECHAZÓ LA ORDEN: EL PRECIO ES MUY ALTO.')
 
     def test_only_the_client_rejects_and_only_before_the_agreement(self):
         order = self.order()

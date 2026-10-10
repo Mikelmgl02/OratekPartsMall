@@ -77,10 +77,12 @@ test('Rechazar ends the order with a reason, before or after the quotation', asy
   const form = document.getByRole('form', { name: 'Rechazar la orden', exact: true });
   await expect(form).toContainText('¿Rechazar la orden ORD-0123? Se cerrará sin acuerdo y REPUESTOS CENTRAL recibirá el motivo.');
   await expect(form.getByRole('button', { name: 'Rechazar orden', exact: true })).toBeDisabled();  // a reason first
-  await form.getByLabel('Motivo del rechazo', { exact: true }).selectOption('found_elsewhere');
+  await expect(form.getByLabel('Motivo del rechazo', { exact: true }).locator('option').first()).toHaveText('Elige un motivo…');
+  await expect(form.getByLabel('Motivo del rechazo', { exact: true }).locator('option').nth(1)).toHaveText('El precio es muy alto');
+  await form.getByLabel('Motivo del rechazo', { exact: true }).selectOption('price_too_high');
   await form.getByLabel('Comentario para el proveedor', { exact: true }).fill('Otro proveedor lo tenía hoy');
   await form.getByRole('button', { name: 'Rechazar orden', exact: true }).click();
-  await expect.poll(() => actions.at(-1)).toMatchObject({ action: 'reject', quotation_id: quote.id, reason_code: 'found_elsewhere', reason: 'Otro proveedor lo tenía hoy' });
+  await expect.poll(() => actions.at(-1)).toMatchObject({ action: 'reject', quotation_id: quote.id, reason_code: 'price_too_high', reason: 'Otro proveedor lo tenía hoy' });
   await expect(document.getByRole('status')).toContainText('Rechazaste la orden.');
   await expect(document.getByRole('group', { name: 'Decisiones', exact: true }).getByRole('button')).toHaveCount(0);
 });

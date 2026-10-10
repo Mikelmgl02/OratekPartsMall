@@ -35,7 +35,8 @@ class SupplierRequest(models.Model):
     CANCEL_SIDES = [('client', 'Cliente'), ('supplier', 'Proveedor'), ('admin', 'MotionPartes')]
     CANCEL_REASONS = [('no_stock', 'Sin existencias'), ('price_error', 'Error de precio'), ('cannot_deliver', 'No puede entregar'),
                       ('not_needed', 'Ya no lo necesita'), ('found_elsewhere', 'Lo consiguió con otro proveedor'), ('delay', 'Demora en la entrega'),
-                      ('shortfall', 'No acepta el faltante'), ('dispute', 'Disputa entre las partes'), ('other', 'Otro motivo')]
+                      ('shortfall', 'No acepta el faltante'), ('dispute', 'Disputa entre las partes'), ('price_too_high', 'El precio es muy alto'),
+                      ('other', 'Otro motivo')]
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     version = models.PositiveIntegerField(default=1)
     handshaked_at = models.DateTimeField(null=True, blank=True)

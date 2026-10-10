@@ -36,8 +36,8 @@ const actionNotices: Record<string, string> = {
   cancel: 'Acuerdo cancelado.', reject: 'Rechazaste la orden.',
 };
 // Rechazar (the client ends an open order) offers the reasons that fit a buyer turning an order down; the note can say more.
-const rejectReasons: [string, string][] = [['not_needed', 'Ya no lo necesito'], ['found_elsewhere', 'Lo conseguí con otro proveedor'],
-  ['delay', 'La respuesta tarda demasiado'], ['other', 'Otro motivo (precio, condiciones…)']];
+const rejectReasons: [string, string][] = [['price_too_high', 'El precio es muy alto'], ['not_needed', 'Ya no lo necesito'],
+  ['found_elsewhere', 'Lo conseguí con otro proveedor'], ['delay', 'La respuesta tarda demasiado'], ['other', 'Otro motivo']];
 const openOrder = ['pending', 'reviewed', 'quoted', 'adjustment'];
 
 // embedded: the Documento column of the conversations panel, next to its chat. There it shows no chat of its own (the assistant's
