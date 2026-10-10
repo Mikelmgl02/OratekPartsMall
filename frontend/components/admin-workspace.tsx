@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowUpRight, BadgeCheck, BarChart3, Boxes, Building2, Check, ChevronRight, Copy, Handshake, LoaderCircle, LogOut, MailPlus, Menu, PanelLeftClose, PanelLeftOpen, PlugZap, Plus, Repeat2, Search, ShieldCheck, Users, X } from 'lucide-react';
 import BrandLogo from './brand-logo';
 import Modal from './modal';
@@ -13,7 +13,7 @@ import AdminDeals from './admin-deals';
 import AdminTechnical from './admin-technical';
 import { AppToolbar, usePageViewport } from './app-shell';
 import { forgetPush } from '@/lib/push';
-import { AdminSection, ManagedAccount, ManagedInvitation, ManagedRole, ManagedUser, Member, Page, SessionUser, request } from '@/lib/types';
+import { AdminSection, ApiagCheck, ManagedAccount, ManagedInvitation, ManagedRole, ManagedUser, Member, Page, SessionUser, request } from '@/lib/types';
 
 type Row = ManagedAccount | ManagedUser | ManagedInvitation;
 const base = '/api/management';
@@ -160,27 +160,43 @@ function AccountEditor({ account, roles, onClose, onSaved }: { account: ManagedA
 function ApiagEditor({ account, onClose, onSaved }: { account: ManagedAccount; onClose: () => void; onSaved: (text: string) => void }) {
   const connection = account.apiag;
   const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const [removing, setRemoving] = useState(false);
+  const [check, setCheck] = useState<ApiagCheck | null>(null); const [testing, setTesting] = useState(false);
+  const formRef = useRef<HTMLFormElement>(null);
+  const edits = useRef(0);  // a result only counts for the values it was asked about
   const path = `${base}/accounts/${account.id}/apiag`;
+  const fields = (form: HTMLFormElement) => { const data = new FormData(form); return JSON.stringify({ server_url: data.get('server_url'), access_token: data.get('access_token') }); };
   async function submit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setError(''); setBusy(true); const form = new FormData(event.currentTarget);
-    try { await request(path, { method: 'POST', body: JSON.stringify({ server_url: form.get('server_url'), access_token: form.get('access_token') }) }); onSaved('Conexión con apiag-cloud guardada.'); }
+    event.preventDefault(); setError(''); setBusy(true);
+    try { await request(path, { method: 'POST', body: fields(event.currentTarget) }); onSaved('Conexión con apiag-cloud guardada.'); }
     catch (error) { setError(message(error)); } finally { setBusy(false); }
+  }
+  // Probar conexión: what is in the form, saved or not (a blank token tests the saved one).
+  async function test() {
+    const form = formRef.current;
+    if (!form?.reportValidity()) return;
+    const asked = edits.current;
+    setError(''); setCheck(null); setTesting(true);
+    try { const result = await request<ApiagCheck>(`${path}/test`, { method: 'POST', body: fields(form) }); if (edits.current === asked) setCheck(result); }
+    catch (error) { if (edits.current === asked) setError(message(error)); } finally { setTesting(false); }
   }
   async function remove() {
     setError(''); setBusy(true);
     try { await request(path, { method: 'DELETE' }); onSaved('Conexión con apiag-cloud eliminada.'); }
     catch (error) { setError(message(error)); } finally { setBusy(false); }
   }
-  return <Modal title={`apiag-cloud · ${account.name}`} onClose={onClose}><p className="modal-description">MotionPartes usará esta dirección y este token para consultar el API del apiag-cloud de este proveedor. Genera el token en su apiag-cloud y pégalo aquí.</p><form autoComplete="off" className="stack-form" onSubmit={submit}>
-    <label>URL del servidor<input autoComplete="off" name="server_url" inputMode="url" spellCheck={false} required maxLength={300} defaultValue={connection?.server_url} placeholder="https://empresa.apiag.cloud"/></label>
+  return <Modal title={`apiag-cloud · ${account.name}`} onClose={onClose}><p className="modal-description">MotionPartes usará esta dirección y este token para consultar el API del apiag-cloud de este proveedor. Escribe solo la dirección del servidor (https:// se agrega solo), genera el token en su apiag-cloud y pégalo aquí.</p><form ref={formRef} autoComplete="off" className="stack-form" onSubmit={submit} onChange={() => { edits.current += 1; setCheck(null); }}>
+    <label>URL del servidor<input autoComplete="off" name="server_url" inputMode="url" spellCheck={false} required maxLength={300} defaultValue={connection?.server_url} placeholder="empresa.apiag.cloud"/></label>
     {/* Masked text, not a password field: browsers would offer to save the supplier's token as a MotionPartes password. */}
     <label>Token de acceso<input autoComplete="off" name="access_token" className="secret-input" spellCheck={false} autoCapitalize="off" autoCorrect="off" data-1p-ignore="" data-lpignore="true" data-bwignore="" required={!connection?.token_readable} placeholder={connection?.token_readable ? 'Déjalo vacío para conservar el token guardado' : 'Pega el token generado en apiag-cloud'}/></label>
     {connection && (connection.token_readable
       ? <p className="form-footnote">Token guardado: termina en <strong>{connection.token_hint}</strong>. Por seguridad no se vuelve a mostrar. Conexión actualizada el {formatDate(connection.updated_at)}{connection.updated_by ? ` por ${connection.updated_by}` : ''}.</p>
       : <div className="notice error" role="alert">El token guardado no se puede leer con la clave actual del servidor. Pega el token de nuevo.</div>)}
-    <FormError error={error}/><SaveButton busy={busy}>Guardar conexión</SaveButton>
+    {check && <div className={`notice ${check.ok ? 'success' : 'error'}`} role="status">{check.ok ? <Check size={16}/> : <X size={16}/>}{check.message}</div>}
+    <FormError error={error}/>
+    <button type="button" className="button soft full" disabled={busy || testing} onClick={test}>{testing ? <LoaderCircle className="spin" size={16}/> : <PlugZap size={16}/>} Probar conexión</button>
+    <SaveButton busy={busy} disabled={testing}>Guardar conexión</SaveButton>
   </form>
-    {connection && <div className="admin-apiag-remove">{removing ? <><button className="button soft small danger-text" disabled={busy} onClick={remove}>Confirmar: quitar conexión</button><button className="button text small" disabled={busy} onClick={() => setRemoving(false)}>Cancelar</button></> : <button className="button text small danger-text" disabled={busy} onClick={() => setRemoving(true)}>Quitar conexión</button>}</div>}
+    {connection && <div className="admin-apiag-remove">{removing ? <><button className="button soft small danger-text" disabled={busy || testing} onClick={remove}>Confirmar: quitar conexión</button><button className="button text small" disabled={busy || testing} onClick={() => setRemoving(false)}>Cancelar</button></> : <button className="button text small danger-text" disabled={busy || testing} onClick={() => setRemoving(true)}>Quitar conexión</button>}</div>}
   </Modal>;
 }
 

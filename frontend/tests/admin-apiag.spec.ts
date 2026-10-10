@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { signedOutInbox } from './inbox-route';
-import type { ApiagConnection, ManagedAccount } from '../lib/types';
+import type { ApiagCheck, ApiagConnection, ManagedAccount } from '../lib/types';
 
 // Cuentas → apiag-cloud, for superusers: server-rendered administration needs a session token; the screen's API calls are mocked.
 const supplierId = '22222222-2222-4222-8222-222222222222';
@@ -86,5 +86,60 @@ test('superusers connect a supplier account to its apiag-cloud without the token
   await expect(page.getByText('Conexión con apiag-cloud eliminada.')).toBeVisible();
   expect(deletes).toEqual([supplierId]);
   await expect(page.getByRole('row').filter({ hasText: 'REPUESTOS CENTRAL' }).getByText(/Conectada a apiag-cloud|vuelve a ingresar el token/)).toHaveCount(0);
+  expect(unexpected).toEqual([]);
+});
+
+test('Probar conexión checks the address and token in the form without saving them', async ({ page, baseURL }) => {
+  test.skip(!process.env.E2E_ADMIN_TOKEN, 'A disposable superuser token is required for server-rendered administration.');
+  await page.context().addCookies([{ name: 'partsmall_session', value: process.env.E2E_ADMIN_TOKEN!, url: baseURL || 'http://localhost:8080', httpOnly: true, sameSite: 'Strict' }]);
+  const checks: unknown[] = [], saves: unknown[] = [], unexpected: string[] = [];
+  let answer: ApiagCheck = { ok: true, status: 'ok', message: 'Conexión correcta: ese apiag-cloud aceptó el token (84 ms).', http_status: 200, elapsed_ms: 84 };
+  await page.route('**/api/**', route => { if (signedOutInbox(route)) return; unexpected.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`); return route.fulfill({ status: 404, json: { detail: 'Ruta no prevista' } }); });
+  await page.route('**/api/market/analytics/events', route => route.fulfill({ status: 202, json: { recorded: true } }));
+  await page.route(/\/api\/management\/roles(?:\?.*)?$/, route => route.fulfill({ json: roles }));
+  await page.route(/\/api\/management\/accounts(?:\?.*)?$/, route => route.fulfill({ json: { count: 1, next: null, previous: null, results: [
+    { id: supplierId, name: 'REPUESTOS CENTRAL', active: true, roles: ['supplier_wholesale'], member_count: 2, members: [], apiag: null }] } }));
+  await page.route(`**/api/management/accounts/${supplierId}/apiag`, route => { saves.push(route.request().postDataJSON()); return route.fulfill({ status: 201, json: saved }); });
+  let held: Promise<void> | null = null;
+  await page.route(`**/api/management/accounts/${supplierId}/apiag/test`, async route => { checks.push(route.request().postDataJSON()); if (held) await held; return route.fulfill({ json: answer }); });
+
+  await page.goto('/administracion?seccion=cuentas');
+  await page.getByRole('button', { name: 'Conexión con apiag-cloud de REPUESTOS CENTRAL', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'apiag-cloud · REPUESTOS CENTRAL' });
+  await expect(dialog.getByLabel('URL del servidor')).toHaveAttribute('placeholder', 'empresa.apiag.cloud');
+  await expect(dialog.getByText('Escribe solo la dirección del servidor (https:// se agrega solo)', { exact: false })).toBeVisible();
+  // The form's own checks come first: nothing is sent without an address and a token.
+  await dialog.getByRole('button', { name: 'Probar conexión' }).click();
+  expect(checks).toEqual([]);
+  await dialog.getByLabel('URL del servidor').fill('mm.oratek.info');
+  await dialog.getByLabel('Token de acceso').fill(secret);
+  await dialog.getByRole('button', { name: 'Probar conexión' }).click();
+  await expect(dialog.locator('.notice.success')).toHaveText('Conexión correcta: ese apiag-cloud aceptó el token (84 ms).');
+  expect(checks).toEqual([{ server_url: 'mm.oratek.info', access_token: secret }]);
+
+  answer = { ok: false, status: 'token_rejected', message: 'Ese apiag-cloud rechazó el token: no coincide con motion_partes_access_token de su .env.', http_status: 401, elapsed_ms: 40 };
+  await dialog.getByRole('button', { name: 'Probar conexión' }).click();
+  await expect(dialog.locator('.notice.error')).toHaveText('Ese apiag-cloud rechazó el token: no coincide con motion_partes_access_token de su .env.');
+  await expect(dialog.locator('.notice.success')).toHaveCount(0);
+  // Editing the form clears a result that no longer describes it.
+  await dialog.getByLabel('Token de acceso').fill(`${secret}-2`);
+  await expect(dialog.getByRole('status')).toHaveCount(0);
+  expect(saves).toEqual([]);
+  // While a test runs, saving waits; a result that arrives after the fields changed is dropped.
+  let release = () => {};
+  held = new Promise(resolve => { release = resolve; });
+  await dialog.getByRole('button', { name: 'Probar conexión' }).click();
+  await expect(dialog.getByRole('button', { name: 'Guardar conexión' })).toBeDisabled();
+  await expect(dialog.getByRole('button', { name: 'Probar conexión' })).toBeDisabled();
+  await dialog.getByLabel('Token de acceso').fill(`${secret}-3`);
+  release(); held = null;
+  await expect(dialog.getByRole('button', { name: 'Guardar conexión' })).toBeEnabled();
+  await expect(dialog.getByRole('status')).toHaveCount(0);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await dialog.getByRole('button', { name: 'Probar conexión' }).click();
+  await expect(dialog.locator('.notice.error')).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: '/tmp/motionpartes-apiag-test-mobile.png' });
+  expect(saves).toEqual([]);
   expect(unexpected).toEqual([]);
 });

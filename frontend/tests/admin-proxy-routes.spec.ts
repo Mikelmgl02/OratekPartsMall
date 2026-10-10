@@ -44,3 +44,12 @@ test('the proxy forwards the apiag-cloud connection of Cuentas', async ({ page }
     expect(await response.text()).not.toContain('La ruta solicitada no existe');
   }
 });
+
+test('the proxy forwards Probar conexión of Cuentas', async ({ page }) => {
+  test.skip(!process.env.E2E_ADMIN_TOKEN, 'A disposable superuser token is required.');
+  await page.context().addCookies([{ name: 'partsmall_session', value: process.env.E2E_ADMIN_TOKEN!, url: origin, httpOnly: true, sameSite: 'Strict' }]);
+  // An account that does not exist: the backend answers 404 before calling any server.
+  const response = await page.request.post('/api/management/accounts/00000000-0000-4000-8000-000000000000/apiag/test', { data: { server_url: 'empresa.apiag.cloud', access_token: '' }, headers: { Origin: origin } });
+  expect(response.status(), await response.text()).toBe(404);
+  expect(await response.text()).not.toContain('La ruta solicitada no existe');
+});

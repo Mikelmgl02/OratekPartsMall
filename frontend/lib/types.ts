@@ -6,6 +6,8 @@ export type AdminSection = 'inventory' | 'alternates' | 'oem' | 'accounts' | 'us
 export type Member = { id: number; user: number; account: string; permission: MembershipPermission; username: string; email: string; account_name: string; user_active: boolean; permission_label: string };
 // The supplier's apiag-cloud server. The token is write-only: responses carry its last four characters (token_hint), never the token.
 export type ApiagConnection = { server_url: string; token_hint: string; token_readable: boolean; updated_at: string; updated_by: string | null };
+// Probar conexión: whether the supplier's apiag-cloud accepted the URL and token (mall.apiag_client.ping).
+export type ApiagCheck = { ok: boolean; status: string; message: string; http_status: number | null; elapsed_ms: number };
 export type ManagedAccount = { id: string; name: string; active: boolean; roles: string[]; member_count: number; members: Member[]; apiag: ApiagConnection | null };
 export type ManagedUser = SessionUser & { email: string; is_active: boolean; is_staff: boolean; date_joined: string; memberships: Member[] };
 export type ManagedRole = { code: string; name: string; capability: string };
