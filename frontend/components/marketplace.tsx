@@ -306,7 +306,7 @@ export default function Catálogo() {
       <nav className="store-departments" aria-label="Navegación principal"><div className="header-inner">
         <button className={catalogActive && !filters.category.length ? 'active' : ''} onClick={() => { selectCategory(''); explore(); }}><Menu size={17}/>Catálogo</button>
         {departments.slice(0, 9).map(department => <button key={department.value} className={catalogActive && filters.category.length === 1 && filters.category[0] === department.value ? 'active' : ''} onClick={() => { selectCategory(department.value); explore(); }}>{department.label}</button>)}
-        <span className="store-departments-end"><button onClick={() => setHelpOpen(true)}>Cómo funciona</button><button className={!basketOpen && !sentOpen && !wishlistOpen && !purchasesOpen && view === 'inventory' ? 'active' : ''} onClick={openSupplier}>Para proveedores</button>{user?.is_superuser && <Link href="/administracion"><ShieldCheck size={14}/>Administración</Link>}</span>
+        <span className="store-departments-end"><button onClick={() => setHelpOpen(true)}>Cómo funciona</button>{canSupply && <button className={!basketOpen && !sentOpen && !wishlistOpen && !purchasesOpen && view === 'inventory' ? 'active' : ''} onClick={openSupplier}>Para proveedores</button>}{user?.is_superuser && <Link href="/administracion"><ShieldCheck size={14}/>Administración</Link>}</span>
       </div></nav>
     </header>
     </AppToolbar>
