@@ -2,8 +2,10 @@
 
 1. Balances: replaying an item's entries from zero, in the order they were written, gives each entry's recorded balances (reported_after,
    reserved_after) and ends at the item's reported and reserved counts. An item with units but no entry, or a replay below zero, fails.
-2. Reservations: an item reserves exactly what its open reservations hold; every reservation has one reserve entry for its units, a
-   settled one also one settle entry for them, an open one none, and each entry belongs to its reservation's item.
+2. Reservations: an item reserves exactly what its open reservations hold; every reservation has one reserve entry, and what its
+   later entries take out (shortfall, settle, release) leaves exactly what it still holds: its quantity while open, nothing once settled or
+   released. A settled reservation has its settle entry, a released one a shortfall or release entry, an open one neither a settle nor a
+   release; each entry belongs to its reservation's item.
 Read-only, on one consistent snapshot. Prints counts and a few examples; exits 1 when something does not reconcile.
 """
 import argparse
@@ -93,12 +95,15 @@ def check(examples=10):
                 held[reservation.item_id] += reservation.quantity
             moves = linked.pop(reservation.pk, [])
             kinds = Counter(entry['kind'] for entry in moves)
-            expected = {'reserve': 1, 'settle': 1} if reservation.status == 'settled' else {'reserve': 1}
             name = f'{reservation.order.reference} en {items[reservation.item_id][0]}'
-            if dict(kinds) != expected:
+            left = sum(movement(entry)[1] for entry in moves)  # reserved units in, minus what shortfalls, settles and releases took out
+            closing = {'settled': kinds['settle'] == 1, 'released': kinds['settle'] == 0 and (kinds['release'] + kinds['shortfall']) >= 1,
+                       'open': kinds['settle'] == 0 and kinds['release'] == 0}[reservation.status]
+            if kinds['reserve'] != 1 or not closing or set(kinds) - {'reserve', 'shortfall', 'settle', 'release'}:
                 problem('reservation', f'{name} ({reservation.status}): {dict(kinds) or "sin movimientos"}')
-            elif any(entry['quantity'] != reservation.quantity or entry['item_id'] != reservation.item_id for entry in moves):
-                problem('reservation', f'{name}: sus movimientos no mueven sus {reservation.quantity} unidades de su artículo')
+            elif any(entry['item_id'] != reservation.item_id for entry in moves) or left != (reservation.quantity if reservation.status == 'open' else 0):
+                problem('reservation', f'{name} ({reservation.status}): sus movimientos dejan {left} unidades reservadas, '
+                                       f'retiene {reservation.quantity if reservation.status == "open" else 0}')
         for pk, (label, _, reserved) in items.items():
             if reserved != held[pk]:
                 problem('reserved', f'{label}: reserva {reserved} unidades, sus reservas abiertas suman {held[pk]}')

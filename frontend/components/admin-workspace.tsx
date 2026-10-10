@@ -3,12 +3,13 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { ArrowLeft, ArrowUpRight, BadgeCheck, BarChart3, Boxes, Building2, Check, ChevronRight, Copy, LoaderCircle, LogOut, MailPlus, Menu, PanelLeftClose, PanelLeftOpen, Plus, Repeat2, Search, ShieldCheck, Users, X } from 'lucide-react';
+import { ArrowLeft, ArrowUpRight, BadgeCheck, BarChart3, Boxes, Building2, Check, ChevronRight, Copy, Handshake, LoaderCircle, LogOut, MailPlus, Menu, PanelLeftClose, PanelLeftOpen, Plus, Repeat2, Search, ShieldCheck, Users, X } from 'lucide-react';
 import BrandLogo from './brand-logo';
 import Modal from './modal';
 import AdminCatalogSection from './admin-catalog-section';
 import AdminOEMSection from './admin-oem-section';
 import AdminAnalytics from './admin-analytics';
+import AdminDeals from './admin-deals';
 import AdminTechnical from './admin-technical';
 import { AppToolbar, usePageViewport } from './app-shell';
 import { forgetPush } from '@/lib/push';
@@ -76,7 +77,7 @@ export default function AdminWorkspace({ user, section = 'accounts' }: { user: S
     try { const account = await request<ManagedAccount>(`${base}/accounts/${id}`); setUserEditor(null); setMemberEditor(account); }
     catch (error) { setError(message(error)); }
   }
-  const heading = { inventory: 'Inventario', alternates: 'Alternos', oem: 'OEM', accounts: 'Cuentas', users: 'Usuarios', invitations: 'Invitaciones', analytics: 'Estadísticas', templates: 'Plantillas técnicas', applications: 'Aplicaciones vehiculares' }[tab];
+  const heading = { inventory: 'Inventario', alternates: 'Alternos', oem: 'OEM', accounts: 'Cuentas', users: 'Usuarios', invitations: 'Invitaciones', analytics: 'Estadísticas', deals: 'Acuerdos', templates: 'Plantillas técnicas', applications: 'Aplicaciones vehiculares' }[tab];
   const navigation = [
     { key: 'inventory', slug: 'inventario', text: 'Inventario', Icon: Boxes, group: 'Catálogo' },
     { key: 'alternates', slug: 'alternos', text: 'Alternos', Icon: Repeat2, group: 'Catálogo' },
@@ -87,6 +88,7 @@ export default function AdminWorkspace({ user, section = 'accounts' }: { user: S
     { key: 'users', slug: 'usuarios', text: 'Usuarios', Icon: Users, group: 'Accesos' },
     { key: 'invitations', slug: 'invitaciones', text: 'Invitaciones', Icon: MailPlus, group: 'Accesos' },
     { key: 'analytics', slug: 'estadisticas', text: 'Estadísticas', Icon: BarChart3, group: 'Actividad' },
+    { key: 'deals', slug: 'acuerdos', text: 'Acuerdos', Icon: Handshake, group: 'Actividad' },
   ];
   return <>
     <AppToolbar><header className="header"><div className="header-inner admin-header">
@@ -121,7 +123,7 @@ export default function AdminWorkspace({ user, section = 'accounts' }: { user: S
         {data && <div className="pagination"><span>{data.count} {data.count === 1 ? 'resultado' : 'resultados'}</span><div><button className="button soft small" disabled={!data.previous} onClick={() => setPage(page - 1)}>Anterior</button><span>Página {page}</span><button className="button soft small" disabled={!data.next} onClick={() => setPage(page + 1)}>Siguiente</button></div></div>}
       </section>
       <p className="admin-footnote">Las cuentas pueden tener varios tipos de cliente o proveedor. Cada usuario puede acceder a varias cuentas con su propio permiso.</p>
-      </> : tab === 'analytics' ? <AdminAnalytics/> : tab === 'oem' ? <AdminOEMSection/> : tab === 'templates' || tab === 'applications' ? <AdminTechnical key={tab} applications={tab === 'applications'}/> : <AdminCatalogSection key={tab} section={tab as 'inventory' | 'alternates'}/>}
+      </> : tab === 'analytics' ? <AdminAnalytics/> : tab === 'deals' ? <AdminDeals/> : tab === 'oem' ? <AdminOEMSection/> : tab === 'templates' || tab === 'applications' ? <AdminTechnical key={tab} applications={tab === 'applications'}/> : <AdminCatalogSection key={tab} section={tab as 'inventory' | 'alternates'}/>}
       </main>
     </div>
     {accountEditor !== undefined && <AccountEditor account={accountEditor} roles={roles} onClose={() => setAccountEditor(undefined)} onSaved={() => { setAccountEditor(undefined); saved('Cuenta guardada.'); }}/>}

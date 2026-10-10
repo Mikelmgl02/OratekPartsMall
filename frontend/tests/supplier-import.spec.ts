@@ -295,9 +295,9 @@ test('manual balance retries reuse the update ID while edited payloads receive a
 });
 
 // Confirmed deals reserved units of FE-ONE: 3 for one order, 2 for another. The file's count is 3.
-const orders = [
-  { id: '66666666-6666-4666-8666-666666666661', reference: 'ORD-20261008-AAAA1111', client_name: 'TALLER CENTRAL', quantity: 3, confirmed_at: '2026-10-08T15:00:00Z' },
-  { id: '66666666-6666-4666-8666-666666666662', reference: 'ORD-20261009-BBBB2222', client_name: 'TALLER NORTE', quantity: 2, confirmed_at: '2026-10-09T15:00:00Z' },
+const orders: { id: string; reference: string; client_name: string; quantity: number; confirmed_at: string; delivered_at: string | null }[] = [
+  { id: '66666666-6666-4666-8666-666666666661', reference: 'ORD-20261008-AAAA1111', client_name: 'TALLER CENTRAL', quantity: 3, confirmed_at: '2026-10-08T15:00:00Z', delivered_at: null },
+  { id: '66666666-6666-4666-8666-666666666662', reference: 'ORD-20261009-BBBB2222', client_name: 'TALLER NORTE', quantity: 2, confirmed_at: '2026-10-09T15:00:00Z', delivered_at: null },
 ];
 function reservedJob() {
   const job = importJob({ rejectedRows: 0 });
@@ -357,6 +357,23 @@ test('confirmed orders in the file need an answer each before importing, and the
   await expect(notice.getByRole('radio')).toHaveCount(0);
 });
 
+test('a delivered order starts answered "Ya lo descuenta" and the supplier can still change it', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  orders[1].delivered_at = '2026-10-09T18:00:00Z';
+  try {
+    const { dialog, bodies, notice } = await reservedImport(page);
+    const delivered = notice.getByRole('group', question('ORD-20261009-BBBB2222'));
+    await expect(delivered.getByLabel('Ya lo descuenta')).toBeChecked();
+    await expect(notice).toContainText('entregado el');
+    await expect(dialog.getByRole('button', { name: 'Responde por 1 pedido confirmado para importar', exact: true })).toBeDisabled();
+    await notice.getByRole('group', question('ORD-20261008-AAAA1111')).getByLabel('Aún lo incluye').check();
+    await delivered.getByLabel('Aún lo incluye').check();
+    await dialog.getByRole('button', { name: 'Confirmar importación', exact: true }).click();
+    await expect(dialog.getByRole('heading', { name: 'Importación completada', exact: true })).toBeVisible();
+    expect(bodies).toEqual([{ batch_index: 0, decisions: { [orders[0].id]: 'gross', [orders[1].id]: 'gross' } }]);
+  } finally { orders[1].delivered_at = null; }
+});
+
 test('on a phone one answer can cover every confirmed order, and the heads-up stays inside the dialog', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const { dialog, bodies, notice } = await reservedImport(page);
@@ -378,10 +395,10 @@ test('on a phone one answer can cover every confirmed order, and the heads-up st
 
 // Through the real Next route (no browser mock): the API validates the batch body before it looks up the account, so an invalid answer
 // that reaches it comes back as a decisions error, while a dropped one would reach the account lookup (404). Nothing is written.
-test('the import proxy forwards the confirmed-order answers to the API', async ({ request }) => {
+test('the import proxy forwards the confirmed-order answers to the API', async ({ request, baseURL }) => {
   test.skip(!process.env.E2E_ADMIN_TOKEN, 'A session token is required to pass the proxy.');
   const url = `/api/market/accounts/${accountId}/inventory/import/jobs/${jobId}`;
-  const headers = { Cookie: `partsmall_session=${process.env.E2E_ADMIN_TOKEN}`, Origin: 'http://localhost:8080', 'Content-Type': 'application/json' };
+  const headers = { Cookie: `partsmall_session=${process.env.E2E_ADMIN_TOKEN}`, Origin: new URL(baseURL!).origin, 'Content-Type': 'application/json' };
   const reservation = orders[0].id;
   const forwarded = await request.post(url, { headers, data: { batch_index: 0, decisions: { [reservation]: 'maybe' } } });
   expect(forwarded.status()).toBe(400);

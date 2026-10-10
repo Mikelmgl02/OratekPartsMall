@@ -92,6 +92,7 @@ class StockReservationTests(APITestCase):
         self.assertEqual([(order['reference'], order['client_name'], order['quantity']) for order in rows['A-001']['orders']],
                          [(first.reference, 'CLIENTE ORIGINAL', 3), (second.reference, 'CLIENTE ORIGINAL', 3)])
         self.assertEqual({row['supplier_invent_id']: row['reserved'] for row in job['preview']}, {'A-001': 6, 'A-002': 4})
+        self.assertEqual({order['delivered_at'] for entry in job['reservations'] for order in entry['orders']}, {None})
         self.assertEqual(job['summary']['reserved_rows'], 2)
         ids = {(key, order['reference']): order['id'] for key, entry in rows.items() for order in entry['orders']}
 
@@ -231,15 +232,20 @@ class StockReservationTests(APITestCase):
             ({'kind': 'release', 'direction': 'debit', 'reserved_direction': 'debit', 'reserved_delta': 2}, 'stock_entry_reservation_amount'),
             ({'kind': 'sync', 'balance_type': 'stock', 'reserved_delta': 0, 'reserved_direction': '', 'reservation': None, 'quantity': 0},
              'stock_entry_quantity_positive'),
+            ({'kind': 'release', 'direction': 'debit', 'reserved_direction': 'debit', 'reservation': None}, 'stock_entry_reservation_link'),
+            ({'kind': 'delivery', 'balance_type': 'stock', 'direction': 'debit', 'reserved_delta': 0, 'reserved_direction': ''}, 'stock_entry_kind_shape'),
+            ({'kind': 'shortfall', 'balance_type': 'stock', 'direction': 'credit'}, 'stock_entry_kind_shape'),
         ]
         for changes, rule in cases:
             with self.subTest(rule=rule, changes=changes), self.assertRaises(IntegrityError) as raised, transaction.atomic():
                 StockEntry.objects.create(**{**base, **changes})
             self.assertIn(rule, str(raised.exception))
-        # The shapes no writer uses yet stay possible: a release with or without its reservation, a delivery of stock.
+        # A shortfall (or a delivery, which no writer uses yet) takes units from the count and the reservation together, or from the
+        # reservation alone when the count has none left.
         for changes in [{'kind': 'release', 'direction': 'debit', 'reserved_direction': 'debit'},
-                        {'kind': 'release', 'direction': 'debit', 'reserved_direction': 'debit', 'reservation': None},
-                        {'kind': 'delivery', 'balance_type': 'stock', 'direction': 'debit', 'reserved_delta': 0, 'reserved_direction': ''}]:
+                        {'kind': 'shortfall', 'balance_type': 'stock', 'direction': 'debit', 'reserved_delta': 2, 'reserved_direction': 'debit'},
+                        {'kind': 'shortfall', 'direction': 'debit', 'reserved_direction': 'debit'},
+                        {'kind': 'delivery', 'balance_type': 'stock', 'direction': 'debit', 'reserved_direction': 'debit'}]:
             with self.subTest(accepted=changes), transaction.atomic():
                 StockEntry.objects.create(**{**base, **changes})
                 transaction.set_rollback(True)

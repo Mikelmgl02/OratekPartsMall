@@ -254,7 +254,7 @@ class SupplierItem(models.Model):
 
 class StockEntry(models.Model):
     item = models.ForeignKey(SupplierItem, on_delete=models.PROTECT, related_name="ledger", verbose_name='artículo del proveedor')
-    kind = models.CharField(max_length=20, choices=[("sync", "Ajuste de existencias"), ("reserve", "Reserva"), ("release", "Liberación de reserva"), ("settle", "Pedido descontado por el proveedor"), ("delivery", "Entrega")], verbose_name='tipo de movimiento')
+    kind = models.CharField(max_length=20, choices=[("sync", "Ajuste de existencias"), ("reserve", "Reserva"), ("release", "Liberación de reserva"), ("settle", "Pedido descontado por el proveedor"), ("shortfall", "Faltante físico"), ("delivery", "Entrega")], verbose_name='tipo de movimiento')
     quantity = models.PositiveIntegerField(default=0, verbose_name='cantidad del movimiento')
     direction = models.CharField(max_length=6, choices=[('credit', 'Crédito'), ('debit', 'Débito')], default='credit', verbose_name='dirección')
     balance_type = models.CharField(max_length=11, choices=[('stock', 'Existencias'), ('reservation', 'Reservas')], default='stock', verbose_name='saldo afectado')
@@ -272,19 +272,22 @@ class StockEntry(models.Model):
         verbose_name = 'movimiento de existencias'
         verbose_name_plural = 'movimientos de existencias'
         # Every entry moves at least one unit of one balance. A sync moves the reported count only; reserve, release and settle move
-        # reserved units only, by their quantity, and point to the reservation they move (mall.check_stock_ledger replays them).
+        # reserved units only, by their quantity; every entry but a sync points to the reservation it moves (mall.check_stock_ledger).
         constraints = [
             models.CheckConstraint(condition=Q(direction__in=['credit', 'debit']), name='stock_entry_valid_direction'),
             models.CheckConstraint(condition=Q(balance_type__in=['stock', 'reservation']), name='stock_entry_valid_balance_type'),
             models.CheckConstraint(condition=Q(reserved_delta=0, reserved_direction='') | Q(reserved_delta__gt=0, reserved_direction__in=['credit', 'debit']), name='stock_entry_reserved_direction'),
             models.CheckConstraint(condition=Q(quantity__gte=1), name='stock_entry_quantity_positive'),
-            models.CheckConstraint(condition=Q(kind='sync', balance_type='stock', reserved_delta=0) | Q(kind='delivery', balance_type='stock')
+            # A shortfall or delivery takes units out of the count and the reservation together (a reservation-only entry when the
+            # count has nothing left to take), so available stock does not move.
+            models.CheckConstraint(condition=Q(kind='sync', balance_type='stock', reserved_delta=0)
                                    | Q(kind='reserve', balance_type='reservation', direction='credit')
-                                   | Q(kind__in=['release', 'settle'], balance_type='reservation', direction='debit'), name='stock_entry_kind_shape'),
+                                   | Q(kind__in=['release', 'settle'], balance_type='reservation', direction='debit')
+                                   | Q(kind__in=['shortfall', 'delivery'], direction='debit', reserved_direction='debit'), name='stock_entry_kind_shape'),
             models.CheckConstraint(condition=Q(balance_type='stock') | Q(reserved_delta=F('quantity'), reserved_direction=F('direction')),
                                    name='stock_entry_reservation_amount'),
-            models.CheckConstraint(condition=Q(kind__in=['reserve', 'settle'], reservation__isnull=False) | Q(kind='sync', reservation__isnull=True)
-                                   | Q(kind__in=['release', 'delivery']), name='stock_entry_reservation_link'),
+            models.CheckConstraint(condition=Q(kind='sync', reservation__isnull=True) | (~Q(kind='sync') & Q(reservation__isnull=False)),
+                                   name='stock_entry_reservation_link'),
         ]
 
 class InventoryUpdate(models.Model):
@@ -304,7 +307,8 @@ from .classification_models import CatalogClassificationState, CatalogClassifica
 from .catalog_assistant_models import CatalogAssistantJob, CatalogAssistantSuggestion, CategorySuggestionCache
 from .supplier_import_models import SupplierInventoryImportJob, SupplierInventoryImportBatch
 from .request_models import (ClientRequestSubmission, SupplierRequest, SupplierRequestLine, RequestContribution,
-                             DealQuotation, DealQuotationLine, DealEvent, DealMessage, DealCommand, StockReservation)
+                             DealQuotation, DealQuotationLine, DealEvent, DealMessage, DealCommand, StockReservation,
+                             DealShortfall, DealShortfallLine)
 from .analytics_models import UsageEvent, UsageVisit
 from .inbox_models import ConversationRead, InboxCursor, PushSubscription
 from .matching_models import MatchingQueue, MatchingCase, SupplierCodeMapping, MatchingDecision

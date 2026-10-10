@@ -43,7 +43,7 @@ async function fixture(page: Page) {
   await page.route(/\/api\/market\/accounts\/[^/]+\/(sent-requests|requests)(?:\?.*)?$/, route => {
     const status = new URL(route.request().url()).searchParams.get('status');
     const supplierList = new URL(route.request().url()).pathname.includes('/requests');
-    const results = !status || status === order.status ? [{...order, quoted_unit_count: order.quotation?.lines.reduce((sum,line) => sum + line.quantity, 0),
+    const results = !status || status === order.status || (status === 'agreements' && order.handshaked_at) ? [{...order, quoted_unit_count: order.quotation?.lines.reduce((sum,line) => sum + line.quantity, 0),
       ...(supplierList ? {draft_state: null, availability_alert: blockAccept ? 'blocked' : null} : {})}] : [];
     return route.fulfill({json:{...empty, count:results.length, results}});
   });

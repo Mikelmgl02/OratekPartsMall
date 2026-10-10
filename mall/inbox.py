@@ -27,7 +27,8 @@ TITLES = {
     'order_sent': '{who} te envió una orden', 'order_appended': '{who} agregó artículos a la orden',
     'review_started': '{who} empezó a revisar tu orden', 'quote': '{who} publicó la cotización v{revision}',
     'request_adjustment': '{who} solicitó un ajuste', 'return_quote': '{who} devolvió la cotización v{revision} para confirmar',
-    'accept': '{who} confirmó el acuerdo',
+    'accept': '{who} confirmó el acuerdo', 'deliver': '{who} marcó la orden como entregada', 'report_shortfall': '{who} reportó un faltante',
+    'accept_shortfall': '{who} aceptó el faltante', 'cancel': '{who} canceló el acuerdo',
 }
 
 
@@ -100,7 +101,9 @@ def message_preview(message, user):
 
 def event_title(event):
     revision = event.quotation.revision if event.quotation_id else ''
-    return TITLES.get(event.kind, '{who} actualizó la orden').format(who=event.account.name, revision=revision)
+    # An administrator's decision (a dispute cancellation) acts for no account.
+    who = event.account.name if event.account else 'MotionPartes'
+    return TITLES.get(event.kind, '{who} actualizó la orden').format(who=who, revision=revision)
 
 
 def snippet(body):

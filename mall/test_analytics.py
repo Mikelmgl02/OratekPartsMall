@@ -171,7 +171,8 @@ class AnalyticsTests(APITestCase):
         """An order quoted revisions times, the first version published one hour after the client sent it; its prices are private markers."""
         submission = ClientRequestSubmission.objects.create(client=self.account, submission_id=uuid.uuid4(), actor=self.buyer, payload_hash=reference)
         order = SupplierRequest.objects.create(submission=submission, client=self.account, supplier=self.supplier, client_name=self.account.name,
-                                               supplier_name=self.supplier.name, reference=reference, status=status)
+                                               supplier_name=self.supplier.name, reference=reference, status=status,
+                                               handshaked_at=timezone.now() if status == 'handshaked' else None)
         now = timezone.now()
         SupplierRequest.objects.filter(pk=order.pk).update(created_at=now - timedelta(hours=hours))
         line = SupplierRequestLine.objects.create(request=order, supplier_item=self.item, part=self.part, supplier_invent_id='STABLE-1', sku=self.part.sku,

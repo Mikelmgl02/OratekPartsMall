@@ -175,7 +175,7 @@ class DealWorkflowTests(APITestCase):
             totals, items = self.request_state()
         # Requested 3 + 2, revision 1 offered 5, the accepted revision 2 agreed 1 + 0. Later sends stay pending.
         self.assertEqual(totals, {'sent_quantity': 15, 'pending_quantity': 10, 'reviewed_quantity': 0, 'quoted_quantity': 0,
-                                  'adjustment_quantity': 0, 'handshaked_quantity': 1})
+                                  'adjustment_quantity': 0, 'handshaked_quantity': 1, 'delivered_quantity': 0})
         self.assertEqual({pk: [items[str(pk)][key] for key in ('sent_quantity', 'pending_quantity', 'handshaked_quantity')]
                           for pk in [self.item_a.pk, self.item_a2.pk, self.item_b.pk]},
                          {self.item_a.pk: [7, 4, 1], self.item_a2.pk: [2, 0, 0], self.item_b.pk: [6, 6, 0]})
@@ -195,7 +195,7 @@ class DealWorkflowTests(APITestCase):
         self.assertEqual(self.action(order, 'accept', quotation_id=quote['id']).status_code, 200)
         totals, items = self.request_state()
         self.assertEqual(totals, {'sent_quantity': 3, 'pending_quantity': 0, 'reviewed_quantity': 0, 'quoted_quantity': 0,
-                                  'adjustment_quantity': 0, 'handshaked_quantity': 0})
+                                  'adjustment_quantity': 0, 'handshaked_quantity': 0, 'delivered_quantity': 0})
         self.assertEqual(items[str(self.item_a.pk)]['handshaked_quantity'], 0)
         self.assertEqual(self.request_state(other)[0]['handshaked_quantity'], 2)
 

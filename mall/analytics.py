@@ -6,7 +6,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Avg, Count, F, Max, Min, Q, Sum
+from django.db.models import Avg, Count, Exists, F, Max, Min, OuterRef, Q, Sum
 from django.db.models.functions import Coalesce, TruncDate
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -116,13 +116,35 @@ def quotation_kpis(start, now):
     # Orders with a version published in the period: every version they needed so far (revisions are sequential and immutable) and
     # how many the client already accepted.
     deals = DealQuotation.objects.filter(order_id__in=quotations.values('order_id')).aggregate(
-        versions=Count('pk'), quoted_orders=Count('order_id', distinct=True), handshaked_orders=Count('order_id', distinct=True, filter=Q(order__status='handshaked')))
+        versions=Count('pk'), quoted_orders=Count('order_id', distinct=True),
+        # Confirmed by both parties, whatever happened after (delivered or cancelled deals stay confirmed).
+        handshaked_orders=Count('order_id', distinct=True, filter=Q(order__handshaked_at__isnull=False)))
     checks = PricingAuditEvent.objects.filter(kind__in=['accept_blocked_shortfall', 'accept_with_shortfall'], created_at__gte=start, created_at__lte=now).aggregate(
         blocked_accepts=Count('pk', filter=Q(kind='accept_blocked_shortfall')), blocked_orders=Count('order_id', filter=Q(kind='accept_blocked_shortfall'), distinct=True),
         accepted_with_shortfall=Count('pk', filter=Q(kind='accept_with_shortfall')))
     return {'first_quotes': first['first_quotes'], 'average_quote_seconds': seconds(first['turnaround']), 'quoted_orders': deals['quoted_orders'],
             'handshaked_orders': deals['handshaked_orders'], 'average_revisions': round(deals['versions'] / deals['quoted_orders'], 2) if deals['quoted_orders'] else None,
             **checks}
+
+
+def supplier_reliability(start, now):
+    """Superusers only, never in `quotations` (decision D5): per supplier, the deals confirmed in the period and how many it failed, a
+    shortfall reported after the handshake or a cancellation by the supplier. Client and MotionPartes cancellations are shown apart and do
+    not count against the supplier. Counts only: no prices, totals or clients."""
+    from .request_models import DealShortfallLine
+    deals = SupplierRequest.objects.filter(handshaked_at__gte=start, handshaked_at__lte=now)
+    short = DealShortfallLine.objects.filter(shortfall__order_id=OuterRef('pk'))
+    rows = deals.annotate(short=Exists(short)).values('supplier_id', 'supplier__name').annotate(
+        confirmed=Count('pk'), delivered=Count('pk', filter=Q(status='delivered')),
+        with_shortfall=Count('pk', filter=Q(short=True)), supplier_cancelled=Count('pk', filter=Q(cancelled_side='supplier')),
+        failed=Count('pk', filter=Q(short=True) | Q(cancelled_side='supplier')),
+        client_cancelled=Count('pk', filter=Q(cancelled_side='client')), admin_cancelled=Count('pk', filter=Q(cancelled_side='admin')))
+    missing = dict(DealShortfallLine.objects.filter(shortfall__order__in=deals).values('shortfall__order__supplier_id').annotate(
+        units=Sum('missing')).values_list('shortfall__order__supplier_id', 'units'))
+    result = [{'id': str(row['supplier_id']), 'name': row['supplier__name'],
+               **{key: row[key] for key in ('confirmed', 'delivered', 'with_shortfall', 'supplier_cancelled', 'failed', 'client_cancelled', 'admin_cancelled')},
+               'missing_units': missing.get(row['supplier_id'], 0), 'failure_rate': round(row['failed'] / row['confirmed'], 4)} for row in rows]
+    return sorted(result, key=lambda row: (-row['failure_rate'], -row['confirmed'], row['name'], row['id']))
 
 
 def ai_spend(today):
@@ -220,4 +242,4 @@ class AnalyticsDashboard(APIView):
                          'daily': [{'date': day.isoformat(), **counts} for day, counts in daily.items()],
                          'top_searches': top_searches, 'missing_searches': missing_searches,
                          'top_parts': top_parts, 'suppliers': suppliers, 'visitors': visitors,
-                         'quotations': quotation_kpis(start, now), 'ai': ai_spend(today)})
+                         'quotations': quotation_kpis(start, now), 'reliability': supplier_reliability(start, now), 'ai': ai_spend(today)})

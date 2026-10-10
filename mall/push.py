@@ -41,11 +41,15 @@ def dispatch(job):
 
 
 def other_side(order, account_id, actor_id):
-    """The people who act for the party that did not act: active members of that account, which must hold that side's capability."""
-    other, capability = (order.supplier_id, 'supplier') if account_id == order.client_id else (order.client_id, 'client')
-    if not Account.objects.filter(pk=other, active=True, roles__capability=capability).exists():
-        return []
-    return set(Membership.objects.filter(account_id=other, user__is_active=True).exclude(user_id=actor_id).values_list('user_id', flat=True))
+    """The people who act for the party that did not act: active members of that account, which must hold that side's capability. An
+    Oratek administrator's decision (a dispute cancellation, no account) reaches both parties."""
+    sides = ([(order.supplier_id, 'supplier'), (order.client_id, 'client')] if account_id is None
+             else [(order.supplier_id, 'supplier') if account_id == order.client_id else (order.client_id, 'client')])
+    users = set()
+    for other, capability in sides:
+        if Account.objects.filter(pk=other, active=True, roles__capability=capability).exists():
+            users |= set(Membership.objects.filter(account_id=other, user__is_active=True).exclude(user_id=actor_id).values_list('user_id', flat=True))
+    return users
 
 
 def payload(order, title, body):

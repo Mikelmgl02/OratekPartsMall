@@ -229,7 +229,10 @@ def stock_plan(supplier, rows, *, lock=False):
                                  'description': data['description'], 'current_quantity': current, 'uploaded_quantity': data['quantity'],
                                  'reserved': reserved, 'reserved_quantity': item.reserved_quantity,
                                  'orders': [{'id': str(reservation.pk), 'reference': reservation.order.reference, 'client_name': reservation.order.client_name,
-                                             'quantity': reservation.quantity, 'confirmed_at': reservation.created_at.isoformat()} for reservation in orders]})
+                                             'quantity': reservation.quantity, 'confirmed_at': reservation.created_at.isoformat(),
+                                             # A delivered order most likely left the file's count already: the panel suggests "Ya lo descuenta".
+                                             'delivered_at': reservation.order.delivered_at.isoformat() if reservation.order.delivered_at else None}
+                                            for reservation in orders]})
         if status != 'matched':
             warnings.append({'row': row['row'], 'column': COLUMNS['codigo'], 'message':
                              'El código requiere revisión antes de aparecer en el catálogo de clientes.' if status == 'review' else

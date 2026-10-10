@@ -70,13 +70,13 @@ class SupplierRequestWorkflowTests(APITestCase):
         path = f'/api/v1/accounts/{self.client_account.pk}/catalog/{self.part.pk}/request-state/'
         response = self.client.get(path)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data['totals'], {'sent_quantity': 17, 'pending_quantity': 5, 'reviewed_quantity': 12, 'quoted_quantity': 0, 'adjustment_quantity': 0, 'handshaked_quantity': 0})
+        self.assertEqual(response.data['totals'], {'sent_quantity': 17, 'pending_quantity': 5, 'reviewed_quantity': 12, 'quoted_quantity': 0, 'adjustment_quantity': 0, 'handshaked_quantity': 0, 'delivered_quantity': 0})
         rows = {row['supplier_item_id']: row for row in response.data['items']}
         self.assertEqual({key: rows[str(self.item_a.pk)][key] for key in response.data['totals']},
-                         {'sent_quantity': 10, 'pending_quantity': 0, 'reviewed_quantity': 10, 'quoted_quantity': 0, 'adjustment_quantity': 0, 'handshaked_quantity': 0})
+                         {'sent_quantity': 10, 'pending_quantity': 0, 'reviewed_quantity': 10, 'quoted_quantity': 0, 'adjustment_quantity': 0, 'handshaked_quantity': 0, 'delivered_quantity': 0})
         self.assertEqual(rows[str(self.item_b.pk)]['sent_quantity'], 5)
         for row in rows.values():
-            self.assertEqual(set(row), {'supplier_item_id', 'supplier_id', 'codigo', 'brand', 'sent_quantity', 'pending_quantity', 'reviewed_quantity', 'quoted_quantity', 'adjustment_quantity', 'handshaked_quantity'})
+            self.assertEqual(set(row), {'supplier_item_id', 'supplier_id', 'codigo', 'brand', 'sent_quantity', 'pending_quantity', 'reviewed_quantity', 'quoted_quantity', 'adjustment_quantity', 'handshaked_quantity', 'delivered_quantity'})
         self.assertEqual(self.stock_snapshot(), before)
         self.assertEqual(self.client.post(path, {}, format='json').status_code, 405)
 
@@ -101,7 +101,7 @@ class SupplierRequestWorkflowTests(APITestCase):
         self.assertEqual(self.client.get(path).data['items'][0]['codigo'], '58411-1R000-G')
         empty = Part.objects.create(sku='EMPTY')
         data = self.client.get(f'/api/v1/accounts/{self.client_account.pk}/catalog/{empty.pk}/request-state/').data
-        self.assertEqual(data['totals'], {'sent_quantity': 0, 'pending_quantity': 0, 'reviewed_quantity': 0, 'quoted_quantity': 0, 'adjustment_quantity': 0, 'handshaked_quantity': 0})
+        self.assertEqual(data['totals'], {'sent_quantity': 0, 'pending_quantity': 0, 'reviewed_quantity': 0, 'quoted_quantity': 0, 'adjustment_quantity': 0, 'handshaked_quantity': 0, 'delivered_quantity': 0})
         self.assertEqual(data['items'], [])
 
     def test_mixed_supplier_submission_splits_lines_and_never_changes_stock(self):
@@ -333,7 +333,7 @@ class SupplierRequestWorkflowTests(APITestCase):
         before = self.stock_snapshot()
         current = self.client.get(path).data['lines'][0]
         self.assertEqual(current['quantity'], 3)
-        self.assertEqual(current['stock'], {'reported_quantity': 1, 'reserved_quantity': 2, 'available_quantity': 0,
+        self.assertEqual(current['stock'], {'reported_quantity': 1, 'reserved_quantity': 2, 'available_quantity': 0, 'held_for_deal': 0,
                                            'shortfall': 3, 'updated_at': updated.updated_at.isoformat()})
         self.assertEqual(self.stock_snapshot(), before)
 

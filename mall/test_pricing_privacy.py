@@ -30,9 +30,11 @@ from .request_models import DealCommand, SupplierRequest
 from .serializers import SupplierItemSerializer
 
 SUMMARY_KEYS = {'id', 'reference', 'status', 'version', 'created_at', 'updated_at', 'handshaked_at', 'reviewed_at', 'line_count',
-                'unit_count', 'quotation_revision', 'quoted_unit_count', 'quotation_total', 'quotation_currency'}
+                'unit_count', 'quotation_revision', 'quoted_unit_count', 'quotation_total', 'quotation_currency',
+                'shortfall_pending', 'delivered_at', 'cancelled_at', 'cancelled_side', 'agreed_unit_count'}
 SENT_SUMMARY_KEYS = SUMMARY_KEYS | {'supplier', 'submission_id'}
-DEAL_KEYS = {'client', 'supplier', 'quotations', 'quotation', 'events'}
+# After the handshake both parties see the agreement after accepted shortfalls, the shortfalls, the delivery and the cancellation.
+DEAL_KEYS = {'client', 'supplier', 'quotations', 'quotation', 'events', 'agreement', 'shortfalls', 'delivered_at', 'cancellation', 'stock_reserved'}
 QUOTATION_KEYS = {'id', 'revision', 'currency', 'terms', 'total', 'created_at', 'supplier_confirmed_at', 'client_confirmed_at', 'lines'}
 QUOTATION_LINE_KEYS = {'order_line_id', 'codigo', 'sku', 'description', 'quantity', 'unit_price', 'total'}
 EVENT_KEYS = {'id', 'kind', 'description', 'account_name', 'actor_name', 'created_at', 'quotation_id'}
@@ -351,7 +353,8 @@ class PricingPrivacyTests(APITestCase):
         listed = self.client.get(self.url(self.supplier_a)).data['results'][0]
         self.assertEqual(set(listed), SUMMARY_KEYS | {'client', 'draft_state', 'availability_alert'})
         self.assertEqual((listed['draft_state'], listed['availability_alert']), (None, None))
-        self.assertEqual(set(self.client.get(f'{self.url(self.supplier_a)}{order.pk}/').data), set(quoted.data))
+        # The supplier's own reads add whether this member may decide; replayable action results never carry it.
+        self.assertEqual(set(self.client.get(f'{self.url(self.supplier_a)}{order.pk}/').data), set(quoted.data) | {'can_decide'})
         self.client.force_authenticate(self.buyer)
         base = f'/api/v1/accounts/{self.client_account.pk}'
         sent = self.client.get(f'{base}/sent-requests/').data['results'][0]
@@ -370,7 +373,7 @@ class PricingPrivacyTests(APITestCase):
         state = self.client.get(f'{base}/catalog/{self.part.pk}/request-state/').data
         self.assertEqual((set(state), set(state['items'][0])), ({'part_id', 'totals', 'items'}, {
             'supplier_item_id', 'supplier_id', 'codigo', 'brand', 'sent_quantity', 'pending_quantity', 'reviewed_quantity',
-            'quoted_quantity', 'adjustment_quantity', 'handshaked_quantity'}))
+            'quoted_quantity', 'adjustment_quantity', 'handshaked_quantity', 'delivered_quantity'}))
         message = self.client.post(self.messages(order), {'message_id': str(uuid.uuid4()), 'body': 'GRACIAS'}, format='json').data
         self.assertEqual(set(message), {'id', 'message_id', 'body', 'account_id', 'account_name', 'actor_name', 'created_at'})
         # The only assistant datum a client receives is the D3 disclosure flag on the conversation.

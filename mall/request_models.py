@@ -30,7 +30,12 @@ class SupplierRequest(models.Model):
     reference = models.CharField(max_length=32, unique=True)
     STATUS_CHOICES = [('pending', 'Enviada · por revisar'), ('reviewed', 'En revisión'),
                       ('quoted', 'Cotizada · por confirmar'), ('adjustment', 'Ajuste solicitado'),
-                      ('handshaked', 'Acuerdo confirmado')]
+                      ('handshaked', 'Acuerdo confirmado'), ('delivered', 'Entregado'), ('cancelled', 'Cancelado')]
+    # Who cancelled a confirmed deal and why (mall.deal_lifecycle). Only supplier cancellations count against its reliability.
+    CANCEL_SIDES = [('client', 'Cliente'), ('supplier', 'Proveedor'), ('admin', 'MotionPartes')]
+    CANCEL_REASONS = [('no_stock', 'Sin existencias'), ('price_error', 'Error de precio'), ('cannot_deliver', 'No puede entregar'),
+                      ('not_needed', 'Ya no lo necesita'), ('found_elsewhere', 'Lo consiguió con otro proveedor'), ('delay', 'Demora en la entrega'),
+                      ('shortfall', 'No acepta el faltante'), ('dispute', 'Disputa entre las partes'), ('other', 'Otro motivo')]
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     version = models.PositiveIntegerField(default=1)
     handshaked_at = models.DateTimeField(null=True, blank=True)
@@ -40,11 +45,25 @@ class SupplierRequest(models.Model):
     reviewed_at = models.DateTimeField(null=True, blank=True)
     reviewed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True,
                                     related_name='reviewed_supplier_requests')
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    delivered_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name='+')
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancelled_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name='+')
+    cancelled_side = models.CharField(max_length=10, choices=CANCEL_SIDES, blank=True, default='')
+    cancel_reason = models.CharField(max_length=20, choices=CANCEL_REASONS, blank=True, default='')
+    cancel_note = models.TextField(blank=True, default='')
 
     class Meta:
         ordering = ['-created_at', 'id']
         constraints = [models.UniqueConstraint(fields=['submission', 'supplier'], name='unique_submission_supplier_request'),
-                       models.CheckConstraint(condition=Q(status__in=['pending', 'reviewed', 'quoted', 'adjustment', 'handshaked']), name='valid_supplier_request_status')]
+                       models.CheckConstraint(condition=Q(status__in=['pending', 'reviewed', 'quoted', 'adjustment', 'handshaked', 'delivered', 'cancelled']),
+                                              name='valid_supplier_request_status'),
+                       # A delivery and a cancellation each leave their date, and a cancellation its side and reason, on exactly that status.
+                       models.CheckConstraint(condition=Q(status='delivered', delivered_at__isnull=False) | (~Q(status='delivered') & Q(delivered_at__isnull=True)),
+                                              name='supplier_request_delivery_fields'),
+                       models.CheckConstraint(condition=Q(status='cancelled', cancelled_at__isnull=False, cancelled_side__in=['client', 'supplier', 'admin'])
+                                              & ~Q(cancel_reason='') | (~Q(status='cancelled') & Q(cancelled_at__isnull=True, cancelled_side='', cancel_reason='')),
+                                              name='supplier_request_cancel_fields')]
 
 
 class SupplierRequestLine(models.Model):
@@ -113,8 +132,9 @@ class DealQuotationLine(models.Model):
 
 class StockReservation(models.Model):
     """Units a confirmed deal holds on a supplier item (mall.stock_reservations): they leave the item's available stock at the handshake
-    and stay held until the supplier's own count includes the sale, a stock upload the supplier marks as already discounting it."""
-    STATUSES = [('open', 'Reservada'), ('settled', 'Descontada por el proveedor')]
+    and stay held until the supplier's own count includes the sale, a stock upload the supplier marks as already discounting it. A reported
+    shortfall takes the missing units out of `quantity` (the units still held); a cancellation releases what is left."""
+    STATUSES = [('open', 'Reservada'), ('settled', 'Descontada por el proveedor'), ('released', 'Liberada')]
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     item = models.ForeignKey('mall.SupplierItem', on_delete=models.PROTECT, related_name='reservations')
     order = models.ForeignKey(SupplierRequest, on_delete=models.PROTECT, related_name='reservations')
@@ -125,17 +145,55 @@ class StockReservation(models.Model):
     settled_at = models.DateTimeField(null=True, blank=True)
     settled_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     settled_reference = models.CharField(max_length=120, blank=True, default='')
+    released_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['created_at', 'id']
-        constraints = [models.CheckConstraint(condition=Q(quantity__gte=1), name='stock_reservation_quantity_positive'),
-                       models.CheckConstraint(condition=Q(status__in=['open', 'settled']), name='stock_reservation_valid_status')]
+        constraints = [models.CheckConstraint(condition=~Q(status='open') | Q(quantity__gte=1), name='stock_reservation_open_holds_units'),
+                       models.CheckConstraint(condition=Q(status__in=['open', 'settled', 'released']), name='stock_reservation_valid_status')]
+
+
+class DealShortfall(models.Model):
+    """Units the supplier could not find after the handshake (mall.deal_lifecycle). They leave the supplier's count and the deal's
+    reservation at once, so they never come back as available; the agreement itself changes only when the client accepts. Declined means
+    the client cancelled the deal instead."""
+    STATUSES = [('pending', 'Esperando al cliente'), ('accepted', 'Aceptado por el cliente'), ('declined', 'El cliente canceló el acuerdo')]
+    REASONS = [('no_stock', 'Sin existencias'), ('damaged', 'Dañado'), ('other', 'Otro motivo')]
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    order = models.ForeignKey(SupplierRequest, on_delete=models.PROTECT, related_name='shortfalls')
+    quotation = models.ForeignKey(DealQuotation, on_delete=models.PROTECT, related_name='shortfalls')
+    reason = models.CharField(max_length=10, choices=REASONS)
+    note = models.TextField(blank=True, default='')
+    status = models.CharField(max_length=10, choices=STATUSES, default='pending', db_index=True)
+    reported_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='+')
+    reported_at = models.DateTimeField(auto_now_add=True)
+    responded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name='+')
+    responded_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['reported_at', 'id']
+        constraints = [models.CheckConstraint(condition=Q(status__in=['pending', 'accepted', 'declined']), name='deal_shortfall_valid_status'),
+                       models.CheckConstraint(condition=Q(reason__in=['no_stock', 'damaged', 'other']), name='deal_shortfall_valid_reason'),
+                       models.UniqueConstraint(fields=['order'], condition=Q(status='pending'), name='one_pending_shortfall_per_deal')]
+
+
+class DealShortfallLine(models.Model):
+    shortfall = models.ForeignKey(DealShortfall, on_delete=models.PROTECT, related_name='lines')
+    quotation_line = models.ForeignKey(DealQuotationLine, on_delete=models.PROTECT, related_name='+')
+    agreed = models.PositiveIntegerField(help_text='Unidades del acuerdo antes de este faltante.')
+    missing = models.PositiveIntegerField()
+
+    class Meta:
+        ordering = ['id']
+        constraints = [models.CheckConstraint(condition=Q(missing__gte=1, missing__lte=models.F('agreed')), name='deal_shortfall_line_missing'),
+                       models.UniqueConstraint(fields=['shortfall', 'quotation_line'], name='unique_deal_shortfall_line')]
 
 
 class DealEvent(models.Model):
     order = models.ForeignKey(SupplierRequest, on_delete=models.PROTECT, related_name='events')
     actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
-    account = models.ForeignKey('mall.Account', on_delete=models.PROTECT)
+    # Null for an Oratek administrator's decision (a dispute cancellation), which acts for no account.
+    account = models.ForeignKey('mall.Account', on_delete=models.PROTECT, null=True, blank=True)
     kind = models.CharField(max_length=40)
     description = models.TextField(blank=True)
     quotation = models.ForeignKey(DealQuotation, on_delete=models.PROTECT, null=True, blank=True)

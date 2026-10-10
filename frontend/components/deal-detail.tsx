@@ -5,12 +5,13 @@ import { Bot, Check, FileText, Handshake, History, LoaderCircle, LockKeyhole, Me
 import Modal from './modal';
 import { percent } from './price-explanation';
 import DealStatusBadge from './deal-status';
+import DealAfterHandshake from './deal-after-handshake';
 import { UppercaseTextarea } from './uppercase-field';
 import { Account, ApiError, request } from '@/lib/types';
 import type { SupplierRequestLine } from '@/lib/request-types';
 import type { Deal, DealMessage, Quotation } from '@/lib/deal-types';
 import type { QuotationTrace, QuoteDraft, QuoteDraftEnvelope, QuoteDraftLine } from '@/lib/pricing-types';
-import { supplierPricingHref } from '@/lib/supplier-navigation';
+import { supplierPricingHref, supplierSectionHref } from '@/lib/supplier-navigation';
 import { markConversationRead } from '@/lib/inbox';
 
 const QuoteEditor = dynamic(() => import('./quotation-editor'), { ssr: false, loading: () => <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando editor de cotización…</div> });
@@ -25,6 +26,13 @@ const stateDescription = {
   quoted: 'La cotización está bloqueada. El cliente debe confirmarla o solicitar un ajuste.',
   adjustment: 'El cliente solicitó un ajuste. El proveedor puede enviar una nueva versión o devolver la misma cotización.',
   handshaked: 'Ambas partes confirmaron la cotización. El acuerdo está cerrado y sus condiciones quedan guardadas.',
+  delivered: 'El proveedor entregó el acuerdo. Sus condiciones quedan guardadas.',
+  cancelled: 'El acuerdo se canceló. Sus condiciones y su actividad quedan guardadas.',
+};
+const actionNotices: Record<string, string> = {
+  accept: 'Acuerdo confirmado por ambas partes · HANDSHAKED.', request_adjustment: 'Ajuste enviado al proveedor.', deliver: 'Acuerdo marcado como entregado.',
+  report_shortfall: 'Faltante reportado. El cliente debe aceptar el acuerdo reducido o cancelarlo.', accept_shortfall: 'Aceptaste el acuerdo reducido.',
+  cancel: 'Acuerdo cancelado.',
 };
 
 export default function DealDetail({ account, orderId, reference, side, onClose, onChanged }: {
@@ -60,12 +68,15 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   const [pricingRevision, setPricingRevision] = useState(0);
   // A question suggested by the AI assistant, copied into the chat composer (never sent by itself).
   const [chatInsert, setChatInsert] = useState<{ text: string; id: number } | null>(null);
+  // The supplier detail says whether this member may take the supplier's decisions; action results (replayable) never carry it.
+  const [canDecide, setCanDecide] = useState(true);
   const draftPath = `${base}/requests/${orderId}/draft`;
   const acceptDetail = useCallback((value: Deal) => {
     if (!mounted.current) return;
     if (latestVersion.current !== undefined && value.version < latestVersion.current) return;
     const changed = latestVersion.current !== undefined && latestVersion.current !== value.version;
     latestVersion.current = value.version;
+    if (typeof value.can_decide === 'boolean') setCanDecide(value.can_decide);
     setDeal(value);
     if (changed) { setConfirming(false); setSuggestAdjust(false); onChangedRef.current?.(); }
   }, []);
@@ -115,7 +126,7 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
       if (!mounted.current) return true;
       retry.current = null; acceptDetail(result); setAdjusting(false); setReason(''); setConfirming(false); setSuggestAdjust(false);
       setTab('quote');
-      setNotice(action === 'accept' ? 'Acuerdo confirmado por ambas partes · HANDSHAKED.' : action === 'request_adjustment' ? 'Ajuste enviado al proveedor.' : 'Cotización confirmada por el proveedor y enviada al cliente.');
+      setNotice(actionNotices[action] || 'Cotización confirmada por el proveedor y enviada al cliente.');
       onChangedRef.current?.();
       return true;
     } catch (caught) {
@@ -142,7 +153,9 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
     request<QuoteDraftEnvelope>(draftPath).then(value => { if (mounted.current && value.draft) { setDraftLoad({ key: draftKey, draft: value.draft }); setLiveDraft(null); } }).catch(() => undefined);
   }
   const suggestions = new Map((priced?.lines || []).map(line => [line.order_line_id, line]));
-  const activeStep = !deal ? 0 : deal.status === 'pending' ? 0 : deal.status === 'reviewed' ? 1 : deal.status === 'handshaked' ? 3 : 2;
+  const activeStep = !deal ? 0 : deal.status === 'pending' ? 0 : deal.status === 'reviewed' ? 1 : deal.status === 'delivered' ? 4
+    : ['handshaked', 'cancelled'].includes(deal.status) ? 3 : 2;
+  const pendingShortfall = deal?.shortfalls?.find(item => item.status === 'pending');
   const content = <>
     <div className="deal-detail">
       {error && <div className="notice error" role="alert"><span>{error}</span><button type="button" disabled={busy} onClick={() => { setError(''); void load(!deal); }}>Actualizar acuerdo</button></div>}
@@ -156,8 +169,13 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
             <button type="button" className="button text small" onClick={() => setProfileOpen(true)}><Pencil size={13}/>{pairProfile.exists ? 'Editar perfil' : 'Configurar cliente'}</button></p>
           {pairProfile.internal_notes && <small title="Solo tu equipo ve estas notas">Notas internas: {pairProfile.internal_notes}</small>}
         </div>}
-        <ol className="deal-progress" aria-label="Seguimiento del acuerdo">{['Enviada', 'En revisión', 'Cotización', 'Acuerdo'].map((label, index) => <li key={label} className={index <= activeStep ? 'reached' : ''} aria-current={index === activeStep ? 'step' : undefined}><span>{index < activeStep ? <Check size={12}/> : index + 1}</span>{label}</li>)}</ol>
-        <div className={`deal-state-note ${deal.status}`}><LockKeyhole size={16}/><p>{stateDescription[deal.status]}{deal.handshaked_at && <strong> {date(deal.handshaked_at)}</strong>}</p></div>
+        <ol className={`deal-progress ${deal.status === 'cancelled' ? 'cancelled' : ''}`} aria-label="Seguimiento del acuerdo">{['Enviada', 'En revisión', 'Cotización', 'Acuerdo', 'Entregado'].map((label, index) => <li key={label} className={index <= activeStep ? 'reached' : ''} aria-current={index === activeStep ? 'step' : undefined}><span>{index < activeStep ? <Check size={12}/> : index + 1}</span>{label}</li>)}</ol>
+        <div className={`deal-state-note ${deal.status}`}><LockKeyhole size={16}/><p>{stateDescription[deal.status]}{(() => {
+          const when = deal.status === 'delivered' ? deal.delivered_at : deal.status === 'cancelled' ? deal.cancellation?.cancelled_at : deal.handshaked_at;
+          return when ? <strong> {date(when)}</strong> : null;
+        })()}</p></div>
+        {pendingShortfall && <div className="notice deal-shortfall-alert" role="status"><span>{supplier ? 'Reportaste un faltante: el cliente debe aceptar el acuerdo reducido o cancelarlo.' : 'El proveedor reportó un faltante. Revisa el acuerdo reducido y decide.'}</span>
+          <button type="button" className="button soft small" onClick={() => { setTab('quote'); setQuoteVisited(true); }}>Ver faltante</button></div>}
         <nav className="deal-tabs" aria-label="Secciones del acuerdo">{([
           ['order', 'Artículos', FileText], ['quote', 'Cotización', Handshake], ['chat', 'Conversación', MessageSquare], ['history', 'Actividad', History],
         ] as const).map(([value, label, Icon]) => <button type="button" key={value} className={tab === value ? 'selected' : ''} aria-pressed={tab === value} title={value === 'quote' && hasDraft ? 'Hay un borrador de cotización guardado' : undefined} onClick={() => { setTab(value); if (value === 'quote') setQuoteVisited(true); }}><Icon size={15}/>{label}{value === 'quote' && hasDraft && <span className="deal-tab-dot" aria-hidden="true"/>}</button>)}</nav>
@@ -167,7 +185,7 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
           {deal.notes && <section className="supplier-request-notes"><h4>Notas del cliente</h4><p>{deal.notes}</p></section>}
           {supplier && <div className="supplier-request-stock-heading"><div><h4>Existencias de tu inventario</h4><p>Disponibles = reportadas menos reservadas. Confirma las unidades que puedes suministrar.</p></div><button type="button" className="button soft small" disabled={busy} onClick={() => void load()}><RefreshCw size={15}/>Actualizar existencias</button></div>}
           {stockWarnings > 0 && <div className="notice supplier-request-stock-warning" role="status">{stockWarnings} {stockWarnings === 1 ? 'artículo requiere' : 'artículos requieren'} confirmar disponibilidad. La orden conserva todas las unidades pedidas.</div>}
-          <div className="table-scroll deal-lines supplier-request-lines"><table><thead><tr><th>Código / descripción</th><th>SKU interno</th>{supplier && <th>Tu ID de inventario</th>}<th>Solicitadas</th>{supplier && <th>Disponibles</th>}{priced && <th>Precio sugerido</th>}</tr></thead><tbody>{deal.lines.map(line => <tr key={line.id}><td><strong>{line.codigo}</strong><span>{line.brand || 'SIN MARCA INDICADA'}</span><small>{line.description}</small></td><td>{line.sku}</td>{supplier && <td>{'supplier_invent_id' in line && line.supplier_invent_id}</td>}<td>{line.quantity}</td>{supplier && <td>{'stock' in line && line.stock ? <><strong>{line.stock.available_quantity}</strong><small>Reportadas: {line.stock.reported_quantity} · Reservadas: {line.stock.reserved_quantity}</small><small className={line.stock.shortfall ? "stock-shortfall" : "stock-sufficient"}>{line.stock.shortfall ? `Faltan ${line.stock.shortfall} unidades` : "Existencias suficientes"}</small></> : <><strong className="stock-shortfall">Revisar artículo</strong><small>El código o el vínculo con el SKU cambió. Confirma la equivalencia en Inventario.</small></>}</td>}{priced && <td><SuggestedPrice line={suggestions.get(line.id)} currency={priced.currency}/></td>}</tr>)}</tbody></table></div>
+          <div className="table-scroll deal-lines supplier-request-lines"><table><thead><tr><th>Código / descripción</th><th>SKU interno</th>{supplier && <th>Tu ID de inventario</th>}<th>Solicitadas</th>{supplier && <th>Disponibles</th>}{priced && <th>Precio sugerido</th>}</tr></thead><tbody>{deal.lines.map(line => <tr key={line.id}><td><strong>{line.codigo}</strong><span>{line.brand || 'SIN MARCA INDICADA'}</span><small>{line.description}</small></td><td>{line.sku}</td>{supplier && <td>{'supplier_invent_id' in line && line.supplier_invent_id}</td>}<td>{line.quantity}</td>{supplier && <td>{'stock' in line && line.stock ? <><strong>{line.stock.available_quantity}</strong><small>Reportadas: {line.stock.reported_quantity} · Reservadas: {line.stock.reserved_quantity}{line.stock.held_for_deal ? ` (${line.stock.held_for_deal} para esta orden)` : ''}</small><small className={line.stock.shortfall ? "stock-shortfall" : "stock-sufficient"}>{line.stock.shortfall ? `Faltan ${line.stock.shortfall} unidades` : "Existencias suficientes"}</small></> : <><strong className="stock-shortfall">Revisar artículo</strong><small>El código o el vínculo con el SKU cambió. Confirma la equivalencia en Inventario.</small></>}</td>}{priced && <td><SuggestedPrice line={suggestions.get(line.id)} currency={priced.currency}/></td>}</tr>)}</tbody></table></div>
           {supplier && ['reviewed', 'adjustment'].includes(deal.status) && <button type="button" className="button primary" onClick={() => { setQuoteVisited(true); setTab('quote'); }}>Preparar cotización<FileText size={16}/></button>}
           {deal.quotation && <button type="button" className="button soft" onClick={() => setTab('quote')}>Ver cotización · v{deal.quotation.revision}<FileText size={16}/></button>}
         </>}
@@ -190,7 +208,9 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
             {suggestAdjust && !confirming && <small id="deal-adjust-hint" className="deal-adjust-hint">Pide al proveedor una nueva versión con las unidades que puede confirmar.</small>}
             {adjusting && <form className="deal-adjustment" onSubmit={event => { event.preventDefault(); void act('request_adjustment', { quotation_id: deal.quotation!.id, reason }); }}><label>¿Qué necesitas ajustar?<UppercaseTextarea required maxLength={4000} value={reason} disabled={busy} onChange={event => setReason(event.target.value)} placeholder="INDICA LAS CANTIDADES O CONDICIONES QUE NECESITAS CAMBIAR…"/></label><button type="submit" className="button primary" disabled={busy || !reason.trim()}>{busy ? <LoaderCircle size={15} className="spin"/> : <Send size={15}/>}Enviar ajuste</button></form>}
           </div>}
-          {deal.status === 'handshaked' && <div className="deal-handshake"><Handshake size={25}/><div><strong>HANDSHAKED · Acuerdo confirmado</strong><p>Confirmación del proveedor: {deal.quotation && date(deal.quotation.supplier_confirmed_at)}</p><p>Confirmación del cliente: {deal.quotation?.client_confirmed_at && date(deal.quotation.client_confirmed_at)}</p></div></div>}
+          {['handshaked', 'delivered'].includes(deal.status) && <div className="deal-handshake"><Handshake size={25}/><div><strong>HANDSHAKED · Acuerdo confirmado</strong><p>Confirmación del proveedor: {deal.quotation && date(deal.quotation.supplier_confirmed_at)}</p><p>Confirmación del cliente: {deal.quotation?.client_confirmed_at && date(deal.quotation.client_confirmed_at)}</p></div></div>}
+          {['handshaked', 'delivered', 'cancelled'].includes(deal.status) && <DealAfterHandshake key={deal.version} deal={deal} supplier={supplier} busy={busy} act={act}
+            canDecide={!supplier || canDecide} inventoryHref={supplier ? supplierSectionHref(account.id, 'inventory') : undefined}/>}
           {(deal.quotations?.length || 0) > 1 && <details className="deal-quote-history"><summary>Versiones anteriores ({deal.quotations.length - 1})</summary>{deal.quotations.slice(0, -1).map(quote => <QuoteView key={quote.id} quote={quote} historical/>)}</details>}
         </div>
         {/* Keep conversation mounted so refreshes and draft messages survive tab changes. */}

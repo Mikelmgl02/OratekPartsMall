@@ -10,6 +10,7 @@ from mall.technical_api import (PartTypeList, PartTypeDetail, TemplateDetail, Ap
                                ItemTechnicalDetail, CatalogTechnicalDetail)
 from mall.matching_views import MatchingOverview, MatchingReview
 from mall.analytics import AnalyticsDashboard, UsageEvents
+from mall.deal_admin import DealAdminCancel, DealAdminDetail, DealAdminList
 from mall.wishlist import WishlistList, WishlistState, WishlistDetail
 from mall.catalog_import import CatalogImport, CatalogImportJobView
 from mall.catalog_classification import CatalogClassification
@@ -49,6 +50,9 @@ urlpatterns = [
     path('api/v1/auth/me/', management.ProfileView.as_view()),
     path('api/v1/analytics/events/', UsageEvents.as_view()),
     path('api/v1/management/analytics/', AnalyticsDashboard.as_view()),
+    path('api/v1/management/deals/', DealAdminList.as_view()),
+    path('api/v1/management/deals/<uuid:pk>/', DealAdminDetail.as_view()),
+    path('api/v1/management/deals/<uuid:pk>/cancel/', DealAdminCancel.as_view()),
     path('api/v1/management/catalog/', management.CatalogList.as_view()),
     path('api/v1/management/part-types/', PartTypeList.as_view()),
     path('api/v1/management/part-types/<uuid:pk>/', PartTypeDetail.as_view()),

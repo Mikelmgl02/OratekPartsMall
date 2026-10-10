@@ -1,4 +1,4 @@
-import { Check, CheckCheck, Clock3, ShoppingBag, FileText, Handshake, RotateCcw } from 'lucide-react';
+import { Check, CheckCheck, Clock3, ShoppingBag, FileText, Handshake, PackageCheck, RotateCcw } from 'lucide-react';
 import type { RequestedQuantities } from '@/lib/request-types';
 
 export function ItemRequestStates({ draftQuantity, history }: { draftQuantity: number; history?: RequestedQuantities }) {
@@ -8,6 +8,7 @@ export function ItemRequestStates({ draftQuantity, history }: { draftQuantity: n
     {!!history?.quoted_quantity && <span className="pending"><FileText size={12}/>{history.quoted_quantity.toLocaleString('es-PA')} COTIZADAS · POR CONFIRMAR</span>}
     {!!history?.adjustment_quantity && <span className="pending"><RotateCcw size={12}/>{history.adjustment_quantity.toLocaleString('es-PA')} EN AJUSTE</span>}
     {!!history?.handshaked_quantity && <span className="reviewed"><Handshake size={12}/>{history.handshaked_quantity.toLocaleString('es-PA')} EN ACUERDOS</span>}
+    {!!history?.delivered_quantity && <span className="reviewed"><PackageCheck size={12}/>{history.delivered_quantity.toLocaleString('es-PA')} ENTREGADAS</span>}
     {!!history?.reviewed_quantity && <span className="reviewed"><CheckCheck size={12}/>{history.reviewed_quantity.toLocaleString('es-PA')} EN REVISIÓN</span>}
   </div>;
 }
@@ -22,6 +23,7 @@ export default function PartRequestStates({ draftQuantity, history, loading, pre
     ...(history?.quoted_quantity ? [{label:'POR CONFIRMAR', value:history.quoted_quantity, Icon:FileText, kind:'quoted'}] : []),
     ...(history?.adjustment_quantity ? [{label:'EN AJUSTE', value:history.adjustment_quantity, Icon:RotateCcw, kind:'adjustment'}] : []),
     ...(history?.handshaked_quantity ? [{label:'EN ACUERDOS', value:history.handshaked_quantity, Icon:Handshake, kind:'handshaked'}] : []),
+    ...(history?.delivered_quantity ? [{label:'ENTREGADAS', value:history.delivered_quantity, Icon:PackageCheck, kind:'delivered'}] : []),
   ];
   return <section className="part-request-summary" aria-label="Tus cantidades para este SKU">
     <h3>Tus cantidades para este SKU</h3>

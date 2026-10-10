@@ -51,7 +51,7 @@ export default function SupplierImportReservations({ rows, decisions, disabled, 
         <ul className="supplier-import-orders">{row.orders.map(order => {
           const value = choice(order.id, order.decision);
           return <li key={order.id}>
-            <div><strong>{order.reference}</strong><span>{order.client_name} · {plural(order.quantity, 'unidad', 'unidades')} · confirmado el {day(order.confirmed_at)}</span></div>
+            <div><strong>{order.reference}</strong><span>{order.client_name} · {plural(order.quantity, 'unidad', 'unidades')} · confirmado el {day(order.confirmed_at)}{order.delivered_at ? ` · entregado el ${day(order.delivered_at)}` : ''}</span></div>
             {row.applied ? <span className="supplier-import-order-answer"><CheckCircle2 size={14}/>{value === 'net' ? 'Ya estaba descontado: la reserva se liquidó' : 'Seguía incluido: sigue reservado'}</span>
               : <fieldset className="supplier-import-order-choice" disabled={disabled} aria-label={`¿El saldo de la fila ${row.row} ya descuenta el pedido ${order.reference}?`}>
                 <label className={value === 'net' ? 'selected' : ''}><input type="radio" name={`reservation-${order.id}`} checked={value === 'net'} onChange={() => answer([order.id], 'net')}/>Ya lo descuenta</label>

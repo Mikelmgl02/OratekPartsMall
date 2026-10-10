@@ -47,9 +47,10 @@ function ReferenceCell({ data }: RequestCell) {
 function AlertsCell({ data }: RequestCell) {
   if (!data) return null;
   const draft = data.draft_state ? draftStates[data.draft_state] : null;
-  if (!draft && !data.availability_alert) return <span className="admin-grid-muted">—</span>;
+  if (!draft && !data.availability_alert && !data.shortfall_pending) return <span className="admin-grid-muted">—</span>;
   return <div className="admin-grid-chips supplier-request-flags">{draft && (() => { const [label, Icon] = draft; return <span className={`supplier-request-draft ${data.draft_state}`}><Icon size={13}/>{label}</span>; })()}
-    {data.availability_alert && <span className={`supplier-request-alert ${data.availability_alert}`}><TriangleAlert size={13}/>{availabilityAlerts[data.availability_alert]}</span>}</div>;
+    {data.availability_alert && <span className={`supplier-request-alert ${data.availability_alert}`}><TriangleAlert size={13}/>{availabilityAlerts[data.availability_alert]}</span>}
+    {data.shortfall_pending && <span className="supplier-request-alert shortfall"><TriangleAlert size={13}/>Faltante: esperando al cliente</span>}</div>;
 }
 function OpenCell({ data, context }: RequestCell) {
   return data ? <div className="admin-grid-actions"><Link className="button soft small" aria-label={`Ver solicitud ${data.reference}`} href={supplierOrderHref(context.accountId, data.id)} prefetch={false}

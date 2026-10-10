@@ -51,8 +51,12 @@ def recipients(order, account_id, actor_id, preference):
     return list(User.objects.filter(pk__in=users, is_active=True).exclude(pk__in=off).exclude(email='').order_by('pk'))
 
 
-def their_account(order, account_id):
-    """The name of the account the recipients act for: the deal's party that did not act."""
+def their_account(order, account_id, user=None):
+    """The name of the account the recipients act for: the deal's party that did not act. An administrator's decision (no account)
+    reaches both parties, so each recipient gets the party they belong to."""
+    if account_id is None and user is not None:
+        from .models import Membership
+        return order.supplier_name if Membership.objects.filter(user=user, account_id=order.supplier_id).exists() else order.client_name
     return order.supplier_name if account_id == order.client_id else order.client_name
 
 
@@ -125,9 +129,10 @@ def event_saved(sender, instance, created=False, raw=False, **kwargs):
         people = recipients(order, event.account_id, event.actor_id, 'email_updates')
         if not people:
             return
-        title, account = event_title(event), their_account(order, event.account_id)
-        emails = [(user.email, *compose(user, order, account, f'{title} · {order.reference}', f'{title} (orden {order.reference}).',
-                                        event.description if event.kind == 'request_adjustment' else '', 'Ver la orden')) for user in people]
+        title = event_title(event)
+        emails = [(user.email, *compose(user, order, their_account(order, event.account_id, user), f'{title} · {order.reference}',
+                                        f'{title} (orden {order.reference}).', event.description if event.kind == 'request_adjustment' else '',
+                                        'Ver la orden')) for user in people]
         dispatch(lambda: deliver(emails))
     transaction.on_commit(collect)
 

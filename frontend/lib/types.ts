@@ -2,7 +2,7 @@ export type Page<T> = { count: number; next: string | null; previous: string | n
 export type MembershipPermission = 'owner' | 'manager' | 'staff';
 export type Account = { id: string; name: string; roles: string[]; capabilities: string[]; permission?: MembershipPermission };
 export type SessionUser = { id: number; username: string; first_name: string; last_name: string; is_superuser: boolean };
-export type AdminSection = 'inventory' | 'alternates' | 'oem' | 'accounts' | 'users' | 'invitations' | 'analytics' | 'templates' | 'applications';
+export type AdminSection = 'inventory' | 'alternates' | 'oem' | 'accounts' | 'users' | 'invitations' | 'analytics' | 'deals' | 'templates' | 'applications';
 export type Member = { id: number; user: number; account: string; permission: MembershipPermission; username: string; email: string; account_name: string; user_active: boolean; permission_label: string };
 export type ManagedAccount = { id: string; name: string; active: boolean; roles: string[]; member_count: number; members: Member[] };
 export type ManagedUser = SessionUser & { email: string; is_active: boolean; is_staff: boolean; date_joined: string; memberships: Member[] };
@@ -79,7 +79,8 @@ export type SupplierImportReservation = {
   row: number; supplier_invent_id: string; codigo: string; description: string; current_quantity: number; uploaded_quantity: number;
   // reserved: the units these orders hold; reserved_quantity: everything the item holds before the import.
   reserved: number; reserved_quantity: number; applied?: boolean;
-  orders: { id: string; reference: string; client_name: string; quantity: number; confirmed_at: string; decision?: SupplierImportDecision | '' }[];
+  // delivered_at: the supplier marked the order delivered, so its count most likely discounts it already ("Ya lo descuenta" is suggested).
+  orders: { id: string; reference: string; client_name: string; quantity: number; confirmed_at: string; delivered_at?: string | null; decision?: SupplierImportDecision | '' }[];
 };
 export type SupplierInventoryImportRow = {
   references?: { brand: string; code: string }[];

@@ -1150,10 +1150,12 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .supplier-request-status.quoted { background: #e6f0f9; color: #245d80; }
 .supplier-request-status.adjustment { background: #fff1d7; color: #906018; }
 .supplier-request-status.handshaked { background: #e4f2e8; color: #276244; }
+.supplier-request-status.delivered { background: #dcefe9; color: #1f5f4d; }
+.supplier-request-status.cancelled { background: #f6e9e6; color: #9a4b3c; }
 .deal-detail { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; min-width: 0; }
 .deal-detail > *, .deal-quote-tab > *, .deal-quote-editor > * { min-width: 0; }
 .deal-modal .modal-header h2 { overflow-wrap: anywhere; }
-.deal-progress { display: grid; grid-template-columns: repeat(4, 1fr); padding: 0; margin: 0; list-style: none; gap: 8px; }
+.deal-progress { display: grid; grid-template-columns: repeat(5, 1fr); padding: 0; margin: 0; list-style: none; gap: 8px; }
 .deal-progress li { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); border-bottom: 2px solid var(--line); padding: 10px 0; }
 .deal-progress li span { display: grid; place-items: center; flex: 0 0 22px; height: 22px; border-radius: 50%; background: var(--line); font-weight: 700; }
 .deal-progress .reached { color: var(--ink); border-color: #45886a; }
@@ -1192,6 +1194,49 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .deal-handshake svg { flex-shrink: 0; }
 .deal-handshake > div { min-width: 0; overflow-wrap: anywhere; }
 .deal-handshake p { font-size: 12px; margin: 8px 0 0; }
+/* After the handshake: delivery, shortfall and cancellation (deal-after-handshake.tsx, admin-deals.tsx). */
+.deal-progress.cancelled .reached { border-color: #c98a7c; }
+.deal-after { display: grid; gap: 14px; margin-top: 14px; min-width: 0; }
+.deal-outcome, .deal-shortfall-pending { display: flex; gap: 14px; border-radius: 14px; padding: 18px 20px; min-width: 0; overflow-wrap: anywhere; }
+.deal-outcome svg, .deal-shortfall-pending > svg { flex-shrink: 0; }
+.deal-outcome p, .deal-shortfall-pending p { font-size: 12px; margin: 6px 0 0; line-height: 1.6; }
+.deal-outcome.delivered { background: #dcefe9; color: #1f5f4d; }
+.deal-outcome.cancelled { background: #f6e9e6; color: #8a4436; }
+.deal-shortfall-pending { background: #fff4df; color: #7d5a1c; }
+.deal-shortfall-pending ul { margin: 8px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.7; }
+.deal-shortfall-pending a { color: inherit; font-weight: 700; }
+.deal-shortfall-alert { justify-content: space-between; flex-wrap: wrap; background: #fff4df; color: #7d5a1c; }
+.deal-after-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.deal-after-form { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: white; min-width: 0; }
+.deal-after-form.cancel { border-color: #ecd2cb; }
+.deal-after-form > p { font-size: 12px; line-height: 1.7; color: #6d7a60; margin: 0; }
+.deal-after-form label { display: grid; gap: 8px; font-size: 13px; }
+.deal-after-form textarea { min-height: 70px; }
+.deal-after-form > div { display: flex; flex-wrap: wrap; gap: 10px; }
+.deal-after-form select, .deal-after-form textarea, .deal-after-form td input { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid #dbe2d1; border-radius: 7px;
+  background: white; color: var(--ink); font: inherit; font-size: 12px; }
+.deal-after-form textarea { line-height: 1.6; resize: vertical; }
+.deal-after-form .table-scroll table { min-width: 0; width: 100%; }
+.deal-after-form td input { width: 72px; text-align: right; }
+.deal-after-form td small, .deal-agreement td small { display: block; font-size: 10px; color: var(--muted); margin-top: 3px; }
+.deal-agreement { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; min-width: 0; }
+.deal-agreement td span { display: block; }
+.button.danger { color: #9a4b3c; }
+.button.primary.danger { background: #b2563f; border-color: #b2563f; color: white; }
+.supplier-request-alert.shortfall { background: #fff4df; color: #8a6a24; }
+.admin-deals { display: grid; gap: 16px; min-width: 0; }
+.admin-deals-table td small { display: block; font-size: 10px; color: var(--muted); margin-top: 3px; }
+.admin-deal-detail { display: grid; gap: 16px; min-width: 0; }
+.admin-deal-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.admin-deal-heading > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; font-size: 13px; }
+.admin-deal-heading span { color: var(--muted); font-size: 11px; }
+.admin-deal-dates { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin: 0; }
+.admin-deal-dates > div { padding: 8px 10px; border-radius: 8px; background: #f5f6f0; }
+.admin-deal-dates dt { font-size: 10px; color: var(--muted); }
+.admin-deal-dates dd { margin: 2px 0 0; font-size: 12px; }
+.admin-deal-shortfalls { display: grid; gap: 8px; }
+.admin-deal-shortfalls article { display: grid; gap: 3px; padding: 10px 12px; border-radius: 9px; background: #fff8ea; font-size: 12px; }
+.admin-deal-shortfalls article span, .admin-deal-shortfalls article small { color: #7d5a1c; font-size: 11px; }
 .deal-quote-history summary { cursor: pointer; font-size: 13px; padding: 12px 0; }
 .deal-quote-history .historical { margin-bottom: 12px; opacity: .85; }
 .deal-events { list-style: none; display: grid; gap: 16px; margin: 0; padding: 0; }

@@ -66,8 +66,15 @@ class RequestSubmission(serializers.Serializer):
 
 class RequestFilters(serializers.Serializer):
     search = serializers.CharField(required=False, allow_blank=True, max_length=200)
-    status = serializers.ChoiceField(required=False, choices=[value for value, _ in SupplierRequest.STATUS_CHOICES])
+    # agreements: every deal both parties confirmed, whatever happened after (open, delivered or cancelled).
+    status = serializers.ChoiceField(required=False, choices=[*[value for value, _ in SupplierRequest.STATUS_CHOICES], 'agreements'])
     ordering = serializers.CharField(required=False, allow_blank=True, max_length=200)
+
+
+def status_filter(rows, status):
+    if not status:
+        return rows
+    return rows.filter(handshaked_at__isnull=False) if status == 'agreements' else rows.filter(status=status)
 
 
 # Grid sorting for the supplier's request list: whitelisted names, newest first and the primary key as the stable tail.
@@ -89,9 +96,17 @@ def quote_summary_fields():
         ('quotation_currency', 'currency'), ('quoted_unit_count', 'offered_units')]}
 
 
+def lifecycle_fields():
+    from .request_models import DealShortfall, DealShortfallLine
+    accepted = DealShortfallLine.objects.filter(shortfall__order_id=OuterRef('pk'), shortfall__status='accepted').values(
+        'shortfall__order_id').annotate(units=Sum('missing')).values('units')[:1]
+    return {'shortfall_pending': Exists(DealShortfall.objects.filter(order_id=OuterRef('pk'), status='pending')),
+            'missing_units': Coalesce(Subquery(accepted), 0)}
+
+
 def request_queryset(supplier):
     return SupplierRequest.objects.filter(supplier=supplier).annotate(
-        line_count=Count('lines'), unit_count=Coalesce(Sum('lines__quantity'), 0), **quote_summary_fields()).order_by('-created_at', 'id')
+        line_count=Count('lines'), unit_count=Coalesce(Sum('lines__quantity'), 0), **quote_summary_fields(), **lifecycle_fields()).order_by('-created_at', 'id')
 
 
 def request_summary(row):
@@ -104,7 +119,14 @@ def request_summary(row):
             'line_count': row.line_count, 'unit_count': row.unit_count,
             'quotation_revision': row.quotation_revision, 'quoted_unit_count': row.quoted_unit_count,
             'quotation_total': str(row.quotation_total) if row.quotation_total is not None else None,
-            'quotation_currency': row.quotation_currency}
+            'quotation_currency': row.quotation_currency,
+            # After the handshake: a shortfall waiting for the client, the delivery, and who cancelled.
+            'shortfall_pending': bool(getattr(row, 'shortfall_pending', False)),
+            # Units the agreement keeps: the accepted revision less accepted shortfalls (None before the handshake).
+            'agreed_unit_count': (row.quoted_unit_count or 0) - (getattr(row, 'missing_units', 0) or 0) if row.handshaked_at else None,
+            'delivered_at': row.delivered_at.isoformat() if row.delivered_at else None,
+            'cancelled_at': row.cancelled_at.isoformat() if row.cancelled_at else None,
+            'cancelled_side': row.cancelled_side or None}
 
 
 def availability_alert():
@@ -131,23 +153,33 @@ def supplier_request_summary(row):
 
 def request_detail(row):
     from .deal_views import deal_data
+    held = own_reservations(row)
     return {**request_summary(row), **deal_data(row), 'notes': row.notes,
             'lines': [{'id': str(line.pk), 'supplier_item_id': str(line.supplier_item_id),
                        'supplier_invent_id': line.supplier_invent_id, 'part_id': str(line.part_id),
                        'sku': line.sku, 'name': line.name, 'codigo': line.codigo, 'brand': line.brand,
                        'description': line.description, 'quantity': line.quantity,
-                       'stock': request_line_stock(line, row.supplier_id)}
+                       'stock': request_line_stock(line, row.supplier_id, confirmed=row.handshaked_at is not None, held=held.get(line.pk, 0))}
                       for line in row.lines.all()]}
 
 
-def request_line_stock(line, supplier_id):
-    """Current supplier-only stock, provided the captured item still matches."""
+def own_reservations(row):
+    """{order line id: units this deal still holds} once it was confirmed (its own reservation is not a shortfall of its own lines)."""
+    if not row.handshaked_at:
+        return {}
+    from .request_models import StockReservation
+    return dict(StockReservation.objects.filter(order=row, status='open').values_list('quotation_line__order_line_id', 'quantity'))
+
+
+def request_line_stock(line, supplier_id, *, confirmed=False, held=0):
+    """Current supplier-only stock, provided the captured item still matches. After the handshake the deal's own units are reported apart
+    (`held`) and there is no shortfall to confirm: a missing unit is reported with the deal's shortfall."""
     item = line.supplier_item
     if not line_item_identity_ok(line, supplier_id):
         return None
     return {'reported_quantity': item.reported_quantity, 'reserved_quantity': item.reserved_quantity,
-            'available_quantity': item.available_quantity,
-            'shortfall': max(0, line.quantity - item.available_quantity),
+            'available_quantity': item.available_quantity, 'held_for_deal': held,
+            'shortfall': 0 if confirmed else max(0, line.quantity - item.available_quantity),
             'updated_at': item.updated_at.isoformat()}
 
 
@@ -158,7 +190,7 @@ def request_detail_queryset(supplier):
 
 def sent_request_queryset(client):
     return SupplierRequest.objects.filter(client=client).annotate(
-        line_count=Count('lines'), unit_count=Coalesce(Sum('lines__quantity'), 0), **quote_summary_fields()).order_by('-created_at', 'id')
+        line_count=Count('lines'), unit_count=Coalesce(Sum('lines__quantity'), 0), **quote_summary_fields(), **lifecycle_fields()).order_by('-created_at', 'id')
 
 
 def sent_request_summary(row):
@@ -176,9 +208,7 @@ class ClientSentRequests(APIView):
         filters = RequestFilters(data=request.query_params)
         filters.is_valid(raise_exception=True)
         data = filters.validated_data
-        rows = sent_request_queryset(client).select_related('submission')
-        if data.get('status'):
-            rows = rows.filter(status=data['status'])
+        rows = status_filter(sent_request_queryset(client).select_related('submission'), data.get('status'))
         if data.get('search'):
             term = data['search'].strip()
             matching_lines = SupplierRequestLine.objects.filter(
@@ -211,9 +241,14 @@ class ClientPartRequestState(APIView):
         client = account_for(request.user, account_id, 'client')
         part = get_object_or_404(Part, pk=part_id, active=True, merged_into__isnull=True)
         family = Part.objects.filter(Q(pk=part.pk) | Q(merged_into=part)).values('pk')
-        # A closed deal counts the units of the quotation the client accepted, which can differ from those requested (or be 0).
+        # A closed deal counts the units of the quotation the client accepted, which can differ from those requested (or be 0), less
+        # the shortfalls the client accepted; a cancelled deal counts nothing.
+        from .request_models import DealShortfallLine
         agreed = DealQuotationLine.objects.filter(order_line=OuterRef('pk'), quotation__client_confirmed_at__isnull=False).order_by('-quotation__revision').values('quantity')[:1]
-        lines = SupplierRequestLine.objects.filter(request__client=client, part_id__in=family).annotate(agreed_quantity=Coalesce(Subquery(agreed), 0))
+        short = DealShortfallLine.objects.filter(quotation_line__order_line=OuterRef('pk'), shortfall__status='accepted').values(
+            'quotation_line__order_line').annotate(units=Sum('missing')).values('units')[:1]
+        lines = SupplierRequestLine.objects.filter(request__client=client, part_id__in=family).annotate(
+            agreed_quantity=Coalesce(Subquery(agreed), 0) - Coalesce(Subquery(short), 0))
         quantities = {
             'sent_quantity': Coalesce(Sum('quantity'), 0),
             'pending_quantity': Coalesce(Sum('quantity', filter=Q(request__status='pending')), 0),
@@ -221,6 +256,7 @@ class ClientPartRequestState(APIView):
             'quoted_quantity': Coalesce(Sum('quantity', filter=Q(request__status='quoted')), 0),
             'adjustment_quantity': Coalesce(Sum('quantity', filter=Q(request__status='adjustment')), 0),
             'handshaked_quantity': Coalesce(Sum('agreed_quantity', filter=Q(request__status='handshaked')), 0),
+            'delivered_quantity': Coalesce(Sum('agreed_quantity', filter=Q(request__status='delivered')), 0),
         }
         totals = lines.aggregate(**quantities)
         items = lines.values('supplier_item_id', 'request__supplier_id', 'codigo', 'brand').annotate(**quantities).order_by(
@@ -352,9 +388,7 @@ class AccountRequests(APIView):
         filters = RequestFilters(data=request.query_params)
         filters.is_valid(raise_exception=True)
         data = filters.validated_data
-        rows = request_queryset(supplier).annotate(availability_alert=availability_alert(), draft_state=draft_state())
-        if data.get('status'):
-            rows = rows.filter(status=data['status'])
+        rows = status_filter(request_queryset(supplier).annotate(availability_alert=availability_alert(), draft_state=draft_state()), data.get('status'))
         if data.get('search'):
             term = data['search'].strip()
             matching_lines = SupplierRequestLine.objects.filter(
@@ -380,12 +414,22 @@ class AccountRequests(APIView):
         return Response(result)
 
 
+def can_decide(account, user):
+    """Whether this member may take the supplier's decisions on a deal (publish_min_permission). Read time only: never stored in a
+    DealCommand result, which other members may replay."""
+    from .models import Membership
+    from .pricing_models import pricing_settings
+    from .views import PERMISSION_RANK
+    permission = Membership.objects.filter(account=account, user=user).values_list('permission', flat=True).first()
+    return PERMISSION_RANK.get(permission, -1) >= PERMISSION_RANK[pricing_settings(account).publish_min_permission]
+
+
 class SupplierRequestDetail(APIView):
     @extend_schema(operation_id='v1_accounts_requests_retrieve', responses=OpenApiTypes.OBJECT)
     def get(self, request, account_id, pk):
         supplier = account_for(request.user, account_id, 'supplier')
         row = get_object_or_404(request_detail_queryset(supplier), pk=pk)
-        return Response(request_detail(row))
+        return Response({**request_detail(row), 'can_decide': can_decide(supplier, request.user)})
 
 
 class SupplierRequestReview(APIView):
@@ -404,4 +448,4 @@ class SupplierRequestReview(APIView):
             DealEvent.objects.create(order=row, account=supplier, actor=request.user, kind='review_started',
                                      description='EL PROVEEDOR ABRIÓ LA ORDEN. ARTÍCULOS BLOQUEADOS.')
         row = request_detail_queryset(supplier).get(pk=row.pk)
-        return Response(request_detail(row))
+        return Response({**request_detail(row), 'can_decide': can_decide(supplier, request.user)})

@@ -24,9 +24,10 @@ from .quote_assistant import applied_runs
 from .quote_assistant_models import QuoteAssistantRun
 from .quote_draft_models import DealQuotationAudit, DealQuotationDraft, DealQuotationLineAudit
 from .quote_drafts import stock_by_line
+from .deal_lifecycle import accept_shortfall, cancel, deliver, lifecycle_data, report_shortfall
 from .stock_reservations import reserve_confirmed
 from .request_models import (SupplierRequest, DealQuotation, DealQuotationLine, DealEvent,
-                             DealMessage, DealCommand)
+                             DealMessage, DealCommand, DealShortfall)
 from .request_views import (RequestConflict, WholeRequestQuantity, request_detail_queryset,
                             request_detail, sent_request_queryset, sent_request_summary)
 from .views import PERMISSION_RANK, account_for
@@ -38,6 +39,11 @@ ACCEPT_SHORTFALL_DETAIL = ('El proveedor debe confirmar la disponibilidad de alg
                            'Solicita un ajuste para que el proveedor prepare una versión actualizada.')
 DRAFT_REQUIRED = 'Prepara la cotización en el borrador y envía la versión guardada: las cotizaciones se publican solo desde el borrador revisado.'
 PUBLISH_DENIED = 'Tu permiso en la cuenta no permite publicar cotizaciones. Solicita la aprobación de un administrador de tu cuenta.'
+DECIDE_DENIED = ('Tu permiso en la cuenta no permite decidir sobre acuerdos confirmados (entregas, faltantes o cancelaciones). '
+                 'Solicita la aprobación de un administrador de tu cuenta.')
+# Who takes each decision; cancel belongs to either party (mall.deal_lifecycle).
+SUPPLIER_ACTIONS = {'quote', 'return_quote', 'deliver', 'report_shortfall'}
+CLIENT_ACTIONS = {'accept', 'request_adjustment', 'accept_shortfall'}
 SETTINGS_SNAPSHOT = ('version', 'over_stock_policy', 'over_request_policy', 'accept_shortfall_policy', 'publish_min_permission', 'prefill_quantity',
                      'usd_pab_parity')
 
@@ -60,9 +66,11 @@ def deal_data(row):
     events = list(row.events.select_related('account', 'actor').order_by('-id')[:100])
     return {'client': {'id': str(row.client_id), 'name': row.client_name},
             'supplier': {'id': str(row.supplier_id), 'name': row.supplier_name},
-            'quotations': quotations, 'quotation': quotations[-1] if quotations else None,
+            'quotations': quotations, 'quotation': quotations[-1] if quotations else None, **lifecycle_data(row),
             'events': [{'id': event.pk, 'kind': event.kind, 'description': event.description,
-                        'account_name': event.account.name, 'actor_name': event.actor.get_full_name() or event.actor.username,
+                        # An administrator's decision acts for no account.
+                        'account_name': event.account.name if event.account else 'MOTIONPARTES',
+                        'actor_name': (event.actor.get_full_name() or event.actor.username) if event.account else 'MOTIONPARTES',
                         'created_at': iso(event.created_at), 'quotation_id': str(event.quotation_id) if event.quotation_id else None}
                        for event in reversed(events)]}
 
@@ -94,10 +102,16 @@ class QuoteLine(serializers.Serializer):
     unit_price = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal('0'))
 
 
+class ShortfallLine(serializers.Serializer):
+    order_line_id = serializers.UUIDField()
+    missing = WholeRequestQuantity(min_value=1, max_value=9999)
+
+
 class DealActionSerializer(serializers.Serializer):
     operation_id = serializers.UUIDField()
     expected_version = serializers.IntegerField(min_value=1)
-    action = serializers.ChoiceField(choices=['quote', 'accept', 'request_adjustment', 'return_quote'])
+    action = serializers.ChoiceField(choices=['quote', 'accept', 'request_adjustment', 'return_quote', 'deliver', 'report_shortfall',
+                                              'accept_shortfall', 'cancel'])
     quotation_id = serializers.UUIDField(required=False)
     currency = serializers.ChoiceField(choices=['USD', 'PAB'], default='USD')
     terms = serializers.CharField(required=False, default='', allow_blank=True, max_length=5000)
@@ -105,16 +119,25 @@ class DealActionSerializer(serializers.Serializer):
     lines = QuoteLine(many=True, required=False, min_length=1)
     # No default: legacy payloads keep a byte-identical DealCommand fingerprint.
     draft_version = serializers.IntegerField(min_value=1, required=False)
+    # After the handshake (no defaults either): the missing units of a shortfall, the reason code of a shortfall or cancellation (the
+    # optional note goes in `reason`) and, for an account that is both parties of the deal, the side it cancels as.
+    shortfall = ShortfallLine(many=True, required=False, min_length=1)
+    reason_code = serializers.ChoiceField(choices=sorted({*dict(DealShortfall.REASONS), *dict(SupplierRequest.CANCEL_REASONS)}), required=False)
+    side = serializers.ChoiceField(choices=['client', 'supplier'], required=False)
 
     def validate(self, data):
         data['terms'] = data['terms'].strip().upper()
         data['reason'] = data['reason'].strip().upper()
         if data['action'] == 'quote' and not data.get('lines'):
             raise serializers.ValidationError('Agrega las cantidades y precios de la cotización.')
-        if data['action'] in ['accept', 'request_adjustment', 'return_quote'] and not data.get('quotation_id'):
+        if data['action'] != 'quote' and not data.get('quotation_id'):
             raise serializers.ValidationError('Indica la cotización que estás revisando.')
         if data['action'] == 'request_adjustment' and not data['reason']:
             raise serializers.ValidationError('Describe el ajuste que necesitas.')
+        if data['action'] == 'report_shortfall' and (not data.get('shortfall') or data.get('reason_code') not in dict(DealShortfall.REASONS)):
+            raise serializers.ValidationError('Indica las unidades que faltan y el motivo del faltante.')
+        if data['action'] == 'cancel' and data.get('reason_code') not in dict(SupplierRequest.CANCEL_REASONS):
+            raise serializers.ValidationError('Indica el motivo de la cancelación.')
         return data
 
 
@@ -196,18 +219,21 @@ def write_quote_audit(quotation, prior, request, account, draft, context, permis
                                   'price_sources': dict(Counter(audit.price_source for audit in audits))})
 
 
-def publish_permission(account, user):
-    """The caller's permission and the supplier's settings, read for a supplier decision: quote and return_quote need publish_min_permission."""
+def publish_permission(account, user, denied=PUBLISH_DENIED):
+    """The caller's permission and the supplier's settings, read for a supplier decision: every one needs publish_min_permission."""
     permission = Membership.objects.filter(account=account, user=user).values_list('permission', flat=True).first()
     settings_row = pricing_settings(account)
     if PERMISSION_RANK.get(permission, -1) < PERMISSION_RANK[settings_row.publish_min_permission]:
-        raise PermissionDenied(PUBLISH_DENIED)
+        raise PermissionDenied(denied)
     return permission, settings_row
 
 
 class DealActions(APIView):
     @extend_schema(request=DealActionSerializer, responses=OpenApiTypes.OBJECT,
-                   description='Decisiones del acuerdo. quote y return_quote exigen el permiso mínimo para publicar del proveedor (403 antes de comprobar '
+                   description='Decisiones del acuerdo. Después del acuerdo: deliver y report_shortfall (proveedor; shortfall con order_line_id y '
+                               'missing por artículo y reason_code), accept_shortfall (cliente) y cancel (cualquiera de las partes, reason_code y nota '
+                               'opcional en reason; side si la cuenta es ambas partes). Las decisiones del proveedor (quote, return_quote, deliver, '
+                               'report_shortfall y su cancel) exigen el permiso mínimo para publicar del proveedor (403 antes de comprobar '
                                'la versión). quote se publica desde el borrador guardado: draft_version y el contenido deben coincidir con él (409 si falta '
                                'o no coincide). Repetir un operation_id de la misma cuenta con el mismo contenido devuelve el resultado guardado.')
     @transaction.atomic
@@ -225,19 +251,27 @@ class DealActions(APIView):
                 raise RequestConflict('Este identificador ya se usó para otra decisión.')
             return Response(previous.result)
         action = data['action']
-        supplier_action = action in ['quote', 'return_quote']
-        expected_account_id = row.supplier_id if supplier_action else row.client_id
-        capability = 'supplier' if supplier_action else 'client'
-        if account.pk != expected_account_id or not account.roles.filter(capability=capability).exists():
+        capabilities = set(account.roles.values_list('capability', flat=True))
+        sides = {side for side, owner in [('client', row.client_id), ('supplier', row.supplier_id)] if account.pk == owner and side in capabilities}
+        if action == 'cancel':
+            if len(sides) > 1 and data.get('side') not in sides:
+                raise ValidationError('Indica si cancelas como cliente o como proveedor.')
+            side = data.get('side') if len(sides) > 1 else next(iter(sides), None)
+        else:
+            side = 'supplier' if action in SUPPLIER_ACTIONS else 'client'
+        if side not in sides:
             raise PermissionDenied('Esta decisión corresponde a la otra parte del acuerdo.')
-        # Opt-in per supplier (staff by default): checked before the version, so a member without permission gets 403, never a 409.
-        permission, settings_row = publish_permission(account, request.user) if supplier_action else (None, None)
+        supplier_action = side == 'supplier'
+        # Opt-in per supplier (staff by default): every supplier decision needs publish_min_permission, checked before the version, so a
+        # member without permission gets 403, never a 409.
+        permission, settings_row = publish_permission(account, request.user, PUBLISH_DENIED if action in ('quote', 'return_quote') else DECIDE_DENIED) \
+            if supplier_action else (None, None)
         if row.version != data['expected_version']:
             raise RequestConflict('El acuerdo cambió. Actualízalo para revisar su estado y cotización actuales.')
         latest = row.quotations.order_by('-revision').first()
         if action != 'quote' and (not latest or latest.pk != data['quotation_id']):
             raise RequestConflict('Esta cotización ya no es la vigente. Actualiza el acuerdo.')
-        now = timezone.now()
+        now, extra_fields = timezone.now(), []
         if action == 'quote':
             if row.status not in ['reviewed', 'adjustment']:
                 raise RequestConflict('Solo puedes cotizar una orden en revisión o con un ajuste solicitado.')
@@ -300,6 +334,14 @@ class DealActions(APIView):
             description = data['reason']
             DealMessage.objects.create(order=row, account=account, actor=request.user,
                                        message_id=data['operation_id'], body=data['reason'])
+        elif action == 'report_shortfall':
+            description, extra_fields = report_shortfall(row, latest, request.user, data['shortfall'], data['reason_code'], data['reason'])
+        elif action == 'accept_shortfall':
+            description, extra_fields = accept_shortfall(row, request.user)
+        elif action == 'deliver':
+            description, extra_fields = deliver(row, request.user)
+        elif action == 'cancel':
+            description, extra_fields = cancel(row, side, request.user, data['reason_code'], data['reason'])
         else:
             if row.status != 'adjustment':
                 raise RequestConflict('Solo puedes devolver una cotización que tenga un ajuste solicitado.')
@@ -312,7 +354,7 @@ class DealActions(APIView):
             # The discarded draft took the applied assistant proposals with it; a later adjustment of this revision starts over.
             QuoteAssistantRun.objects.filter(order=row, base_quotation=latest).update(decisions={})
         row.version += 1
-        row.save(update_fields=['status', 'version', 'handshaked_at', 'updated_at'])
+        row.save(update_fields=['status', 'version', 'handshaked_at', 'updated_at', *extra_fields])
         DealEvent.objects.create(order=row, account=account, actor=request.user, kind=action,
                                  description=description, quotation=latest)
         fresh = request_detail_queryset(row.supplier).get(pk=row.pk)
