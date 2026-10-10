@@ -24,6 +24,7 @@ from .quote_assistant import applied_runs
 from .quote_assistant_models import QuoteAssistantRun
 from .quote_draft_models import DealQuotationAudit, DealQuotationDraft, DealQuotationLineAudit
 from .quote_drafts import stock_by_line
+from .stock_reservations import reserve_confirmed
 from .request_models import (SupplierRequest, DealQuotation, DealQuotationLine, DealEvent,
                              DealMessage, DealCommand)
 from .request_views import (RequestConflict, WholeRequestQuantity, request_detail_queryset,
@@ -288,7 +289,10 @@ class DealActions(APIView):
             row.status = 'handshaked'
             row.handshaked_at = now
             DealQuotationDraft.objects.filter(order=row).delete()
-            description = 'AMBAS PARTES CONFIRMARON LA COTIZACIÓN. ACUERDO CERRADO · HANDSHAKED.'
+            # The agreed units leave the supplier's available stock now (mall.stock_reservations); the order row is already locked.
+            held = sum(reservation.quantity for reservation in reserve_confirmed(row, latest, request.user))
+            description = 'AMBAS PARTES CONFIRMARON LA COTIZACIÓN. ACUERDO CERRADO · HANDSHAKED.' + (
+                f' SE RESERVARON {held} {"UNIDAD" if held == 1 else "UNIDADES"} DEL INVENTARIO DEL PROVEEDOR.' if held else '')
         elif action == 'request_adjustment':
             if row.status != 'quoted':
                 raise RequestConflict('Solo puedes pedir un ajuste de una cotización pendiente de confirmación.')

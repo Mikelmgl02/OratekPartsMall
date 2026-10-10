@@ -288,10 +288,12 @@ class QuoteExceptionTests(APITestCase):
         self.client.force_authenticate(self.buyer)
         order, quotation = self.quoted(order=self.reviewed())
         self.stock(self.item_a, 3)
-        before = self.stock_snapshot()
+        counts = lambda: {item.pk: (item.reported_quantity, item.reserved_quantity) for item in SupplierItem.objects.filter(pk__in=[self.item_a.pk, self.item_a2.pk])}
+        before = counts()
         accepted = self.accept(order, quotation)
         self.assertEqual((accepted.status_code, accepted.data['status']), (200, 'handshaked'))
-        self.assertEqual(self.stock_snapshot(), before)
+        # Accepting with a shortfall still reserves what was agreed; the reported counts stay as the supplier sent them.
+        self.assertEqual(counts(), {self.item_a.pk: (3, before[self.item_a.pk][1] + 3), self.item_a2.pk: (before[self.item_a2.pk][0], before[self.item_a2.pk][1] + 2)})
         audit = DealQuotationAudit.objects.get(quotation_id=quotation['id'])
         self.assertEqual(audit.accept_check['result'], 'accepted_with_shortfall')
         self.assertEqual(PricingAuditEvent.objects.filter(kind='accept_with_shortfall', order=order).count(), 1)
@@ -371,11 +373,12 @@ class ConcurrentAvailabilityTests(APITransactionTestCase):
     setUp = deal_tests.ConcurrentDealTests.setUp
     call = deal_tests.ConcurrentDealTests.call
 
-    def test_accept_racing_a_stock_ingest_neither_deadlocks_nor_writes_stock(self):
+    def test_accept_racing_a_stock_ingest_neither_deadlocks_nor_changes_the_reported_stock(self):
         SupplierItem.objects.filter(pk=self.item.pk).update(source='upload')
         for attempt in range(3):
+            held = SupplierItem.objects.get(pk=self.item.pk).reserved_quantity  # deals accepted in earlier attempts still hold their units
             self.assertEqual(self.call(self.seller, f'/api/v1/accounts/{self.supplier.pk}/inventory/ingest/', {
-                'update_id': f'restock-{attempt}', 'supplier_invent_id': '1', 'codigo': 'CONCURRENT-DEAL', 'brand': '', 'source': 'upload', 'quantity': 10})[0], 200)
+                'update_id': f'restock-{attempt}', 'supplier_invent_id': '1', 'codigo': 'CONCURRENT-DEAL', 'brand': '', 'source': 'upload', 'quantity': 10 + held})[0], 200)
             _, result = self.call(self.buyer, f'/api/v1/accounts/{self.client_account.pk}/requests/',
                                   {'submission_id': str(uuid.uuid4()), 'lines': [{'supplier_item_id': str(self.item.pk), 'quantity': 4}]})
             order = SupplierRequest.objects.get(pk=result['requests'][0]['id'])
@@ -401,6 +404,7 @@ class ConcurrentAvailabilityTests(APITransactionTestCase):
                 self.assertIn(results[0][0], [200, 409])
                 order.refresh_from_db()
                 self.assertEqual(order.status, 'handshaked' if results[0][0] == 200 else 'quoted')
-                self.assertEqual(SupplierItem.objects.get(pk=self.item.pk).reported_quantity, 1)
+                item = SupplierItem.objects.get(pk=self.item.pk)
+                self.assertEqual((item.reported_quantity, item.reserved_quantity), (1, held + (4 if results[0][0] == 200 else 0)))
                 self.assertEqual(DealQuotationAudit.objects.get(quotation_id=quoted['quotation']['id']).accept_check['result'],
                                  'ok' if results[0][0] == 200 else 'blocked')

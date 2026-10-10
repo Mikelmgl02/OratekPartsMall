@@ -120,7 +120,11 @@ class DealWorkflowTests(APITestCase):
         self.assertIsNotNone(accepted.data['handshaked_at'])
         self.assertIsNotNone(accepted.data['quotation']['client_confirmed_at'])
         self.assertNotIn('stock', accepted.data['lines'][0])
-        self.assertEqual(self.stock_snapshot(), before)
+        # The agreed units are reserved (mall.test_stock_reservations); the supplier's reported counts stay as they were.
+        items, _, updates = self.stock_snapshot()
+        self.assertEqual({item['supplier_invent_id']: (item['reported_quantity'], item['reserved_quantity']) for item in items},
+                         {'A-001': (10, 5), 'A-002': (10, 2), 'B-001': (20, 0)})
+        self.assertEqual(updates, before[2])
         self.assertEqual(self.action(order, 'request_adjustment', quotation_id=quote['id'], reason='OTRO').status_code, 409)
         self.client.force_authenticate(self.seller_a)
         self.assertEqual(self.quote(order).status_code, 409)

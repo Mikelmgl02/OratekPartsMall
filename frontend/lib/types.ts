@@ -70,13 +70,23 @@ export type SupplierInventoryImportSummary = {
   source_rows: number; valid_rows: number; rejected_rows: number;
   created_items: number; updated_items: number; unchanged_items: number;
   credit_units: number; debit_units: number;
+  // Rows whose item holds units for confirmed orders; an applied summary also counts the units settled and those still held.
+  reserved_rows?: number; settled_units?: number; held_units?: number;
+};
+// net: the file's count already discounts the confirmed order (its reservation is settled); gross: it still includes it (it stays held).
+export type SupplierImportDecision = 'net' | 'gross';
+export type SupplierImportReservation = {
+  row: number; supplier_invent_id: string; codigo: string; description: string; current_quantity: number; uploaded_quantity: number;
+  // reserved: the units these orders hold; reserved_quantity: everything the item holds before the import.
+  reserved: number; reserved_quantity: number; applied?: boolean;
+  orders: { id: string; reference: string; client_name: string; quantity: number; confirmed_at: string; decision?: SupplierImportDecision | '' }[];
 };
 export type SupplierInventoryImportRow = {
   references?: { brand: string; code: string }[];
   row: number; supplier_invent_id: string; codigo: string; brand: string; description: string;
   current_quantity: number; uploaded_quantity: number; direction: 'credit' | 'debit' | 'none';
   movement_quantity: number; new_quantity: number; matching_status: StockItem['matching_status'];
-  part_id: string | null; part_sku: string | null; action: 'create' | 'update' | 'unchanged';
+  part_id: string | null; part_sku: string | null; action: 'create' | 'update' | 'unchanged'; reserved?: number;
 };
 export type SupplierInventoryImportResult = {
   job_id: string; supplier_id: string; expires_at: string; filename: string;
@@ -85,6 +95,7 @@ export type SupplierInventoryImportResult = {
   preview: SupplierInventoryImportRow[]; preview_count: number;
   errors: { row: number; column: string; message: string }[]; error_count: number;
   warnings: { row: number; column: string; message: string }[]; warning_count: number;
+  reservations?: SupplierImportReservation[];
   progress: { batch_size: number; total_batches: number; completed_batches: number; total_rows: number; processed_rows: number; next_batch: number | null };
 };
 export type LedgerEntry = { id: number; kind: string; quantity: number; direction: 'credit' | 'debit'; balance_type: 'stock' | 'reservation'; reserved_delta: number; reserved_direction: 'credit' | 'debit' | ''; reported_after: number; reserved_after: number; reference: string; created_at: string };

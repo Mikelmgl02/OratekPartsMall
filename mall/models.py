@@ -254,7 +254,7 @@ class SupplierItem(models.Model):
 
 class StockEntry(models.Model):
     item = models.ForeignKey(SupplierItem, on_delete=models.PROTECT, related_name="ledger", verbose_name='artículo del proveedor')
-    kind = models.CharField(max_length=20, choices=[("sync", "Ajuste de existencias"), ("reserve", "Reserva"), ("release", "Liberación de reserva"), ("delivery", "Entrega")], verbose_name='tipo de movimiento')
+    kind = models.CharField(max_length=20, choices=[("sync", "Ajuste de existencias"), ("reserve", "Reserva"), ("release", "Liberación de reserva"), ("settle", "Pedido descontado por el proveedor"), ("delivery", "Entrega")], verbose_name='tipo de movimiento')
     quantity = models.PositiveIntegerField(default=0, verbose_name='cantidad del movimiento')
     direction = models.CharField(max_length=6, choices=[('credit', 'Crédito'), ('debit', 'Débito')], default='credit', verbose_name='dirección')
     balance_type = models.CharField(max_length=11, choices=[('stock', 'Existencias'), ('reservation', 'Reservas')], default='stock', verbose_name='saldo afectado')
@@ -291,7 +291,7 @@ from .classification_models import CatalogClassificationState, CatalogClassifica
 from .catalog_assistant_models import CatalogAssistantJob, CatalogAssistantSuggestion, CategorySuggestionCache
 from .supplier_import_models import SupplierInventoryImportJob, SupplierInventoryImportBatch
 from .request_models import (ClientRequestSubmission, SupplierRequest, SupplierRequestLine, RequestContribution,
-                             DealQuotation, DealQuotationLine, DealEvent, DealMessage, DealCommand)
+                             DealQuotation, DealQuotationLine, DealEvent, DealMessage, DealCommand, StockReservation)
 from .analytics_models import UsageEvent, UsageVisit
 from .matching_models import MatchingQueue, MatchingCase, SupplierCodeMapping, MatchingDecision
 from .technical_models import PartType, TechnicalTemplate, TechnicalField, PartSpecification, Application, ItemApplication

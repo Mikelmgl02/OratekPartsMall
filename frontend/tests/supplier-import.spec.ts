@@ -293,3 +293,85 @@ test('manual balance retries reuse the update ID while edited payloads receive a
   expect(payloads[2]).toMatchObject({ supplier_invent_id: 'supplier-id-lowercase', codigo: 'FE-ONE', brand: 'ACME', description: 'DESCRIPCIÓN CORREGIDA', quantity: 0, source: 'upload' });
   expect(payloads[2].update_id).not.toBe(payloads[0].update_id);
 });
+
+// Confirmed deals reserved units of FE-ONE: 3 for one order, 2 for another. The file's count is 3.
+const orders = [
+  { id: '66666666-6666-4666-8666-666666666661', reference: 'ORD-20261008-AAAA1111', client_name: 'TALLER CENTRAL', quantity: 3, confirmed_at: '2026-10-08T15:00:00Z' },
+  { id: '66666666-6666-4666-8666-666666666662', reference: 'ORD-20261009-BBBB2222', client_name: 'TALLER NORTE', quantity: 2, confirmed_at: '2026-10-09T15:00:00Z' },
+];
+function reservedJob() {
+  const job = importJob({ rejectedRows: 0 });
+  return { ...job, summary: { ...job.summary, reserved_rows: 1 }, preview: job.preview.map(row => ({ ...row, reserved: row.row === 2 ? 5 : 0 })),
+    reservations: [{ row: 2, supplier_invent_id: 'supplier-id-lowercase', codigo: 'FE-ONE', description: 'REPUESTO DE PRUEBA', current_quantity: 10,
+      uploaded_quantity: 3, reserved: 5, reserved_quantity: 5, orders, applied: false }] };
+}
+async function reservedImport(page: Page) {
+  await supplier(page);
+  const current = reservedJob();
+  const bodies: Record<string, unknown>[] = [];
+  await page.route(`${root}/**`, async route => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === `${root}/import`) { await route.fulfill({ json: current }); return; }
+    if (pathname === `${root}/import/jobs/${jobId}`) {
+      if (route.request().method() !== 'POST') { await route.fulfill({ json: current }); return; }
+      const body = route.request().postDataJSON() as { decisions: Record<string, string> };
+      bodies.push(body);
+      const settled = orders.filter(order => body.decisions[order.id] === 'net').reduce((sum, order) => sum + order.quantity, 0);
+      await route.fulfill({ json: { ...current, status: 'completed', imported: true, applied_summary: { ...current.summary, settled_units: settled, held_units: 5 - settled },
+        reservations: current.reservations.map(entry => ({ ...entry, applied: true, orders: entry.orders.map(order => ({ ...order, decision: body.decisions[order.id] })) })),
+        progress: { ...current.progress, completed_batches: 1, processed_rows: 2, next_batch: null } } });
+      return;
+    }
+    await route.fulfill({ status: 404, json: { detail: 'Ruta de prueba desconocida.' } });
+  });
+  await page.route(new RegExp(`${root}(?:\\?.*)?$`), route => route.fulfill({ json: { ...emptyPage, count: 1, results: [stockItem()] } }));
+  await openPanel(page);
+  const dialog = await upload(page);
+  return { dialog, bodies, notice: dialog.getByRole('region', { name: 'Pedidos confirmados en este archivo', exact: true }) };
+}
+const question = (reference: string) => ({ name: `¿El saldo de la fila 2 ya descuenta el pedido ${reference}?`, exact: true });
+
+test('confirmed orders in the file need an answer each before importing, and the batch carries the answers', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const { dialog, bodies, notice } = await reservedImport(page);
+  await expect(notice).toContainText('ORD-20261008-AAAA1111');
+  const day = await page.evaluate(() => new Date('2026-10-08T15:00:00Z').toLocaleDateString('es-PA', { dateStyle: 'medium', timeZone: 'America/Panama' }));
+  await expect(notice).toContainText(`TALLER CENTRAL · 3 unidades · confirmado el ${day}`);
+  await expect(dialog.getByRole('row').filter({ hasText: 'supplier-id-lowercase' })).toContainText('5 reservadas por pedidos confirmados');
+  await expect(dialog.getByRole('button', { name: 'Responde por 2 pedidos confirmados para importar', exact: true })).toBeDisabled();
+  const available = notice.locator('.supplier-import-reservation-numbers .result dd');
+  await expect(available).toHaveText('—');
+  await notice.getByRole('group', question('ORD-20261008-AAAA1111')).getByLabel('Ya lo descuenta').check();
+  await expect(dialog.getByRole('button', { name: 'Responde por 1 pedido confirmado para importar', exact: true })).toBeDisabled();
+  await notice.getByRole('group', question('ORD-20261009-BBBB2222')).getByLabel('Aún lo incluye').check();
+  await expect(available).toHaveText('1');  // 3 in the file, 2 still held by the order it includes
+  await notice.evaluate(element => element.scrollIntoView());
+  await page.screenshot({ path: '/tmp/motionpartes-supplier-import-reservations.png' });
+  await dialog.getByRole('button', { name: 'Confirmar importación', exact: true }).click();
+  await expect(dialog.getByRole('heading', { name: 'Importación completada', exact: true })).toBeVisible();
+  await expect(dialog.getByRole('status').filter({ hasText: 'filas válidas' })).toContainText(
+    '3 unidades de pedidos confirmados quedaron descontadas en tu saldo. 2 unidades siguen reservadas hasta que tu saldo las descuente.');
+  expect(bodies).toEqual([{ batch_index: 0, decisions: { [orders[0].id]: 'net', [orders[1].id]: 'gross' } }]);
+  await expect(notice).toContainText('Ya estaba descontado: la reserva se liquidó');
+  await expect(notice).toContainText('Seguía incluido: sigue reservado');
+  await expect(notice.getByRole('radio')).toHaveCount(0);
+});
+
+test('on a phone one answer can cover every confirmed order, and the heads-up stays inside the dialog', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const { dialog, bodies, notice } = await reservedImport(page);
+  await notice.getByRole('button', { name: 'Mi archivo aún los incluye todos', exact: true }).click();
+  await expect(notice.locator('.supplier-import-reservation-numbers .result dd')).toHaveText('0');
+  await expect(notice).toContainText('El saldo del archivo es menor que las 5 unidades que siguen reservadas');
+  await notice.getByRole('button', { name: 'Mi archivo ya los descuenta todos', exact: true }).click();
+  await expect(notice.locator('.supplier-import-reservation-numbers .result dd')).toHaveText('3');
+  expect(await dialog.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(false);
+  const box = (await notice.getByRole('group', question('ORD-20261009-BBBB2222')).boundingBox())!;
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(390);
+  await notice.evaluate(element => element.scrollIntoView());
+  await page.screenshot({ path: '/tmp/motionpartes-supplier-import-reservations-mobile.png' });
+  await dialog.getByRole('button', { name: 'Confirmar importación', exact: true }).click();
+  await expect(dialog.getByRole('heading', { name: 'Importación completada', exact: true })).toBeVisible();
+  expect(bodies).toEqual([{ batch_index: 0, decisions: { [orders[0].id]: 'net', [orders[1].id]: 'net' } }]);
+});

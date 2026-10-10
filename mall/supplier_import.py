@@ -20,6 +20,7 @@ from rest_framework.views import APIView
 from .models import Account, Part, PartCode, SupplierItem
 from .serializers import InventorySerializer
 from .services import ingest_inventory, initial_match
+from .stock_reservations import open_reservations, settle
 from .supplier_import_models import SupplierInventoryImportBatch, SupplierInventoryImportJob
 from .views import account_for
 from .part_references import parse_reference_cell, format_references
@@ -50,6 +51,9 @@ class SupplierImportRequest(serializers.Serializer):
 
 class SupplierBatchRequest(serializers.Serializer):
     batch_index = serializers.IntegerField(min_value=0)
+    decisions = serializers.DictField(child=serializers.ChoiceField(choices=['net', 'gross']), required=False, default=dict,
+                                      help_text='Por reserva de un pedido confirmado (su id): net, el saldo del archivo ya descuenta ese pedido (la reserva '
+                                                'se liquida); gross, todavía lo incluye (la reserva sigue apartando sus unidades).')
 
 
 class StaleSupplierPreview(APIException):
@@ -169,6 +173,7 @@ def stock_plan(supplier, rows, *, lock=False):
         for offset in range(0, len(identifiers), 2000):
             items.update((item.supplier_invent_id, item) for item in SupplierItem.objects.select_for_update().filter(
                 supplier=supplier, supplier_invent_id__in=identifiers[offset:offset + 2000]).order_by('pk'))
+    held = open_reservations(item.pk for item in items.values())  # units confirmed deals still hold (mall.stock_reservations)
     matching = {}
     for part in parts.values():
         if part.active and not part.merged_into_id:
@@ -177,8 +182,8 @@ def stock_plan(supplier, rows, *, lock=False):
         part = parts.get(alias.part_id)
         if part and part.active and not part.merged_into_id:
             matching.setdefault(alias.code, []).append((alias.brand, part.pk))
-    summary = {'valid_rows': 0, 'created_items': 0, 'updated_items': 0, 'unchanged_items': 0, 'credit_units': 0, 'debit_units': 0}
-    preview, errors, warnings = [], [], []
+    summary = {'valid_rows': 0, 'created_items': 0, 'updated_items': 0, 'unchanged_items': 0, 'credit_units': 0, 'debit_units': 0, 'reserved_rows': 0}
+    preview, errors, warnings, reservations = [], [], [], []
     for row in rows:
         data = dict(row['data'])
         item = items.get(data['supplier_invent_id'])
@@ -208,27 +213,34 @@ def stock_plan(supplier, rows, *, lock=False):
         if direction != 'none':
             summary[f'{direction}_units'] += abs(difference)
         part = parts.get(part_id)
+        orders = held.get(item.pk, []) if item else []
+        reserved = sum(reservation.quantity for reservation in orders)
         preview.append({'row': row['row'], **data, 'current_quantity': current, 'uploaded_quantity': data['quantity'],
                         'direction': direction, 'movement_quantity': abs(difference), 'new_quantity': data['quantity'],
                         'matching_status': status, 'part_id': str(part_id) if part_id else None,
-                        'part_sku': part.sku if part else None, 'action': action})
+                        'part_sku': part.sku if part else None, 'action': action, 'reserved': reserved})
+        if reserved:
+            # Confirmed deals hold units of this item: the supplier says whether the new count already discounts them.
+            summary['reserved_rows'] += 1
+            reservations.append({'row': row['row'], 'supplier_invent_id': data['supplier_invent_id'], 'codigo': data['codigo'],
+                                 'description': data['description'], 'current_quantity': current, 'uploaded_quantity': data['quantity'],
+                                 'reserved': reserved, 'reserved_quantity': item.reserved_quantity,
+                                 'orders': [{'id': str(reservation.pk), 'reference': reservation.order.reference, 'client_name': reservation.order.client_name,
+                                             'quantity': reservation.quantity, 'confirmed_at': reservation.created_at.isoformat()} for reservation in orders]})
         if status != 'matched':
             warnings.append({'row': row['row'], 'column': COLUMNS['codigo'], 'message':
                              'El código requiere revisión antes de aparecer en el catálogo de clientes.' if status == 'review' else
                              'Se buscará una coincidencia automáticamente al terminar la carga; las dudas quedarán para revisión.'})
-        reserved = item.reserved_quantity if item else 0
-        if data['quantity'] < reserved:
-            warnings.append({'row': row['row'], 'column': COLUMNS['quantity'], 'message':
-                             f'El saldo es menor que las {reserved} unidades reservadas. La disponibilidad será cero.'})
     snapshot = {
         'items': sorted((str(item.pk), item.supplier_invent_id, item.codigo, item.brand, item.description,
                          item.source, item.reported_quantity, item.reserved_quantity, str(item.part_id),
                          item.matching_status, item.updated_at.isoformat(), item.references) for item in items.values()),
         'parts': sorted((str(part.pk), part.sku, part.description, part.active, str(part.merged_into_id)) for part in parts.values()),
         'codes': sorted((alias.pk, str(alias.part_id), alias.brand, alias.code) for alias in aliases),
+        'reservations': sorted((str(reservation.pk), reservation.quantity) for orders in held.values() for reservation in orders),
     }
     fingerprint = hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode()).hexdigest()
-    return {'summary': summary, 'preview': preview, 'errors': errors, 'warnings': warnings}, fingerprint
+    return {'summary': summary, 'preview': preview, 'errors': errors, 'warnings': warnings, 'reservations': reservations}, fingerprint
 
 
 def job_result(job):
@@ -279,7 +291,8 @@ class SupplierInventoryImport(APIView):
         warnings = parse_warnings + plan['warnings']
         summary = {**plan['summary'], 'source_rows': len(records), 'rejected_rows': len(rejected)}
         preview = {'preview': plan['preview'][:100], 'preview_count': len(plan['preview']), 'errors': errors[:100],
-                   'error_count': len(errors), 'warnings': warnings[:100], 'warning_count': len(warnings)}
+                   'error_count': len(errors), 'warnings': warnings[:100], 'warning_count': len(warnings),
+                   'reservations': plan['reservations']}  # every row with units held by confirmed deals, not only the first 100
         with transaction.atomic():
             Account.objects.select_for_update().get(pk=supplier.pk)
             _, locked_fingerprint = stock_plan(supplier, rows, lock=True)
@@ -291,7 +304,7 @@ class SupplierInventoryImport(APIView):
                 summary=summary, preview=preview,
                 rejected_rows=[{key: record[key] for key in ['row', 'values', 'original', 'errors']} for record in rejected],
                 total_rows=len(accepted), total_batches=(len(accepted) + BATCH_SIZE - 1) // BATCH_SIZE,
-                applied_summary={key: 0 for key in plan['summary']})
+                applied_summary={**{key: 0 for key in plan['summary']}, 'settled_units': 0, 'held_units': 0})
             staged = []
             for index, chunk in batches(accepted, BATCH_SIZE):
                 data = [{'row': record['row'], 'data': record['data']} for record in chunk]
@@ -342,6 +355,14 @@ class SupplierInventoryImportJobView(APIView):
                 if fingerprint != batch.fingerprint or plan['errors']:
                     raise StaleSupplierPreview('Las existencias, su origen o su vínculo cambiaron para este lote. Los lotes anteriores siguen guardados; revisa una nueva vista previa.')
                 expected_matches = {row['row']: row for row in plan['preview']}
+                # Every confirmed order still holding units of a row needs the supplier's answer: does the file's count discount it?
+                decisions = serializer.validated_data['decisions']
+                held = {entry['row']: entry['orders'] for entry in plan['reservations']}
+                undecided = [row for row, orders in held.items() if any(order['id'] not in decisions for order in orders)]
+                if undecided:
+                    raise ValidationError({'detail': 'Indica, para cada pedido confirmado de las filas '
+                                                     f'{", ".join(map(str, sorted(undecided)[:10]))}, si el saldo de tu archivo ya lo descuenta.'})
+                settled = kept = 0
                 for row in batch.data:
                     item = ingest_inventory(supplier=supplier, actor=request.user,
                                             data={**row['data'], 'source': 'upload', 'update_id': f'excel-{job.pk}-{row["row"]}'})
@@ -352,12 +373,25 @@ class SupplierInventoryImportJobView(APIView):
                         # If it appeared after validation, matching may have
                         # changed during ingestion; roll back the whole batch.
                         raise StaleSupplierPreview('Los códigos del catálogo cambiaron durante este lote. Revisa una nueva vista previa antes de continuar.')
+                    orders = held.get(row['row'])
+                    if orders:
+                        settled += settle(item, [order['id'] for order in orders if decisions[order['id']] == 'net'], request.user,
+                                          f'excel-{job.pk}-{row["row"]}')
+                        kept += sum(order['quantity'] for order in orders if decisions[order['id']] == 'gross')
+                # What the supplier answered stays with the job, so a resumed import shows it instead of asking again.
+                for entry in job.preview.get('reservations', []):
+                    if entry['row'] in held:
+                        entry['applied'] = True
+                        for order in entry['orders']:
+                            order['decision'] = decisions.get(order['id'], '')
+                job.applied_summary['settled_units'] = job.applied_summary.get('settled_units', 0) + settled
+                job.applied_summary['held_units'] = job.applied_summary.get('held_units', 0) + kept
                 for key, value in plan['summary'].items():
                     job.applied_summary[key] = job.applied_summary.get(key, 0) + value
                 job.completed_batches += 1
                 job.processed_rows += len(batch.data)
                 job.status = 'completed' if job.completed_batches == job.total_batches else 'importing'
-                job.save(update_fields=['applied_summary', 'completed_batches', 'processed_rows', 'status'])
+                job.save(update_fields=['applied_summary', 'preview', 'completed_batches', 'processed_rows', 'status'])
                 if job.status == 'completed':
                     from .matching_queue import enqueue_matching
                     enqueue_matching()
