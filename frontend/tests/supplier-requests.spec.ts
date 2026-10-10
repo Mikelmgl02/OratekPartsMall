@@ -153,15 +153,20 @@ test('supplier sees requested units, stock shortfalls and refreshed availability
   await expect(first).toContainText('Reportadas: 10 · Reservadas: 2');
   await expect(first).toContainText('Existencias suficientes');
   await expect(second).toContainText('Faltan 2 unidades');
-  await expect(second.getByRole('cell').nth(3)).toHaveText('3');
+  await expect(second.getByRole('gridcell').nth(1)).toHaveText('3');
   expect(await dialog.locator('.supplier-request-lines').evaluate(element => element.scrollWidth > element.clientWidth)).toBe(false);
   await expect(dialog.getByRole('status')).toContainText('1 artículo requiere confirmar disponibilidad');
+  const show = dialog.getByRole('group', { name: 'Mostrar artículos', exact: true });
+  await show.getByRole('button', { name: 'Por revisar (1)', exact: true }).click();  // only the items whose stock needs confirming
+  await expect(first).toHaveCount(0);
+  await expect(second).toContainText('Faltan 2 unidades');
+  await show.getByRole('button', { name: 'Todos (2)', exact: true }).click();
   await dialog.getByRole('button', { name: 'Actualizar existencias', exact: true }).click();
   await expect(first).toContainText('Revisar artículo');
   await expect(first).not.toContainText('Reportadas:');
   await expect(second).toContainText('Reportadas: 0 · Reservadas: 2');
   await expect(second).toContainText('Faltan 3 unidades');
-  await expect(second.getByRole('cell').nth(3)).toHaveText('3');
+  await expect(second.getByRole('gridcell').nth(1)).toHaveText('3');
   await expect(dialog.getByRole('status')).toContainText('2 artículos requieren confirmar disponibilidad');
   await expect(dialog.getByText('En revisión', { exact: true }).first()).toBeVisible();
   expect(reads).toBe(2);

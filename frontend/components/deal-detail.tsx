@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { Bot, Check, FileText, Handshake, History, LoaderCircle, LockKeyhole, MessageSquare, Pencil, RefreshCw, Send, UserRoundCog, X } from 'lucide-react';
 import Modal from './modal';
@@ -16,6 +16,7 @@ import { markConversationRead } from '@/lib/inbox';
 import { onDealNudge, realtimeLive } from '@/lib/realtime';
 
 const QuoteEditor = dynamic(() => import('./quotation-editor'), { ssr: false, loading: () => <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando editor de cotización…</div> });
+const DealLinesGrid = dynamic(() => import('./deal-lines-grid'), { ssr: false, loading: () => <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando artículos…</div> });
 const ClientPricingProfile = dynamic(() => import('./client-pricing-profile'), { ssr: false, loading: () => <div className="loading"><LoaderCircle className="spin"/>Cargando perfil comercial…</div> });
 
 const date = (value: string) => new Date(value).toLocaleString('es-PA', { timeZone: 'America/Panama', dateStyle: 'medium', timeStyle: 'short' });
@@ -183,7 +184,8 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
     if (editorMounted) { setPricingRevision(value => value + 1); return; }
     request<QuoteDraftEnvelope>(draftPath).then(value => { if (mounted.current && value.draft) { setDraftLoad({ key: draftKey, draft: value.draft }); setLiveDraft(null); } }).catch(() => undefined);
   }
-  const suggestions = new Map((priced?.lines || []).map(line => [line.order_line_id, line]));
+  const suggestions = useMemo(() => new Map((priced?.lines || []).map(line => [line.order_line_id, line])), [priced]);
+  const suggestedPrice = useCallback((line: Deal['lines'][number]) => priced ? <SuggestedPrice line={suggestions.get(line.id)} currency={priced.currency}/> : null, [priced, suggestions]);
   const activeStep = !deal ? 0 : deal.status === 'pending' ? 0 : deal.status === 'reviewed' ? 1 : deal.status === 'delivered' ? 4
     : ['handshaked', 'cancelled'].includes(deal.status) ? 3 : 2;
   const pendingShortfall = deal?.shortfalls?.find(item => item.status === 'pending');
@@ -238,7 +240,7 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
           {deal.notes && <section className="supplier-request-notes"><h4>Notas del cliente</h4><p>{deal.notes}</p></section>}
           {supplier && <div className="supplier-request-stock-heading"><div><h4>Existencias de tu inventario</h4><p>Disponibles = reportadas menos reservadas. Confirma las unidades que puedes suministrar.</p></div><button type="button" className="button soft small" disabled={busy} onClick={() => void load()}><RefreshCw size={15}/>Actualizar existencias</button></div>}
           {stockWarnings > 0 && <div className="notice supplier-request-stock-warning" role="status">{stockWarnings} {stockWarnings === 1 ? 'artículo requiere' : 'artículos requieren'} confirmar disponibilidad. La orden conserva todas las unidades pedidas.</div>}
-          <div className="table-scroll deal-lines supplier-request-lines"><table><thead><tr><th>Código / descripción</th><th>SKU interno</th>{supplier && <th>Tu ID de inventario</th>}<th>Solicitadas</th>{supplier && <th>Disponibles</th>}{priced && <th>Precio sugerido</th>}</tr></thead><tbody>{deal.lines.map(line => <tr key={line.id}><td><strong>{line.codigo}</strong><span>{line.brand || 'SIN MARCA INDICADA'}</span><small>{line.description}</small></td><td>{line.sku}</td>{supplier && <td>{'supplier_invent_id' in line && line.supplier_invent_id}</td>}<td>{line.quantity}</td>{supplier && <td>{'stock' in line && line.stock ? <><strong>{line.stock.available_quantity}</strong><small>Reportadas: {line.stock.reported_quantity} · Reservadas: {line.stock.reserved_quantity}{line.stock.held_for_deal ? ` (${line.stock.held_for_deal} para esta orden)` : ''}</small><small className={line.stock.shortfall ? "stock-shortfall" : "stock-sufficient"}>{line.stock.shortfall ? `Faltan ${line.stock.shortfall} unidades` : "Existencias suficientes"}</small></> : <><strong className="stock-shortfall">Revisar artículo</strong><small>El código o el vínculo con el SKU cambió. Confirma la equivalencia en Inventario.</small></>}</td>}{priced && <td><SuggestedPrice line={suggestions.get(line.id)} currency={priced.currency}/></td>}</tr>)}</tbody></table></div>
+          <DealLinesGrid lines={deal.lines} supplier={supplier} price={priced ? suggestedPrice : undefined}/>
           {supplier && ['reviewed', 'adjustment'].includes(deal.status) && <button type="button" className="button primary" onClick={() => { setQuoteVisited(true); setTab('quote'); }}>Preparar cotización<FileText size={16}/></button>}
           {deal.quotation && <button type="button" className="button soft" onClick={() => setTab('quote')}>Ver cotización · v{deal.quotation.revision}<FileText size={16}/></button>}
           {!embedded && !supplier && ['pending', 'reviewed', 'adjustment'].includes(deal.status) && rejectButton}

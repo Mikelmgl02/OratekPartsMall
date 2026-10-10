@@ -69,7 +69,7 @@ test('sent history loads without browser receipts, searches, paginates and shows
   await expect(dialog.getByRole('alert')).toContainText('No se pudo abrir la solicitud.');
   await dialog.getByRole('button', { name: 'Actualizar acuerdo', exact: true }).click();
   await expect(dialog.getByText('58411-1R000-G', { exact: true })).toBeVisible();
-  await expect(dialog.getByRole('cell', { name: '3', exact: true })).toBeVisible();
+  await expect(dialog.getByRole('gridcell', { name: '3', exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: /Marcar|Eliminar|Enviar/ })).toHaveCount(0);
   expect(await dialog.innerText()).not.toMatch(/Reportadas|Reservadas|ID de inventario|[$€]/);
   await page.setViewportSize({ width: 390, height: 844 });

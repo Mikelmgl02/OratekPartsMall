@@ -1021,13 +1021,15 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .supplier-request-notes { padding:15px; border:1px solid #e1e7d8; background:white; border-radius:9px; min-width:0; }
 .supplier-request-notes h4 { font-size:11px; color:#78915e; margin-bottom:9px; }
 .supplier-request-notes p { color:#889a75; font-size:11px; line-height:1.8; white-space:pre-wrap; overflow-wrap:anywhere; }
-.supplier-request-lines { border:1px solid #e1e7d8; border-radius:9px; }
-.supplier-request-lines table { min-width:850px; }
-.supplier-request-lines td { vertical-align:top; white-space:normal; overflow-wrap:anywhere; }
-.supplier-request-lines td:first-child { min-width:155px; max-width:250px; }
-.supplier-request-lines td:nth-child(2) { min-width:145px; max-width:190px; }
-.supplier-request-lines td:nth-child(3) { min-width:150px; max-width:220px; }
-.supplier-request-lines td small { display:block; margin-top:7px; font-size:9px; line-height:1.8; }
+/* The order's items: an AG Grid (deal-lines-grid.tsx), with a search and a "Por revisar" filter when the list is long or needs review. */
+.deal-lines-grid { display:grid; gap:8px; min-width:0; }
+.deal-lines-tools { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.deal-lines-tools .inbox-search { flex:1 1 240px; height:36px; }
+.deal-lines-tools .inbox-filter { flex:0 0 auto; }
+.deal-lines-tools .inbox-filter button { white-space:nowrap; }
+.supplier-request-lines .stock-shortfall { color:#a96636; }
+.supplier-request-lines .stock-sufficient { color:#6c8654; }
+.supplier-request-lines .admin-grid-stack strong .stock-shortfall,.supplier-request-lines .admin-grid-stack strong .stock-sufficient { font-size:11px; font-weight:500; }
 .supplier-request-stock-heading { display:flex; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; gap:12px; }
 .supplier-request-stock-heading>div { flex:1; min-width:220px; }
 .supplier-request-stock-heading h4 { font-size:12px; color:#6c8654; margin-bottom:7px; }

@@ -18,10 +18,10 @@ const line: SupplierRequestLine = { id: lineId, part_id: '66666666-6666-4666-866
   supplier_invent_id: 'ID-1', sku: '58411-1R000', name: 'TAMBOR', codigo: '58411-1R000-G', brand: 'KSM', description: 'TAMBOR', quantity: 5,
   stock: { reported_quantity: 9, reserved_quantity: 0, available_quantity: 9, shortfall: 0, updated_at: stamp } };
 
-async function panel(page: Page, side: 'client' | 'supplier', status: Deal['status'], quoted: boolean) {
+async function panel(page: Page, side: 'client' | 'supplier', status: Deal['status'], quoted: boolean, lines: SupplierRequestLine[] = [line]) {
   const account = side === 'client' ? { ...client, roles: ['client_business'], capabilities: ['client'] } : { ...supplier, roles: ['supplier_retail'], capabilities: ['supplier'] };
   let deal = { id: orderId, reference: 'ORD-0123', client, supplier, status, version: 3, created_at: stamp, reviewed_at: stamp, handshaked_at: null,
-    line_count: 1, unit_count: 5, notes: '', quotation: quoted ? quote : null, quotations: quoted ? [quote] : [], events: [], lines: [line], can_decide: true } as unknown as Deal;
+    line_count: lines.length, unit_count: 5, notes: '', quotation: quoted ? quote : null, quotations: quoted ? [quote] : [], events: [], lines, can_decide: true } as unknown as Deal;
   const actions: Record<string, unknown>[] = [], reviews: string[] = [];
   const counterpart = side === 'client' ? supplier : client;
   await page.route('**/api/**', route => route.fulfill({ json: empty }));
@@ -115,4 +115,21 @@ test('a supplier edits a sent quotation on the go, until the client confirms it'
   await expect(document.locator('.quotation-grid')).toBeVisible();
   await expect(document.getByRole('button', { name: /Confirmar y enviar cotización/ })).toBeVisible();
   await expect(document.getByRole('region', { name: 'Cotización vigente v1', exact: true })).toContainText('USD 61.75');  // still what the client sees
+});
+
+test('a long order lists its items in a grid: searched, and narrowed to the ones whose stock needs confirming', async ({ page }) => {
+  const many = Array.from({ length: 12 }, (_, index) => ({ ...line, id: `44444444-4444-4444-8444-${String(index).padStart(12, '0')}`, codigo: `COD-${index}`, sku: `SKU-${index}`,
+    description: index === 5 ? 'BOMBA DE AGUA' : 'TAMBOR', stock: index === 7 ? null : { ...line.stock!, shortfall: index === 3 ? 2 : 0 } }));
+  const { document } = await panel(page, 'supplier', 'pending', false, many);
+  const grid = document.getByRole('region', { name: 'Artículos de la orden', exact: true });
+  await expect(grid.getByRole('row')).toHaveCount(13);  // the heading and every item
+  await expect(grid.getByRole('columnheader')).toHaveText(['Código / descripción', 'Solicitadas', 'Disponibles', 'SKU interno', 'Tu ID de inventario']);
+  await document.getByLabel('Buscar en los artículos', { exact: true }).fill('bomba');
+  await expect(grid.getByRole('row')).toHaveCount(2);
+  await expect(grid).toContainText('COD-5');
+  await document.getByLabel('Buscar en los artículos', { exact: true }).fill('');
+  await document.getByRole('group', { name: 'Mostrar artículos', exact: true }).getByRole('button', { name: 'Por revisar (2)', exact: true }).click();
+  await expect(grid.getByRole('row')).toHaveCount(3);
+  await expect(grid).toContainText('Faltan 2 unidades');
+  await expect(grid).toContainText('Revisar artículo');
 });
