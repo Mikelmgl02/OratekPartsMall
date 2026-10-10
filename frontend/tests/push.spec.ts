@@ -103,3 +103,33 @@ test('a delivered push shows a system notification when the site is not in front
   expect(posts.some(post => post.path === `?order=${order}`)).toBe(true);
   expect(new URL(link.url()).searchParams.get('conversacion')).toBeNull();
 });
+
+test('MotionPartes is installable: its manifest, icons and home-screen tags', async ({ page, context, browserName }) => {
+  test.skip(browserName !== 'chromium', 'Reads installability through the Chrome DevTools Protocol.');
+  await mock(page, true);
+  await page.goto('/');
+  await expect(page.locator('link[rel="manifest"]')).toHaveAttribute('href', '/manifest.webmanifest');
+  await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute('sizes', '180x180');
+  await expect(page.locator('meta[name="apple-mobile-web-app-title"]')).toHaveAttribute('content', 'MotionPartes');
+  const manifest = await (await page.request.get('/manifest.webmanifest')).json();
+  expect({ display: manifest.display, start_url: manifest.start_url, sizes: manifest.icons.map((icon: { sizes: string; purpose: string }) => `${icon.sizes} ${icon.purpose}`) })
+    .toEqual({ display: 'standalone', start_url: '/', sizes: ['192x192 any', '512x512 any', '512x512 maskable'] });
+  const cdp = await context.newCDPSession(page);
+  // Playwright's contexts are private windows, where Chrome never installs: every other criterion has to pass.
+  await expect.poll(async () => (await cdp.send('Page.getInstallabilityErrors')).installabilityErrors.map(error => error.errorId).filter(id => id !== 'in-incognito')).toEqual([]);
+});
+
+test('an iPhone browser tab explains how to add MotionPartes to the home screen to get notifications', async ({ browser }) => {
+  const context = await browser.newContext({ userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1', viewport: { width: 390, height: 844 } });
+  const page = await context.newPage();
+  await page.addInitScript(() => { delete (window as Partial<Window & { PushManager: unknown }>).PushManager; });  // as in Safari outside the home-screen app
+  await mock(page, true);
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Notificaciones', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Notificaciones', exact: true })).toContainText('toca Compartir y luego Agregar a inicio');
+  await expect(page.getByRole('button', { name: /Recibir notificaciones/ })).toHaveCount(0);
+  const menu = (await page.getByRole('region', { name: 'Notificaciones', exact: true }).boundingBox())!;
+  expect(menu.x).toBeGreaterThanOrEqual(0);
+  expect(menu.x + menu.width).toBeLessThanOrEqual(390);  // spans the phone screen instead of hanging off the bell
+  await context.close();
+});

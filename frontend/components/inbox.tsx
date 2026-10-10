@@ -1,7 +1,7 @@
 'use client';
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import dynamic from 'next/dynamic';
-import { Bell, BellOff, BellRing, LoaderCircle, MessagesSquare, X } from 'lucide-react';
+import { Bell, BellOff, BellRing, LoaderCircle, MessagesSquare, Smartphone, X } from 'lucide-react';
 import { ApiError, request } from '@/lib/types';
 import { INBOX_EVENT, InboxConversation, InboxNotification, InboxSummary, InboxTarget, ago, inboxChanged, targetOf } from '@/lib/inbox';
 import { PushState, disablePush, enablePush, pushStatus, syncPush } from '@/lib/push';
@@ -118,6 +118,7 @@ function NotificationsMenu() {
   const [items, setItems] = useState<InboxNotification[] | null>(null);
   const [more, setMore] = useState(false);
   const [error, setError] = useState('');
+  const [top, setTop] = useState(0);
   const box = useRef<HTMLDivElement>(null);
   const unseen = inbox.summary?.unseen_notifications ?? 0;
   const load = useCallback(async (before?: number) => {
@@ -140,8 +141,9 @@ function NotificationsMenu() {
     return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape); };
   }, [open]);
   return <div className="inbox-notifications" ref={box}>
-    <button type="button" className="basket-button inbox-button" aria-expanded={open} aria-haspopup="true" onClick={() => setOpen(value => !value)} aria-label={unseen ? `Notificaciones, ${unseen} nuevas` : 'Notificaciones'}><Bell size={20}/>{unseen > 0 && <span className="basket-count inbox-count">{count(unseen)}</span>}</button>
-    {open && <section className="inbox-notifications-menu" aria-label="Notificaciones">
+    <button type="button" className="basket-button inbox-button" aria-expanded={open} aria-haspopup="true" onClick={() => { setTop(Math.round(box.current?.getBoundingClientRect().bottom ?? 0) + 8); setOpen(value => !value); }} aria-label={unseen ? `Notificaciones, ${unseen} nuevas` : 'Notificaciones'}><Bell size={20}/>{unseen > 0 && <span className="basket-count inbox-count">{count(unseen)}</span>}</button>
+    {/* On a phone the menu spans the screen under the bell (--inbox-menu-top) instead of hanging from it. */}
+    {open && <section className="inbox-notifications-menu" aria-label="Notificaciones" style={{ '--inbox-menu-top': `${top}px` } as React.CSSProperties}>
       <header><h2>Notificaciones</h2><small>Lo que la otra parte hizo en tus órdenes</small></header>
       <PushSwitch/>
       {error && <p className="notice error" role="alert">{error}</p>}
@@ -168,7 +170,8 @@ function PushSwitch() {
     finally { setBusy(false); }
   }
   return <div className={`inbox-push ${status.state}`}>
-    {status.state === 'blocked' ? <p><BellOff size={16}/>Las notificaciones están bloqueadas en este navegador. Permítelas en la configuración del sitio para recibirlas.</p>
+    {status.state === 'install' ? <p><Smartphone size={16}/><span>Para recibir notificaciones en iPhone o iPad, toca <strong>Compartir</strong> y luego <strong>Agregar a inicio</strong>; abre MotionPartes desde tu pantalla de inicio y actívalas aquí.</span></p>
+      : status.state === 'blocked' ? <p><BellOff size={16}/>Las notificaciones están bloqueadas en este navegador. Permítelas en la configuración del sitio para recibirlas.</p>
       : status.state === 'on' ? <p><BellRing size={16}/><span>Notificaciones del navegador activas</span><button type="button" className="button text small" disabled={busy} onClick={() => void change(false)}>Desactivar</button></p>
       : <button type="button" className="button soft small" disabled={busy} onClick={() => void change(true)}>{busy ? <LoaderCircle size={15} className="spin"/> : <BellRing size={15}/>}Recibir notificaciones en este navegador</button>}
     {status.state === 'off' && <small>Te avisamos de mensajes y cambios en tus órdenes aunque MotionPartes esté cerrado.</small>}

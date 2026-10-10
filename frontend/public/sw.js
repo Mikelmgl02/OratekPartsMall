@@ -7,10 +7,13 @@ self.addEventListener('push', event => {
   try { data = event.data ? event.data.json() : {}; } catch { data = {}; }
   event.waitUntil((async () => {
     const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    // Open pages refresh their inbox now; one in front already announces it with its own toast, so the system shows nothing.
+    // Open pages refresh their inbox now. Every push shows a notification (Safari revokes a subscription whose pushes show none); with a
+    // MotionPartes page in front it is closed at once, since the page announces it with its own toast.
     windows.forEach(client => client.postMessage({ type: 'motionpartes:push', order_id: data.order_id }));
-    if (windows.some(client => client.visibilityState === 'visible' && client.focused)) return;
-    await self.registration.showNotification(data.title || 'MotionPartes', { body: data.body || '', tag: data.tag, data: { url: data.url || '/', order_id: data.order_id } });
+    await self.registration.showNotification(data.title || 'MotionPartes', { body: data.body || '', tag: data.tag, icon: '/icons/icon-192.png',
+      data: { url: data.url || '/', order_id: data.order_id } });
+    if (data.tag && windows.some(client => client.visibilityState === 'visible' && client.focused))
+      (await self.registration.getNotifications({ tag: data.tag })).forEach(notification => notification.close());
   })());
 });
 

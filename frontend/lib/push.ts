@@ -3,7 +3,8 @@
 // the browser and remembers the choice here.
 import { request } from './types';
 
-export type PushState = 'unsupported' | 'unconfigured' | 'blocked' | 'off' | 'on';
+// install: an iPhone or iPad browser tab, where push needs MotionPartes added to the home screen first.
+export type PushState = 'unsupported' | 'unconfigured' | 'install' | 'blocked' | 'off' | 'on';
 const OFF_KEY = 'motionpartes:push:off';
 const PATH = '/api/market/inbox/push';
 
@@ -29,14 +30,21 @@ function sameKey(subscription: PushSubscription, key: string) {
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
+function iosTab() {
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const installed = window.matchMedia('(display-mode: standalone)').matches || (navigator as Navigator & { standalone?: boolean }).standalone === true;
+  return ios && !installed;
+}
+
 async function current() {
   return (await navigator.serviceWorker.getRegistration('/'))?.pushManager.getSubscription() ?? null;
 }
 
 export async function pushStatus(): Promise<{ state: PushState; key: string }> {
-  if (!pushSupported()) return { state: 'unsupported', key: '' };
+  if (!pushSupported() && !(typeof window !== 'undefined' && iosTab())) return { state: 'unsupported', key: '' };
   const config = await request<{ enabled: boolean; public_key: string }>(PATH);
   if (!config.enabled) return { state: 'unconfigured', key: '' };
+  if (!pushSupported()) return { state: 'install', key: config.public_key };
   if (Notification.permission === 'denied') return { state: 'blocked', key: config.public_key };
   const subscription = Notification.permission === 'granted' ? await current() : null;
   return { state: subscription && sameKey(subscription, config.public_key) ? 'on' : 'off', key: config.public_key };
