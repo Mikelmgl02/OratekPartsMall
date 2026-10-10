@@ -330,7 +330,7 @@ export function DealChat({ account, orderId, active, supplier, insert, compact =
   }, [active, messages, orderId]);
   useEffect(() => {
     if (!insert) return;
-    setBody(value => (value.trim() ? `${value.trimEnd()}\n${insert.text}` : insert.text).toUpperCase().slice(0, 4000)); setCopied(true);
+    setBody(value => (value.trim() ? `${value.trimEnd()}\n${insert.text}` : insert.text).slice(0, 4000)); setCopied(true);
     requestAnimationFrame(() => composer.current?.focus());
   }, [insert]);
   async function earlier() {
@@ -354,7 +354,12 @@ export function DealChat({ account, orderId, active, supplier, insert, compact =
       if (!mounted.current) return;
       merge([message]); setBody(''); setCopied(false); pending.current = null; void fetchMessages();
     } catch (caught) { if (mounted.current) setError(failure(caught)); }
-    finally { sendLock.current = false; if (mounted.current) setSending(false); }
+    finally { sendLock.current = false; if (mounted.current) { setSending(false); requestAnimationFrame(() => composer.current?.focus()); } }
+  }
+  // Enter sends and Shift+Enter starts a new line; on a touch screen Return keeps writing a new line (the button sends).
+  function composerKey(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing || window.matchMedia('(pointer: coarse)').matches) return;
+    event.preventDefault(); void send();
   }
   return <section className={`deal-chat${compact ? ' compact' : ''}`} aria-label="Conversación del acuerdo">{!compact && <><h3>Conversación privada</h3><p>Cliente y proveedor pueden conversar durante todo el acuerdo. Las decisiones sobre la cotización se realizan en la pestaña Cotización.</p></>}
     {assistantNotice && <p className="deal-chat-ai-notice" role="note" aria-label="Aviso de asistente de IA"><Bot size={15}/>{supplier
@@ -363,7 +368,7 @@ export function DealChat({ account, orderId, active, supplier, insert, compact =
     {error && <div className="notice error" role="alert">{error}<button type="button" onClick={() => void fetchMessages()}>Actualizar mensajes</button></div>}
     {hasEarlier && <button type="button" className="button soft small" disabled={loadingEarlier} onClick={() => void earlier()}>Cargar mensajes anteriores</button>}
     <div ref={log} className="deal-chat-messages" role="log" aria-label="Mensajes del acuerdo" aria-live="polite">{!ready && !error ? <p>Cargando mensajes…</p> : !messages.length ? <p className="deal-chat-empty">Inicia la conversación sobre esta orden.</p> : messages.map(message => <article key={message.id} className={message.account_id === account.id ? 'own' : ''}><header><strong>{message.account_name}</strong><span>{message.actor_name} · {date(message.created_at)}</span></header><p>{message.body}</p></article>)}</div>
-    <form onSubmit={event => { event.preventDefault(); void send(); }}><label>Mensaje<UppercaseTextarea ref={composer} aria-label="Mensaje del acuerdo" required maxLength={4000} disabled={sending} value={body} onChange={event => { setBody(event.target.value); setCopied(false); }} placeholder="ESCRIBE A LA OTRA PARTE…"/></label>
-      {copied && <small className="deal-chat-copied" role="status">Pregunta del asistente copiada. Revísala y envíala cuando quieras.</small>}<button type="submit" className="button primary" disabled={sending || !body.trim()}>{sending ? <LoaderCircle size={15} className="spin"/> : <Send size={15}/>}Enviar mensaje</button></form>
+    <form onSubmit={event => { event.preventDefault(); void send(); }}><label>Mensaje<textarea ref={composer} aria-label="Mensaje del acuerdo" required maxLength={4000} readOnly={sending} value={body} onChange={event => { setBody(event.target.value); setCopied(false); }} onKeyDown={composerKey} placeholder="Escribe a la otra parte…"/></label>
+      {copied && <small className="deal-chat-copied" role="status">Pregunta del asistente copiada. Revísala y envíala cuando quieras.</small>}<div className="deal-chat-send"><small className="deal-chat-hint">Enter para enviar · Shift+Enter para otra línea</small><button type="submit" className="button primary" disabled={sending || !body.trim()}>{sending ? <LoaderCircle size={15} className="spin"/> : <Send size={15}/>}Enviar mensaje</button></div></form>
   </section>;
 }

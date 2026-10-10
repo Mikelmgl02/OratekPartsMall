@@ -366,10 +366,7 @@ class DealActions(APIView):
 
 class MessageSerializer(serializers.Serializer):
     message_id = serializers.UUIDField()
-    body = serializers.CharField(max_length=4000, trim_whitespace=True)
-
-    def validate_body(self, value):
-        return value.upper()
+    body = serializers.CharField(max_length=4000, trim_whitespace=True)  # kept as typed, like any chat
 
 
 class MessageCursor(serializers.Serializer):

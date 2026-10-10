@@ -136,14 +136,14 @@ for (const mobile of [false, true]) test(`${mobile ? 'mobile' : 'desktop'}: priv
   await dialog(page).getByRole('button', {name:'Conversación', exact:true}).click();
   await dialog(page).getByLabel('Mensaje del acuerdo', {exact:true}).fill('retiro mañana');
   await dialog(page).getByRole('button', {name:'Enviar mensaje', exact:true}).click();
-  await expect(dialog(page).getByRole('log')).toContainText('RETIRO MAÑANA');
+  await expect(dialog(page).getByRole('log')).toContainText('retiro mañana');
   await asSupplier(page);
   await expect(dialog(page).getByText('En revisión', {exact:true}).first()).toBeVisible();
   await dialog(page).getByRole('button', {name:'Preparar cotización', exact:true}).click();
   await editQuote(page, 'unit_price', '12.50');
   expect(state.actions).toHaveLength(0);
   await dialog(page).getByRole('button', {name:'Conversación', exact:true}).click();
-  await expect(dialog(page).getByRole('log')).toContainText('RETIRO MAÑANA');
+  await expect(dialog(page).getByRole('log')).toContainText('retiro mañana');
   await quoteTab(page);
   await expect(quoteCell(page, 'unit_price')).toContainText('12.50');
   expect(await dialog(page).evaluate(element => element.scrollWidth > element.clientWidth)).toBe(false);

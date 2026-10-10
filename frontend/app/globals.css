@@ -2358,3 +2358,8 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .inbox-email legend strong { color:#4c5745; font-weight:600; }
 .inbox-email label { display:flex; align-items:flex-start; gap:8px; font-size:12px; color:#4c5745; line-height:1.4; cursor:pointer; }
 .inbox-email input { margin:2px 0 0; accent-color:#5d8a33; }
+.deal-chat-send { display:flex; align-items:center; justify-content:flex-end; gap:12px; }
+.deal-chat-send>.button { flex:0 0 auto; }
+.deal-chat.compact .deal-chat-send>.button { flex:1; }
+.deal-chat-hint { color:var(--muted); font-size:11px; margin-right:auto; }
+@media (pointer:coarse) { .deal-chat-hint { display:none; } }

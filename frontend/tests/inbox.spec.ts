@@ -80,10 +80,16 @@ test('a notification opens the panel on its deal: the quotation beside the chat,
   await expect(conversation.getByRole('region', { name: 'Cotización vigente v2', exact: true })).toContainText('USD 612.40');
   await expect(conversation.getByRole('log', { name: 'Mensajes del acuerdo', exact: true })).toContainText('SÍ, PODEMOS ENTREGAR EL LUNES ANTES DE LAS 12.');
   await expect.poll(() => calls.find(call => call.url.endsWith(`/conversations/${order}/read`))?.body).toEqual({ last_message_id: 12 });
-  await conversation.getByLabel('Mensaje del acuerdo', { exact: true }).fill('perfecto, el lunes');
-  await conversation.getByRole('button', { name: 'Enviar mensaje', exact: true }).click();
-  await expect(conversation.getByRole('log')).toContainText('PERFECTO, EL LUNES');
-  expect(calls.find(call => call.url === 'messages')?.body).toMatchObject({ body: 'PERFECTO, EL LUNES' });
+  const composer = conversation.getByLabel('Mensaje del acuerdo', { exact: true });
+  await composer.fill('Perfecto, el lunes');
+  await composer.press('Shift+Enter');  // a new line, not a send
+  await composer.pressSequentially('Gracias');
+  expect(calls.some(call => call.url === 'messages')).toBe(false);
+  await composer.press('Enter');
+  await expect(conversation.getByRole('log')).toContainText('Perfecto, el lunes\nGracias');
+  expect(calls.find(call => call.url === 'messages')?.body).toMatchObject({ body: 'Perfecto, el lunes\nGracias' });  // as typed
+  await expect(composer).toHaveValue('');
+  await expect(composer).toBeFocused();  // ready for the next message
   await panel.getByRole('button', { name: /AUTOPARTES DEL ISTMO/ }).click();
   await expect(panel.getByRole('region', { name: 'Orden ORD-0119 con AUTOPARTES DEL ISTMO', exact: true })).toBeVisible();
   await panel.getByRole('button', { name: 'No leídas', exact: true }).click();

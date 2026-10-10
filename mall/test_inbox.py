@@ -47,7 +47,7 @@ class InboxTests(APITestCase):
         summary = self.inbox(self.seller_a)
         self.assertEqual((summary['unread_messages'], summary['unread_conversations']), (1, 1))
         self.assertEqual({key: summary['latest_message'][key] for key in ['id', 'body', 'reference', 'side', 'mine']},
-                         {'id': latest, 'body': '¿PUEDEN ENTREGAR EL LUNES?', 'reference': order.reference, 'side': 'supplier', 'mine': False})
+                         {'id': latest, 'body': '¿Pueden entregar el lunes?', 'reference': order.reference, 'side': 'supplier', 'mine': False})
         self.assertEqual((summary['latest_message']['account']['name'], summary['latest_message']['counterpart']['name']), ('PROVEEDOR A', 'CLIENTE ORIGINAL'))
         self.assertEqual(self.inbox(self.buyer)['unread_messages'], 0)
 
@@ -59,7 +59,7 @@ class InboxTests(APITestCase):
         [row] = self.inbox(self.seller_a, 'conversations/')['results']
         self.assertEqual({key: row[key] for key in ['id', 'reference', 'side', 'unread']}, {'id': str(order.pk), 'reference': order.reference, 'side': 'supplier', 'unread': 2})
         self.assertEqual((row['account']['id'], row['counterpart']['name']), (str(self.supplier_a.pk), 'CLIENTE ORIGINAL'))
-        self.assertEqual((row['last_message']['id'], row['last_message']['body'], row['last_message']['mine']), (second, 'SEGUNDO', False))
+        self.assertEqual((row['last_message']['id'], row['last_message']['body'], row['last_message']['mine']), (second, 'segundo', False))
         [mine] = self.inbox(self.buyer, 'conversations/')['results']
         self.assertEqual((mine['side'], mine['counterpart']['name'], mine['unread'], mine['last_message']['mine']), ('client', 'PROVEEDOR A', 0, True))
 

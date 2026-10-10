@@ -71,7 +71,7 @@ class PushTests(APITestCase):
         self.say(self.buyer, self.client_account, order, '¿Pueden entregar el lunes?')
         [(endpoint, data)] = self.pushed(sent)
         self.assertEqual(endpoint, 'proveedor')
-        self.assertEqual(data, {'title': f'CLIENTE ORIGINAL · {order.reference}', 'body': '¿PUEDEN ENTREGAR EL LUNES?', 'tag': f'deal-{order.pk}',
+        self.assertEqual(data, {'title': f'CLIENTE ORIGINAL · {order.reference}', 'body': '¿Pueden entregar el lunes?', 'tag': f'deal-{order.pk}',
                                 'url': f'/?conversacion={order.pk}', 'order_id': str(order.pk)})
         self.assertEqual(sent.call_args.kwargs['vapid_claims'], {'sub': 'mailto:equipo@example.invalid'})
         sent.reset_mock()

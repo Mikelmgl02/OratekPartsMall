@@ -66,7 +66,7 @@ class EmailNotificationTests(APITestCase):
         self.say(self.buyer, self.client_account, order, '¿Pueden entregar el lunes? <b>urgente</b>')
         [email] = self.sent(urlopen)
         self.assertEqual((email['to'], email['subject']), ([self.seller_a.email], f'Nuevo mensaje de CLIENTE ORIGINAL · {order.reference}'))
-        self.assertIn('¿PUEDEN ENTREGAR EL LUNES? &lt;B&gt;URGENTE&lt;/B&gt;', email['html'])  # the message is quoted, escaped
+        self.assertIn('¿Pueden entregar el lunes? &lt;b&gt;urgente&lt;/b&gt;', email['html'])  # the message is quoted, escaped
         self.say(self.buyer, self.client_account, order, 'otro mensaje')
         self.assertEqual(self.sent(urlopen), [])  # within the cooldown
         ConversationRead.objects.filter(user=self.seller_a, order=order).update(emailed_at=timezone.now() - timedelta(minutes=16))

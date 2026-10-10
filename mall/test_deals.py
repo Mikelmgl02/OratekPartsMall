@@ -269,7 +269,7 @@ class DealWorkflowTests(APITestCase):
         first = self.client.post(url, body, format='json')
         again = self.client.post(url, body, format='json')
         self.assertEqual(first.status_code, 200); self.assertEqual(first.data, again.data)
-        self.assertEqual(first.data['body'], 'NECESITO RETIRO')
+        self.assertEqual(first.data['body'], 'necesito retiro')  # trimmed, kept as typed
         self.assertEqual(DealMessage.objects.count(), 1)
         self.assertEqual(self.client.post(url, {**body, 'body': 'OTRO'}, format='json').status_code, 409)
         self.client.force_authenticate(self.seller_a)
