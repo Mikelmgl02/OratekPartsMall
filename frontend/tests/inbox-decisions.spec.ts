@@ -133,3 +133,15 @@ test('a long order lists its items in a grid: searched, and narrowed to the ones
   await expect(grid).toContainText('Faltan 2 unidades');
   await expect(grid).toContainText('Revisar artículo');
 });
+
+test('a short grid’s column menu opens over the panel instead of being clipped by the grid', async ({ page }) => {
+  const { document } = await panel(page, 'client', 'quoted', true);
+  const grid = document.getByRole('region', { name: 'Líneas de la cotización v1', exact: true });
+  await grid.getByRole('columnheader', { name: 'Artículo' }).hover();
+  await grid.locator('.ag-header-cell[col-id="item"] .ag-header-cell-menu-button').click();
+  const menu = page.locator('.ag-menu');
+  await expect(menu.getByText('Ordenar Ascendente')).toBeVisible();
+  expect(await menu.evaluate(element => !element.closest('.quote-lines') && !!element.closest('dialog'))).toBe(true);  // in the dialog, outside the grid
+  const [menuBox, gridBox] = [(await menu.boundingBox())!, (await grid.boundingBox())!];
+  expect(menuBox.y + menuBox.height).toBeGreaterThan(gridBox.y + gridBox.height);  // taller than the one-row grid, and whole
+});

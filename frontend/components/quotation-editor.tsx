@@ -642,9 +642,9 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autosave]);
+  // Menus and popup editors open on the page (or in the dialog, whose top layer would otherwise cover them), never clipped by the grid.
   function ready(event: GridReadyEvent<QuoteRow>) {
-    const dialog = host.current?.closest('dialog');
-    if (dialog) event.api.setGridOption('popupParent', dialog);
+    event.api.setGridOption('popupParent', host.current?.closest('dialog') ?? document.body);
   }
   function validLines() {
     const lines = [];
