@@ -5,7 +5,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import Count, F, Q, Value
 from django.db.models.functions import Greatest
 from django.utils import timezone
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import extend_schema, extend_schema_field
 from rest_framework import filters, generics, permissions, serializers
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -13,6 +13,7 @@ from .list_ordering import StableOrdering
 from rest_framework.authtoken.models import Token
 from rest_framework.exceptions import ValidationError
 
+from .apiag_tokens import ConnectionData, connection_data
 from .models import Account, Invitation, Membership, Part, PartCode, PartType, Role, SupplierItem, User
 from .serializers import SupplierItemSerializer
 from .media_serializers import PartImageSerializer
@@ -66,10 +67,15 @@ class ManagedAccountSerializer(serializers.ModelSerializer):
     roles = serializers.SlugRelatedField(queryset=Role.objects.all(), slug_field='code', many=True, required=False)
     member_count = serializers.IntegerField(read_only=True, default=0)
     members = MembershipSerializer(source='memberships', many=True, read_only=True)
+    apiag = serializers.SerializerMethodField()
 
     class Meta:
         model = Account
-        fields = ['id', 'name', 'active', 'roles', 'member_count', 'members']
+        fields = ['id', 'name', 'active', 'roles', 'member_count', 'members', 'apiag']
+
+    @extend_schema_field(ConnectionData(allow_null=True))
+    def get_apiag(self, account):
+        return connection_data(getattr(account, 'apiag_connection', None))
 
 
 class ManagedUserSerializer(serializers.ModelSerializer):
@@ -593,7 +599,7 @@ class AccountList(SuperuserMixin, generics.ListCreateAPIView):
     serializer_class = ManagedAccountSerializer
     filter_backends = [filters.SearchFilter]
     search_fields = ['name']
-    queryset = Account.objects.annotate(member_count=Count('memberships')).prefetch_related('roles', 'memberships__user').order_by('name', 'id')
+    queryset = Account.objects.annotate(member_count=Count('memberships')).select_related('apiag_connection__updated_by').prefetch_related('roles', 'memberships__user').order_by('name', 'id')
 
 
 class AccountDetail(SuperuserMixin, generics.RetrieveUpdateAPIView):

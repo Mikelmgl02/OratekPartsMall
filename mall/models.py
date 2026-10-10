@@ -322,3 +322,4 @@ from .catalog_suffix_models import CatalogCodeSuffix, CatalogCodeSuffixChange
 from .oem_finder_models import OEMFinderRun, OEMReviewCase, OEMFinderChange, OEMApplyHalt, OEMReviewDecision, OEMAutoCandidate
 from .oem_reference_models import OEMReference, OEMReferenceSource, OEMCrossReference, OEMCrossReferenceRetired, PartOEMLink
 from .catalog_split_models import CatalogSplit, CatalogSeparation
+from .apiag_models import ApiagConnection

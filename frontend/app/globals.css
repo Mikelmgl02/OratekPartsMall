@@ -639,6 +639,8 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .admin-panel th { color:#7e8f70; }
 .admin-panel td strong { color:#405238; }
 .admin-row-actions { display:flex; align-items:center; gap:12px; }
+.secret-input { -webkit-text-security:disc; }
+.admin-apiag-remove { display:flex; flex-wrap:wrap; justify-content:center; align-items:center; gap:12px; margin-top:16px; }
 .admin-role-list { display:flex; flex-wrap:wrap; gap:5px; max-width:270px; }
 .admin-role-list span { border-radius:4px; background:#f0f4e9; color:#718264; padding:5px 7px; font-size:10px; white-space:normal; }
 .admin-footnote { font-size:11px; color:#8a9b7a; line-height:1.8; margin:22px 0 10px; }

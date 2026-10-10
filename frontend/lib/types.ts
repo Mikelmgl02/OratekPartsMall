@@ -4,7 +4,9 @@ export type Account = { id: string; name: string; roles: string[]; capabilities:
 export type SessionUser = { id: number; username: string; first_name: string; last_name: string; is_superuser: boolean };
 export type AdminSection = 'inventory' | 'alternates' | 'oem' | 'accounts' | 'users' | 'invitations' | 'analytics' | 'deals' | 'templates' | 'applications';
 export type Member = { id: number; user: number; account: string; permission: MembershipPermission; username: string; email: string; account_name: string; user_active: boolean; permission_label: string };
-export type ManagedAccount = { id: string; name: string; active: boolean; roles: string[]; member_count: number; members: Member[] };
+// The supplier's apiag-cloud server. The token is write-only: responses carry its last four characters (token_hint), never the token.
+export type ApiagConnection = { server_url: string; token_hint: string; token_readable: boolean; updated_at: string; updated_by: string | null };
+export type ManagedAccount = { id: string; name: string; active: boolean; roles: string[]; member_count: number; members: Member[]; apiag: ApiagConnection | null };
 export type ManagedUser = SessionUser & { email: string; is_active: boolean; is_staff: boolean; date_joined: string; memberships: Member[] };
 export type ManagedRole = { code: string; name: string; capability: string };
 export type ManagedInvitation = { id: number; email: string; token: string; expires_at: string; accepted_at: string | null; status: 'pending' | 'accepted' | 'expired' };
@@ -110,6 +112,7 @@ const fieldLabel: Record<string, string> = {
   user: 'Usuario', account: 'Cuenta', days: 'Vigencia', active: 'Estado de la cuenta', is_active: 'Estado del usuario',
   is_OEM: 'El SKU principal es OEM', sku: 'SKU interno', codes: 'Alternos', code: 'Código alterno', matching_status: 'Estado de coincidencia',
   file: 'Archivo Excel', mode: 'Acción', preview_token: 'Vista previa',
+  server_url: 'URL del servidor', access_token: 'Token de acceso',
   category: 'Categoría', subcategory: 'Subcategoría',
   // Private pricing: client profiles, commercial rules and the simulator.
   price_list_id: 'Lista de precios', fallback_to_default: 'Lista de respaldo', discount_percent: 'Descuento general', preferred_currency: 'Moneda preferida',

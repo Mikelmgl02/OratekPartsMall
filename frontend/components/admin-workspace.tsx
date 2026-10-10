@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { ArrowLeft, ArrowUpRight, BadgeCheck, BarChart3, Boxes, Building2, Check, ChevronRight, Copy, Handshake, LoaderCircle, LogOut, MailPlus, Menu, PanelLeftClose, PanelLeftOpen, Plus, Repeat2, Search, ShieldCheck, Users, X } from 'lucide-react';
+import { ArrowLeft, ArrowUpRight, BadgeCheck, BarChart3, Boxes, Building2, Check, ChevronRight, Copy, Handshake, LoaderCircle, LogOut, MailPlus, Menu, PanelLeftClose, PanelLeftOpen, PlugZap, Plus, Repeat2, Search, ShieldCheck, Users, X } from 'lucide-react';
 import BrandLogo from './brand-logo';
 import Modal from './modal';
 import AdminCatalogSection from './admin-catalog-section';
@@ -47,6 +47,7 @@ export default function AdminWorkspace({ user, section = 'accounts' }: { user: S
   const [accountEditor, setAccountEditor] = useState<ManagedAccount | null | undefined>();
   const [userEditor, setUserEditor] = useState<ManagedUser | null>(null);
   const [memberEditor, setMemberEditor] = useState<ManagedAccount | null>(null);
+  const [apiagEditor, setApiagEditor] = useState<ManagedAccount | null>(null);
   const [assignUser, setAssignUser] = useState<ManagedUser | null>(null);
   const [inviting, setInviting] = useState(false);
   const [invitation, setInvitation] = useState<ManagedInvitation | null>(null);
@@ -115,7 +116,7 @@ export default function AdminWorkspace({ user, section = 'accounts' }: { user: S
         {!!data?.results.length && <div className="table-scroll"><table>
           <thead>{tab === 'accounts' ? <tr><th>Cuenta</th><th>Tipos de cuenta</th><th>Estado</th><th>Usuarios</th><th>Acciones</th></tr> : tab === 'users' ? <tr><th>Usuario</th><th>Correo electrónico</th><th>Estado</th><th>Cuentas</th><th>Acciones</th></tr> : <tr><th>Correo electrónico</th><th>Estado</th><th>Vence</th><th>Acciones</th></tr>}</thead>
           <tbody>{data?.results.map(row => {
-            if (tab === 'accounts') { const account = row as ManagedAccount; return <tr key={account.id}><td><strong>{account.name}</strong></td><td><div className="admin-role-list">{account.roles.length ? account.roles.map(code => <span key={code}>{roles.find(role => role.code === code)?.name || code}</span>) : <span>Sin tipos asignados</span>}</div></td><td><span className={`status ${account.active ? 'matched' : ''}`}>{account.active ? 'Activa' : 'Inactiva'}</span></td><td>{account.member_count}</td><td><div className="admin-row-actions"><button className="button soft small" aria-label={`Editar cuenta ${account.name}`} onClick={() => setAccountEditor(account)}>Editar</button><button className="button text small" aria-label={`Gestionar usuarios de ${account.name}`} onClick={() => setMemberEditor(account)}><Users size={14}/>Usuarios</button></div></td></tr>; }
+            if (tab === 'accounts') { const account = row as ManagedAccount; const supplier = account.roles.some(code => roles.find(role => role.code === code)?.capability === 'supplier'); return <tr key={account.id}><td><strong>{account.name}</strong>{account.apiag && <span className={account.apiag.token_readable ? undefined : 'danger-text'}>{account.apiag.token_readable ? 'Conectada a apiag-cloud' : 'apiag-cloud: vuelve a ingresar el token'}</span>}</td><td><div className="admin-role-list">{account.roles.length ? account.roles.map(code => <span key={code}>{roles.find(role => role.code === code)?.name || code}</span>) : <span>Sin tipos asignados</span>}</div></td><td><span className={`status ${account.active ? 'matched' : ''}`}>{account.active ? 'Activa' : 'Inactiva'}</span></td><td>{account.member_count}</td><td><div className="admin-row-actions"><button className="button soft small" aria-label={`Editar cuenta ${account.name}`} onClick={() => setAccountEditor(account)}>Editar</button><button className="button text small" aria-label={`Gestionar usuarios de ${account.name}`} onClick={() => setMemberEditor(account)}><Users size={14}/>Usuarios</button>{(supplier || account.apiag) && <button className="button text small" aria-label={`Conexión con apiag-cloud de ${account.name}`} onClick={() => setApiagEditor(account)}><PlugZap size={14}/>apiag-cloud</button>}</div></td></tr>; }
             if (tab === 'users') { const managed = row as ManagedUser; return <tr key={managed.id}><td><strong>{managed.username}</strong><span>{[managed.first_name, managed.last_name].filter(Boolean).join(' ') || 'Sin nombre completo'}{managed.is_superuser ? ' · Superusuario' : ''}</span></td><td>{managed.email}</td><td><span className={`status ${managed.is_active ? 'matched' : ''}`}>{managed.is_active ? 'Activo' : 'Inactivo'}</span></td><td><div className="admin-role-list">{managed.memberships.length ? managed.memberships.map(member => <span key={member.id}>{member.account_name}</span>) : <span>Sin cuenta asignada</span>}</div></td><td><div className="admin-row-actions"><button className="button soft small" aria-label={`Editar usuario ${managed.username}`} onClick={() => setUserEditor(managed)}>Editar</button><button className="button text small" aria-label={`Asignar cuenta a ${managed.username}`} onClick={() => setAssignUser(managed)}><Plus size={14}/>Asignar cuenta</button></div></td></tr>; }
             const invite = row as ManagedInvitation; return <tr key={invite.id}><td><strong>{invite.email}</strong></td><td><span className={`status ${invite.status === 'accepted' ? 'matched' : invite.status === 'expired' ? 'review' : ''}`}>{{pending: 'Pendiente', accepted: 'Aceptada', expired: 'Vencida'}[invite.status]}</span></td><td>{formatDate(invite.expires_at)}</td><td>{invite.status === 'pending' && <div className="admin-row-actions"><button className="button soft small" aria-label={`Ver código para ${invite.email}`} onClick={() => setInvitation(invite)}>Ver código</button><button className="button text small danger-text" aria-label={`Revocar invitación de ${invite.email}`} onClick={() => setRevoke(invite)}>Revocar</button></div>}</td></tr>;
           })}</tbody>
@@ -128,6 +129,7 @@ export default function AdminWorkspace({ user, section = 'accounts' }: { user: S
     </div>
     {accountEditor !== undefined && <AccountEditor account={accountEditor} roles={roles} onClose={() => setAccountEditor(undefined)} onSaved={() => { setAccountEditor(undefined); saved('Cuenta guardada.'); }}/>}
     {userEditor && <UserEditor user={userEditor} onClose={() => setUserEditor(null)} onSaved={() => { setUserEditor(null); saved('Usuario actualizado.'); }} onManage={manageAccount}/>}
+    {apiagEditor && <ApiagEditor account={apiagEditor} onClose={() => setApiagEditor(null)} onSaved={text => { setApiagEditor(null); saved(text); }}/>}
     {memberEditor && <AccountMembers account={memberEditor} onClose={() => setMemberEditor(null)} onSaved={() => saved('Accesos de la cuenta actualizados.')}/>}
     {assignUser && <AssignAccount user={assignUser} onClose={() => setAssignUser(null)} onSaved={() => { setAssignUser(null); saved('Cuenta asignada al usuario.'); }}/>}
     {inviting && <InvitationForm onClose={() => setInviting(false)} onSaved={invite => { setInviting(false); setInvitation(invite); saved('Invitación creada.'); }}/>}
@@ -151,6 +153,35 @@ function AccountEditor({ account, roles, onClose, onSaved }: { account: ManagedA
     <label className="admin-checkbox"><input autoComplete="off" name="active" type="checkbox" defaultChecked={account?.active ?? true}/>Cuenta activa</label><p className="form-footnote">Una cuenta inactiva deja de estar disponible para sus usuarios y sus existencias dejan de aparecer a los clientes.</p>
     <FormError error={error}/><SaveButton busy={busy} disabled={!roles.length}>Guardar cuenta</SaveButton>
   </form></Modal>;
+}
+
+// The supplier's apiag-cloud server and the token its apiag-cloud issued for MotionPartes. The token is write-only: the server keeps it
+// encrypted and answers with its last four characters, so a blank field keeps the saved one.
+function ApiagEditor({ account, onClose, onSaved }: { account: ManagedAccount; onClose: () => void; onSaved: (text: string) => void }) {
+  const connection = account.apiag;
+  const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const [removing, setRemoving] = useState(false);
+  const path = `${base}/accounts/${account.id}/apiag`;
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setError(''); setBusy(true); const form = new FormData(event.currentTarget);
+    try { await request(path, { method: 'POST', body: JSON.stringify({ server_url: form.get('server_url'), access_token: form.get('access_token') }) }); onSaved('Conexión con apiag-cloud guardada.'); }
+    catch (error) { setError(message(error)); } finally { setBusy(false); }
+  }
+  async function remove() {
+    setError(''); setBusy(true);
+    try { await request(path, { method: 'DELETE' }); onSaved('Conexión con apiag-cloud eliminada.'); }
+    catch (error) { setError(message(error)); } finally { setBusy(false); }
+  }
+  return <Modal title={`apiag-cloud · ${account.name}`} onClose={onClose}><p className="modal-description">MotionPartes usará esta dirección y este token para consultar el API del apiag-cloud de este proveedor. Genera el token en su apiag-cloud y pégalo aquí.</p><form autoComplete="off" className="stack-form" onSubmit={submit}>
+    <label>URL del servidor<input autoComplete="off" name="server_url" inputMode="url" spellCheck={false} required maxLength={300} defaultValue={connection?.server_url} placeholder="https://empresa.apiag.cloud"/></label>
+    {/* Masked text, not a password field: browsers would offer to save the supplier's token as a MotionPartes password. */}
+    <label>Token de acceso<input autoComplete="off" name="access_token" className="secret-input" spellCheck={false} autoCapitalize="off" autoCorrect="off" data-1p-ignore="" data-lpignore="true" data-bwignore="" required={!connection?.token_readable} placeholder={connection?.token_readable ? 'Déjalo vacío para conservar el token guardado' : 'Pega el token generado en apiag-cloud'}/></label>
+    {connection && (connection.token_readable
+      ? <p className="form-footnote">Token guardado: termina en <strong>{connection.token_hint}</strong>. Por seguridad no se vuelve a mostrar. Conexión actualizada el {formatDate(connection.updated_at)}{connection.updated_by ? ` por ${connection.updated_by}` : ''}.</p>
+      : <div className="notice error" role="alert">El token guardado no se puede leer con la clave actual del servidor. Pega el token de nuevo.</div>)}
+    <FormError error={error}/><SaveButton busy={busy}>Guardar conexión</SaveButton>
+  </form>
+    {connection && <div className="admin-apiag-remove">{removing ? <><button className="button soft small danger-text" disabled={busy} onClick={remove}>Confirmar: quitar conexión</button><button className="button text small" disabled={busy} onClick={() => setRemoving(false)}>Cancelar</button></> : <button className="button text small danger-text" disabled={busy} onClick={() => setRemoving(true)}>Quitar conexión</button>}</div>}
+  </Modal>;
 }
 
 function UserEditor({ user, onClose, onSaved, onManage }: { user: ManagedUser; onClose: () => void; onSaved: () => void; onManage: (id: string) => void }) {

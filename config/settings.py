@@ -110,6 +110,8 @@ SPECTACULAR_SETTINGS = {"TITLE": "MotionPartes API", "VERSION": "0.1.0", "COMPON
     # OEM reference library (superuser-only). Labels must match OEMReference.status.
     "OEMReferenceStatusEnum": [("verified", "Verificado"), ("declared", "Declarado"), ("inferred", "Inferido"), ("disputed", "En disputa")]}}
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY') or os.getenv('GEM_API_KEY', '')
+# Fernet keys for the apiag-cloud access tokens saved in Cuentas (mall.apiag_tokens): the first encrypts, all decrypt.
+APIAG_TOKEN_KEYS = [key.strip() for key in os.getenv('APIAG_TOKEN_KEYS', '').split(',') if key.strip()]
 # Browser push notifications of the deal inbox (mall.push); off while any is empty. python -m mall.vapid_keys makes a pair.
 VAPID_PUBLIC_KEY = os.getenv('VAPID_PUBLIC_KEY', '')
 VAPID_PRIVATE_KEY = os.getenv('VAPID_PRIVATE_KEY', '')

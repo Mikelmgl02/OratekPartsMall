@@ -11,6 +11,7 @@ from mall.technical_api import (PartTypeList, PartTypeDetail, TemplateDetail, Ap
 from mall.matching_views import MatchingOverview, MatchingReview
 from mall.analytics import AnalyticsDashboard, UsageEvents
 from mall.deal_admin import DealAdminCancel, DealAdminDetail, DealAdminList
+from mall.apiag_connection import ApiagConnectionView
 from mall.wishlist import WishlistList, WishlistState, WishlistDetail
 from mall.catalog_import import CatalogImport, CatalogImportJobView
 from mall.catalog_classification import CatalogClassification
@@ -115,6 +116,7 @@ urlpatterns = [
     path('api/v1/management/alternates/<int:pk>/', management.AlternateDetail.as_view()),
     path('api/v1/management/accounts/', management.AccountList.as_view()),
     path('api/v1/management/accounts/<uuid:pk>/', management.AccountDetail.as_view()),
+    path('api/v1/management/accounts/<uuid:pk>/apiag/', ApiagConnectionView.as_view()),
     path('api/v1/management/users/', management.UserList.as_view()),
     path('api/v1/management/users/<int:pk>/', management.UserDetail.as_view()),
     path('api/v1/management/roles/', management.RoleList.as_view()),

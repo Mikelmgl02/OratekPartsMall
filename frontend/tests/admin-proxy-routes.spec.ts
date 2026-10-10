@@ -33,3 +33,14 @@ test('the proxy forwards the routes of Editar celdas (Inventario and Biblioteca 
     expect(await batch.text()).not.toContain('La ruta solicitada no existe');
   }
 });
+
+test('the proxy forwards the apiag-cloud connection of Cuentas', async ({ page }) => {
+  test.skip(!process.env.E2E_ADMIN_TOKEN, 'A disposable superuser token is required.');
+  await page.context().addCookies([{ name: 'partsmall_session', value: process.env.E2E_ADMIN_TOKEN!, url: origin, httpOnly: true, sameSite: 'Strict' }]);
+  // An account that does not exist: the backend answers 404 itself, so nothing is written.
+  const path = '/api/management/accounts/00000000-0000-4000-8000-000000000000/apiag';
+  for (const response of [await page.request.post(path, { data: { server_url: 'https://empresa.apiag.cloud', access_token: '' }, headers: { Origin: origin } }), await page.request.delete(path, { headers: { Origin: origin } })]) {
+    expect(response.status(), await response.text()).toBe(404);
+    expect(await response.text()).not.toContain('La ruta solicitada no existe');
+  }
+});

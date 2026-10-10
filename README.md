@@ -103,6 +103,10 @@ An administrator creates an invitation with recipient email and expiration in th
 
 Seeded roles: `supplier_retail`, `supplier_wholesale`, `client_business`, `client_walkin`. Additional roles can be added in the admin. Membership owner/manager/staff values establish the structure; this initial inventory API allows all members of a supplier account to ingest its inventory. Private pricing uses them for its configuration and publishing permissions (staff by default). Employee management is admin-only for now.
 
+**Conexión con apiag-cloud.** In **Cuentas**, a supplier account's **apiag-cloud** action saves the base URL of that supplier's apiag-cloud server and the access token its apiag-cloud issued for MotionPartes (`ApiagConnection`, migration `0053_apiag_connection`), for the calls MotionPartes will make to that API; nothing calls it yet. Only superusers reach it, only accounts with a supplier role can connect, and the URL must be `https://` (plain `http://` only with `DJANGO_DEBUG=1`), without credentials, query or fragment. The token is write-only: it is stored encrypted, and responses carry only its last four characters and whether the server can still read it; saving with a blank token keeps the saved one. **Quitar conexión** deletes it.
+
+The tokens are encrypted with `APIAG_TOKEN_KEYS` (Fernet keys; required in production, where saving refuses without one). Generate one with `docker compose exec -T app python -m mall.apiag_keys`, set it in `.env` and recreate the app service. To rotate, put the new key first and keep the old one after a comma (`APIAG_TOKEN_KEYS=new,old`) until every token was saved again. Local `DJANGO_DEBUG=1` runs without a key use one derived from `DJANGO_SECRET_KEY`; tokens saved that way show **vuelve a ingresar el token** once a real key is set, and must be pasted again.
+
 ## Supplier stock imports
 
 Supplier account members can open **Para proveedores → Importar Excel**, download the template, upload an `.xlsx`, and select **Revisar archivo**. The preview compares current stock with the uploaded absolute balance. A change from 5 to 10 creates a movement of **5 Crédito**; a change from 5 to 0 creates **5 Débito**. Unchanged balances create no movement. Neither preview nor template download writes inventory.
@@ -361,6 +365,7 @@ All routes use `/api/v1/` unless noted.
 | GET / PATCH / DELETE | `management/alternates/{id}/` | Inspect, edit or retire an alterno code |
 | GET / POST | `management/accounts/` | Superuser account management |
 | GET / PATCH | `management/accounts/{id}/` | Account details, roles, and activation |
+| POST / DELETE | `management/accounts/{id}/apiag/` | Save (a blank `access_token` keeps the saved one) / remove the supplier's apiag-cloud server URL and access token; responses never carry the token |
 | GET | `management/users/` | Superuser user directory |
 | GET / PATCH | `management/users/{id}/` | User profile and activation |
 | GET | `management/roles/` | Available account types |
