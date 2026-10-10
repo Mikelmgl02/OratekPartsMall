@@ -70,7 +70,7 @@ test('filtering resets pagination, retains the search, and does not inflate sear
   const { queries, events } = await mockCatalog(page);
   await page.goto('/');
   const search = page.getByLabel('Buscar repuestos, marcas o códigos', { exact: true });
-  await search.fill('TEST');
+  await search.fill('TEST'); await search.press('Enter');
   await expect.poll(() => events.filter(event => event.kind === 'search').length).toBe(1);
   await page.getByRole('button', { name: 'Siguiente', exact: true }).click();
   await expect(page.locator('.pagination')).toContainText('Página 2');

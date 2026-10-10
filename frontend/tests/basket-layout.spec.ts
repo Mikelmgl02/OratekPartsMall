@@ -62,7 +62,7 @@ test('full-page basket keeps equivalent supplier items separate, edits quantitie
   const writes = await mockClient(page, [sharedPart], { [sharedPart.id]: offers });
   await page.goto('/?campana=cesta-prueba#inicio');
   const search = page.getByLabel('Buscar repuestos, marcas o códigos', { exact: true });
-  await search.fill('58411');
+  await search.fill('58411'); await search.press('Enter');
   await expect(page.locator('.results-heading>p')).toContainText('para “58411”');
   await page.getByRole('button', { name: 'Ver DISCO DE FRENO', exact: true }).click();
   const detail = page.getByRole('dialog');

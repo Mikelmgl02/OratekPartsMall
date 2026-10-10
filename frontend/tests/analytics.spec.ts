@@ -30,6 +30,7 @@ test('real browsing events share a visit, retry safely and do not interrupt bask
   await expect(page.getByRole('button', { name: `Ver ${part.sku}`, exact: true })).toBeVisible();
   await expect.poll(() => events.filter(event => event.kind === 'visit').length).toBe(1);
   await page.getByLabel('Buscar repuestos, marcas o códigos', { exact: true }).fill('58411');
+  await page.getByLabel('Buscar repuestos, marcas o códigos', { exact: true }).press('Enter');
   await expect.poll(() => events.filter(event => event.kind === 'search').length).toBe(1);
   await page.getByRole('button', { name: `Ver ${part.sku}`, exact: true }).click();
   await page.getByLabel('Cantidad solicitada', { exact: true }).fill('3');
@@ -71,13 +72,13 @@ test('obsolete searches and pagination do not inflate searches; zero-result sear
     await page.goto('/');
     await expect(page.getByRole('button', { name: `Ver ${part.sku}`, exact: true })).toBeVisible();
     const input = page.getByLabel('Buscar repuestos, marcas o códigos', { exact: true });
-    await input.fill('ANTERIOR'); await requested;
-    await input.fill('ACTUAL');
+    await input.fill('ANTERIOR'); await input.press('Enter'); await requested;
+    await input.fill('ACTUAL'); await input.press('Enter');
     await expect.poll(() => events.filter(event => event.kind === 'search').map(event => event.term)).toEqual(['ACTUAL']);
     releaseOlder();
     await page.getByRole('button', { name: 'Siguiente', exact: true }).click();
     await expect(page.locator('.pagination')).toContainText('Página 2');
-    await input.fill('SINRESULTADO');
+    await input.fill('SINRESULTADO'); await input.press('Enter');
     await expect(page.getByRole('heading', { name: 'No encontramos repuestos para esta búsqueda.', exact: true })).toBeVisible();
     await expect.poll(() => events.filter(event => event.kind === 'search').map(event => event.term)).toEqual(['ACTUAL', 'SINRESULTADO']);
   } finally { releaseOlder(); }
@@ -90,6 +91,7 @@ test('superuser browsing is excluded from telemetry', async ({ page }) => {
   await page.route('**/api/market/analytics/events', route => { events.push(route.request().postDataJSON()); return route.fulfill({ status: 202, json: {} }); });
   await page.goto('/');
   await page.getByLabel('Buscar repuestos, marcas o códigos', { exact: true }).fill('58411');
+  await page.getByLabel('Buscar repuestos, marcas o códigos', { exact: true }).press('Enter');
   await expect(page.locator('.results-heading>p')).toContainText('58411');
   await page.getByRole('button', { name: `Ver ${part.sku}`, exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Elige tu proveedor', exact: true })).toBeVisible();

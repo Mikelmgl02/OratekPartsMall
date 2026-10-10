@@ -8,6 +8,8 @@ import CatalogSkeleton from './catalog-skeleton';
 import CatalogCard from './catalog-card';
 import CatalogFilterPanel, { ActiveCatalogFilters } from './catalog-filters';
 import { catalogQuery, emptyFacets, emptyFilters, filterCount, matchesFilters, previewFacets } from '@/lib/catalog-filters';
+import { isCodeSearch, matchesSearch } from '@/lib/catalog-search';
+import StoreSearch from './store-search';
 import AuthModal from './auth-modal';
 import AccountMenu from './account-menu';
 import PartDetail from './part-detail';
@@ -145,11 +147,6 @@ export default function Catálogo() {
     return () => window.removeEventListener('popstate', restorePage);
   }, []);
   useEffect(() => {
-    if (search.trim() === appliedSearch) return;
-    const timer = setTimeout(() => {setAppliedSearch(search.trim()); setPage(1);}, 350);
-    return () => clearTimeout(timer);
-  }, [search, appliedSearch]);
-  useEffect(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(basketKey) || '[]');
       let draft: BasketLine[] = Array.isArray(saved) ? saved.filter(line => line?.key && line?.part?.id && line?.offer?.supplier_id && Number.isInteger(line.quantity) && line.quantity > 0).map(line => ({...line, part: preview ? previewParts.find(part => part.id === line.part.id) || line.part : line.part, offer: preview ? previewOffers.find(offer => offer.supplier_id === line.offer.supplier_id) || line.offer : line.offer, quantity: Math.min(9999, line.quantity)})) : [];
@@ -181,7 +178,7 @@ export default function Catálogo() {
     } }).catch(error => { if (!cancelled) setError(error.message); }).finally(() => { if (!cancelled) setBusy(false); });
     return () => {cancelled = true;};
   }, [authenticated, accountId, appliedSearch, filters, page, revision, user?.id, user?.is_superuser]);
-  const searchedPreview = previewParts.filter(part => `${part.sku} ${part.name} ${part.description} ${part.category} ${part.subcategory} ${part.codes.map(c => `${c.brand} ${c.code}`).join(' ')}`.toLocaleLowerCase('es').includes(appliedSearch.toLocaleLowerCase('es')));
+  const searchedPreview = previewParts.filter(part => matchesSearch(part, appliedSearch));
   const visibleParts = preview ? searchedPreview.filter(part => matchesFilters(part, filters)) : catalog.results;
   const facets = preview ? previewFacets(searchedPreview, filters) : hasCatalog ? catalogSnapshot.data.facets || emptyFacets : emptyFacets;
   const unfiltered = !completedSearch && !filterCount(filters);
@@ -239,6 +236,8 @@ export default function Catálogo() {
     } catch (cause) { setNotice(cause instanceof Error ? cause.message : 'No se pudieron actualizar tus favoritos. Inténtalo de nuevo.'); }
   }
   function changeFilters(next: CatalogFilters) { setFilters(next); setPage(1); }
+  // Typing only fills the box (and its suggestions); the results change when a search is submitted.
+  function applySearch(term: string) { setSearch(term); setAppliedSearch(term.trim()); setPage(1); }
   function selectCategory(value: string) { changeFilters({ ...filters, category: value ? [value] : [], subcategory: [] }); }
   function setClientPage(destination: 'cesta' | 'solicitudes' | 'favoritos' | 'compras' | null, replace = false) {
     const url = new URL(window.location.href);
@@ -274,12 +273,17 @@ export default function Catálogo() {
   // The department strip lists what the whole catalog holds (largest first), not what the current search narrowed it to.
   const departments = (departmentFacets.length ? departmentFacets : categories.filter(item => item.value).map(item => ({ value: item.value, label: item.value, count: 0 })))
     .map(item => ({ value: item.value, label: item.label.charAt(0) + item.label.slice(1).toLowerCase() }));
-  // Typing or choosing a department from any page brings the catalog back; only submitting scrolls to the results.
+  // Searching or choosing a department from any page brings the catalog back; a search also brings its results up, unless the reader
+  // is already in them (the pinned controls then keep their place and the first result shows under them).
   function showCatalog(scroll: boolean) {
     if (!catalogActive) { setClientPage(null); setView('catalog'); }
-    if (scroll) setTimeout(() => document.getElementById('catalog')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 20);
+    if (scroll) setTimeout(() => {
+      const section = document.getElementById('catalog'), scroller = viewport.current;
+      if (section && (!scroller || section.getBoundingClientRect().top > scroller.getBoundingClientRect().top + 1)) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 20);
   }
-  function browse(term: string) { setSearch(term); changeFilters(emptyFilters); showCatalog(true); }
+  function submitSearch(term: string) { applySearch(term); showCatalog(true); }
+  function browse(term: string) { applySearch(term); changeFilters(emptyFilters); showCatalog(true); }
   function openSupplier() {
     if (!authenticated) openAuth();
     else if (canSupply) { setBasketPage(false); setView('inventory'); viewport.current?.scrollTo({ top: 0, behavior: 'instant' }); }
@@ -291,16 +295,9 @@ export default function Catálogo() {
     <AppToolbar>
     <header className={`header store-header${supplierPanel ? ' is-wide' : ''}`}>
       <div className="header-inner store-header-main">
-        <button className="wordmark" aria-label="Inicio de MotionPartes" onClick={() => {setBasketPage(false); setView('catalog'); setSearch(''); changeFilters(emptyFilters); viewport.current?.scrollTo({top: 0, behavior: 'smooth'});}}><BrandLogo/></button>
+        <button className="wordmark" aria-label="Inicio de MotionPartes" onClick={() => {setBasketPage(false); setView('catalog'); applySearch(''); changeFilters(emptyFilters); viewport.current?.scrollTo({top: 0, behavior: 'smooth'});}}><BrandLogo/></button>
         {authenticated && <div className="store-account" title={account?.roles.map(role => roleLabel[role] || role).join(' · ') || undefined}><span className="store-account-caption"><span className="live-dot"/>Cuenta conectada</span><label className="sr-only" htmlFor="active-account">Cuenta activa</label><select id="active-account" disabled={!accounts.length} value={accountId} onChange={event => selectAccount(event.target.value)}>{!accounts.length && <option value="">Sin cuenta asignada</option>}{accounts.map(account => <option key={account.id} value={account.id}>{account.name}</option>)}</select></div>}
-        <form className="store-search" role="search" aria-label="Buscar en el catálogo" onSubmit={event => { event.preventDefault(); showCatalog(true); }}>
-          <label className="sr-only" htmlFor="store-department">Departamento</label>
-          <select id="store-department" className="store-search-scope" value={filters.category.length === 1 ? filters.category[0] : ''} onChange={event => { showCatalog(false); selectCategory(event.target.value); }}><option value="">Todos</option>{departments.map(department => <option key={department.value} value={department.value}>{department.label}</option>)}</select>
-          <label className="sr-only" htmlFor="catalog-search">Buscar repuestos, marcas o códigos</label>
-          <input ref={searchRef} id="catalog-search" value={search} onChange={event => { showCatalog(false); setSearch(event.target.value); }} autoComplete="off" placeholder="Busca por código, OEM, marca o repuesto…"/>
-          {search && <button type="button" className="icon-button store-search-clear" aria-label="Limpiar búsqueda" onClick={() => setSearch('')}><X size={16}/></button>}
-          <button type="submit" className="store-search-go" aria-label="Buscar"><Search size={20}/></button>
-        </form>
+        <StoreSearch value={search} onChange={setSearch} onSearch={submitSearch} onOpen={openPart} filters={filters} departments={departments} onDepartment={value => { showCatalog(false); selectCategory(value); }} preview={preview} accountId={accountId} inputRef={searchRef}/>
       <div className="header-actions"><button className="basket-button wishlist-nav" onClick={() => setClientPage('favoritos')} aria-current={wishlistOpen ? 'page' : undefined} aria-label="Mis favoritos"><Heart size={20}/><span>Favoritos</span>{wishlist.ready && wishlist.count > 0 && <span className="wishlist-nav-count basket-count">{wishlist.count}</span>}</button>{authenticated && canQuote && <button className="basket-button request-history-button" onClick={() => setClientPage('solicitudes')} aria-current={sentOpen ? 'page' : undefined} aria-label="Mis solicitudes enviadas"><List size={20}/><span>Mis solicitudes</span></button>}<button className="basket-button" onClick={() => setBasketPage(true)} aria-current={basketOpen ? 'page' : undefined} aria-label={`Abrir cesta, ${currentBasket.length} ${currentBasket.length === 1 ? 'artículo' : 'artículos'}`}><ShoppingBag size={20}/><span>Cesta</span><span className="basket-count">{currentBasket.length}</span></button><AccountMenu user={user} ready={sessionReady} accounts={accounts} accountId={accountId} favoriteCount={wishlist.ready ? wishlist.count : 0} basketCount={currentBasket.length} onFavorites={() => setClientPage('favoritos')} onRequests={() => setClientPage('solicitudes')} onPurchases={() => setClientPage('compras')} onBasket={() => setBasketPage(true)} onSupplier={() => { setBasketPage(false); setView('inventory'); viewport.current?.scrollTo({ top: 0, behavior: 'instant' }); }} onSignIn={() => openAuth()} onInvitation={() => openAuth('signup')} onSwitchAccount={selectAccount} onLogout={logout}/></div>
       </div>
       <nav className="store-departments" aria-label="Navegación principal"><div className="header-inner">
@@ -329,14 +326,14 @@ export default function Catálogo() {
         {preview && <div className="preview-notice"><span>Estás explorando un catálogo de ejemplo.</span><button onClick={() => openAuth()}>Inicia sesión para ver el inventario real<ArrowUpRight size={14}/></button></div>}
         {authenticated && !accounts.length && <div className="notice setup-notice"><UserRound size={22}/><div><strong>Estamos preparando tu cuenta.</strong><p>Tu administrador debe asignarte una cuenta y sus roles antes de que puedas consultar el inventario real.</p></div></div>}
         <ActiveCatalogFilters facets={facets} filters={filters} onChange={changeFilters}/>
-        <div className="results-heading"><h2>Resultados</h2><p><strong>{totalParts}</strong> {preview ? (totalParts === 1 ? 'repuesto de ejemplo' : 'repuestos de ejemplo') : (totalParts === 1 ? 'repuesto del catálogo' : 'repuestos del catálogo')}{completedSearch && <> para <strong>“{completedSearch}”</strong></>}</p><div><span className="catalog-label">{preview ? <><Sparkles size={14}/>Catálogo de ejemplo</> : <><span className="live-dot"/>Catálogo real</>}</span><span className="catalog-update-status" role="status"><LoaderCircle size={12} className={busy ? 'spin' : 'catalog-progress-idle'} aria-hidden="true"/><span>{busy ? 'Actualizando…' : preview ? 'Vista de ejemplo' : 'Ordenados por SKU'}</span></span><button className="button filter-button catalog-filter-trigger" onClick={() => setFiltersOpen(true)} aria-haspopup="dialog" aria-label="Abrir filtros del catálogo" aria-expanded={filtersOpen}><SlidersHorizontal size={17}/>Filtros{filterCount(filters) > 0 && <span className="filter-trigger-count">{filterCount(filters)}</span>}</button><div className="view-toggle"><button aria-label="Vista de cuadrícula" aria-pressed={!listView} className={!listView ? 'selected' : ''} onClick={() => setListView(false)}><Grid2X2 size={16}/></button><button aria-label="Vista de lista" aria-pressed={listView} className={listView ? 'selected' : ''} onClick={() => setListView(true)}><List size={18}/></button></div></div></div>
+        <div className="results-heading"><h2>Resultados</h2><p><strong>{totalParts}</strong> {preview ? (totalParts === 1 ? 'repuesto de ejemplo' : 'repuestos de ejemplo') : (totalParts === 1 ? 'repuesto del catálogo' : 'repuestos del catálogo')}{completedSearch && <> para <strong>“{completedSearch}”</strong></>}</p><div><span className="catalog-label">{preview ? <><Sparkles size={14}/>Catálogo de ejemplo</> : <><span className="live-dot"/>Catálogo real</>}</span><span className="catalog-update-status" role="status"><LoaderCircle size={12} className={busy ? 'spin' : 'catalog-progress-idle'} aria-hidden="true"/><span>{busy ? 'Actualizando…' : preview ? 'Vista de ejemplo' : isCodeSearch(completedSearch) ? 'Código exacto primero' : 'Ordenados por SKU'}</span></span><button className="button filter-button catalog-filter-trigger" onClick={() => setFiltersOpen(true)} aria-haspopup="dialog" aria-label="Abrir filtros del catálogo" aria-expanded={filtersOpen}><SlidersHorizontal size={17}/>Filtros{filterCount(filters) > 0 && <span className="filter-trigger-count">{filterCount(filters)}</span>}</button><div className="view-toggle"><button aria-label="Vista de cuadrícula" aria-pressed={!listView} className={!listView ? 'selected' : ''} onClick={() => setListView(false)}><Grid2X2 size={16}/></button><button aria-label="Vista de lista" aria-pressed={listView} className={listView ? 'selected' : ''} onClick={() => setListView(true)}><List size={18}/></button></div></div></div>
         </div>
         <div className="catalog-layout">
         <aside className="catalog-sidebar" aria-label="Filtros del catálogo"><CatalogFilterPanel facets={facets} filters={filters} loading={busy || initialLoading} onChange={changeFilters}/></aside>
         <div className="catalog-results-column">
         {error && <div className="notice error" role="alert">{error}<button onClick={() => {setRevision(revision+1); loadSession().catch(error => setError(error.message));}}>Intentar de nuevo</button></div>}
         <div className="catalog-results" role="region" aria-label="Resultados del catálogo" aria-busy={busy || initialLoading}>
-        {initialLoading || (busy && !visibleParts.length) ? <><span className="sr-only" role="status">Cargando el catálogo…</span><div className={`parts-grid ${listView ? 'list-view' : ''}`} aria-hidden="true">{Array.from({length:6}, (_, index) => <div className="part-card skeleton-card" key={index}><CatalogSkeleton/></div>)}</div></> : visibleParts.length ? <div className={`parts-grid ${listView ? 'list-view' : ''}`}>{visibleParts.map(part => <CatalogCard key={part.id} part={part} preview={preview} busy={busy} onOpen={() => openPart(part)} saved={wishlist.ids.has(part.id)} saving={wishlist.pending.has(part.id)} onFavorite={() => toggleFavorite(part)}/>)}</div> : (!authenticated || accountId) && !error ? <div className="empty-state"><Search size={35}/><h3>{filterCount(filters) ? 'No encontramos repuestos con estos criterios.' : completedSearch ? 'No encontramos repuestos para esta búsqueda.' : 'Tu catálogo está listo para crecer.'}</h3><p>{filterCount(filters) ? 'Quita algún filtro o cambia tu búsqueda para ver más repuestos.' : completedSearch ? 'Prueba con otro nombre, marca o código de repuesto.' : 'Los repuestos aprobados aparecerán aquí cuando tu equipo los agregue.'}</p>{filterCount(filters) > 0 ? <button className="button primary" onClick={() => changeFilters(emptyFilters)}>Limpiar filtros<ArrowRight size={16}/></button> : completedSearch && <button className="button primary" onClick={() => setSearch('')}>Limpiar búsqueda<ArrowRight size={16}/></button>}</div> : null}
+        {initialLoading || (busy && !visibleParts.length) ? <><span className="sr-only" role="status">Cargando el catálogo…</span><div className={`parts-grid ${listView ? 'list-view' : ''}`} aria-hidden="true">{Array.from({length:6}, (_, index) => <div className="part-card skeleton-card" key={index}><CatalogSkeleton/></div>)}</div></> : visibleParts.length ? <div className={`parts-grid ${listView ? 'list-view' : ''}`}>{visibleParts.map(part => <CatalogCard key={part.id} part={part} preview={preview} busy={busy} onOpen={() => openPart(part)} saved={wishlist.ids.has(part.id)} saving={wishlist.pending.has(part.id)} onFavorite={() => toggleFavorite(part)}/>)}</div> : (!authenticated || accountId) && !error ? <div className="empty-state"><Search size={35}/><h3>{filterCount(filters) ? 'No encontramos repuestos con estos criterios.' : completedSearch ? 'No encontramos repuestos para esta búsqueda.' : 'Tu catálogo está listo para crecer.'}</h3><p>{filterCount(filters) ? 'Quita algún filtro o cambia tu búsqueda para ver más repuestos.' : completedSearch ? 'Prueba con otro nombre, marca o código de repuesto.' : 'Los repuestos aprobados aparecerán aquí cuando tu equipo los agregue.'}</p>{filterCount(filters) > 0 ? <button className="button primary" onClick={() => changeFilters(emptyFilters)}>Limpiar filtros<ArrowRight size={16}/></button> : completedSearch && <button className="button primary" onClick={() => applySearch('')}>Limpiar búsqueda<ArrowRight size={16}/></button>}</div> : null}
         {authenticated && catalog.count > 0 && <div className="pagination"><span>{catalog.count} repuestos</span><div><button className="button soft small" onClick={() => setPage(page-1)} disabled={!catalog.previous || busy}>Anterior</button><span>Página {catalogSnapshot?.page ?? page}</span><button className="button soft small" onClick={() => setPage(page+1)} disabled={!catalog.next || busy}>Siguiente</button></div></div>}
         </div>
         </div>
@@ -355,7 +352,7 @@ export default function Catálogo() {
       <div className="store-footer-brand section-container"><BrandLogo/><p>Conectamos repuestos. Conectamos personas.</p>{user?.is_superuser && <Link href="/administracion">Administración<ArrowUpRight size={12}/></Link>}<span className="footer-caption"><Globe2 size={15}/>Para tu próxima reparación.</span></div>
     </footer>
     {filtersOpen && <Modal title="Filtrar repuestos" drawer className="catalog-filter-drawer" onClose={() => setFiltersOpen(false)}><CatalogFilterPanel facets={facets} filters={filters} loading={busy || initialLoading} onChange={changeFilters}/><div className="filter-drawer-footer"><button className="button primary" onClick={() => setFiltersOpen(false)}>{busy ? 'Ver resultados · Actualizando…' : `Ver ${totalParts.toLocaleString('es')} ${totalParts === 1 ? 'repuesto' : 'repuestos'}`}<ArrowRight size={16}/></button></div></Modal>}
-    {authOpen && <AuthModal initialMode={authMode} onClose={() => setAuthOpen(false)} onSuccess={async () => {setSearch(''); changeFilters(emptyFilters); setView('catalog'); await loadSession();}}/>}
+    {authOpen && <AuthModal initialMode={authMode} onClose={() => setAuthOpen(false)} onSuccess={async () => {applySearch(''); changeFilters(emptyFilters); setView('catalog'); await loadSession();}}/>}
     {detail && <PartDetail key={`${accountId}:${detail.id}`} part={detail} preview={preview} canQuote={canQuote} accountId={accountId} basketLines={currentBasket} onClose={() => setDetail(null)} onAdd={(offer, quantity) => addToBasket(detail, offer, quantity)} onBasket={() => setBasketPage(true)} saved={wishlist.ids.has(detail.id)} saving={wishlist.pending.has(detail.id)} onFavorite={() => toggleFavorite(detail)}/>}
     {helpOpen && <Modal title="Una forma más fácil de encontrar repuestos" onClose={() => setHelpOpen(false)}><div className="how-steps">{[{Icon: Search, title: 'Encuentra tu repuesto', text: 'Busca en el catálogo compartido por nombre, marca o código.'}, {Icon: Store, title: 'Elige tus proveedores', text: 'Consulta quién tiene existencias y agrega repuestos a tu cesta.'}, {Icon: LockKeyhole, title: 'Solicita una cotización privada', text: 'Cada proveedor cotizará sus propios repuestos. Los precios serán privados.'}, {Icon: Truck, title: 'Confirma tu acuerdo', text: 'Revisa la cotización, solicita ajustes si los necesitas y confirma las condiciones con el proveedor.'}].map(({Icon, title, text}, i) => <div key={title}><span className="round-icon"><Icon size={21}/></span><div><small>0{i+1}</small><h3>{title}</h3><p>{text}</p></div></div>)}</div><div className="notice">Envía tu cesta para crear órdenes por proveedor. El proveedor revisa y cotiza; tú confirmas o solicitas ajustes. Cuando ambas partes confirman, el acuerdo queda cerrado y aparece en tu historial.</div><p className="private-note">Estadísticas para mejorar el catálogo: al iniciar sesión registramos tus visitas, búsquedas, repuestos consultados y artículos agregados a la cesta. Solo los superusuarios pueden consultar estas estadísticas; no usamos rastreadores externos.</p></Modal>}
     {notice && <div className="toast" role="status"><Check size={17}/>{notice}<button aria-label="Cerrar notificación" onClick={() => setNotice('')}><X size={14}/></button></div>}

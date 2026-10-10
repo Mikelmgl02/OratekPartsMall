@@ -118,7 +118,7 @@ for (const viewport of [{ label: 'desktop', width: 1440, height: 1000 }, { label
       const topBefore = (await input.boundingBox())!.y;
       const scrollBefore = await page.getByTestId('page-viewport').evaluate(viewport => viewport.scrollTop);
       const heightBefore = (await page.locator('.parts-grid').boundingBox())!.height;
-      await input.fill('58411'); await one.requested;
+      await input.fill('58411'); await input.press('Enter'); await one.requested;
       await expectPendingSkeletons(page, 50);
       await expect(page.getByRole('heading', { name: 'INICIAL-001', exact: true })).not.toBeVisible();
       expect(Math.abs((await page.locator('.parts-grid').boundingBox())!.height - heightBefore)).toBeLessThanOrEqual(1);
@@ -137,7 +137,7 @@ for (const viewport of [{ label: 'desktop', width: 1440, height: 1000 }, { label
       await expectPinnedResult(page, page.locator('.part-card').first());
       await page.screenshot({ path: `/tmp/motionpartes-search-stable-${viewport.label}.png` });
 
-      await input.fill('SINRESULTADO'); await zero.requested;
+      await input.fill('SINRESULTADO'); await input.press('Enter'); await zero.requested;
       await expectPendingSkeletons(page, 1);
       await expect(page.locator('.results-heading>p')).toContainText('para “58411”');
       zero.respond(emptyCatalog);
@@ -148,7 +148,7 @@ for (const viewport of [{ label: 'desktop', width: 1440, height: 1000 }, { label
       await expect(input).toBeFocused();
       expect(Math.abs((await input.boundingBox())!.y - topBefore)).toBeLessThanOrEqual(1);
       await expectPinnedResult(page, empty);
-      await input.fill('REGRESO'); await returnFromEmpty.requested;
+      await input.fill('REGRESO'); await input.press('Enter'); await returnFromEmpty.requested;
       await expectInitialSkeletons(page);
       await expect(empty).not.toBeVisible();
       await expect(input).toBeFocused();
@@ -163,6 +163,47 @@ for (const viewport of [{ label: 'desktop', width: 1440, height: 1000 }, { label
   });
 }
 
+test('typing previews the first results without searching; Enter or the last row lists them all, a suggestion opens its part', async ({ page }) => {
+  await mockClient(page);
+  const searches: string[] = [], suggested: string[] = [];
+  await page.route(/\/api\/market\/catalog(?:\?.*)?$/, route => {
+    const search = new URL(route.request().url()).searchParams.get('search') || '';
+    searches.push(search);
+    return route.fulfill({ json: catalog(parts(search ? 'RESULTADO' : 'INICIAL', search ? 2 : 3)) });
+  });
+  await page.route(/\/api\/market\/catalog\/suggest\?.*$/, route => {
+    suggested.push(new URL(route.request().url()).searchParams.get('search') || '');
+    const [disc, pad] = parts('SUGERIDO', 2);
+    return route.fulfill({ json: [{ ...disc, description: 'DISCO DE FRENO DELANTERO' }, pad] });
+  });
+  await page.route('**/api/market/catalog/SUGERIDO-0/suppliers', route => route.fulfill({ json: [] }));
+  await page.goto('/');
+  await expect(page.locator('.part-card')).toHaveCount(3);
+  const input = page.getByRole('combobox', { name: 'Buscar repuestos, marcas o códigos', exact: true });
+  const list = page.getByRole('listbox', { name: 'Sugerencias de búsqueda', exact: true });
+  await input.fill('disco');
+  await expect(list.getByRole('option')).toHaveCount(3);
+  await expect(list.getByRole('option').first()).toContainText('SUGERIDO-001DISCO DE FRENO DELANTERO');
+  await expect(list.getByRole('option').last()).toContainText('Ver todos los resultados para «disco»');
+  expect(searches).toEqual(['']);
+  await expect(page.locator('.results-heading>p')).not.toContainText('disco');
+  await input.press('ArrowDown'); await input.press('ArrowDown');
+  await expect(input).toHaveAttribute('aria-activedescendant', 'catalog-suggestion-1');
+  await input.press('Escape');
+  await expect(list).not.toBeVisible();
+  await input.press('Enter');
+  await expect(page.locator('.results-heading>p')).toContainText('2 repuestos del catálogo para “disco”');
+  await expect(list).not.toBeVisible();
+  await input.fill('disco freno');
+  await list.getByRole('option', { name: /Ver todos los resultados/ }).click();
+  await expect(page.locator('.results-heading>p')).toContainText('2 repuestos del catálogo para “disco freno”');
+  await input.fill('disco del');
+  await expect.poll(() => suggested.at(-1)).toBe('disco del');
+  await list.getByRole('option').first().click();
+  await expect(page.getByRole('dialog').getByRole('heading', { name: 'SUGERIDO-001', exact: true })).toBeVisible();
+  expect(searches).toEqual(['', 'disco', 'disco freno']);
+});
+
 test('an obsolete delayed search cannot replace newer accepted results', async ({ page }) => {
   await mockClient(page);
   const mock = await controlledCatalog(page);
@@ -174,8 +215,8 @@ test('an obsolete delayed search cannot replace newer accepted results', async (
     await expect(page.locator('.part-card')).toHaveCount(20);
     await pinCatalog(page);
     const input = page.getByLabel('Buscar repuestos, marcas o códigos', { exact: true });
-    await input.fill('ANTERIOR'); await older.requested;
-    await input.fill('ACTUAL'); await newer.requested;
+    await input.fill('ANTERIOR'); await input.press('Enter'); await older.requested;
+    await input.fill('ACTUAL'); await input.press('Enter'); await newer.requested;
     newer.respond(catalog(parts('ACTUAL', 1)));
     await expect(page.getByRole('heading', { name: 'ACTUAL-001', exact: true })).toBeVisible();
     older.respond(catalog(parts('OBSOLETO', 3))); await older.finished;
@@ -250,7 +291,7 @@ test('mobile list view keeps loading placeholders within the screen under reduce
     await pinCatalog(page);
     const heightBefore = (await page.locator('.parts-grid').boundingBox())!.height;
     const input = page.getByLabel('Buscar repuestos, marcas o códigos', { exact: true });
-    await input.fill('RODAMIENTO'); await search.requested;
+    await input.fill('RODAMIENTO'); await input.press('Enter'); await search.requested;
     await expectPendingSkeletons(page, 20);
     expect(Math.abs((await page.locator('.parts-grid').boundingBox())!.height - heightBefore)).toBeLessThanOrEqual(1);
     expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);

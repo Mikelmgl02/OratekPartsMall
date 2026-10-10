@@ -453,6 +453,7 @@ test('one brand-neutral SKU shows all equivalent supplier items and keeps basket
       expect((await stock.json()).part).toBe(part.id);
     }
     await clientPage.getByLabel('Buscar repuestos, marcas o códigos', { exact: true }).fill(codes[1]);
+    await clientPage.getByLabel('Buscar repuestos, marcas o códigos', { exact: true }).press('Enter');
     await clientPage.getByRole('button', { name: `Ver ${sku}`, exact: true }).click();
     const dialog = clientPage.getByRole('dialog');
     await expect(dialog.getByRole('heading', { name: sku, exact: true })).toBeVisible();
@@ -473,6 +474,7 @@ test('one brand-neutral SKU shows all equivalent supplier items and keeps basket
     await clientPage.getByRole('button', { name: 'Volver al catálogo', exact: true }).click();
     await clientPage.setViewportSize({ width: 390, height: 844 });
     await clientPage.getByLabel('Buscar repuestos, marcas o códigos', { exact: true }).fill(sku);
+    await clientPage.getByLabel('Buscar repuestos, marcas o códigos', { exact: true }).press('Enter');
     await clientPage.getByRole('button', { name: `Ver ${sku}`, exact: true }).click();
     await expect(clientPage.getByRole('group', { name: `Artículo ${codes[2]} · ${brands[2]}`, exact: true })).toBeVisible();
     expect(await clientPage.getByRole('dialog').evaluate(dialog => dialog.scrollWidth > dialog.clientWidth)).toBe(false);

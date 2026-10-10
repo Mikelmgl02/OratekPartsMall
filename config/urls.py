@@ -154,6 +154,7 @@ urlpatterns = [
     path('api/v1/accounts/<uuid:account_id>/pricing-rules/<uuid:pk>/archive/', PricingRuleArchiveView.as_view()),
     path('api/v1/accounts/<uuid:account_id>/pricing/simulate/', PricingSimulate.as_view()),
     path('api/v1/catalog/', views.CatalogList.as_view()),
+    path('api/v1/catalog/suggest/', views.CatalogSuggest.as_view()),
     path('api/v1/catalog/<uuid:pk>/technical/', CatalogTechnicalDetail.as_view()),
     path('api/v1/catalog/<uuid:part_id>/suppliers/', views.OffersView.as_view()),
     path('api/v1/accounts/<uuid:account_id>/inventory/', views.InventoryList.as_view()),

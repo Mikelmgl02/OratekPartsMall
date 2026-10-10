@@ -5,6 +5,7 @@ test('preview search, part details, and basket persist on reload', async ({ page
   await expect(page.locator('html')).toHaveAttribute('lang', 'es');
   await expect(page.getByRole('heading', { name: /El repuesto indicado/ })).toBeVisible();
   await page.getByLabel('Buscar repuestos, marcas o códigos').fill('bujía');
+  await page.getByLabel('Buscar repuestos, marcas o códigos').press('Enter');
   await expect(page.locator('#catalog').getByRole('heading', { name: 'Bujía de iridio' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Disco de freno delantero' })).not.toBeVisible();
   await page.getByRole('button', { name: 'Ver Bujía de iridio', exact: true }).click();
@@ -59,6 +60,7 @@ test('live sign-in, catalog, supplier update, and ledger', async ({ page }) => {
   await expect(page.getByText('Cuenta conectada', { exact: true })).toBeVisible();
   await expect(page.getByText('Catálogo real', { exact: true })).toBeVisible();
   await page.getByLabel('Buscar repuestos, marcas o códigos', { exact: true }).fill(process.env.E2E_USERNAME!);
+  await page.getByLabel('Buscar repuestos, marcas o códigos', { exact: true }).press('Enter');
   await expect(page.getByRole('heading', { name: process.env.E2E_USERNAME!, exact: true })).toBeVisible();
   expect((await page.context().cookies()).find(cookie => cookie.name === 'partsmall_session')?.httpOnly).toBe(true);
   expect(await page.evaluate(() => Object.keys(localStorage).some(key => key.includes('token')))).toBe(false);
@@ -77,6 +79,7 @@ test('live sign-in, catalog, supplier update, and ledger', async ({ page }) => {
   await page.getByRole('button', { name: 'Cerrar ventana' }).click();
   await page.getByRole('navigation').getByRole('button', { name: 'Catálogo', exact: true }).click();
   await page.getByLabel('Buscar repuestos, marcas o códigos', { exact: true }).fill(process.env.E2E_USERNAME!);
+  await page.getByLabel('Buscar repuestos, marcas o códigos', { exact: true }).press('Enter');
   await page.getByRole('button', { name: `Ver ${process.env.E2E_USERNAME}`, exact: true }).click();
   await expect(page.getByRole('dialog').getByText('Artículos disponibles que corresponden a este SKU, con sus códigos y marcas.')).toBeVisible();
   await page.getByRole('button', { name: /^Agregar FE-QA-001 de .* a la cesta$/ }).click();

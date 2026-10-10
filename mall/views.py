@@ -16,7 +16,8 @@ from .serializers import AccountSerializer, InventorySerializer, OfferSerializer
 from .services import ingest_inventory
 from .catalog_availability import catalog_availability
 from .catalog_filters import apply_filters, catalog_facets, filter_values
-from .oem_links import equivalents_for, search_q
+from .catalog_search import search_parts, search_rank
+from .oem_links import equivalents_for
 
 def account_for(user, account_id, capability=None):
     account = get_object_or_404(Account, pk=account_id, active=True, memberships__user=user)
@@ -70,38 +71,57 @@ class AccountList(generics.ListAPIView):
         return Account.objects.filter(memberships__user=self.request.user, active=True).prefetch_related('roles', own).order_by('name', 'id')
 
 def catalog_parts(search=''):
-    query = Part.objects.filter(active=True, merged_into__isnull=True)
-    if search:
-        match = (Q(sku__icontains=search) | Q(name__icontains=search) | Q(description__icontains=search)
-                 | Q(category__icontains=search) | Q(subcategory__icontains=search)
-                 | Q(codes__code__icontains=search) | Q(codes__brand__icontains=search)
-                 | Q(supplier_items__codigo__icontains=search, supplier_items__matching_status='matched', supplier_items__supplier__active=True))
-        # Also through the OEM library: an OEM number the SKU reaches, or an aftermarket code filed under one (separators ignored).
-        library = search_q(search)
-        query = query.filter(match | library if library is not None else match).distinct()
-    return query
+    """The canonical catalog SKUs the search finds (mall.catalog_search: every word, any order, accents and separators ignored)."""
+    return search_parts(Part.objects.filter(active=True, merged_into__isnull=True), search)
 
+
+REUSED_MATCHES = 2000
 
 class CatalogList(generics.ListAPIView):
     serializer_class = PartSerializer
+    reuse_matches = True
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
         page = self.paginate_queryset(queryset)
-        parts = list(page if page is not None else queryset)
-        context = {**self.get_serializer_context(), 'availability_by_part': catalog_availability(parts),
-                   'equivalents_by_part': equivalents_for([part.pk for part in parts])}
-        data = self.get_serializer(parts, many=True, context=context).data
+        data = self.serialize(page if page is not None else queryset)
         response = self.get_paginated_response(data) if page is not None else Response(data)
         if request.query_params.get('include_facets') == '1' and page is not None:
             response.data['facets'] = catalog_facets(self.base_query, self.catalog_filters)
         return response
 
+    def serialize(self, parts):
+        parts = list(parts)
+        context = {**self.get_serializer_context(), 'availability_by_part': catalog_availability(parts),
+                   'equivalents_by_part': equivalents_for([part.pk for part in parts])}
+        return self.get_serializer(parts, many=True, context=context).data
+
     def get_queryset(self):
         if not Membership.objects.filter(user=self.request.user, account__active=True).exists():
             raise PermissionDenied('Tu administrador debe configurar tu cuenta.')
         self.catalog_filters = filter_values(self.request.query_params)
-        self.base_query = catalog_parts(self.request.query_params.get('search', '').strip())
-        return apply_filters(self.base_query, self.catalog_filters).prefetch_related('codes', 'images').order_by('sku', 'id')
+        search = self.request.query_params.get('search', '').strip()
+        self.base_query = catalog_parts(search)
+        if search and self.reuse_matches:
+            # The count, the page and the four facet queries read the matches by id instead of each running the search again.
+            ids = list(self.base_query.order_by().values_list('pk', flat=True)[:REUSED_MATCHES + 1])
+            if len(ids) <= REUSED_MATCHES:
+                self.base_query = Part.objects.filter(pk__in=ids)
+        query = apply_filters(self.base_query, self.catalog_filters).prefetch_related('codes', 'images')
+        # A code search lists the exact code first, then the codes containing it; everything else stays in SKU order.
+        rank = search_rank(search)
+        return query.annotate(search_rank=rank).order_by('search_rank', 'sku', 'id') if rank is not None else query.order_by('sku', 'id')
+
+
+SUGGESTIONS = 6
+
+class CatalogSuggest(CatalogList):
+    """The search box's preview while typing: the first results the search would list, without the count or the facets."""
+    pagination_class = None
+    reuse_matches = False
+    def list(self, request, *args, **kwargs):
+        if not request.query_params.get('search', '').strip():
+            return Response([])
+        return Response(self.serialize(self.get_queryset()[:SUGGESTIONS]))
 
 class OffersView(APIView):
     @extend_schema(responses=OfferSerializer(many=True))

@@ -233,17 +233,18 @@ def equivalents_for(part_ids):
     return {part_id: [{'brand': brand, 'code': code} for (brand, _), code in sorted(found.items())] for part_id, found in codes.items()}
 
 
-def search_q(text):
+def search_q(text, exact=False):
     """Q for catalog SKUs that reach an OEM number, or an aftermarket code filed under one, containing the text compared compact
-    (16100 39315, gwt41a); None for text with fewer than MIN_SEARCH letters or digits. Uncorrelated subqueries, no Python lists."""
+    (16100 39315, gwt41a), or equal to it when exact; None for text with fewer than MIN_SEARCH letters or digits. Uncorrelated
+    subqueries, no Python lists."""
     from .models import PartCode
     key = compact(text)
     if len(key) < MIN_SEARCH:
         return None
-    refs = Q(reference__in=OEMReference.objects.filter(code__contains=key).values('pk')) | \
-        Q(reference__in=OEMCrossReference.objects.filter(number__contains=key).values('reference_id'))
-    alternos = Q(oem_reference__in=OEMReference.objects.filter(code__contains=key).values('pk')) | \
-        Q(oem_reference__in=OEMCrossReference.objects.filter(number__contains=key).values('reference_id'))
+    numbers = OEMReference.objects.filter(**{'code' if exact else 'code__contains': key}).values('pk')
+    crossed = OEMCrossReference.objects.filter(**{'number' if exact else 'number__contains': key}).values('reference_id')
+    refs = Q(reference__in=numbers) | Q(reference__in=crossed)
+    alternos = Q(oem_reference__in=numbers) | Q(oem_reference__in=crossed)
     return (Q(pk__in=PartOEMLink.objects.filter(refs).values('part_id'))
             | Q(pk__in=PartCode.objects.filter(alternos, ref_type='oem').values('part_id')))
 
