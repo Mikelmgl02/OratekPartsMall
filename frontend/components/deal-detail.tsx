@@ -59,6 +59,9 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   const [adjusting, setAdjusting] = useState(false);
   const [reason, setReason] = useState('');
   const [confirming, setConfirming] = useState(false);
+  // A sent quotation the client has not confirmed yet: the supplier opens the editor to send its next version.
+  const [revising, setRevising] = useState(false);
+  const quoteTab = useRef<HTMLDivElement>(null);
   const [rejecting, setRejecting] = useState(false);
   const [rejectCode, setRejectCode] = useState('');
   const [rejectNote, setRejectNote] = useState('');
@@ -111,7 +114,7 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   // In the panel the document is the quotation once there is one.
   const opened = useRef(false);
   useEffect(() => { if (embedded && deal && !opened.current) { opened.current = true; if (deal.quotation) setTab('quote'); } }, [embedded, deal]);
-  const editable = supplier && !!deal && ['reviewed', 'adjustment'].includes(deal.status);
+  const editable = supplier && !!deal && (['reviewed', 'adjustment'].includes(deal.status) || (deal.status === 'quoted' && revising));
   const draftKey = deal ? `${deal.id}:${deal.quotation?.id || 'new'}` : '';
   useEffect(() => {
     if (!editable) { setDraftLoad(null); setHasDraft(false); return; }
@@ -141,7 +144,7 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
       const result = await request<Deal>(actionPath, { method: 'POST', body: JSON.stringify({ ...payload, operation_id: retry.current.id }) });
       if (!mounted.current) return true;
       retry.current = null; acceptDetail(result); setAdjusting(false); setReason(''); setConfirming(false); setSuggestAdjust(false);
-      setRejecting(false); setRejectCode(''); setRejectNote('');
+      setRejecting(false); setRejectCode(''); setRejectNote(''); setRevising(false);
       setTab('quote');
       setNotice(actionNotices[action] || 'Cotización confirmada por el proveedor y enviada al cliente.');
       onChangedRef.current?.();
@@ -177,6 +180,11 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   const activeStep = !deal ? 0 : deal.status === 'pending' ? 0 : deal.status === 'reviewed' ? 1 : deal.status === 'delivered' ? 4
     : ['handshaked', 'cancelled'].includes(deal.status) ? 3 : 2;
   const pendingShortfall = deal?.shortfalls?.find(item => item.status === 'pending');
+  const reviseButton = <button type="button" className="button primary small" disabled={busy} onClick={() => {
+    setRevising(true); setQuoteVisited(true); setTab('quote');
+    // The editor opens under the sent version: bring it up (its loading placeholder first, while the draft loads).
+    setTimeout(() => quoteTab.current?.querySelector('.deal-quote-editor, .quotation-grid-loading')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 120);
+  }}><Pencil size={15}/>Editar cotización</button>;
   const rejectButton = <button type="button" className="button soft danger small" disabled={busy} aria-expanded={rejecting} onClick={() => { setRejecting(value => !value); setConfirming(false); setAdjusting(false); }}>Rechazar</button>;
   const content = <>
     <div className="deal-detail">
@@ -192,13 +200,14 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
           {pairProfile.internal_notes && <small title="Solo tu equipo ve estas notas">Notas internas: {pairProfile.internal_notes}</small>}
         </div>}
         <ol className={`deal-progress ${deal.status === 'cancelled' ? 'cancelled' : ''}`} aria-label="Seguimiento del acuerdo">{['Enviada', 'En revisión', 'Cotización', 'Acuerdo', 'Entregado'].map((label, index) => <li key={label} className={index <= activeStep ? 'reached' : ''} aria-current={index === activeStep ? 'step' : undefined}><span>{index < activeStep ? <Check size={12}/> : index + 1}</span>{label}</li>)}</ol>
-        <div className={`deal-state-note ${deal.status}`}><LockKeyhole size={16}/><p>{stateDescription[deal.status]}{(() => {
+        <div className={`deal-state-note ${deal.status}`}><LockKeyhole size={16}/><p>{supplier && deal.status === 'quoted' ? `Enviaste la cotización v${deal.quotation?.revision ?? 1}. Mientras el cliente no la confirme, puedes editarla y enviarle una nueva versión.` : stateDescription[deal.status]}{(() => {
           const when = deal.status === 'delivered' ? deal.delivered_at : deal.status === 'cancelled' ? deal.cancellation?.cancelled_at : deal.handshaked_at;
           return when ? <strong> {date(when)}</strong> : null;
         })()}</p></div>
         {embedded && <div className="deal-quick-actions" role="group" aria-label="Decisiones">
           {supplier && canDecide && ['pending', 'reviewed', 'adjustment'].includes(deal.status) && !pricing && <button type="button" className="button primary small" disabled={busy}
             onClick={async () => { if (deal.status === 'pending') await load(true); setQuoteVisited(true); setTab('quote'); }}><Pencil size={15}/>Fijar precios</button>}
+          {supplier && canDecide && deal.status === 'quoted' && !pricing && reviseButton}
           {!supplier && deal.status === 'quoted' && deal.quotation && <>
             <button type="button" className="button primary small" disabled={busy} onClick={() => { setTab('quote'); setConfirming(true); setAdjusting(false); setRejecting(false); }}><Handshake size={15}/>Confirmar</button>
             <button type="button" className="button soft small" disabled={busy} onClick={() => { setTab('quote'); setAdjusting(value => !value); setConfirming(false); setRejecting(false); }}>Solicitar ajuste</button>
@@ -227,9 +236,10 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
           {deal.quotation && <button type="button" className="button soft" onClick={() => setTab('quote')}>Ver cotización · v{deal.quotation.revision}<FileText size={16}/></button>}
           {!embedded && !supplier && ['pending', 'reviewed', 'adjustment'].includes(deal.status) && rejectButton}
         </>}
-        <div className="deal-quote-tab" hidden={tab !== 'quote'}>
+        <div ref={quoteTab} className="deal-quote-tab" hidden={tab !== 'quote'}>
           {deal.quotation && <QuoteView quote={deal.quotation}/>}
           {supplier && deal.quotation && <QuoteTrace key={deal.quotation.id} path={`${base}/requests/${orderId}/quotations/${deal.quotation.id}/trace`} currency={deal.quotation.currency}/>}
+          {!embedded && supplier && canDecide && deal.status === 'quoted' && !revising && reviseButton}
           {!deal.quotation && !supplier && <div className="notice">El proveedor preparará tu cotización. Te aparecerán aquí las cantidades, precios y condiciones.</div>}
           {editable && (tab === 'quote' || quoteVisited) && (draftLoad?.key === draftKey
             ? <QuoteEditor key={`${draftKey}:${draftLoad.draft ? draftLoad.draft.persisted ? 'saved' : 'virtual' : 'fallback'}`} deal={deal} draft={draftLoad.draft} draftPath={draftPath}

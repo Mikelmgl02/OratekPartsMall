@@ -117,7 +117,7 @@ export async function mockQuoteDrafts(page: Page, getOrder: () => DraftSource, {
   const saves: QuoteDraftSave[] = [], discards: QuoteDraftSave[] = [], reprices: QuoteDraftReprice[] = [], requests: string[] = [];
   // hold() keeps draft saves waiting until the returned release() is called, to act while a save is in flight.
   let gate: Promise<void> | null = null, held = 0;
-  const editable = () => ['reviewed', 'adjustment'].includes(getOrder().status);
+  const editable = () => ['reviewed', 'adjustment', 'quoted'].includes(getOrder().status);  // as mall.quote_drafts.EDITABLE_STATUSES
   const stored = () => ({ ...withPricing(saved && saved.base_quotation_id === (getOrder().quotation?.id ?? null) ? saved : virtualDraft(getOrder(), suggestions), suggestions, profile),
     ...(permissions ? { permissions } : {}), ...(assistant ? { assistant: assistant() } : {}) });
   const current = () => exceptions ? withExceptions(stored(), saved ? acks : {}) : stored();

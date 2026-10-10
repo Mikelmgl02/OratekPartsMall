@@ -142,7 +142,7 @@ def draft_state():
     quotations = DealQuotation.objects.filter(order_id=OuterRef('order_id'))
     latest = Q(base_quotation=Subquery(quotations.order_by('-revision').values('pk')[:1])) | Q(base_quotation__isnull=True, has_quotation=False)
     drafts = DealQuotationDraft.objects.filter(order_id=OuterRef('pk')).annotate(has_quotation=Exists(quotations)).filter(latest)
-    return Case(When(status__in=['reviewed', 'adjustment'], then=Subquery(drafts.values('status')[:1])), default=None, output_field=CharField())
+    return Case(When(status__in=['reviewed', 'adjustment', 'quoted'], then=Subquery(drafts.values('status')[:1])), default=None, output_field=CharField())
 
 
 def supplier_request_summary(row):

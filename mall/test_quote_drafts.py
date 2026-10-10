@@ -140,15 +140,14 @@ class QuoteDraftTests(APITestCase):
         self.assertEqual(self.discard(order, 2).status_code, 200)
         self.assertEqual((SupplierRequest.objects.values('version', 'updated_at').get(pk=order.pk), DealEvent.objects.count(), DealCommand.objects.count()), before)
 
-    def test_writes_are_rejected_outside_review_and_adjustment(self):
+    def test_writes_are_rejected_before_the_review_and_after_the_agreement(self):
         order = self.order()
         self.client.force_authenticate(self.seller_a)
-        for status in ['pending', 'quoted', 'handshaked']:
+        for status in ['pending', 'handshaked']:
             with self.subTest(status):
-                if status == 'quoted':
+                if status == 'handshaked':
                     self.review(order)
                     quote = self.quote(order).data['quotation']
-                elif status == 'handshaked':
                     self.client.force_authenticate(self.buyer)
                     self.assertEqual(self.action(order, 'accept', quotation_id=quote['id']).status_code, 200)
                     self.client.force_authenticate(self.seller_a)
@@ -156,6 +155,21 @@ class QuoteDraftTests(APITestCase):
                 for response in [self.save(order, 0, lines=[{'order_line_id': str(order.lines.first().pk), 'unit_price': '1.00'}]), self.discard(order)]:
                     self.assertEqual((response.status_code, response.data['detail']), (409, NOT_EDITABLE_DETAIL))
         self.assertFalse(DealQuotationDraft.objects.exists())
+
+    def test_a_sent_quotation_is_revised_until_the_client_confirms(self):
+        order = self.order()
+        self.review(order)
+        first = self.quote(order).data['quotation']
+        order.refresh_from_db()
+        state = self.client.get(self.draft_url(order)).data
+        self.assertEqual((order.status, state['editable'], state['draft']['base_quotation_id']), ('quoted', True, first['id']))
+        lines = [{'order_line_id': str(line.pk), 'quantity': line.quantity, 'unit_price': '11.00'} for line in order.lines.all()]
+        revised = self.action(order, 'quote', lines=lines, draft_version=self.drafted(order, lines))
+        self.assertEqual((revised.status_code, revised.data['status'], revised.data['quotation']['revision']), (200, 'quoted', 2))
+        self.assertEqual(DealEvent.objects.filter(order=order).latest('id').description, 'COTIZACIÓN V2 CONFIRMADA POR EL PROVEEDOR Y ENVIADA AL CLIENTE.')
+        self.client.force_authenticate(self.buyer)
+        self.assertEqual(self.action(order, 'accept', quotation_id=first['id']).status_code, 409)  # the version the client saw is gone
+        self.assertEqual(self.action(order, 'accept', quotation_id=revised.data['quotation']['id']).status_code, 200)
 
     def test_only_members_of_the_supplier_account_reach_the_draft(self):
         order = self.reviewed()
@@ -261,10 +275,13 @@ class QuoteDraftTests(APITestCase):
         self.assertFalse(DealQuotationDraft.objects.exists())
         self.assertFalse(DealQuotationDraftLine.objects.exists())
         self.assertEqual(publish(draft_version=1, operation_id=key, expected_version=2).data, published.data)
+        # The quoted order can still be revised, but the published draft is gone: a late save of it starts over from the quotation.
         late = self.save(order, 1, lines=[{'order_line_id': first, 'unit_price': '11.00'}])
-        self.assertEqual((late.status_code, late.data['detail']), (409, NOT_EDITABLE_DETAIL))
+        self.assertEqual((late.status_code, late.data['detail']), (409, CONFLICT_DETAIL))
         self.assertFalse(DealQuotationDraft.objects.exists())
-        self.assertEqual(self.client.get(self.draft_url(order)).data, {'editable': False, 'draft': None})
+        state = self.client.get(self.draft_url(order)).data
+        self.assertEqual((state['editable'], state['draft']['persisted'], state['draft']['base_quotation_id']),
+                         (True, False, published.data['quotation']['id']))
 
     def test_draft_version_without_a_saved_draft_is_rejected_and_virtual_drafts_publish_after_saving(self):
         order = self.reviewed()
@@ -393,8 +410,8 @@ class ConcurrentQuoteDraftTests(APITransactionTestCase):
         if results['publish'][0] == 409:
             self.assertEqual(results['publish'][1]['detail'], 'El borrador cambió. Revísalo antes de publicar.')
             self.assertEqual(publish(2)[0], 200)
-        else:
-            self.assertEqual(results['save'][1]['detail'], NOT_EDITABLE_DETAIL)
+        else:  # the draft it edited was published: the quoted order takes a new draft, never this stale save
+            self.assertEqual(results['save'][1]['detail'], CONFLICT_DETAIL)
         self.assertEqual(DealQuotation.objects.count(), 1)
         self.assertFalse(DealQuotationDraft.objects.exists())
         self.assertFalse(DealQuotationDraftLine.objects.exists())

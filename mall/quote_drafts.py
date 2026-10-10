@@ -36,7 +36,9 @@ from .request_models import DealQuotation, SupplierRequest
 from .request_views import RequestConflict, WholeRequestQuantity
 from .views import PERMISSION_RANK, membership_for
 
-EDITABLE_STATUSES = ('reviewed', 'adjustment')
+# Quoted too: until the client confirms, the supplier may revise a sent quotation and publish its next version (the client's accept
+# names the version it saw, so a newer one in between refuses it).
+EDITABLE_STATUSES = ('reviewed', 'adjustment', 'quoted')
 REPRICE_SCOPES = ('blank', 'engine', 'lines')
 VALUE_FIELDS = ('quantity', 'quantity_source', 'unit_price', 'price_source', 'note', 'engine_unit_price', 'engine_fingerprint', 'explanation')
 ENGINE_FIELDS = ('engine_unit_price', 'engine_fingerprint', 'explanation')

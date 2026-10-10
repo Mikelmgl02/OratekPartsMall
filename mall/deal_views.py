@@ -279,8 +279,8 @@ class DealActions(APIView):
             raise RequestConflict('Esta cotización ya no es la vigente. Actualiza el acuerdo.')
         now, extra_fields = timezone.now(), []
         if action == 'quote':
-            if row.status not in ['reviewed', 'adjustment']:
-                raise RequestConflict('Solo puedes cotizar una orden en revisión o con un ajuste solicitado.')
+            if row.status not in ['reviewed', 'adjustment', 'quoted']:  # quoted: a new version before the client confirms
+                raise RequestConflict('Solo puedes cotizar una orden en revisión, cotizada o con un ajuste solicitado.')
             identifiers = [line['order_line_id'] for line in data['lines']]
             order_lines = set(row.lines.values_list('pk', flat=True))
             if len(identifiers) != len(set(identifiers)) or set(identifiers) != order_lines:
