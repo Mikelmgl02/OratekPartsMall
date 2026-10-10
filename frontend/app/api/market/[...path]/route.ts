@@ -24,6 +24,12 @@ async function handle(request: NextRequest, context: Context) {
     const list = request.nextUrl.searchParams.get('list');
     if (list && new RegExp(`^${uuid}$`).test(list)) query.set('list', list);
   }
+  // The supplier's stock grid filters by matching state and sorts by column (the view accepts only its own ordering fields).
+  if (new RegExp(`^accounts/${uuid}/inventory$`).test(route)) {
+    const matching = request.nextUrl.searchParams.get('matching_status'), ordering = request.nextUrl.searchParams.get('ordering');
+    if (matching && ['matched', 'pending', 'review', 'unmatched'].includes(matching)) query.set('matching_status', matching);
+    if (ordering && /^[-a-z_,]{1,120}$/.test(ordering)) query.set('ordering', ordering);
+  }
   // Rules filter by one client of the pair (a uuid) or by scope.
   if (new RegExp(`^accounts/${uuid}/pricing-rules$`).test(route)) {
     const client = request.nextUrl.searchParams.get('client'), scope = request.nextUrl.searchParams.get('scope');
