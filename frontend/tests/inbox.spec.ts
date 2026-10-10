@@ -251,3 +251,88 @@ test('like a desktop chat app: sections toggle a right panel, the side columns r
   await expect(panel.getByRole('button', { name: 'Mostrar conversaciones', exact: true })).toBeVisible();  // remembered
   await expect.poll(width).toBe(before + 72);
 });
+
+test('like a desktop sidebar: one line per conversation, pinned ones first, the person’s own groups, kept on the server', async ({ page }) => {
+  await mockInbox(page, { current: pending() });
+  type Row = (typeof conversations)[number] & { pinned: boolean; group: string | null };
+  const rows: Row[] = conversations.map(row => ({ ...row, pinned: false, group: null }));
+  let groups: { id: string; name: string }[] = [];
+  const writes: { url: string; method: string; body: unknown }[] = [];
+  const listed = () => {
+    const at = (row: Row) => row.pinned ? [0, 0] : row.group ? [1, groups.findIndex(group => group.id === row.group)] : [2, 0];
+    return [...rows].sort((a, b) => at(a)[0] - at(b)[0] || at(a)[1] - at(b)[1] || b.activity.localeCompare(a.activity));
+  };
+  await page.route(/\/api\/market\/inbox\/conversations(\?.*)?$/, route => route.fulfill({ json: { count: rows.length, next: null, previous: null, results: listed(),
+    groups: groups.map(group => ({ ...group, count: rows.filter(row => !row.pinned && row.group === group.id).length })) } }));
+  await page.route(/\/api\/market\/inbox\/(groups.*|conversations\/[^/]+\/place)$/, route => {
+    const request = route.request(), path = new URL(request.url()).pathname.replace('/api/market/inbox/', ''), body = request.method() === 'POST' ? request.postDataJSON() : null;
+    writes.push({ url: path, method: request.method(), body });
+    if (path === 'groups') {
+      const group = { id: `aaaaaaaa-aaaa-4aaa-8aaa-00000000000${groups.length + 1}`, name: body.name.trim() };
+      groups.push(group); return route.fulfill({ status: 201, json: { ...group, count: 0 } });
+    }
+    const id = path.split('/')[1];
+    if (path.startsWith('groups/') && request.method() === 'DELETE') {
+      groups = groups.filter(group => group.id !== id); rows.forEach(row => { if (row.group === id) row.group = null; });
+      return route.fulfill({ status: 204 });
+    }
+    if (path.startsWith('groups/')) { groups.find(group => group.id === id)!.name = body.name; return route.fulfill({ json: { id, name: body.name, count: 0 } }); }
+    Object.assign(rows.find(row => row.id === id)!, body);
+    return route.fulfill({ json: { order_id: id } });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Mensajes, 3 sin leer', exact: true }).click();
+  const panel = page.getByRole('dialog', { name: 'Conversaciones', exact: true });
+  const list = panel.getByRole('complementary', { name: 'Tus conversaciones', exact: true });
+  const row = (reference: string) => list.getByRole('listitem').filter({ has: page.getByRole('button', { name: `Organizar ${reference}`, exact: true }) });
+  const istmo = list.getByRole('button', { name: /AUTOPARTES DEL ISTMO/ });
+  await expect(istmo).toHaveText(/^AUTOPARTES DEL ISTMOORD-0119, En revisión1$/);  // a single line: the other party, the reference, the unread count
+  await expect(istmo).toHaveAttribute('title', /¿EL DISCO ES VENTILADO\?/);  // the last message only in its tooltip
+  await expect(list.getByRole('group')).toHaveCount(1);  // no Fijadas, groups or Sin grupo headings until the person organizes the list
+
+  await list.getByRole('button', { name: 'Nuevo grupo', exact: true }).click();
+  await list.getByLabel('Nombre del nuevo grupo', { exact: true }).fill('Urgentes');
+  await list.getByLabel('Nombre del nuevo grupo', { exact: true }).press('Enter');
+  const urgent = list.getByRole('group', { name: 'Urgentes', exact: true });
+  await expect(urgent).toContainText('Vacío.');
+  await row('ORD-0119').getByRole('button', { name: 'Organizar ORD-0119', exact: true }).click();
+  const menu = list.getByRole('menu', { name: 'Organizar ORD-0119', exact: true });
+  await expect(menu.getByRole('menuitem').first()).toBeFocused();
+  await page.keyboard.press('Escape');  // closes the menu, never the panel
+  await expect(menu).toHaveCount(0);
+  await expect(panel).toBeVisible();
+  await row('ORD-0119').getByRole('button', { name: 'Organizar ORD-0119', exact: true }).click();
+  await menu.getByRole('menuitemradio', { name: 'Mover a Urgentes', exact: true }).click();
+  await expect(urgent.getByRole('listitem')).toHaveText([/AUTOPARTES DEL ISTMO/]);
+  expect(writes.at(-1)).toEqual({ url: `conversations/${order2}/place`, method: 'POST', body: { group: groups[0].id, pinned: false } });
+
+  await row('ORD-0123').getByRole('button', { name: 'Organizar ORD-0123', exact: true }).click();
+  await list.getByRole('menuitem', { name: 'Fijar', exact: true }).click();
+  await expect(list.getByRole('group', { name: 'Fijadas', exact: true }).getByRole('listitem')).toHaveText([/GRUPO RAZOR PARTS/]);
+  await row('ORD-0102').dragTo(urgent);  // or dragged onto a group
+  await expect(urgent.getByRole('listitem')).toHaveCount(2);
+  expect(writes.at(-1)).toEqual({ url: `conversations/${conversations[2].id}/place`, method: 'POST', body: { group: groups[0].id, pinned: false } });
+  await expect(list.getByRole('group', { name: 'Sin grupo', exact: true }).getByRole('listitem')).toHaveCount(0);
+
+  await urgent.getByRole('button', { name: 'Urgentes', exact: true }).click();  // folded, with its unread count on the heading
+  await expect(urgent.getByRole('listitem')).toHaveCount(0);
+  await expect(urgent.getByLabel('1 sin leer', { exact: true })).toBeVisible();
+  await panel.getByRole('button', { name: 'Cerrar ventana', exact: true }).click();
+  await page.getByRole('button', { name: 'Mensajes, 3 sin leer', exact: true }).click();
+  await expect(urgent.getByRole('button', { name: /^Urgentes/ })).toHaveAttribute('aria-expanded', 'false');  // remembered
+
+  await urgent.getByRole('button', { name: 'Opciones del grupo Urgentes', exact: true }).click();
+  await list.getByRole('menuitem', { name: 'Cambiar nombre', exact: true }).click();
+  await list.getByLabel('Nuevo nombre de Urgentes', { exact: true }).fill('Por cobrar');
+  await list.getByLabel('Nuevo nombre de Urgentes', { exact: true }).press('Enter');
+  const renamed = list.getByRole('group', { name: 'Por cobrar', exact: true });
+  await expect(renamed).toBeVisible();
+  await renamed.getByRole('button', { name: 'Opciones del grupo Por cobrar', exact: true }).click();
+  await list.getByRole('menuitem', { name: 'Eliminar grupo…', exact: true }).click();
+  await expect(list.getByRole('menu')).toContainText('¿Eliminar «Por cobrar»? Sus conversaciones quedan en Sin grupo.');
+  await list.getByRole('menuitem', { name: 'Eliminar grupo', exact: true }).click();
+  await expect(renamed).toHaveCount(0);
+  await expect(list.getByRole('group', { name: 'Sin grupo', exact: true }).getByRole('listitem')).toHaveCount(2);  // its conversations stay
+  expect(writes.map(write => `${write.method} ${write.url.replace(/[a-f0-9-]{36}/, 'ID')}`)).toEqual(['POST groups', 'POST conversations/ID/place', 'POST conversations/ID/place',
+    'POST conversations/ID/place', 'POST groups/ID', 'DELETE groups/ID']);
+});

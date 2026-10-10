@@ -83,6 +83,53 @@ class InboxTests(APITestCase):
         self.say(self.seller_a, self.supplier_a, order_a, 'a')
         self.assertEqual([row['id'] for row in self.inbox(self.buyer, 'conversations/')['results']], [str(order_a.pk), str(order_b.pk)])
 
+    def test_people_pin_and_group_their_conversations_and_the_list_keeps_that_order(self):
+        self.client.force_authenticate(self.buyer)
+        response = self.submit()  # one order for each supplier
+        orders = {row.supplier_id: row for row in SupplierRequest.objects.filter(pk__in=[item['id'] for item in response.data['requests']])}
+        order_a, order_b = orders[self.supplier_a.pk], orders[self.supplier_b.pk]
+        self.say(self.seller_b, self.supplier_b, order_b, 'b')  # the most recent
+        listed = lambda: [(row['id'], row['pinned'], row['group']) for row in self.inbox(self.buyer, 'conversations/')['results']]
+        created = self.mark(self.buyer, 'groups/', {'name': ' Urgentes '})
+        self.assertEqual((created.status_code, created.data['name'], created.data['count']), (201, 'Urgentes', 0))
+        group = created.data['id']
+        self.assertEqual(self.mark(self.buyer, 'groups/', {'name': 'URGENTES'}).status_code, 400)  # names never repeat
+        self.assertEqual(self.mark(self.buyer, 'groups/', {'name': '  '}).status_code, 400)
+        self.assertEqual(self.mark(self.buyer, f'conversations/{order_a.pk}/place/', {'group': group}).data,
+                         {'order_id': str(order_a.pk), 'pinned': False, 'group': group})
+        self.assertEqual(listed(), [(str(order_a.pk), False, group), (str(order_b.pk), False, None)])  # a group lists before Sin grupo
+        self.assertEqual(self.inbox(self.buyer, 'conversations/')['groups'], [{'id': group, 'name': 'Urgentes', 'count': 1}])
+        self.mark(self.buyer, f'conversations/{order_b.pk}/place/', {'pinned': True})
+        self.assertEqual(listed(), [(str(order_b.pk), True, None), (str(order_a.pk), False, group)])  # Fijadas first
+        self.mark(self.buyer, f'conversations/{order_a.pk}/place/', {'pinned': True})
+        self.assertEqual(listed(), [(str(order_b.pk), True, None), (str(order_a.pk), True, group)])  # by activity, its group remembered
+        self.assertEqual(self.inbox(self.buyer, 'conversations/')['groups'][0]['count'], 0)
+        self.mark(self.buyer, f'conversations/{order_a.pk}/place/', {'pinned': False})
+        self.assertEqual(listed(), [(str(order_b.pk), True, None), (str(order_a.pk), False, group)])  # back in its group
+        self.assertEqual(self.mark(self.buyer, f'conversations/{order_a.pk}/place/', {}).status_code, 400)
+        self.assertEqual(self.mark(self.buyer, f'groups/{group}/', {'name': 'Por cobrar'}).data, {'id': group, 'name': 'Por cobrar', 'count': 1})
+        self.assertEqual(self.client.delete(f'/api/v1/inbox/groups/{group}/').status_code, 204)
+        self.assertEqual(listed(), [(str(order_b.pk), True, None), (str(order_a.pk), False, None)])  # its conversations stay, ungrouped
+        self.assertEqual(self.inbox(self.buyer, 'conversations/')['groups'], [])
+
+    def test_groups_and_places_are_each_persons_own_and_never_move_the_read_mark(self):
+        order = self.order()
+        self.inbox(self.buyer)
+        group = self.mark(self.buyer, 'groups/', {'name': 'Mía'}).data['id']
+        self.assertEqual(self.mark(self.buyer, f'conversations/{order.pk}/place/', {'group': group, 'pinned': True}).status_code, 200)
+        listing = self.inbox(self.seller_a, 'conversations/')
+        self.assertEqual(([(row['pinned'], row['group']) for row in listing['results']], listing['groups']), ([(False, None)], []))
+        self.assertEqual(self.mark(self.seller_a, f'conversations/{order.pk}/place/', {'group': group}).status_code, 404)
+        self.assertEqual(self.mark(self.seller_a, f'groups/{group}/', {'name': 'Ajena'}).status_code, 404)
+        self.assertEqual(self.client.delete(f'/api/v1/inbox/groups/{group}/').status_code, 404)
+        self.assertEqual(self.mark(self.seller_b, f'conversations/{order.pk}/place/', {'pinned': True}).status_code, 404)  # not their deal
+        self.say(self.seller_a, self.supplier_a, order, 'hola')
+        self.mark(self.buyer, f'conversations/{order.pk}/place/', {'pinned': False})
+        self.assertEqual(self.inbox(self.buyer)['unread_messages'], 1)
+        for number in range(29):
+            self.assertEqual(self.mark(self.buyer, 'groups/', {'name': f'Grupo {number}'}).status_code, 201)
+        self.assertEqual(self.mark(self.buyer, 'groups/', {'name': 'Uno más'}).status_code, 400)  # 30 at most
+
     def test_notifications_list_what_the_other_party_did_until_seen(self):
         order = self.order()
         self.inbox(self.buyer)

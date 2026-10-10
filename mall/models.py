@@ -310,7 +310,7 @@ from .request_models import (ClientRequestSubmission, SupplierRequest, SupplierR
                              DealQuotation, DealQuotationLine, DealEvent, DealMessage, DealCommand, StockReservation,
                              DealShortfall, DealShortfallLine)
 from .analytics_models import UsageEvent, UsageVisit
-from .inbox_models import ConversationRead, InboxCursor, PushSubscription, WhatsAppMessage
+from .inbox_models import ConversationRead, InboxCursor, InboxGroup, PushSubscription, WhatsAppMessage
 from .matching_models import MatchingQueue, MatchingCase, SupplierCodeMapping, MatchingDecision
 from .technical_models import PartType, TechnicalTemplate, TechnicalField, PartSpecification, Application, ItemApplication
 from .pricing_models import (SupplierPricingSettings, PricingAuditEvent, PriceList, PriceListEntry, SupplierItemPricing, PriceChange,

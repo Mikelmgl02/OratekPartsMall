@@ -1,16 +1,38 @@
-"""What each person has read in their deal inbox: a conversation up to a message, the notifications up to a deal event."""
+"""What each person has read in their deal inbox: a conversation up to a message, the notifications up to a deal event. Also how they
+organize their conversations list: the ones they pinned and the groups they made."""
+import uuid
+
 from django.conf import settings
 from django.db import models
+from django.db.models.functions import Lower
+
+
+class InboxGroup(models.Model):
+    """A group the person made in their conversations list, shown in the order they made them. Deleting it leaves its conversations
+    ungrouped."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='inbox_groups')
+    name = models.CharField(max_length=60)
+    position = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['position', 'created_at']
+        constraints = [models.UniqueConstraint(Lower('name'), 'user', name='unique_inbox_group_name')]
 
 
 class ConversationRead(models.Model):
-    """The newest message of a deal's conversation this person has seen (in the inbox panel or on the deal itself)."""
+    """This person's state of a deal's conversation: the newest message they have seen (in the inbox panel or on the deal itself), and
+    where they keep it in their list (pinned on top, or in one of their groups)."""
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='conversation_reads')
     order = models.ForeignKey('mall.SupplierRequest', on_delete=models.CASCADE, related_name='reads')
     last_message_id = models.BigIntegerField(default=0)
     # When the person was last emailed (or sent a WhatsApp) about unread messages of this deal (one per conversation per cooldown).
     emailed_at = models.DateTimeField(null=True, blank=True)
     whatsapp_at = models.DateTimeField(null=True, blank=True)
+    # A pinned conversation lists under Fijadas whatever its group; unpinned, it goes back to its group.
+    pinned_at = models.DateTimeField(null=True, blank=True)
+    group = models.ForeignKey(InboxGroup, on_delete=models.SET_NULL, null=True, blank=True, related_name='conversations')
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

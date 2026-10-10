@@ -1,26 +1,29 @@
 """The person's deal inbox, across every account they belong to: the conversations of their deals with unread counts, and notifications
-of what the other party did on them. Read by polling (no websocket); nothing here changes a deal.
+of what the other party did on them. Read by polling, nudged by the websocket (realtime.py); nothing here changes a deal.
 
 A person takes part in a deal through a membership of its client account (with the client capability) or of its supplier account
 (with the supplier capability), the rule of deal_views.participant. Unread messages are the ones someone else wrote after the person's
-read mark; notifications are the deal events of accounts the person does not belong to."""
+read mark; notifications are the deal events of accounts the person does not belong to. The person organizes their conversations list
+by pinning conversations (listed first, under Fijadas) and keeping others in groups they make; the rest list as Sin grupo."""
 import uuid
 from datetime import timedelta
 
 from django.db import IntegrityError, transaction
-from django.db.models import BigIntegerField, Case, Count, F, IntegerField, Max, OuterRef, Q, Subquery, Value, When
+from django.db.models import BigIntegerField, Case, Count, F, IntegerField, Max, OuterRef, Q, Subquery, UUIDField, Value, When
 from django.db.models.functions import Coalesce, Greatest
 from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics, serializers
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .inbox_models import ConversationRead, InboxCursor
+from .inbox_models import ConversationRead, InboxCursor, InboxGroup
 from .models import Account, DealEvent, DealMessage, SupplierRequest
 
 NOTIFICATION_PAGE = 30
+GROUP_LIMIT = 30
 ACTIVITY_WRITE = timedelta(minutes=1)
 SNIPPET = 140
 TITLES = {
@@ -79,6 +82,33 @@ def with_activity(deals, user, cursor):
     return deals.annotate(unread=Coalesce(Subquery(unread_count, output_field=IntegerField()), Value(0)),
                           last_message_id=Subquery(latest.values('id')[:1]),
                           activity=Greatest('updated_at', Coalesce(Subquery(latest.values('created_at')[:1]), 'updated_at')))
+
+
+def placed(deals, user):
+    """Each deal with where the person keeps it in their list: pinned, in one of their groups (with its position), or neither."""
+    place = ConversationRead.objects.filter(user=user, order=OuterRef('pk'))
+    return deals.annotate(list_pinned=Subquery(place.values('pinned_at')[:1]), list_group=Subquery(place.values('group_id')[:1]),
+                          list_position=Subquery(place.values('group__position')[:1]))
+
+
+def list_order(rows):
+    """Fijadas first, then each group in the person's order, then Sin grupo; the most recent activity first within each."""
+    loose = Q(list_pinned__isnull=True)
+    section = Case(When(list_pinned__isnull=False, then=Value(0)), When(list_group__isnull=False, then=Value(1)), default=Value(2))
+    return rows.order_by(section, Case(When(loose, then=F('list_position')), default=Value(None), output_field=IntegerField()),
+                         Case(When(loose, then=F('list_group')), default=Value(None), output_field=UUIDField()), '-activity', '-pk')
+
+
+def groups_of(user):
+    """The person's groups in order, each with how many of their conversations it lists (pinned ones list under Fijadas instead)."""
+    counts = (ConversationRead.objects.filter(group=OuterRef('pk'), pinned_at__isnull=True, order__in=my_deals(user).values('pk'))
+              .order_by().values('group').annotate(total=Count('pk')).values('total'))
+    groups = InboxGroup.objects.filter(user=user).annotate(total=Coalesce(Subquery(counts, output_field=IntegerField()), Value(0)))
+    return [group_data(group, group.total) for group in groups]
+
+
+def group_data(group, count=0):
+    return {'id': str(group.pk), 'name': group.name, 'count': count}
 
 
 def notifications(user):
@@ -150,11 +180,12 @@ class InboxSummary(APIView):
 
 class InboxConversations(generics.GenericAPIView):
     @extend_schema(responses=OpenApiTypes.OBJECT, description='Los acuerdos de la persona, del más reciente al más antiguo (mensaje o '
-                   'cambio de estado), con su lado, la otra parte, el último mensaje y cuántos mensajes no ha leído. search filtra por '
-                   'referencia o nombre de cuenta; unread=1 deja solo los que tienen mensajes sin leer; order=<id> deja ese acuerdo.')
+                   'cambio de estado), con su lado, la otra parte, el último mensaje y cuántos mensajes no ha leído; primero los fijados, '
+                   'luego los de cada grupo de la persona y al final los demás (groups lista sus grupos). search filtra por referencia o '
+                   'nombre de cuenta; unread=1 deja solo los que tienen mensajes sin leer; order=<id> deja ese acuerdo.')
     def get(self, request):
         user, cursor = request.user, cursor_for(request.user)
-        rows = with_activity(my_deals(user), user, cursor)
+        rows = placed(with_activity(my_deals(user), user, cursor), user)
         search = request.query_params.get('search', '').strip()
         if search:
             rows = rows.filter(Q(reference__icontains=search) | Q(client_name__icontains=search) | Q(supplier_name__icontains=search))
@@ -166,15 +197,18 @@ class InboxConversations(generics.GenericAPIView):
                 rows = rows.filter(pk=uuid.UUID(order))
             except ValueError:
                 rows = rows.none()
-        page = self.paginate_queryset(rows.order_by('-activity', '-pk'))
+        page = self.paginate_queryset(list_order(rows))
         messages = DealMessage.objects.select_related('account', 'actor').in_bulk([row.last_message_id for row in page if row.last_message_id])
         results = []
         for row in page:
             mine, counterpart = own_side(row)
             results.append({'id': str(row.pk), 'reference': row.reference, 'status': row.status, 'side': row.side, 'account': mine,
                             'counterpart': counterpart, 'unread': row.unread, 'activity': iso(row.activity),
-                            'last_message': message_preview(messages.get(row.last_message_id), user)})
-        return self.get_paginated_response(results)
+                            'last_message': message_preview(messages.get(row.last_message_id), user),
+                            'pinned': row.list_pinned is not None, 'group': str(row.list_group) if row.list_group else None})
+        response = self.get_paginated_response(results)
+        response.data['groups'] = groups_of(user)
+        return response
 
 
 class ReadMark(serializers.Serializer):
@@ -195,6 +229,87 @@ class InboxConversationRead(APIView):
         from .realtime import publish_later  # the person's other tabs and devices update their badges
         publish_later({request.user.pk}, 'read', row.pk)
         return Response({'order_id': str(row.pk), 'last_message_id': mark.last_message_id})
+
+
+class Placement(serializers.Serializer):
+    pinned = serializers.BooleanField(required=False)
+    group = serializers.UUIDField(required=False, allow_null=True)
+
+
+class InboxConversationPlace(APIView):
+    @extend_schema(request=Placement, responses=OpenApiTypes.OBJECT, description='Dónde guarda la persona la conversación en su lista: '
+                   'pinned la fija arriba (o la devuelve a su grupo); group la pone en uno de sus grupos (null la deja sin grupo).')
+    def post(self, request, pk):
+        row = generics.get_object_or_404(my_deals(request.user), pk=pk)
+        data = Placement(data=request.data)
+        data.is_valid(raise_exception=True)
+        changes = {}
+        if 'pinned' in data.validated_data:
+            changes['pinned_at'] = timezone.now() if data.validated_data['pinned'] else None
+        if 'group' in data.validated_data:
+            group = data.validated_data['group']
+            changes['group'] = generics.get_object_or_404(InboxGroup, user=request.user, pk=group) if group else None
+        if not changes:
+            raise ValidationError({'detail': 'Indica si la conversación va fijada (pinned) o en qué grupo (group).'})
+        mark, _ = ConversationRead.objects.get_or_create(user=request.user, order=row)
+        for field, value in changes.items():
+            setattr(mark, field, value)
+        mark.save(update_fields=[*changes, 'updated_at'])  # never the read mark, which another request may be moving
+        from .realtime import publish_later  # the person's other tabs and devices list it there too
+        publish_later({request.user.pk}, 'read', row.pk)
+        return Response({'order_id': str(row.pk), 'pinned': mark.pinned_at is not None, 'group': str(mark.group_id) if mark.group_id else None})
+
+
+class GroupName(serializers.Serializer):
+    name = serializers.CharField(max_length=60)
+
+
+def group_name(request, group=None):
+    data = GroupName(data=request.data)
+    data.is_valid(raise_exception=True)
+    name = data.validated_data['name']
+    taken = InboxGroup.objects.filter(user=request.user, name__iexact=name)
+    if (taken.exclude(pk=group.pk) if group else taken).exists():
+        raise ValidationError({'name': ['Ya tienes un grupo con ese nombre.']})
+    return name
+
+
+def saved_group(request, group):
+    try:
+        with transaction.atomic():
+            group.save()
+    except IntegrityError:  # the same name, saved by a parallel request
+        raise ValidationError({'name': ['Ya tienes un grupo con ese nombre.']})
+    from .realtime import publish_later
+    publish_later({request.user.pk}, 'read')
+
+
+class InboxGroups(APIView):
+    @extend_schema(request=GroupName, responses=OpenApiTypes.OBJECT, description='Crea un grupo en la lista de conversaciones de la '
+                   f'persona, después de los que ya tiene (hasta {GROUP_LIMIT}; el nombre no se repite).')
+    def post(self, request):
+        groups = InboxGroup.objects.filter(user=request.user)
+        if groups.count() >= GROUP_LIMIT:
+            raise ValidationError({'name': [f'Puedes tener hasta {GROUP_LIMIT} grupos.']})
+        group = InboxGroup(user=request.user, name=group_name(request), position=(groups.aggregate(top=Max('position'))['top'] or 0) + 1)
+        saved_group(request, group)
+        return Response(group_data(group), status=201)
+
+
+class InboxGroupDetail(APIView):
+    @extend_schema(operation_id='v1_inbox_groups_rename', request=GroupName, responses=OpenApiTypes.OBJECT, description='Cambia el nombre del grupo.')
+    def post(self, request, pk):
+        group = generics.get_object_or_404(InboxGroup, user=request.user, pk=pk)
+        group.name = group_name(request, group)
+        saved_group(request, group)
+        return Response(group_data(group, group.conversations.filter(pinned_at__isnull=True, order__in=my_deals(request.user).values('pk')).count()))
+
+    @extend_schema(responses={204: None}, description='Elimina el grupo; sus conversaciones quedan sin grupo.')
+    def delete(self, request, pk):
+        generics.get_object_or_404(InboxGroup, user=request.user, pk=pk).delete()
+        from .realtime import publish_later
+        publish_later({request.user.pk}, 'read')
+        return Response(status=204)
 
 
 class InboxNotifications(APIView):
