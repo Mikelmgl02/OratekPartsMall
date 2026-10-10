@@ -18,6 +18,7 @@ import { onDealNudge, realtimeLive } from '@/lib/realtime';
 const QuoteEditor = dynamic(() => import('./quotation-editor'), { ssr: false, loading: () => <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando editor de cotización…</div> });
 const DealLinesGrid = dynamic(() => import('./deal-lines-grid'), { ssr: false, loading: () => <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando artículos…</div> });
 const QuoteLinesGrid = dynamic(() => import('./quote-lines-grid'), { ssr: false, loading: () => <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando cotización…</div> });
+const QuoteTraceGrid = dynamic(() => import('./quote-trace-grid'), { ssr: false, loading: () => <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando origen de precios…</div> });
 const ClientPricingProfile = dynamic(() => import('./client-pricing-profile'), { ssr: false, loading: () => <div className="loading"><LoaderCircle className="spin"/>Cargando perfil comercial…</div> });
 
 const date = (value: string) => new Date(value).toLocaleString('es-PA', { timeZone: 'America/Panama', dateStyle: 'medium', timeStyle: 'short' });
@@ -299,15 +300,6 @@ export function QuoteView({ quote, historical = false }: { quote: Quotation; his
   return <section className={`deal-quote ${historical ? 'historical' : ''}`} aria-label={`${historical ? 'Cotización anterior' : 'Cotización vigente'} v${quote.revision}`}><div className="deal-quote-heading"><div><h3>Cotización v{quote.revision}</h3><small>Confirmada por el proveedor · {date(quote.supplier_confirmed_at)}</small></div><strong>{money(quote.total, quote.currency)}</strong></div><QuoteLinesGrid quote={quote} label={`Líneas de la cotización ${historical ? 'anterior ' : ''}v${quote.revision}`}/>{quote.terms && <div className="deal-terms"><h4>Condiciones</h4><p>{quote.terms}</p></div>}</section>;
 }
 
-const priceSources = { engine: 'Lista o regla', previous: 'Versión anterior', manual: 'Manual', none: 'Sin precio', unspecified: 'Sin especificar' };
-// Keep in sync with EXCEPTION_CODES (mall/quotation_exceptions.py); the trace lists the block and confirm ones.
-const alertNames: Record<string, string> = { offered_gt_available: 'Más que las disponibles', offered_gt_requested: 'Más que las solicitadas',
-  identity_changed: 'Artículo cambiado', zero_price: 'Precio 0,00', below_floor: 'Bajo tu precio mínimo', stale_price: 'Precio sugerido cambió',
-  quantity_missing: 'Falta la cantidad', price_missing: 'Falta el precio', all_zero: 'Sin unidades', draft_outdated: 'Borrador desactualizado',
-  reduced_to_stock: 'Ajustado a existencias', zero_offered: 'No ofrecido', manual_price: 'Precio manual', differs_from_list: 'Distinto de tu lista',
-  no_list_price: 'Sin precio en tu lista', currency_parity: 'Paridad USD/PAB', currency_mismatch: 'Moneda distinta', fallback_list: 'Lista de respaldo',
-  rule_conflict: 'Reglas igual de específicas', no_profile: 'Cliente sin perfil comercial', client_price_request: 'El cliente pide precio',
-  assistant_unmatched: 'Mencionado fuera de la orden' };
 const suggestionStates: Record<string, string> = { missing: 'Sin precio en tu lista', identity_changed: 'Artículo cambiado', currency_mismatch: 'Moneda distinta',
   out_of_range: 'Fuera de rango', no_price_list: 'Sin lista de precios' };
 
@@ -338,10 +330,7 @@ function QuoteTrace({ path, currency }: { path: string; currency: string }) {
       : !trace.available ? <p>Publicada antes de los precios privados.</p> : <>
         <p>Publicada por {trace.publisher.name} · {trace.draft_version ? `borrador v${trace.draft_version}` : 'sin borrador guardado'} · {date(trace.published_at)}</p>
         {check && <p className={`deal-trace-check ${check.result}`}>{acceptResults[check.result]} · {date(check.at)}</p>}
-        <div className="table-scroll"><table><thead><tr><th>Artículo</th><th>Ofrecidas</th><th>Disponibles al cotizar</th><th>Al confirmar</th><th>Origen del precio</th><th>Alertas</th></tr></thead>
-          <tbody>{trace.lines.map(line => <tr key={line.order_line_id}><td><strong>{line.codigo}</strong><small>{line.description}</small></td><td>{line.quantity}</td>
-            <td>{line.identity_ok_at_quote ? line.available_at_quote : 'Artículo cambiado'}</td><td>{line.available_at_accept ?? '—'}</td><td>{priceSources[line.price_source]}{line.suggested_price && <small>Sugerido {money(line.suggested_price, currency)}</small>}</td>
-            <td>{line.exceptions.some(item => item.severity !== 'info') ? line.exceptions.filter(item => item.severity !== 'info').map(item => <small key={item.code}>{alertNames[item.code] || item.code} ({item.context}) · {item.acknowledged_by ? `confirmada por ${item.acknowledged_by.name}` : 'sin confirmar'}</small>) : '—'}</td></tr>)}</tbody></table></div>
+        <QuoteTraceGrid lines={trace.lines} currency={currency}/>
       </>}
   </details>;
 }

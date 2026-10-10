@@ -132,6 +132,11 @@ test('a long order lists its items in a grid: searched, and narrowed to the ones
   await expect(grid.getByRole('row')).toHaveCount(3);
   await expect(grid).toContainText('Faltan 2 unidades');
   await expect(grid).toContainText('Revisar artículo');
+  const row = grid.getByRole('row').filter({ hasText: 'COD-7' });
+  await row.getByRole('gridcell').first().click();  // the focused row stays highlighted
+  await expect(row).toHaveClass(/ag-row-focus/);
+  await expect(row).toHaveCSS('background-color', 'rgb(238, 246, 226)');
+  await expect(grid.getByRole('row').filter({ hasText: 'COD-3' })).not.toHaveCSS('background-color', 'rgb(238, 246, 226)');
 });
 
 test('a short grid’s column menu opens over the panel instead of being clipped by the grid', async ({ page }) => {

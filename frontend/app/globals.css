@@ -1321,7 +1321,7 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .deal-adjust-hint { flex-basis:100%; color:var(--muted); font-size:12px; }
 .deal-quote-trace { min-width:0; font-size:12px; }
 .deal-quote-trace summary { cursor:pointer; padding:8px 0; color:#52743f; font-weight:700; }
-.deal-quote-trace td small { display:block; overflow-wrap:anywhere; }
+.deal-quote-trace .trace-alerts small.unconfirmed { color:#a14c2d; }
 .deal-trace-check { font-weight:700; color:#45652f; }
 .deal-trace-check.blocked { color:#a14c2d; }
 .deal-trace-check.accepted_with_shortfall { color:#8a6a24; }
@@ -1871,6 +1871,10 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .admin-grid .ag-cell { line-height:1.35; }
 .admin-grid .ag-header-cell-text { font-size:10px; font-weight:600; letter-spacing:.6px; text-transform:uppercase; }
 .admin-grid .ag-row-hover .ag-cell { background:#fafcf6; }
+/* Every grid: the row of the focused cell stays highlighted (a tint and an accent on its left edge), so the eye keeps its place across columns. */
+.ag-row.ag-row-focus { background-color:#eef6e2; box-shadow:inset 3px 0 0 #6e954b; }
+.admin-grid .ag-row-focus .ag-cell,.admin-grid .ag-row-focus.ag-row-hover .ag-cell { background:transparent; }
+.quotation-grid .ag-row-focus .quotation-editable-cell:not(.quotation-invalid-cell) { background:#e4f0d0; }
 .admin-grid .admin-grid-text { color:#5f6f55; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:block; line-height:var(--admin-row-height, 56px); }
 .admin-grid .admin-grid-text.muted { color:#8d9b80; font-size:11px; }
 .admin-grid .admin-grid-number { color:var(--ink); font-weight:600; }

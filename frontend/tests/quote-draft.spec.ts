@@ -312,9 +312,9 @@ test('the private trace of the current quotation loads only when the supplier op
   await expect(trace).toContainText('Confirmación bloqueada por existencias');
   const rows = trace.getByRole('row');
   await expect(rows.nth(1)).toContainText('Más que las disponibles (5>3) · confirmada por EMPLEADO');
-  await expect(rows.nth(1).getByRole('cell').nth(2)).toHaveText('3');
-  await expect(rows.nth(1).getByRole('cell').nth(3)).toHaveText('2');
-  await expect(rows.nth(2).getByRole('cell').nth(2)).toHaveText('Artículo cambiado');
+  await expect(rows.nth(1).getByRole('gridcell').nth(2)).toHaveText('3');
+  await expect(rows.nth(1).getByRole('gridcell').nth(3)).toHaveText('2');
+  await expect(rows.nth(2).getByRole('gridcell').nth(2)).toHaveText('Artículo cambiado');
   await expect(rows.nth(2)).toContainText('Versión anterior');
   await expect(rows.nth(2)).toContainText('Artículo cambiado (a1b2c3d4e5f6) · sin confirmar');
   // Reopening reads it again, so an accept check recorded meanwhile shows up.
