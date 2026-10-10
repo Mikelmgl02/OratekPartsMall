@@ -1,5 +1,5 @@
 'use client';
-import { type DragEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { Check, ChevronDown, ChevronRight, Ellipsis, Folder, FolderMinus, FolderPlus, LoaderCircle, Pencil, Pin, PinOff, Search, Trash2 } from 'lucide-react';
 import type { Page } from '@/lib/types';
 import { request } from '@/lib/types';
@@ -26,8 +26,11 @@ export function mostRecent(rows: InboxConversation[]) {
   return rows.reduce<InboxConversation | undefined>((best, row) => !best || Date.parse(row.activity) > Date.parse(best.activity) ? row : best, undefined);
 }
 
-export default function ConversationList({ hidden, selectedId, onChoose, onLoaded }: {
-  hidden: boolean; selectedId: string | null; onChoose: (target: InboxTarget) => void; onLoaded: (rows: InboxConversation[]) => void;
+// floatTop: shown floating over the chat (the panel's peek at a hidden list), that far from the top; onPeek tells the panel the pointer
+// came in or left, or the focus left the list.
+export default function ConversationList({ hidden, floatTop = null, onPeek, selectedId, onChoose, onLoaded }: {
+  hidden: boolean; floatTop?: number | null; onPeek?: (kind: 'enter' | 'leave' | 'blur') => void; selectedId: string | null;
+  onChoose: (target: InboxTarget) => void; onLoaded: (rows: InboxConversation[]) => void;
 }) {
   const [rows, setRows] = useState<InboxConversation[] | null>(null);
   const [groups, setGroups] = useState<InboxGroup[]>([]);
@@ -203,7 +206,10 @@ export default function ConversationList({ hidden, selectedId, onChoose, onLoade
 
   const empty = !rows?.length && (filtering || !groups.length);
   const looseOpen = !collapsed.includes(LOOSE) || filtering;
-  return <aside ref={list} className="inbox-list" aria-label="Tus conversaciones" hidden={hidden}>
+  return <aside ref={list} className={`inbox-list${floatTop !== null ? ' floating' : ''}`} aria-label="Tus conversaciones" hidden={hidden}
+    style={floatTop !== null ? { '--inbox-peek-top': `${floatTop}px` } as CSSProperties : undefined}
+    onPointerEnter={() => onPeek?.('enter')} onPointerLeave={() => onPeek?.('leave')}
+    onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) onPeek?.('blur'); }}>
     <div className="inbox-list-tools">
       <label className="inbox-search"><Search size={15}/><span className="sr-only">Buscar conversación</span><input value={search} onChange={event => setSearch(event.target.value)} placeholder="Orden o cuenta…" autoComplete="off"/></label>
       <div className="inbox-list-filters">

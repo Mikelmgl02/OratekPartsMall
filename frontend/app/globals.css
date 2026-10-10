@@ -2291,7 +2291,13 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .inbox-modal>.modal-header { margin-bottom:10px; }
 .inbox-modal>.modal-header h2 { font-size:16px; }
 /* Conversations | chat | the order's section, like a desktop chat app; the dividers resize the side columns. */
-.inbox-layout { flex:1; min-height:0; display:flex; }
+.inbox-layout { position:relative; flex:1; min-height:0; display:flex; }
+/* A hidden list peeks over the chat while its button (or the list itself) is hovered. */
+.inbox-list.floating { position:absolute; left:0; top:var(--inbox-peek-top,0px); bottom:0; z-index:6; width:var(--inbox-list,300px); padding:10px 8px 10px 10px; border:1px solid var(--line); border-radius:12px; background:#fbfcf8; box-shadow:0 18px 44px #19221b2e; animation:inbox-peek .14s ease-out; }
+@keyframes inbox-peek { from { opacity:0; transform:translateX(-10px); } }
+@media (prefers-reduced-motion: reduce) { .inbox-list.floating { animation:none; } }
+.inbox-placeholder { position:relative; }
+.inbox-placeholder .inbox-list-toggle { position:absolute; top:12px; left:12px; }
 .inbox-list { flex:0 0 var(--inbox-list,300px); }
 .inbox-list { display:flex; flex-direction:column; gap:8px; min-height:0; overflow-y:auto; padding-right:4px; }
 .inbox-list-tools { display:grid; gap:8px; position:sticky; top:0; z-index:1; background:#fbfcf8; padding-bottom:4px; }

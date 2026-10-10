@@ -40,6 +40,36 @@ export default function ConversationsPanel({ initial, onClose, onShowing }: { in
   const box = useRef<HTMLDivElement>(null);
   // Setting prices widens the order's panel for a while; the layout the person chose comes back afterwards.
   const beforePricing = useRef<Layout | null>(null);
+  // With the list hidden, hovering its button shows it floating over the chat (as in a desktop app). It hides a moment after the pointer
+  // leaves both, unless the person is typing in it; choosing a conversation or Escape hides it too, and pressing the button docks it.
+  const header = useRef<HTMLElement>(null);
+  const [peekTop, setPeekTop] = useState<number | null>(null);
+  const peekTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const peekHovered = useRef(false);
+  function peek(inside: boolean) {
+    peekHovered.current = inside;
+    clearTimeout(peekTimer.current);
+    peekTimer.current = setTimeout(() => {
+      if (inside) setPeekTop(Math.round((header.current?.getBoundingClientRect().bottom ?? 0) - (box.current?.getBoundingClientRect().top ?? 0)) + 6);
+      else if (!(document.activeElement instanceof HTMLInputElement && document.activeElement.closest('.inbox-list'))) setPeekTop(null);
+    }, inside ? 90 : 300);
+  }
+  function peekEvent(kind: 'enter' | 'leave' | 'blur') {
+    if (kind !== 'blur') peek(kind === 'enter');
+    else if (!peekHovered.current) peek(false);  // done typing in it, with the pointer already elsewhere
+  }
+  function unpeek() { clearTimeout(peekTimer.current); peekHovered.current = false; setPeekTop(null); }
+  useEffect(() => () => clearTimeout(peekTimer.current), []);
+  useEffect(() => {
+    if (peekTop === null) return;
+    // Escape hides the floating list (not the panel), unless one of its menus or a group's name is taking it.
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || document.querySelector('.inbox-list .inbox-menu') || (event.target as Element | null)?.closest?.('.inbox-group-form')) return;
+      event.preventDefault(); event.stopPropagation(); unpeek();
+    };
+    document.addEventListener('keydown', escape, true);
+    return () => document.removeEventListener('keydown', escape, true);
+  }, [peekTop]);
   // On a wide screen the most recent conversation opens by itself.
   const loaded = useCallback((rows: InboxConversation[]) => {
     const recent = mostRecent(rows);
@@ -52,6 +82,7 @@ export default function ConversationsPanel({ initial, onClose, onShowing }: { in
   }, [layout]);
   function choose(target: InboxTarget) {
     setSelected(target); setSection('order');  // the deal shows its quotation instead once it loads one
+    unpeek();
     if (!wide()) setLayout(current => ({ ...current, sideOpen: false }));
   }
   // A section button opens its section, switches to it, or (pressed again) closes the panel.
@@ -101,17 +132,20 @@ export default function ConversationsPanel({ initial, onClose, onShowing }: { in
   const separator = (which: 'list' | 'side', label: string) => <div className="inbox-resizer" role="separator" aria-orientation="vertical" aria-label={label} tabIndex={0}
     aria-valuenow={layout[which]} aria-valuemin={which === 'list' ? LIST_MIN : SIDE_MIN} onPointerDown={drag(which)} onKeyDown={nudge(which)}
     onDoubleClick={() => setLayout(current => ({ ...current, [which]: DEFAULT_LAYOUT[which] }))}/>;
+  const listToggle = <button type="button" className="icon-button inbox-list-toggle" aria-pressed={layout.listOpen} aria-label={layout.listOpen ? 'Ocultar conversaciones' : 'Mostrar conversaciones'}
+    title={layout.listOpen ? 'Ocultar conversaciones' : 'Mostrar conversaciones'} onClick={() => { unpeek(); setLayout(current => ({ ...current, listOpen: !current.listOpen })); }}
+    onPointerEnter={event => { if (event.pointerType === 'mouse' && !layout.listOpen) peek(true); }} onPointerLeave={() => { if (!layout.listOpen) peek(false); }}><PanelLeft size={18}/></button>;
 
   return <Modal title="Conversaciones" className={`inbox-modal${selected ? ' has-selection' : ''}`} onClose={onClose}>
     <div ref={box} className={`inbox-layout${layout.listOpen ? '' : ' list-closed'}`} style={{ '--inbox-list': `${layout.list}px`, '--inbox-side': `${layout.side}px` } as React.CSSProperties}>
       {/* Kept mounted while hidden, so its search, folded groups and scroll stay as they were. */}
-      <ConversationList hidden={!layout.listOpen} selectedId={selected?.orderId ?? null} onChoose={choose} onLoaded={loaded}/>
+      <ConversationList hidden={!layout.listOpen && peekTop === null} floatTop={layout.listOpen ? null : peekTop} onPeek={layout.listOpen ? undefined : peekEvent}
+        selectedId={selected?.orderId ?? null} onChoose={choose} onLoaded={loaded}/>
       {layout.listOpen && separator('list', 'Ajustar el ancho de las conversaciones')}
       {selected ? <section className="inbox-conversation" aria-label={`Orden ${selected.reference} con ${selected.counterpart.name}`}>
-        <header className="inbox-conversation-header">
+        <header ref={header} className="inbox-conversation-header">
           <button type="button" className="icon-button inbox-back" aria-label="Volver a conversaciones" onClick={() => setSelected(null)}><ArrowLeft size={18}/></button>
-          <button type="button" className="icon-button inbox-list-toggle" aria-pressed={layout.listOpen} aria-label={layout.listOpen ? 'Ocultar conversaciones' : 'Mostrar conversaciones'}
-            title={layout.listOpen ? 'Ocultar conversaciones' : 'Mostrar conversaciones'} onClick={() => setLayout(current => ({ ...current, listOpen: !current.listOpen }))}><PanelLeft size={18}/></button>
+          {listToggle}
           <div className="inbox-conversation-title"><strong>{selected.counterpart.name}</strong><span>{selected.reference} · {selected.side === 'supplier' ? 'tu cliente' : 'tu proveedor'}</span></div>
           <div className="inbox-sections" role="group" aria-label="Secciones de la orden">
             {SECTIONS.map(([value, label, Icon]) => <button type="button" key={value} aria-pressed={layout.sideOpen && section === value} title={label} onClick={() => toggleSection(value)}><Icon size={15}/><span>{label}</span></button>)}
@@ -130,7 +164,7 @@ export default function ConversationsPanel({ initial, onClose, onShowing }: { in
               onCopyToChat={text => { setChatInsert({ text, id: Date.now() }); if (!wide()) setLayout(current => ({ ...current, sideOpen: false })); }}/>
           </div>
         </div>
-      </section> : <section className="inbox-conversation inbox-placeholder"><MessagesSquare size={30}/><p>Elige una conversación para ver su chat y su orden.</p></section>}
+      </section> : <section className="inbox-conversation inbox-placeholder">{!layout.listOpen && listToggle}<MessagesSquare size={30}/><p>Elige una conversación para ver su chat y su orden.</p></section>}
     </div>
     {dealOpen && selected && <DealDetail account={accountOf(selected)} orderId={selected.orderId} reference={selected.reference} side="client" onClose={() => setDealOpen(false)}/>}
   </Modal>;

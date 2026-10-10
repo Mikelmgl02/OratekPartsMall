@@ -246,6 +246,24 @@ test('like a desktop chat app: sections toggle a right panel, the side columns r
   await expect.poll(async () => Math.round((await list.boundingBox())!.width)).toBeGreaterThan(listBefore + 40);
   await panel.getByRole('button', { name: 'Ocultar conversaciones', exact: true }).click();
   await expect(list).toHaveCount(0);
+  const toggle = panel.getByRole('button', { name: 'Mostrar conversaciones', exact: true });
+  await chat.hover();
+  await toggle.hover();  // hovering the hidden list's button shows it floating over the chat
+  await expect(list).toBeVisible();
+  await expect(list).toHaveClass(/floating/);
+  const chatBox = (await chat.boundingBox())!;
+  expect(Math.round((await list.boundingBox())!.x)).toBeLessThan(chatBox.x + 20);  // over the chat, which keeps its place
+  await chat.hover({ position: { x: chatBox.width - 40, y: chatBox.height / 2 } });  // the pointer leaves: it hides again
+  await expect(list).toBeHidden();
+  await toggle.hover();
+  await list.getByPlaceholder('Orden o cuenta…').click();
+  await page.keyboard.press('Escape');  // Escape hides it, never the panel
+  await expect(list).toBeHidden();
+  await expect(panel).toBeVisible();
+  await toggle.hover();
+  await list.getByRole('button', { name: /AUTOPARTES DEL ISTMO/ }).click();  // choosing a conversation there hides it too
+  await expect(panel.getByRole('region', { name: 'Orden ORD-0119 con AUTOPARTES DEL ISTMO', exact: true })).toBeVisible();
+  await expect(list).toBeHidden();
   await panel.getByRole('button', { name: 'Cerrar ventana', exact: true }).click();
   await page.getByRole('button', { name: 'Mensajes, 3 sin leer', exact: true }).click();
   await expect(panel.getByRole('button', { name: 'Mostrar conversaciones', exact: true })).toBeVisible();  // remembered
