@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { expect, Page, test } from '@playwright/test';
+import { expectSignedIn } from './header';
 import { excelDate, excelFixture } from './excel-fixture';
 
 const workbookType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -11,7 +12,7 @@ async function signIn(page: Page) {
   await page.getByLabel('Usuario', { exact: true }).fill(process.env.E2E_ADMIN_USERNAME!);
   await page.getByLabel('Contraseña', { exact: true }).fill(process.env.E2E_ADMIN_PASSWORD!);
   await page.getByRole('dialog').getByRole('button', { name: 'Iniciar sesión', exact: true }).last().click();
-  await expect(page.getByText('Cuenta conectada', { exact: true })).toBeVisible();
+  await expectSignedIn(page);
   await page.goto('/administracion?seccion=inventario');
   await page.getByRole('button', { name: 'Importar Excel', exact: true }).click();
 }

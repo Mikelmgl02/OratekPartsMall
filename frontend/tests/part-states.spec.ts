@@ -1,4 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
+import { switchAccount } from './header';
 
 const part = {id:'state-part', sku:'58411-1R000', name:'', description:'TAMBOR HYU ACCENT', category:'FRENOS', subcategory:'TAMBORES', codes:[]};
 const accounts = [
@@ -73,7 +74,7 @@ for (const viewport of [{label:'desktop', width:1440, height:1100}, {label:'mobi
     await expect(row(page).getByRole('button', {name:'Agregar 58411-1R000-G de PROVEEDOR A a la cesta', exact:true})).toBeVisible();
     await expect(row(page).locator('.item-request-states>span')).toHaveText(['3 ENVIADAS · POR REVISAR', '5 EN REVISIÓN']);
     await page.getByRole('button', {name:'Cerrar ventana', exact:true}).click();
-    await page.getByLabel('Cuenta activa', {exact:true}).selectOption('state-client-b');
+    await switchAccount(page, 'state-client-b');
     await page.unroute('**/request-state');
     await page.route('**/request-state', route => route.fulfill({json:emptyHistory}));
     await openDetail(page);

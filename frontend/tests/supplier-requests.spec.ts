@@ -1,4 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
+import { expectAccount, expectSignedIn, switchAccount } from './header';
 import { signedOutInbox } from './inbox-route';
 import type { Account, BasketLine, Part } from '../lib/types';
 import type { SupplierRequestDetail } from '../lib/request-types';
@@ -72,7 +73,7 @@ async function mockSession(page: Page, accounts = supplierAccounts.slice(0, 1)) 
 
 async function openSupplier(page: Page) {
   await page.goto('/');
-  await expect(page.getByText('Cuenta conectada', { exact: true })).toBeVisible();
+  await expectSignedIn(page);
   await expect(page.getByRole('link', { name: 'Administración', exact: true })).toHaveCount(0);
   if (page.viewportSize()!.width < 760) await page.getByRole('button', { name: 'Abrir tu panel', exact: true }).click();
   else await page.getByRole('button', { name: 'Para proveedores', exact: true }).click();
@@ -104,7 +105,7 @@ test('order has its own URL, reloads safely and returns to supplier requests wit
   await expect(requestDialog(page).getByText('En revisión', { exact: true }).first()).toBeVisible();
   expect(reviews).toBe(2);
   await page.goBack();
-  await expect(page.getByLabel('Cuenta activa', { exact: true })).toHaveValue(supplierAccount);
+  await expectAccount(page, supplierAccount);
   await expect(page.getByRole('tab', { name: 'Solicitudes', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(requests(page).getByText('SOL-PRUEBA-001', { exact: true })).toBeVisible();
   expect(unexpected).toEqual([]);
@@ -308,7 +309,7 @@ test('late request list and detail responses from a previous supplier cannot app
     await detailRequested;
     await page.getByRole('link', { name: 'Volver a solicitudes', exact: true }).click();
     await listRequested;
-    await page.getByLabel('Cuenta activa', { exact: true }).selectOption(otherSupplierAccount);
+    await switchAccount(page, otherSupplierAccount);
     await page.getByRole('button', { name: 'Para proveedores', exact: true }).click();
     await page.getByRole('tab', { name: 'Solicitudes', exact: true }).click();
     await expect(requests(page).getByText('SOL-SEGUNDO-001', { exact: true })).toBeVisible();

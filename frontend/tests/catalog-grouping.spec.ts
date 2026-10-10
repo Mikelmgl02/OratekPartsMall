@@ -1,4 +1,5 @@
 import { test, expect, Page } from '@playwright/test';
+import { expectSignedIn } from './header';
 
 async function signIn(page: Page) {
   await page.goto('/');
@@ -7,7 +8,7 @@ async function signIn(page: Page) {
   await page.getByLabel('Usuario', { exact: true }).fill(process.env.E2E_ADMIN_USERNAME!);
   await page.getByLabel('Contraseña', { exact: true }).fill(process.env.E2E_ADMIN_PASSWORD!);
   await page.getByRole('dialog').getByRole('button', { name: 'Iniciar sesión', exact: true }).last().click();
-  await expect(page.getByText('Cuenta conectada', { exact: true })).toBeVisible();
+  await expectSignedIn(page);
 }
 
 test('a reviewed catalog family merges into one searchable SKU without requiring AI', async ({ page }) => {

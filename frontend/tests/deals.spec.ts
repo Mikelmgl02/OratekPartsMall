@@ -1,4 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
+import { switchAccount } from './header';
 import { signedOutInbox } from './inbox-route';
 import type { Deal, DealMessage, DealStatus } from '../lib/deal-types';
 import { openSupplierNavigation } from './supplier-navigation';
@@ -102,7 +103,7 @@ async function fixture(page: Page) {
 }
 async function asSupplier(page: Page) {
   await backToRequests(page);
-  await page.getByLabel('Cuenta activa', {exact:true}).selectOption(supplierId);
+  await switchAccount(page, supplierId);
   if (page.viewportSize()!.width < 760) { await page.getByRole('button', {name:'Cuenta y listas', exact:true}).click(); await page.getByRole('region', {name:'Cuenta y listas', exact:true}).getByRole('button', {name:'Panel de proveedor', exact:true}).click(); }
   else await page.getByRole('button', {name:'Para proveedores', exact:true}).click();
   await openSupplierNavigation(page);
@@ -112,7 +113,7 @@ async function asSupplier(page: Page) {
 }
 async function asClient(page: Page) {
   await backToRequests(page);
-  await page.getByLabel('Cuenta activa', {exact:true}).selectOption(clientId);
+  await switchAccount(page, clientId);
   await page.goto('/?vista=solicitudes');
   await page.getByRole('button', {name:'Ver enviada ORD-PRUEBA-001', exact:true}).click();
 }
@@ -162,7 +163,7 @@ for (const mobile of [false, true]) test(`${mobile ? 'mobile' : 'desktop'}: priv
   await dialog(page).getByRole('button', {name:'Conversación', exact:true}).click();
   await expect(dialog(page).getByRole('log')).toContainText('SOLO NECESITO TRES');
   await dialog(page).getByRole('button', {name:'Cerrar ventana', exact:true}).click();
-  await page.getByLabel('Cuenta activa', {exact:true}).selectOption(supplierId);
+  await switchAccount(page, supplierId);
   await page.goto('/');
   if (mobile) await page.getByRole('button', {name:'Abrir tu panel', exact:true}).click(); else await page.getByRole('button', {name:'Para proveedores', exact:true}).click();
   await openSupplierNavigation(page);
@@ -209,7 +210,7 @@ test('supplier can return an unchanged quotation after adjustment and the client
   await dialog(page).getByLabel('¿Qué necesitas ajustar?', {exact:true}).fill('descuento');
   await dialog(page).getByRole('button', {name:'Enviar ajuste', exact:true}).click();
   await dialog(page).getByRole('button', {name:'Cerrar ventana', exact:true}).click();
-  await page.getByLabel('Cuenta activa', {exact:true}).selectOption(supplierId);
+  await switchAccount(page, supplierId);
   await page.goto('/');
   await page.getByRole('button', {name:'Para proveedores', exact:true}).click();
   await openSupplierNavigation(page);
@@ -302,7 +303,7 @@ test('a client accept refused for availability keeps the deal open, explains it 
   // The supplier's list flags the order privately; the client's own list never carries the badge.
   await dialog(page).getByRole('button', {name:'Cerrar ventana', exact:true}).click();
   await expect(page.getByText('Confirmación bloqueada por existencias', {exact:true})).toHaveCount(0);
-  await page.getByLabel('Cuenta activa', {exact:true}).selectOption(supplierId);
+  await switchAccount(page, supplierId);
   await page.goto('/');
   await page.getByRole('button', {name:'Para proveedores', exact:true}).click();
   await openSupplierNavigation(page);

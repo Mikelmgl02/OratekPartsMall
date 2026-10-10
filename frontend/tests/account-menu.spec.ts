@@ -1,4 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
+import { expectAccount, switchAccount } from './header';
 
 const client = {id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', name:'TALLER UNO', roles:['client_business'], capabilities:['client']};
 const supplier = {id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', name:'REPUESTOS DOS', roles:['supplier_wholesale'], capabilities:['supplier']};
@@ -94,7 +95,7 @@ test('account switching updates allowed links and opens the supplier workspace',
   await expect(panel(page).getByRole('button', {name:'Historial de compras', exact:true})).toBeVisible();
   await panel(page).getByLabel('Cambiar cuenta desde el menú').selectOption(supplier.id);
   await expect(panel(page)).toHaveCount(0);
-  await expect(page.getByLabel('Cuenta activa', {exact:true})).toHaveValue(supplier.id);
+  await expectAccount(page, supplier.id);
   await trigger(page).click();
   await expect(panel(page)).toContainText('REPUESTOS DOS');
   await expect(panel(page).getByRole('button', {name:'Mis solicitudes', exact:true})).toHaveCount(0);
@@ -103,7 +104,7 @@ test('account switching updates allowed links and opens the supplier workspace',
   await expect(page.getByRole('heading', {name:'Tu inventario, en un solo lugar.', exact:true})).toBeVisible();
   await expect(panel(page)).toHaveCount(0);
   await page.reload();
-  await expect(page.getByLabel('Cuenta activa', {exact:true})).toHaveValue(supplier.id);
+  await expectAccount(page, supplier.id);
 });
 
 test('superusers get administration; sign-out submits once and returns to guest actions', async ({page}) => {
@@ -137,7 +138,7 @@ test('purchase history survives reload and browser back, and keeps quotations in
   await expect(page.getByRole('heading', {name:'Órdenes enviadas', exact:true})).toBeVisible();
   await page.goBack();
   await expect(page.getByRole('heading', {name:'Historial de compras', exact:true})).toBeVisible();
-  await page.getByLabel('Cuenta activa', {exact:true}).selectOption(supplier.id);
+  await switchAccount(page, supplier.id);
   await expect(page.getByRole('main', {name:'Historial de compras', exact:true})).toContainText('Selecciona una cuenta con rol de cliente');
   await expect(page.getByRole('button', {name:'Ver mis solicitudes', exact:true})).toHaveCount(0);
 });

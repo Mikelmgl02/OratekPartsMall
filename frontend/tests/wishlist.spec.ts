@@ -1,4 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
+import { openFavorites, switchAccount } from './header';
 import type { Part } from '../lib/types';
 
 const parts: Part[] = [
@@ -52,9 +53,9 @@ test('saved hearts persist after reopening, reload and account switching; wishli
   await expect(savedHeart).toHaveAttribute('aria-pressed','true');
   await page.reload();
   await expect(savedHeart).toHaveAttribute('aria-pressed','true');
-  await page.getByLabel('Cuenta activa', {exact:true}).selectOption('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+  await switchAccount(page, 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
   await expect(savedHeart).toHaveAttribute('aria-pressed','true');
-  await page.getByRole('button', {name:'Mis favoritos', exact:true}).click();
+  await openFavorites(page);
   await expect(page).toHaveURL(/vista=favoritos/);
   await expect(page.locator('.wishlist-page .part-card')).toHaveCount(1);
   await page.getByRole('button', {name:'Ver 58411-1R000', exact:true}).click();
@@ -106,7 +107,7 @@ test('guests get sign-in and a different user does not inherit favorites', async
   await expect(page.locator('.wishlist-page .part-card')).toHaveCount(1);
   await page.getByRole('button', {name:'Cuenta y listas', exact:true}).click();
   await page.getByRole('button', {name:'Cerrar sesión', exact:true}).click();
-  await page.getByRole('button', {name:'Mis favoritos', exact:true}).click();
+  await openFavorites(page);
   await expect(page.getByRole('heading', {name:'Tus próximos repuestos, en un solo lugar.'})).toBeVisible();
   await page.locator('.wishlist-page').getByRole('button', {name:'Iniciar sesión'}).click();
   const login = page.getByRole('dialog');
@@ -121,9 +122,9 @@ for (const width of [390, 320]) {
     await page.setViewportSize({width, height:844});
     await fixture(page, {initial:[parts[0]]});
     await page.goto('/');
-    await page.getByRole('button', {name:'Mis favoritos', exact:true}).click();
+    await page.getByRole('button', {name:'Cuenta y listas', exact:true}).click();
+    await page.getByRole('region', {name:'Cuenta y listas', exact:true}).getByRole('button', {name:'Mis favoritos 1', exact:true}).click();  // the count travels with the link
     await expect(page.getByRole('heading', {name:'Mis favoritos', exact:true})).toBeVisible();
-    await expect(page.locator('.wishlist-nav-count')).toBeVisible();
     await page.getByRole('button', {name:'Quitar 58411-1R000 de favoritos', exact:true}).click();
     await expect(page.getByRole('heading', {name:'Aún no tienes repuestos guardados.'})).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);

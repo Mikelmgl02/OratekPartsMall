@@ -1,4 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
+import { switchAccount } from './header';
 
 type Part = { id: string; sku: string; name: string; description: string; codes: { brand: string; code: string }[] };
 type CatalogPage = { count: number; next: string | null; previous: string | null; results: Part[] };
@@ -238,7 +239,7 @@ test('switching accounts hides the previous account catalog until the new respon
   try {
     await page.goto('/'); await firstAccount.requested; firstAccount.respond(catalog(parts('CUENTA-A', 2)));
     await expect(page.getByRole('heading', { name: 'CUENTA-A-001', exact: true })).toBeVisible();
-    await page.getByLabel('Cuenta activa', { exact: true }).selectOption('client-b'); await secondAccount.requested;
+    await switchAccount(page, 'client-b'); await secondAccount.requested;
     await expectInitialSkeletons(page);
     await expect(page.getByRole('heading', { name: 'CUENTA-A-001', exact: true })).not.toBeVisible();
     secondAccount.respond(catalog(parts('CUENTA-B', 1)));

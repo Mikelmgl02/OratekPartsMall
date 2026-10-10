@@ -1,4 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
+import { switchAccount } from './header';
 import { signedOutInbox } from './inbox-route';
 import type { Account, BasketLine } from '../lib/types';
 import { requestPayloadLines } from '../lib/basket-submissions';
@@ -120,7 +121,7 @@ test('late sent history from another client cannot appear after account switchin
   });
   try {
     await page.goto('/?vista=solicitudes'); await requested;
-    await page.getByLabel('Cuenta activa', { exact: true }).selectOption(otherClientId);
+    await switchAccount(page, otherClientId);
     await expect(sent(page).getByRole('heading', { name: 'SOL-OTRO-001', exact: true })).toBeVisible();
     release(); await done;
     await expect(sent(page).getByRole('heading', { name: 'SOL-ENVIADA-001', exact: true })).toHaveCount(0);

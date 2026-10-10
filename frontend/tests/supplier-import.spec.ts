@@ -1,4 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
+import { expectSignedIn, switchAccount } from './header';
 import { readFile } from 'node:fs/promises';
 import { excelFixture } from './excel-fixture';
 
@@ -49,7 +50,7 @@ async function supplier(page: Page, bothAccounts = false) {
 
 async function openPanel(page: Page) {
   await page.goto('/');
-  await expect(page.getByText('Cuenta conectada', { exact: true })).toBeVisible();
+  await expectSignedIn(page);
   await expect(page.getByRole('link', { name: 'Administración', exact: true })).not.toBeVisible();
   if (page.viewportSize()!.width < 760) await page.getByRole('button', { name: 'Abrir tu panel', exact: true }).click();
   else await page.getByRole('button', { name: 'Para proveedores', exact: true }).click();
@@ -207,7 +208,7 @@ test('lost batch response is recovered after reload and only the remaining batch
   await expect(resumed).not.toBeVisible();
   expect(submitted).toEqual([0, 1]);
 
-  await page.getByLabel('Cuenta activa', { exact: true }).selectOption(secondAccountId);
+  await switchAccount(page, secondAccountId);
   await page.getByRole('button', { name: 'Para proveedores', exact: true }).click();
   await page.getByRole('button', { name: 'Importar Excel', exact: true }).click();
   const separate = page.getByRole('dialog', { name: 'Importar existencias desde Excel', exact: true });

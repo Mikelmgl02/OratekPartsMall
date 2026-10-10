@@ -102,7 +102,8 @@ export default function AccountMenu({ user, ready, accounts, accountId, favorite
         if (open) focusFirst(); else { focusNext.current = true; setOpen(true); }
       }}>
       <UserRound className="account-menu-mobile-icon" size={20}/>
-      <span className="account-menu-trigger-copy"><span>{user ? `Hola, ${name}` : 'Hola, inicia sesión'}</span><strong>Cuenta y listas</strong></span>
+      {/* The active account replaces the header's old account picker; switching stays in the menu (Tu cuenta). */}
+      <span className="account-menu-trigger-copy" title={user && account ? account.roles.map(role => roleLabel[role] || role).join(' · ') || undefined : undefined}><span>{user ? `Hola, ${name}` : 'Hola, inicia sesión'}</span><strong>{user && account ? <><span className="live-dot"/><span className="account-menu-account-name">{account.name}</span></> : 'Cuenta y listas'}</strong></span>
       <ChevronDown className="account-menu-chevron" size={13}/>
     </button>
     {open && <>

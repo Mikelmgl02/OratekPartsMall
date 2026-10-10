@@ -1,4 +1,5 @@
 import { test, expect, Page } from '@playwright/test';
+import { expectSignedIn } from './header';
 import { excelDate, excelFixture } from './excel-fixture';
 
 async function signIn(page: Page) {
@@ -8,7 +9,7 @@ async function signIn(page: Page) {
   await page.getByLabel('Usuario', { exact: true }).fill(process.env.E2E_ADMIN_USERNAME!);
   await page.getByLabel('Contraseña', { exact: true }).fill(process.env.E2E_ADMIN_PASSWORD!);
   await page.getByRole('dialog').getByRole('button', { name: 'Iniciar sesión', exact: true }).last().click();
-  await expect(page.getByText('Cuenta conectada', { exact: true })).toBeVisible();
+  await expectSignedIn(page);
 }
 
 async function upload(page: Page, filename: string, buffer: Buffer) {

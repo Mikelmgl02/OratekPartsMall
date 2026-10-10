@@ -1,4 +1,5 @@
 import { test, expect, Page } from '@playwright/test';
+import { expectSignedIn } from './header';
 import { excelFixture } from './excel-fixture';
 
 async function signIn(page: Page, username: string, password: string) {
@@ -8,7 +9,7 @@ async function signIn(page: Page, username: string, password: string) {
   await page.getByLabel('Usuario', { exact: true }).fill(username);
   await page.getByLabel('Contraseña', { exact: true }).fill(password);
   await page.getByRole('dialog').getByRole('button', { name: 'Iniciar sesión', exact: true }).last().click();
-  await expect(page.getByText('Cuenta conectada', { exact: true })).toBeVisible();
+  await expectSignedIn(page);
 }
 
 test('administration requires sign-in and management endpoints reject anonymous requests', async ({ page, request }) => {

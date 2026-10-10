@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { expectSignedIn } from './header';
 
 test('preview search, part details, and basket persist on reload', async ({ page }) => {
   await page.goto('/');
@@ -57,7 +58,7 @@ test('live sign-in, catalog, supplier update, and ledger', async ({ page }) => {
   await page.getByLabel('Usuario', { exact: true }).fill(process.env.E2E_USERNAME!);
   await page.getByLabel('Contraseña', { exact: true }).fill(process.env.E2E_PASSWORD!);
   await page.getByRole('dialog').getByRole('button', { name: 'Iniciar sesión', exact: true }).last().click();
-  await expect(page.getByText('Cuenta conectada', { exact: true })).toBeVisible();
+  await expectSignedIn(page);
   await expect(page.getByText('Catálogo real', { exact: true })).toBeVisible();
   await page.getByLabel('Buscar repuestos, marcas o códigos', { exact: true }).fill(process.env.E2E_USERNAME!);
   await page.getByLabel('Buscar repuestos, marcas o códigos', { exact: true }).press('Enter');

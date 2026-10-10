@@ -2,7 +2,7 @@
 import Link from 'next/link';
 import BrandLogo from './brand-logo';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowDown, ArrowRight, ArrowUp, ArrowUpRight, Boxes, Check, ChevronDown, CircleHelp, Disc3, Filter, Globe2, Grid2X2, Heart, List, LoaderCircle, LockKeyhole, Menu, Package, Search, Settings2, ShieldCheck, ShoppingBag, SlidersHorizontal, Sparkles, Store, Truck, UserRound, Wrench, X, Zap } from 'lucide-react';
+import { ArrowDown, ArrowRight, ArrowUp, ArrowUpRight, Boxes, Check, ChevronDown, CircleHelp, Disc3, Filter, Globe2, Grid2X2, List, LoaderCircle, LockKeyhole, Menu, Package, Search, Settings2, ShieldCheck, ShoppingBag, SlidersHorizontal, Sparkles, Store, Truck, UserRound, Wrench, X, Zap } from 'lucide-react';
 import PartArt from './part-art';
 import CatalogSkeleton from './catalog-skeleton';
 import CatalogCard from './catalog-card';
@@ -27,7 +27,7 @@ import type { RequestSubmissionResult } from '@/lib/request-types';
 import SupplierWorkspace from './supplier-workspace';
 import Modal from './modal';
 import { AppToolbar, usePageViewport } from './app-shell';
-import { Account, BasketLine, CatalogFacet, CatalogFilters, CatalogPage, Offer, Page, Part, SessionUser, request, roleLabel } from '@/lib/types';
+import { Account, BasketLine, CatalogFacet, CatalogFilters, CatalogPage, Offer, Page, Part, SessionUser, request } from '@/lib/types';
 import { previewParts, previewOffers } from '@/lib/preview';
 
 const categories = [
@@ -300,14 +300,13 @@ export default function Catálogo() {
     <header className={`header store-header${supplierPanel ? ' is-wide' : ''}`}>
       <div className="header-inner store-header-main">
         <button className="wordmark" aria-label="Inicio de MotionPartes" onClick={() => {setBasketPage(false); setView('catalog'); applySearch(''); changeFilters(emptyFilters); viewport.current?.scrollTo({top: 0, behavior: 'smooth'});}}><BrandLogo/></button>
-        {authenticated && <div className="store-account" title={account?.roles.map(role => roleLabel[role] || role).join(' · ') || undefined}><span className="store-account-caption"><span className="live-dot"/>Cuenta conectada</span><label className="sr-only" htmlFor="active-account">Cuenta activa</label><select id="active-account" disabled={!accounts.length} value={accountId} onChange={event => selectAccount(event.target.value)}>{!accounts.length && <option value="">Sin cuenta asignada</option>}{accounts.map(account => <option key={account.id} value={account.id}>{account.name}</option>)}</select></div>}
         <StoreSearch value={search} onChange={setSearch} onSearch={submitSearch} onOpen={openPart} filters={filters} departments={departments} onDepartment={value => { showCatalog(false); selectCategory(value); }} preview={preview} accountId={accountId} inputRef={searchRef}/>
-      <div className="header-actions"><InboxButtons/><button className="basket-button wishlist-nav" onClick={() => setClientPage('favoritos')} aria-current={wishlistOpen ? 'page' : undefined} aria-label="Mis favoritos"><Heart size={20}/><span>Favoritos</span>{wishlist.ready && wishlist.count > 0 && <span className="wishlist-nav-count basket-count">{wishlist.count}</span>}</button>{authenticated && canQuote && <button className="basket-button request-history-button" onClick={() => setClientPage('solicitudes')} aria-current={sentOpen ? 'page' : undefined} aria-label="Mis solicitudes enviadas"><List size={20}/><span>Mis solicitudes</span></button>}<button className="basket-button" onClick={() => setBasketPage(true)} aria-current={basketOpen ? 'page' : undefined} aria-label={`Abrir cesta, ${currentBasket.length} ${currentBasket.length === 1 ? 'artículo' : 'artículos'}`}><ShoppingBag size={20}/><span>Cesta</span><span className="basket-count">{currentBasket.length}</span></button><AccountMenu user={user} ready={sessionReady} accounts={accounts} accountId={accountId} favoriteCount={wishlist.ready ? wishlist.count : 0} basketCount={currentBasket.length} onFavorites={() => setClientPage('favoritos')} onRequests={() => setClientPage('solicitudes')} onPurchases={() => setClientPage('compras')} onBasket={() => setBasketPage(true)} onSupplier={() => { setBasketPage(false); setView('inventory'); viewport.current?.scrollTo({ top: 0, behavior: 'instant' }); }} onSignIn={() => openAuth()} onInvitation={() => openAuth('signup')} onSwitchAccount={selectAccount} onLogout={logout}/></div>
+      <div className="header-actions"><InboxButtons/><button className="basket-button" onClick={() => setBasketPage(true)} aria-current={basketOpen ? 'page' : undefined} aria-label={`Abrir cesta, ${currentBasket.length} ${currentBasket.length === 1 ? 'artículo' : 'artículos'}`}><ShoppingBag size={20}/><span>Cesta</span><span className="basket-count">{currentBasket.length}</span></button><AccountMenu user={user} ready={sessionReady} accounts={accounts} accountId={accountId} favoriteCount={wishlist.ready ? wishlist.count : 0} basketCount={currentBasket.length} onFavorites={() => setClientPage('favoritos')} onRequests={() => setClientPage('solicitudes')} onPurchases={() => setClientPage('compras')} onBasket={() => setBasketPage(true)} onSupplier={() => { setBasketPage(false); setView('inventory'); viewport.current?.scrollTo({ top: 0, behavior: 'instant' }); }} onSignIn={() => openAuth()} onInvitation={() => openAuth('signup')} onSwitchAccount={selectAccount} onLogout={logout}/></div>
       </div>
       <nav className="store-departments" aria-label="Navegación principal"><div className="header-inner">
         <button className={catalogActive && !filters.category.length ? 'active' : ''} onClick={() => { selectCategory(''); explore(); }}><Menu size={17}/>Catálogo</button>
         {departments.slice(0, 9).map(department => <button key={department.value} className={catalogActive && filters.category.length === 1 && filters.category[0] === department.value ? 'active' : ''} onClick={() => { selectCategory(department.value); explore(); }}>{department.label}</button>)}
-        <span className="store-departments-end"><button onClick={() => setHelpOpen(true)}>Cómo funciona</button>{canSupply && <button className={!basketOpen && !sentOpen && !wishlistOpen && !purchasesOpen && view === 'inventory' ? 'active' : ''} onClick={openSupplier}>Para proveedores</button>}{user?.is_superuser && <Link href="/administracion"><ShieldCheck size={14}/>Administración</Link>}</span>
+        <span className="store-departments-end">{!authenticated && <button onClick={() => setHelpOpen(true)}>Cómo funciona</button>}{canSupply && <button className={!basketOpen && !sentOpen && !wishlistOpen && !purchasesOpen && view === 'inventory' ? 'active' : ''} onClick={openSupplier}>Para proveedores</button>}</span>
       </div></nav>
     </header>
     </AppToolbar>

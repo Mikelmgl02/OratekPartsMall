@@ -107,7 +107,7 @@ export function InboxButtons() {
   if (!inbox?.available) return null;
   const unread = inbox.summary?.unread_messages ?? 0;
   return <>
-    <button type="button" className="basket-button inbox-button" onClick={() => inbox.open()} aria-label={unread ? `Mensajes, ${unread} sin leer` : 'Mensajes'}><MessagesSquare size={20}/><span>Mensajes</span>{unread > 0 && <span className="basket-count inbox-count">{count(unread)}</span>}</button>
+    <button type="button" className="basket-button inbox-button" onClick={() => inbox.open()} title="Mensajes" aria-label={unread ? `Mensajes, ${unread} sin leer` : 'Mensajes'}><MessagesSquare size={20}/>{unread > 0 && <span className="basket-count inbox-count">{count(unread)}</span>}</button>
     <NotificationsMenu/>
   </>;
 }
@@ -141,7 +141,7 @@ function NotificationsMenu() {
     return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape); };
   }, [open]);
   return <div className="inbox-notifications" ref={box}>
-    <button type="button" className="basket-button inbox-button" aria-expanded={open} aria-haspopup="true" onClick={() => { setTop(Math.round(box.current?.getBoundingClientRect().bottom ?? 0) + 8); setOpen(value => !value); }} aria-label={unseen ? `Notificaciones, ${unseen} nuevas` : 'Notificaciones'}><Bell size={20}/>{unseen > 0 && <span className="basket-count inbox-count">{count(unseen)}</span>}</button>
+    <button type="button" className="basket-button inbox-button" aria-expanded={open} aria-haspopup="true" onClick={() => { setTop(Math.round(box.current?.getBoundingClientRect().bottom ?? 0) + 8); setOpen(value => !value); }} title="Notificaciones" aria-label={unseen ? `Notificaciones, ${unseen} nuevas` : 'Notificaciones'}><Bell size={20}/>{unseen > 0 && <span className="basket-count inbox-count">{count(unseen)}</span>}</button>
     {/* On a phone the menu spans the screen under the bell (--inbox-menu-top) instead of hanging from it. */}
     {open && <section className="inbox-notifications-menu" aria-label="Notificaciones" style={{ '--inbox-menu-top': `${top}px` } as React.CSSProperties}>
       <header><h2>Notificaciones</h2><small>Lo que la otra parte hizo en tus órdenes</small></header>

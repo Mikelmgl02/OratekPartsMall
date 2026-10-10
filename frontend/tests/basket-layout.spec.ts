@@ -1,4 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
+import { expectAccount, expectSignedOut, switchAccount } from './header';
 import type { BasketLine, Offer, Part } from '../lib/types';
 
 const accounts = [
@@ -168,7 +169,7 @@ test('account drafts stay isolated through reload, quantity correction and an em
   await seedDrafts(page, { [accounts[0].id]: draftA, [accounts[1].id]: draftB });
   await page.goto('/?vista=cesta');
   await expectSummary(page, 1, 1, 2);
-  await page.getByLabel('Cuenta activa', { exact: true }).selectOption(accounts[1].id);
+  await switchAccount(page, accounts[1].id);
   await expect(item(page, 'CUENTA-B', supplierB.supplier_name)).toBeVisible();
   await expect(item(page, 'CUENTA-A', supplierA.supplier_name)).toHaveCount(0);
   await expectSummary(page, 1, 1, 3);
@@ -186,9 +187,9 @@ test('account drafts stay isolated through reload, quantity correction and an em
   await expect(item(page, 'CUENTA-B', supplierB.supplier_name).getByRole('button', { name: 'Aumentar cantidad de CUENTA-B', exact: true })).toBeDisabled();
   await quantityB.fill('4');
   await page.reload();
-  await expect(page.getByLabel('Cuenta activa', { exact: true })).toHaveValue(accounts[1].id);
+  await expectAccount(page, accounts[1].id);
   await expectSummary(page, 1, 1, 4);
-  await page.getByLabel('Cuenta activa', { exact: true }).selectOption(accounts[0].id);
+  await switchAccount(page, accounts[0].id);
   await expectSummary(page, 1, 1, 2);
   await expect(item(page, 'CUENTA-A', supplierA.supplier_name).getByLabel('Cantidad de CUENTA-A', { exact: true })).toHaveValue('2');
   await item(page, 'CUENTA-A', supplierA.supplier_name).getByRole('button', { name: 'Eliminar CUENTA-A', exact: true }).click();
@@ -224,12 +225,12 @@ test('paginated membership loading keeps drafts hidden until the saved active ac
     await page.goto('/?vista=cesta');
     await pageTwoRequested;
     await expect(page.getByText('Cargando tu cesta…', { exact: true })).toBeVisible();
-    await expect(page.getByText('Cuenta conectada', { exact: true })).toHaveCount(0);
+    await expectSignedOut(page);
     await expect(page.getByLabel('Cuenta activa', { exact: true })).toHaveCount(0);
     await expect(basket(page)).toHaveCount(0);
     await expect(page.getByLabel('Cantidad de SIN-CUENTA', { exact: true })).toHaveCount(0);
     release();
-    await expect(page.getByLabel('Cuenta activa', { exact: true })).toHaveValue(accounts[1].id);
+    await expectAccount(page, accounts[1].id);
     await expectSummary(page, 1, 1, 7);
     await expect(item(page, 'CUENTA-VALIDADA', supplierB.supplier_name)).toBeVisible();
     await expect(page.getByText('SIN-CUENTA', { exact: true })).toHaveCount(0);
