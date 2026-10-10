@@ -152,6 +152,7 @@ function NotificationsMenu() {
           <strong>{item.title}</strong><span>{item.reference} · <time dateTime={item.created_at}>{ago(item.created_at)}</time></span>{item.description && <small>{item.description}</small>}
         </button></li>)}</ul>}
       {more && items && <button type="button" className="button text small" onClick={() => void load(items.at(-1)?.id)}>Ver anteriores</button>}
+      <EmailSwitches/>
     </section>}
   </div>;
 }
@@ -177,4 +178,25 @@ function PushSwitch() {
     {status.state === 'off' && <small>Te avisamos de mensajes y cambios en tus órdenes aunque MotionPartes esté cerrado.</small>}
     {error && <small className="inbox-push-error" role="alert">{error}</small>}
   </div>;
+}
+
+type EmailPreferences = { enabled: boolean; address: string; messages: boolean; updates: boolean };
+
+// Email notices (mall/email_notifications.py): new messages while the person is away from MotionPartes, and changes in their orders.
+function EmailSwitches() {
+  const [preferences, setPreferences] = useState<EmailPreferences | null>(null);
+  const [error, setError] = useState('');
+  useEffect(() => { request<EmailPreferences>('/api/market/inbox/email').then(setPreferences).catch(() => setPreferences(null)); }, []);
+  if (!preferences?.enabled) return null;
+  async function change(key: 'messages' | 'updates', value: boolean) {
+    setPreferences(current => current && { ...current, [key]: value }); setError('');
+    try { setPreferences(await request<EmailPreferences>('/api/market/inbox/email', { method: 'POST', body: JSON.stringify({ [key]: value }) })); }
+    catch { setPreferences(current => current && { ...current, [key]: !value }); setError('No se pudo guardar tu preferencia. Inténtalo de nuevo.'); }
+  }
+  return <fieldset className="inbox-email">
+    <legend>Avisos por correo a <strong>{preferences.address}</strong></legend>
+    <label><input type="checkbox" checked={preferences.messages} onChange={event => void change('messages', event.target.checked)}/>Mensajes nuevos, cuando no estés en MotionPartes</label>
+    <label><input type="checkbox" checked={preferences.updates} onChange={event => void change('updates', event.target.checked)}/>Cambios en tus órdenes</label>
+    {error && <small className="inbox-push-error" role="alert">{error}</small>}
+  </fieldset>;
 }

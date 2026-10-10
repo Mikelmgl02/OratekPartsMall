@@ -114,6 +114,12 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY') or os.getenv('GEM_API_KEY', '')
 VAPID_PUBLIC_KEY = os.getenv('VAPID_PUBLIC_KEY', '')
 VAPID_PRIVATE_KEY = os.getenv('VAPID_PRIVATE_KEY', '')
 VAPID_SUBJECT = os.getenv('VAPID_SUBJECT', '')
+# Email notifications of the deal inbox (mall.email_notifications), sent through Resend; off without a key and a sender address.
+RESEND_API_KEY = os.getenv('RESEND_API_KEY', '')
+EMAIL_FROM_ADDRESS = os.getenv('EMAIL_FROM_ADDRESS', '')
+EMAIL_FROM_NAME = os.getenv('EMAIL_FROM_NAME', 'MotionPartes')
+# The public address of the site, for links in emails.
+SITE_URL = os.getenv('SITE_URL', 'http://localhost:8080')
 GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-3.5-flash-lite')
 
 

@@ -8,6 +8,8 @@ class ConversationRead(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='conversation_reads')
     order = models.ForeignKey('mall.SupplierRequest', on_delete=models.CASCADE, related_name='reads')
     last_message_id = models.BigIntegerField(default=0)
+    # When the person was last emailed about unread messages of this deal (one email per conversation per cooldown).
+    emailed_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -16,10 +18,14 @@ class ConversationRead(models.Model):
 
 class InboxCursor(models.Model):
     """Per person: the newest deal event their notification list has shown, and the message unread counts start after. Both start at
-    the newest one when the person first polls the inbox, so the history from before the inbox existed never shows up as new."""
+    the newest one when the person first polls the inbox, so the history from before the inbox existed never shows up as new. Also
+    when they last polled it (someone active in the app gets no email about a message) and which emails they want."""
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, primary_key=True, related_name='inbox_cursor')
     seen_event_id = models.BigIntegerField(default=0)
     message_floor = models.BigIntegerField(default=0)
+    active_at = models.DateTimeField(null=True, blank=True)
+    email_messages = models.BooleanField(default=True, verbose_name='correo por mensajes nuevos')
+    email_updates = models.BooleanField(default=True, verbose_name='correo por cambios en las órdenes')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

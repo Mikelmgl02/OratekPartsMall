@@ -42,6 +42,10 @@ services:
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS:-}
+      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-MotionPartes}
+      SITE_URL: ${SITE_URL:-http://localhost:8080}
       # Quotation assistant: dark until QUOTE_ASSISTANT_MONTHLY_USD > 0. Token prices are placeholders; set them from Google's price sheet.
       QUOTE_ASSISTANT_MONTHLY_USD: ${QUOTE_ASSISTANT_MONTHLY_USD:-0}
       AI_MONTHLY_BUDGET_USD: ${AI_MONTHLY_BUDGET_USD:-200}

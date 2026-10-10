@@ -125,3 +125,27 @@ test('mobile: the list, the chat and the document take turns in a full-screen pa
   await panel.getByRole('button', { name: 'Volver a conversaciones', exact: true }).click();
   await expect(panel.getByRole('complementary', { name: 'Tus conversaciones', exact: true })).toBeVisible();
 });
+
+test('the bell menu keeps the email notices each person wants, and hides them when the server sends no email', async ({ page }) => {
+  await mockInbox(page, { current: pending() });
+  const saved: unknown[] = [];
+  let enabled = false;
+  await page.route(/\/api\/market\/inbox\/email$/, route => {
+    if (route.request().method() === 'POST') saved.push(route.request().postDataJSON());
+    return route.fulfill({ json: { enabled, address: 'francisco@example.invalid', messages: route.request().method() === 'POST' ? false : true, updates: true } });
+  });
+  await page.goto('/');
+  const bell = page.getByRole('button', { name: 'Notificaciones, 2 nuevas', exact: true });
+  await bell.click();
+  const menu = page.getByRole('region', { name: 'Notificaciones', exact: true });
+  await expect(menu.getByRole('button', { name: /REPUESTOS PANAMÁ confirmó el acuerdo/ })).toBeVisible();
+  await expect(menu.getByRole('group', { name: /Avisos por correo/ })).toHaveCount(0);
+  await bell.click();
+  enabled = true;
+  await bell.click();
+  const email = menu.getByRole('group', { name: 'Avisos por correo a francisco@example.invalid', exact: true });
+  await expect(email.getByRole('checkbox', { name: 'Cambios en tus órdenes', exact: true })).toBeChecked();
+  await email.getByRole('checkbox', { name: 'Mensajes nuevos, cuando no estés en MotionPartes', exact: true }).uncheck();
+  await expect(email.getByRole('checkbox', { name: 'Mensajes nuevos, cuando no estés en MotionPartes', exact: true })).not.toBeChecked();
+  expect(saved).toEqual([{ messages: false }]);
+});

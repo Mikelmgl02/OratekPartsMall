@@ -5,10 +5,12 @@ A person takes part in a deal through a membership of its client account (with t
 (with the supplier capability), the rule of deal_views.participant. Unread messages are the ones someone else wrote after the person's
 read mark; notifications are the deal events of accounts the person does not belong to."""
 import uuid
+from datetime import timedelta
 
 from django.db import IntegrityError, transaction
 from django.db.models import BigIntegerField, Case, Count, F, IntegerField, Max, OuterRef, Q, Subquery, Value, When
 from django.db.models.functions import Coalesce, Greatest
+from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics, serializers
@@ -19,6 +21,7 @@ from .inbox_models import ConversationRead, InboxCursor
 from .models import Account, DealEvent, DealMessage, SupplierRequest
 
 NOTIFICATION_PAGE = 30
+ACTIVITY_WRITE = timedelta(minutes=1)
 SNIPPET = 140
 TITLES = {
     'order_sent': '{who} te envió una orden', 'order_appended': '{who} agregó artículos a la orden',
@@ -123,6 +126,9 @@ class InboxSummary(APIView):
                    'cuántas conversaciones), notificaciones sin ver, y el mensaje y la notificación más recientes para avisar de ellos.')
     def get(self, request):
         user, cursor = request.user, cursor_for(request.user)
+        now = timezone.now()
+        if not cursor.active_at or now - cursor.active_at > ACTIVITY_WRITE:  # someone using the app gets no email about a message
+            InboxCursor.objects.filter(pk=cursor.pk).update(active_at=now)
         unread = unread_messages(user, cursor)
         totals = unread.aggregate(messages=Count('pk'), conversations=Count('order', distinct=True))
         latest_message = unread.select_related('account', 'actor', 'order').order_by('-id').first()
