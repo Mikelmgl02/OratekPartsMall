@@ -1,4 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
+import { signedOutInbox } from './inbox-route';
 import type { Account, BasketLine, Part } from '../lib/types';
 import type { SupplierRequestDetail } from '../lib/request-types';
 import { openSupplierNavigation } from './supplier-navigation';
@@ -41,6 +42,7 @@ function detail(status: 'pending' | 'reviewed' = 'pending'): SupplierRequestDeta
 async function mockSession(page: Page, accounts = supplierAccounts.slice(0, 1)) {
   const unexpected: string[] = [];
   await page.route('**/api/**', async route => {
+    if (signedOutInbox(route)) return;
     unexpected.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`);
     await route.fulfill({ status: 404, json: { detail: 'Ruta no prevista en esta prueba.' } });
   });

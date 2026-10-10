@@ -11,6 +11,7 @@ import type { SupplierRequestLine } from '@/lib/request-types';
 import type { Deal, DealMessage, Quotation } from '@/lib/deal-types';
 import type { QuotationTrace, QuoteDraft, QuoteDraftEnvelope, QuoteDraftLine } from '@/lib/pricing-types';
 import { supplierPricingHref } from '@/lib/supplier-navigation';
+import { markConversationRead } from '@/lib/inbox';
 
 const QuoteEditor = dynamic(() => import('./quotation-editor'), { ssr: false, loading: () => <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando editor de cotización…</div> });
 const ClientPricingProfile = dynamic(() => import('./client-pricing-profile'), { ssr: false, loading: () => <div className="loading"><LoaderCircle className="spin"/>Cargando perfil comercial…</div> });
@@ -209,7 +210,7 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   </section> : <Modal title={`Orden ${reference}`} wide className="deal-modal supplier-request-modal" onClose={() => { if (!inFlight.current) onClose?.(); }}>{content}</Modal>;
 }
 
-function QuoteView({ quote, historical = false }: { quote: Quotation; historical?: boolean }) {
+export function QuoteView({ quote, historical = false }: { quote: Quotation; historical?: boolean }) {
   return <section className={`deal-quote ${historical ? 'historical' : ''}`} aria-label={`${historical ? 'Cotización anterior' : 'Cotización vigente'} v${quote.revision}`}><div className="deal-quote-heading"><div><h3>Cotización v{quote.revision}</h3><small>Confirmada por el proveedor · {date(quote.supplier_confirmed_at)}</small></div><strong>{money(quote.total, quote.currency)}</strong></div><div className="table-scroll"><table><thead><tr><th>Artículo</th><th>Ofrecidas</th><th>Precio unitario</th><th>Importe</th></tr></thead><tbody>{quote.lines.map(line => <tr key={line.order_line_id}><td><strong>{line.codigo}</strong><small>{line.description}</small></td><td>{line.quantity === 0 ? 'No disponible' : line.quantity}</td><td>{money(line.unit_price, quote.currency)}</td><td>{money(line.total, quote.currency)}</td></tr>)}</tbody></table></div>{quote.terms && <div className="deal-terms"><h4>Condiciones</h4><p>{quote.terms}</p></div>}</section>;
 }
 
@@ -260,7 +261,8 @@ function QuoteTrace({ path, currency }: { path: string; currency: string }) {
   </details>;
 }
 
-function DealChat({ account, orderId, active, supplier, insert }: { account: Account; orderId: string; active: boolean; supplier: boolean; insert: { text: string; id: number } | null }) {
+// Also the chat of the global conversations panel (compact: without the introduction). While it shows, it marks what it shows as read.
+export function DealChat({ account, orderId, active, supplier, insert, compact = false }: { account: Account; orderId: string; active: boolean; supplier: boolean; insert: { text: string; id: number } | null; compact?: boolean }) {
   const path = `/api/market/accounts/${account.id}/deals/${orderId}/messages`;
   const [messages, setMessages] = useState<DealMessage[]>([]);
   const [body, setBody] = useState('');
@@ -279,6 +281,7 @@ function DealChat({ account, orderId, active, supplier, insert }: { account: Acc
   const cursor = useRef<number | null>(null);
   const pending = useRef<{ body: string; id: string } | null>(null);
   const sendLock = useRef(false);
+  const readUpTo = useRef(0);
   const merge = (items: DealMessage[]) => setMessages(values => [...new Map([...values, ...items].map(value => [value.id, value])).values()].sort((a, b) => a.id - b.id));
   const fetchMessages = useCallback(async () => {
     if (loading.current) return;
@@ -298,8 +301,13 @@ function DealChat({ account, orderId, active, supplier, insert }: { account: Acc
     } catch (caught) { if (mounted.current) setError(failure(caught)); }
     finally { loading.current = false; }
   }, [path]);
-  useEffect(() => { mounted.current = true; void fetchMessages(); const timer = setInterval(() => { if (document.visibilityState === 'visible') void fetchMessages(); }, 5000); return () => { mounted.current = false; clearInterval(timer); }; }, [fetchMessages]);
+  useEffect(() => { mounted.current = true; void fetchMessages(); const timer = setInterval(() => { if (document.visibilityState === 'visible') void fetchMessages(); }, 3000); return () => { mounted.current = false; clearInterval(timer); }; }, [fetchMessages]);
   useEffect(() => { if (active) void fetchMessages(); }, [active, fetchMessages]);
+  useEffect(() => {
+    const last = messages.at(-1)?.id;
+    if (!active || !last || last <= readUpTo.current || document.visibilityState !== 'visible') return;
+    readUpTo.current = last; void markConversationRead(orderId, last);
+  }, [active, messages, orderId]);
   useEffect(() => {
     if (!insert) return;
     setBody(value => (value.trim() ? `${value.trimEnd()}\n${insert.text}` : insert.text).toUpperCase().slice(0, 4000)); setCopied(true);
@@ -328,7 +336,7 @@ function DealChat({ account, orderId, active, supplier, insert }: { account: Acc
     } catch (caught) { if (mounted.current) setError(failure(caught)); }
     finally { sendLock.current = false; if (mounted.current) setSending(false); }
   }
-  return <section className="deal-chat" aria-label="Conversación del acuerdo"><h3>Conversación privada</h3><p>Cliente y proveedor pueden conversar durante todo el acuerdo. Las decisiones sobre la cotización se realizan en la pestaña Cotización.</p>
+  return <section className={`deal-chat${compact ? ' compact' : ''}`} aria-label="Conversación del acuerdo">{!compact && <><h3>Conversación privada</h3><p>Cliente y proveedor pueden conversar durante todo el acuerdo. Las decisiones sobre la cotización se realizan en la pestaña Cotización.</p></>}
     {assistantNotice && <p className="deal-chat-ai-notice" role="note" aria-label="Aviso de asistente de IA"><Bot size={15}/>{supplier
       ? 'Tu cuenta tiene activado el asistente de IA: cuando lo usas, las notas de la orden y esta conversación desde la última versión se envían a Google Gemini para interpretarlas, sin precios ni existencias. Tu cliente ve este aviso.'
       : 'El proveedor usa un asistente de IA (Google Gemini) que puede leer las notas de tu orden y esta conversación para preparar tu cotización. No recibe precios ni existencias.'}</p>}

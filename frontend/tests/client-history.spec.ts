@@ -1,4 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
+import { signedOutInbox } from './inbox-route';
 import type { Account, BasketLine } from '../lib/types';
 import { requestPayloadLines } from '../lib/basket-submissions';
 
@@ -24,7 +25,7 @@ function draft(id = '66666666-6666-4666-8666-666666666666', codigo = '58411-1R00
 }
 async function mock(page: Page) {
   const unexpected: string[] = [];
-  await page.route('**/api/**', route => { unexpected.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`); return route.fulfill({ status: 404, json: { detail: 'Ruta no prevista.' } }); });
+  await page.route('**/api/**', route => { if (signedOutInbox(route)) return; unexpected.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`); return route.fulfill({ status: 404, json: { detail: 'Ruta no prevista.' } }); });
   await page.route('**/api/market/wishlist/state', route => route.fulfill({ json: { part_ids: [], count: 0 } }));
   await page.route('**/api/market/analytics/events', route => route.fulfill({ status: 202, json: { recorded: true } }));
   await page.route('**/api/session', route => route.fulfill({ json: { authenticated: true, user: { id: 81, username: 'CLIENTE', first_name: '', last_name: '', is_superuser: false }, accounts: { ...empty, count: 2, results: accounts } } }));

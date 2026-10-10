@@ -306,6 +306,7 @@ from .supplier_import_models import SupplierInventoryImportJob, SupplierInventor
 from .request_models import (ClientRequestSubmission, SupplierRequest, SupplierRequestLine, RequestContribution,
                              DealQuotation, DealQuotationLine, DealEvent, DealMessage, DealCommand, StockReservation)
 from .analytics_models import UsageEvent, UsageVisit
+from .inbox_models import ConversationRead, InboxCursor
 from .matching_models import MatchingQueue, MatchingCase, SupplierCodeMapping, MatchingDecision
 from .technical_models import PartType, TechnicalTemplate, TechnicalField, PartSpecification, Application, ItemApplication
 from .pricing_models import (SupplierPricingSettings, PricingAuditEvent, PriceList, PriceListEntry, SupplierItemPricing, PriceChange,

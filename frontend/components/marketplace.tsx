@@ -10,6 +10,8 @@ import CatalogFilterPanel, { ActiveCatalogFilters } from './catalog-filters';
 import { catalogQuery, emptyFacets, emptyFilters, filterCount, matchesFilters, previewFacets } from '@/lib/catalog-filters';
 import { isCodeSearch, matchesSearch } from '@/lib/catalog-search';
 import StoreSearch from './store-search';
+import { InboxButtons } from './inbox';
+import { inboxChanged } from '@/lib/inbox';
 import AuthModal from './auth-modal';
 import AccountMenu from './account-menu';
 import PartDetail from './part-detail';
@@ -119,6 +121,7 @@ export default function Catálogo() {
     setAccounts(all);
     setAccountId(current => all.find(a => a.id === requestedAccount)?.id || (all.some(a => a.id === current) ? current : all.find(a => a.id === savedAccount)?.id || all[0]?.id || ''));
     setSessionReady(true);
+    inboxChanged();
   }, []);
   useEffect(() => { loadSession().catch(error => { setError(error.message); setSessionReady(true); }); }, [loadSession]);
   useEffect(() => {
@@ -265,7 +268,7 @@ export default function Catálogo() {
   }
   async function logout() {
     sessionGeneration.current += 1;
-    try { await request('/api/session', { method: 'DELETE' }); sessionGeneration.current += 1; setAuthenticated(false); setUser(null); setAccounts([]); setAccountId(''); setView('catalog'); setDetail(null); setBasketPage(false); setError(''); }
+    try { await request('/api/session', { method: 'DELETE' }); inboxChanged(); sessionGeneration.current += 1; setAuthenticated(false); setUser(null); setAccounts([]); setAccountId(''); setView('catalog'); setDetail(null); setBasketPage(false); setError(''); }
     catch (error) { setNotice(error instanceof Error ? error.message : 'No se pudo cerrar la sesión.'); }
   }
   const totalParts = preview ? visibleParts.length : catalog.count;
@@ -298,7 +301,7 @@ export default function Catálogo() {
         <button className="wordmark" aria-label="Inicio de MotionPartes" onClick={() => {setBasketPage(false); setView('catalog'); applySearch(''); changeFilters(emptyFilters); viewport.current?.scrollTo({top: 0, behavior: 'smooth'});}}><BrandLogo/></button>
         {authenticated && <div className="store-account" title={account?.roles.map(role => roleLabel[role] || role).join(' · ') || undefined}><span className="store-account-caption"><span className="live-dot"/>Cuenta conectada</span><label className="sr-only" htmlFor="active-account">Cuenta activa</label><select id="active-account" disabled={!accounts.length} value={accountId} onChange={event => selectAccount(event.target.value)}>{!accounts.length && <option value="">Sin cuenta asignada</option>}{accounts.map(account => <option key={account.id} value={account.id}>{account.name}</option>)}</select></div>}
         <StoreSearch value={search} onChange={setSearch} onSearch={submitSearch} onOpen={openPart} filters={filters} departments={departments} onDepartment={value => { showCatalog(false); selectCategory(value); }} preview={preview} accountId={accountId} inputRef={searchRef}/>
-      <div className="header-actions"><button className="basket-button wishlist-nav" onClick={() => setClientPage('favoritos')} aria-current={wishlistOpen ? 'page' : undefined} aria-label="Mis favoritos"><Heart size={20}/><span>Favoritos</span>{wishlist.ready && wishlist.count > 0 && <span className="wishlist-nav-count basket-count">{wishlist.count}</span>}</button>{authenticated && canQuote && <button className="basket-button request-history-button" onClick={() => setClientPage('solicitudes')} aria-current={sentOpen ? 'page' : undefined} aria-label="Mis solicitudes enviadas"><List size={20}/><span>Mis solicitudes</span></button>}<button className="basket-button" onClick={() => setBasketPage(true)} aria-current={basketOpen ? 'page' : undefined} aria-label={`Abrir cesta, ${currentBasket.length} ${currentBasket.length === 1 ? 'artículo' : 'artículos'}`}><ShoppingBag size={20}/><span>Cesta</span><span className="basket-count">{currentBasket.length}</span></button><AccountMenu user={user} ready={sessionReady} accounts={accounts} accountId={accountId} favoriteCount={wishlist.ready ? wishlist.count : 0} basketCount={currentBasket.length} onFavorites={() => setClientPage('favoritos')} onRequests={() => setClientPage('solicitudes')} onPurchases={() => setClientPage('compras')} onBasket={() => setBasketPage(true)} onSupplier={() => { setBasketPage(false); setView('inventory'); viewport.current?.scrollTo({ top: 0, behavior: 'instant' }); }} onSignIn={() => openAuth()} onInvitation={() => openAuth('signup')} onSwitchAccount={selectAccount} onLogout={logout}/></div>
+      <div className="header-actions"><InboxButtons/><button className="basket-button wishlist-nav" onClick={() => setClientPage('favoritos')} aria-current={wishlistOpen ? 'page' : undefined} aria-label="Mis favoritos"><Heart size={20}/><span>Favoritos</span>{wishlist.ready && wishlist.count > 0 && <span className="wishlist-nav-count basket-count">{wishlist.count}</span>}</button>{authenticated && canQuote && <button className="basket-button request-history-button" onClick={() => setClientPage('solicitudes')} aria-current={sentOpen ? 'page' : undefined} aria-label="Mis solicitudes enviadas"><List size={20}/><span>Mis solicitudes</span></button>}<button className="basket-button" onClick={() => setBasketPage(true)} aria-current={basketOpen ? 'page' : undefined} aria-label={`Abrir cesta, ${currentBasket.length} ${currentBasket.length === 1 ? 'artículo' : 'artículos'}`}><ShoppingBag size={20}/><span>Cesta</span><span className="basket-count">{currentBasket.length}</span></button><AccountMenu user={user} ready={sessionReady} accounts={accounts} accountId={accountId} favoriteCount={wishlist.ready ? wishlist.count : 0} basketCount={currentBasket.length} onFavorites={() => setClientPage('favoritos')} onRequests={() => setClientPage('solicitudes')} onPurchases={() => setClientPage('compras')} onBasket={() => setBasketPage(true)} onSupplier={() => { setBasketPage(false); setView('inventory'); viewport.current?.scrollTo({ top: 0, behavior: 'instant' }); }} onSignIn={() => openAuth()} onInvitation={() => openAuth('signup')} onSwitchAccount={selectAccount} onLogout={logout}/></div>
       </div>
       <nav className="store-departments" aria-label="Navegación principal"><div className="header-inner">
         <button className={catalogActive && !filters.category.length ? 'active' : ''} onClick={() => { selectCategory(''); explore(); }}><Menu size={17}/>Catálogo</button>

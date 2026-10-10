@@ -1,4 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
+import { signedOutInbox } from './inbox-route';
 import type { Deal, DealMessage } from '../lib/deal-types';
 import type { AssistantRun, AssistantState, QuoteDraft, QuoteDraftSave } from '../lib/pricing-types';
 import type { SupplierRequestLine } from '../lib/request-types';
@@ -39,7 +40,7 @@ async function fixture(page: Page, initial: AssistantState | undefined, { notice
     lines: [line(lineId, '58411-1R000-G', 3), line(secondId, '00700-NP', 2)] };
   let assistant = initial;
   const unexpected: string[] = [], actions: unknown[] = [], runs: unknown[] = [], decisions: Record<string, unknown>[] = [], posted: unknown[] = [];
-  await page.route('**/api/**', route => { unexpected.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`); return route.fulfill({ status: 404, json: { detail: 'Ruta no prevista' } }); });
+  await page.route('**/api/**', route => { if (signedOutInbox(route)) return; unexpected.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`); return route.fulfill({ status: 404, json: { detail: 'Ruta no prevista' } }); });
   await page.route('**/api/session', route => route.fulfill({ json: { authenticated: true, user: { id: 801, username: 'EMPLEADO', is_superuser: false },
     accounts: { ...empty, count: 1, results: [{ id: supplierId, name: 'REPUESTOS CENTRAL', roles: ['supplier_retail'], capabilities: ['supplier'], permission: 'staff' }] } } }));
   await page.route('**/api/market/analytics/events', route => route.fulfill({ status: 202, json: { recorded: true } }));
@@ -143,7 +144,7 @@ test('the client sees in the deal chat that the supplier uses an AI assistant, a
     unit_count: 3, notes: 'SOLO NECESITO 2', quotation: null, quotations: [], events: [], lines: [{ id: lineId, part_id: '66666666-6666-4666-8666-666666666666', sku: '58411-1R000',
       name: 'TAMBOR', codigo: '58411-1R000-G', brand: 'KSM', description: 'TAMBOR', quantity: 3 }] };
   const unexpected: string[] = [];
-  await page.route('**/api/**', route => { unexpected.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`); return route.fulfill({ status: 404, json: { detail: 'Ruta no prevista' } }); });
+  await page.route('**/api/**', route => { if (signedOutInbox(route)) return; unexpected.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`); return route.fulfill({ status: 404, json: { detail: 'Ruta no prevista' } }); });
   await page.route('**/api/session', route => route.fulfill({ json: { authenticated: true, user: { id: 802, username: 'CLIENTE', is_superuser: false },
     accounts: { ...empty, count: 1, results: [{ id: clientId, name: 'TALLER CENTRAL', roles: ['client_business'], capabilities: ['client'], permission: 'owner' }] } } }));
   await page.route('**/api/market/analytics/events', route => route.fulfill({ status: 202, json: { recorded: true } }));

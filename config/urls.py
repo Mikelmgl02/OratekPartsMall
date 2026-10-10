@@ -5,7 +5,7 @@ from django.conf.urls.static import static
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from rest_framework.authtoken.views import ObtainAuthToken
 from rest_framework.throttling import AnonRateThrottle
-from mall import management, views
+from mall import inbox, management, views
 from mall.technical_api import (PartTypeList, PartTypeDetail, TemplateDetail, ApplicationList, ApplicationDetail,
                                ItemTechnicalDetail, CatalogTechnicalDetail)
 from mall.matching_views import MatchingOverview, MatchingReview
@@ -155,6 +155,11 @@ urlpatterns = [
     path('api/v1/accounts/<uuid:account_id>/pricing/simulate/', PricingSimulate.as_view()),
     path('api/v1/catalog/', views.CatalogList.as_view()),
     path('api/v1/catalog/suggest/', views.CatalogSuggest.as_view()),
+    path('api/v1/inbox/', inbox.InboxSummary.as_view()),
+    path('api/v1/inbox/conversations/', inbox.InboxConversations.as_view()),
+    path('api/v1/inbox/conversations/<uuid:pk>/read/', inbox.InboxConversationRead.as_view()),
+    path('api/v1/inbox/notifications/', inbox.InboxNotifications.as_view()),
+    path('api/v1/inbox/notifications/seen/', inbox.InboxNotificationsSeen.as_view()),
     path('api/v1/catalog/<uuid:pk>/technical/', CatalogTechnicalDetail.as_view()),
     path('api/v1/catalog/<uuid:part_id>/suppliers/', views.OffersView.as_view()),
     path('api/v1/accounts/<uuid:account_id>/inventory/', views.InventoryList.as_view()),

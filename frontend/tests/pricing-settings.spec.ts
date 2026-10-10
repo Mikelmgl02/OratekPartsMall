@@ -1,4 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
+import { signedOutInbox } from './inbox-route';
 import type { MembershipPermission } from '../lib/types';
 import type { PricingSettings } from '../lib/pricing-types';
 
@@ -18,7 +19,7 @@ function settings(permission: MembershipPermission, extra: Partial<PricingSettin
 async function open(page: Page, permission: MembershipPermission, initial: Partial<PricingSettings> = {}) {
   const unexpected: string[] = [], writes: Record<string, unknown>[] = [];
   let current = settings(permission, initial);
-  await page.route('**/api/**', route => { unexpected.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`); return route.fulfill({ status: 404, json: { detail: 'Ruta no prevista' } }); });
+  await page.route('**/api/**', route => { if (signedOutInbox(route)) return; unexpected.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`); return route.fulfill({ status: 404, json: { detail: 'Ruta no prevista' } }); });
   await page.route('**/api/session', route => route.fulfill({ json: { authenticated: true, user: { id: 801, username: 'EMPLEADO', first_name: '', last_name: '', is_superuser: false },
     accounts: { ...empty, count: 1, results: [{ id: supplierId, name: 'REPUESTOS CENTRAL', roles: ['supplier_retail'], capabilities: ['supplier'], permission }] } } }));
   await page.route('**/api/market/analytics/events', route => route.fulfill({ status: 202, json: { recorded: true } }));

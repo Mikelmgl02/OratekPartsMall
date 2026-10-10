@@ -1,4 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
+import { signedOutInbox } from './inbox-route';
 import type { Deal } from '../lib/deal-types';
 import type { ClientProfile, DraftProfile, DraftSuggestion, PriceList, PriceRow, PricingRule, SimulationResult } from '../lib/pricing-types';
 import type { SupplierRequestLine } from '../lib/request-types';
@@ -19,7 +20,7 @@ const route = (path: string) => new RegExp(`${base}/${path}(?:\\?.*)?$`);
 
 async function session(page: Page) {
   const unexpected: string[] = [];
-  await page.route('**/api/**', request => { unexpected.push(`${request.request().method()} ${new URL(request.request().url()).pathname}`); return request.fulfill({ status: 404, json: { detail: 'Ruta no prevista' } }); });
+  await page.route('**/api/**', request => { if (signedOutInbox(request)) return; unexpected.push(`${request.request().method()} ${new URL(request.request().url()).pathname}`); return request.fulfill({ status: 404, json: { detail: 'Ruta no prevista' } }); });
   await page.route('**/api/session', request => request.fulfill({ json: { authenticated: true, user: { id: 801, username: 'EMPLEADO', first_name: '', last_name: '', is_superuser: false },
     accounts: { ...empty, count: 1, results: [{ id: supplierId, name: 'REPUESTOS CENTRAL', roles: ['supplier_retail'], capabilities: ['supplier'], permission: 'staff' }] } } }));
   await page.route('**/api/market/analytics/events', request => request.fulfill({ status: 202, json: { recorded: true } }));

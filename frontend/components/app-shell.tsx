@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import BrandLogo from './brand-logo';
+import { InboxProvider } from './inbox';
 
 type ShellContext = { toolbarHost: HTMLDivElement | null; viewport: RefObject<HTMLDivElement | null> };
 const Context = createContext<ShellContext | null>(null);
@@ -23,7 +24,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         <Link className="wordmark" aria-label="Inicio de MotionPartes" href="/"><BrandLogo/></Link>
       </div></header>
     </div>
-    <div ref={viewport} className="app-viewport" data-testid="page-viewport">{children}</div>
+    <div ref={viewport} className="app-viewport" data-testid="page-viewport"><InboxProvider>{children}</InboxProvider></div>
   </div></Context.Provider>;
 }
 
