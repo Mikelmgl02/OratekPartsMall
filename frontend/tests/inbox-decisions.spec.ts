@@ -3,7 +3,7 @@ import type { Deal, Quotation } from '../lib/deal-types';
 import type { SupplierRequestLine } from '../lib/request-types';
 import { mockQuoteDrafts } from './quote-draft-mock';
 
-// The conversations panel's Documento column is the deal itself, embedded next to the chat, with its decisions above the tabs.
+// The conversations panel's side panel is the deal itself, embedded next to the chat, with its decisions above the section the header toggles pick.
 const clientId = '11111111-1111-4111-8111-111111111111';
 const supplierId = '22222222-2222-4222-8222-222222222222';
 const orderId = '33333333-3333-4333-8333-333333333333';
@@ -102,7 +102,7 @@ test('a supplier sets prices in the panel: viewing never opens the order, Fijar 
   expect(reviews).toEqual([]);  // looking at it in the panel does not lock the client's items
   await document.getByRole('button', { name: 'Fijar precios', exact: true }).click();
   await expect.poll(() => reviews).toEqual(['POST']);
-  await expect(document.getByRole('button', { name: 'Cotización', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('group', { name: 'Secciones de la orden', exact: true }).getByRole('button', { name: 'Cotización', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(document.locator('.quotation-grid')).toBeVisible();
   await expect(document.getByRole('button', { name: /Confirmar y enviar cotización/ })).toBeVisible();
 });

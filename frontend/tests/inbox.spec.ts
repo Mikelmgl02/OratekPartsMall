@@ -93,10 +93,10 @@ test('a notification opens the panel on its deal: the quotation beside the chat,
   await panel.getByRole('button', { name: /AUTOPARTES DEL ISTMO/ }).click();
   await expect(panel.getByRole('region', { name: 'Orden ORD-0119 con AUTOPARTES DEL ISTMO', exact: true })).toBeVisible();
   await panel.getByRole('button', { name: 'No leídas', exact: true }).click();
-  await expect(panel.getByRole('complementary').getByRole('listitem')).toHaveCount(2);
+  await expect(panel.getByRole('complementary', { name: 'Tus conversaciones', exact: true }).getByRole('listitem')).toHaveCount(2);
   expect(calls.some(call => call.url.endsWith('?unread=1'))).toBe(true);
   await panel.getByPlaceholder('Orden o cuenta…').fill('0119');
-  await expect(panel.getByRole('complementary').getByRole('listitem')).toHaveCount(1);
+  await expect(panel.getByRole('complementary', { name: 'Tus conversaciones', exact: true }).getByRole('listitem')).toHaveCount(1);
 });
 
 test('a new message or notification between polls shows a toast that opens its conversation', async ({ page }) => {
@@ -123,9 +123,12 @@ test('mobile: the list, the chat and the document take turns in a full-screen pa
   await panel.getByRole('button', { name: /GRUPO RAZOR PARTS/ }).click();
   await expect(panel.getByRole('complementary', { name: 'Tus conversaciones', exact: true })).toBeHidden();
   await expect(panel.getByRole('log', { name: 'Mensajes del acuerdo', exact: true })).toBeVisible();
-  await panel.getByRole('button', { name: 'Documento', exact: true }).click();
+  const sections = panel.getByRole('group', { name: 'Secciones de la orden', exact: true });
+  await sections.getByRole('button', { name: 'Cotización', exact: true }).click();  // a section takes the chat's place
   await expect(panel.getByRole('region', { name: 'Cotización vigente v2', exact: true })).toBeVisible();
   await expect(panel.getByRole('log', { name: 'Mensajes del acuerdo', exact: true })).toBeHidden();
+  await sections.getByRole('button', { name: 'Cotización', exact: true }).click();  // pressed again: back to the chat
+  await expect(panel.getByRole('log', { name: 'Mensajes del acuerdo', exact: true })).toBeVisible();
   const box = await panel.boundingBox();
   expect(box!.width).toBeGreaterThanOrEqual(389);
   await panel.getByRole('button', { name: 'Volver a conversaciones', exact: true }).click();
@@ -211,4 +214,40 @@ test('WhatsApp notices need the number and an explicit consent; each kind can be
   await whatsapp.getByRole('button', { name: 'Desactivar', exact: true }).click();
   await expect.poll(() => saved.at(-1)).toEqual({ opt_in: false });
   await expect(whatsapp.getByLabel('Tu número de WhatsApp')).toHaveValue('+50761234567');
+});
+
+test('like a desktop chat app: sections toggle a right panel, the side columns resize and the layout is remembered', async ({ page }) => {
+  await mockInbox(page, { current: pending() });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Mensajes, 3 sin leer', exact: true }).click();
+  const panel = page.getByRole('dialog', { name: 'Conversaciones', exact: true });
+  const sections = panel.getByRole('group', { name: 'Secciones de la orden', exact: true });
+  const side = panel.locator('.inbox-side');
+  const chat = panel.getByRole('log', { name: 'Mensajes del acuerdo', exact: true });
+  await expect(panel.getByRole('region', { name: 'Cotización vigente v2', exact: true })).toBeVisible();  // the quotation opens on the right
+  await expect(sections.getByRole('button', { name: 'Cotización', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await sections.getByRole('button', { name: 'Actividad', exact: true }).click();
+  await expect(sections.getByRole('button', { name: 'Actividad', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(panel.getByRole('region', { name: 'Cotización vigente v2', exact: true })).toBeHidden();
+  await sections.getByRole('button', { name: 'Actividad', exact: true }).click();  // pressed again: the panel closes, the chat stays
+  await expect(side).toBeHidden();
+  await expect(chat).toBeVisible();
+  await sections.getByRole('button', { name: 'Cotización', exact: true }).click();
+  const width = async () => Math.round((await side.boundingBox())!.width);
+  const before = await width();
+  await panel.getByRole('separator', { name: 'Ajustar el ancho de la orden', exact: true }).focus();
+  for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowLeft');  // the order's panel grows to the left
+  await expect.poll(width).toBe(before + 72);
+  const list = panel.getByRole('complementary', { name: 'Tus conversaciones', exact: true });
+  const listBefore = Math.round((await list.boundingBox())!.width);
+  const divider = (await panel.getByRole('separator', { name: 'Ajustar el ancho de las conversaciones', exact: true }).boundingBox())!;
+  await page.mouse.move(divider.x + divider.width / 2, divider.y + 200);
+  await page.mouse.down(); await page.mouse.move(divider.x + 60, divider.y + 200, { steps: 4 }); await page.mouse.up();
+  await expect.poll(async () => Math.round((await list.boundingBox())!.width)).toBeGreaterThan(listBefore + 40);
+  await panel.getByRole('button', { name: 'Ocultar conversaciones', exact: true }).click();
+  await expect(list).toHaveCount(0);
+  await panel.getByRole('button', { name: 'Cerrar ventana', exact: true }).click();
+  await page.getByRole('button', { name: 'Mensajes, 3 sin leer', exact: true }).click();
+  await expect(panel.getByRole('button', { name: 'Mostrar conversaciones', exact: true })).toBeVisible();  // remembered
+  await expect.poll(width).toBe(before + 72);
 });

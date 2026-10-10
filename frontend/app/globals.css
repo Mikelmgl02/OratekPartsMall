@@ -2286,17 +2286,20 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .inbox-toast-open { flex:1; min-width:0; display:grid; gap:3px; text-align:left; color:var(--ink); }
 .inbox-toast-open strong { font-size:12px; }
 .inbox-toast-open span { color:var(--muted); font-size:11px; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
-.modal.inbox-modal { width:min(1320px,calc(100vw - 32px)); height:calc(100dvh - 48px); padding:16px 18px 18px; overflow:hidden; }
+.modal.inbox-modal { width:min(1720px,calc(100vw - 24px)); height:calc(100dvh - 24px); max-height:calc(100dvh - 24px); padding:12px 14px 14px; overflow:hidden; }
 .modal.inbox-modal[open] { display:flex; flex-direction:column; }
-.inbox-modal>.modal-header { margin-bottom:12px; }
-.inbox-layout { flex:1; min-height:0; display:grid; grid-template-columns:300px minmax(0,1fr); gap:14px; }
+.inbox-modal>.modal-header { margin-bottom:10px; }
+.inbox-modal>.modal-header h2 { font-size:16px; }
+/* Conversations | chat | the order's section, like a desktop chat app; the dividers resize the side columns. */
+.inbox-layout { flex:1; min-height:0; display:flex; }
+.inbox-list { flex:0 0 var(--inbox-list,300px); }
 .inbox-list { display:flex; flex-direction:column; gap:8px; min-height:0; overflow-y:auto; padding-right:4px; }
 .inbox-list-tools { display:grid; gap:8px; position:sticky; top:0; z-index:1; background:#fbfcf8; padding-bottom:4px; }
 .inbox-search { display:flex; align-items:center; gap:8px; height:38px; padding:0 10px; border:1px solid var(--line); border-radius:8px; background:#fff; color:#8e9885; }
 .inbox-search input { flex:1; min-width:0; border:0; outline:0; background:transparent; font-size:12px; color:var(--ink); }
-.inbox-filter,.inbox-view-switch { display:flex; gap:4px; padding:3px; border-radius:9px; background:#eef2e8; }
-.inbox-filter button,.inbox-view-switch button { flex:1; display:flex; align-items:center; justify-content:center; gap:6px; padding:6px 10px; border-radius:7px; font-size:11px; color:#5f6c55; }
-.inbox-filter button[aria-pressed="true"],.inbox-view-switch button[aria-pressed="true"] { background:#fff; color:var(--ink); font-weight:600; box-shadow:0 1px 3px #19221b1a; }
+.inbox-filter { display:flex; gap:4px; padding:3px; border-radius:9px; background:#eef2e8; }
+.inbox-filter button { flex:1; display:flex; align-items:center; justify-content:center; gap:6px; padding:6px 10px; border-radius:7px; font-size:11px; color:#5f6c55; }
+.inbox-filter button[aria-pressed="true"] { background:#fff; color:var(--ink); font-weight:600; box-shadow:0 1px 3px #19221b1a; }
 .inbox-list ul { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:4px; }
 .inbox-list li>button { position:relative; display:grid; gap:4px; width:100%; padding:10px 12px; border:1px solid transparent; border-radius:10px; text-align:left; color:var(--ink); }
 .inbox-list li>button:hover { background:#f3f6ee; }
@@ -2310,32 +2313,58 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .inbox-list li>button.unread .inbox-row-message { color:var(--ink); font-weight:600; }
 .inbox-row-unread { position:absolute; top:10px; right:10px; min-width:19px; height:19px; padding:0 5px; border-radius:10px; display:grid; place-items:center; background:#6f9a3c; color:#fff; font-size:10px; font-weight:700; }
 .inbox-row-account { color:#97a08e; font-size:10px; }
-.inbox-conversation { display:flex; flex-direction:column; min-height:0; min-width:0; border:1px solid var(--line); border-radius:12px; background:#fff; }
+.inbox-conversation { flex:1 1 auto; display:flex; flex-direction:column; min-height:0; min-width:0; border:1px solid var(--line); border-radius:12px; background:#fff; overflow:hidden; }
 .inbox-placeholder { align-items:center; justify-content:center; gap:10px; color:var(--muted); font-size:13px; text-align:center; padding:24px; }
-.inbox-conversation-header { display:flex; align-items:center; gap:12px; padding:12px 14px; border-bottom:1px solid var(--line); }
-.inbox-conversation-header>div:nth-of-type(1) { display:grid; gap:2px; flex:1; min-width:0; }
-.inbox-conversation-header strong { font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.inbox-conversation-header span { color:var(--muted); font-size:11px; }
-.inbox-back,.inbox-view-switch { display:none; }
-.inbox-conversation-body { flex:1; min-height:0; display:grid; grid-template-columns:minmax(0,1.1fr) minmax(320px,.9fr); }
-.inbox-document { min-height:0; overflow-y:auto; padding:16px; display:grid; align-content:start; gap:14px; border-right:1px solid var(--line); }
-.inbox-chat { min-height:0; display:flex; padding:12px; }
+.inbox-conversation-header { display:flex; align-items:center; gap:10px; padding:10px 12px; border-bottom:1px solid var(--line); }
+.inbox-conversation-title { display:grid; gap:2px; flex:1; min-width:0; }
+.inbox-conversation-title strong { font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.inbox-conversation-title span { color:var(--muted); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.inbox-back { display:none; }
+.inbox-list-toggle[aria-pressed="true"] { color:var(--green-dark); }
+/* The order's sections, toggled from the header's top-right corner. */
+.inbox-sections { display:flex; gap:2px; padding:3px; border-radius:9px; background:#eef2e8; }
+.inbox-sections button { display:flex; align-items:center; gap:6px; padding:6px 10px; border-radius:7px; font-size:12px; color:#5f6c55; white-space:nowrap; }
+.inbox-sections button:hover { color:var(--ink); }
+.inbox-sections button[aria-pressed="true"] { background:#fff; color:var(--ink); font-weight:600; box-shadow:0 1px 3px #19221b1a; }
+.inbox-open-order { white-space:nowrap; }
+.inbox-conversation-body { flex:1; min-height:0; display:flex; }
+.inbox-side { flex:0 0 var(--inbox-side,540px); min-width:0; min-height:0; overflow-y:auto; padding:14px 16px; background:#fcfdfa; }
+.inbox-side[hidden] { display:none; }
+.inbox-side .deal-quote th, .inbox-side .deal-quote td { padding:10px 8px; white-space:normal; vertical-align:top; }
+.inbox-side .deal-quote td:not(:first-child) { white-space:nowrap; }
+.inbox-side { container:inbox-side / inline-size; }
+/* Too narrow for four columns: each line stacks, the item above "2 × USD 86.50" and its amount. */
+@container inbox-side (max-width: 420px) {
+  .inbox-side .deal-quote thead { display:none; }
+  .inbox-side .deal-quote tr { display:grid; grid-template-columns:auto 1fr auto; align-items:baseline; gap:4px 6px; padding:12px 14px; border-bottom:1px solid #edf1e6; }
+  .inbox-side .deal-quote td { display:block; padding:0; border:0; }
+  .inbox-side .deal-quote td:first-child { grid-column:1 / -1; }
+  .inbox-side .deal-quote td:nth-child(3)::before { content:'× '; }
+  .inbox-side .deal-quote td:nth-child(4) { color:var(--ink); font-weight:600; }
+}
+.inbox-resizer { flex:0 0 9px; position:relative; cursor:col-resize; touch-action:none; outline:none; }
+.inbox-resizer::after { content:''; position:absolute; top:12px; bottom:12px; left:4px; width:1px; background:var(--line); transition:background .15s, width .15s, left .15s; }
+.inbox-resizer:hover::after,.inbox-resizer:focus-visible::after { left:3px; width:3px; border-radius:3px; background:#a9c27f; }
+.inbox-conversation-body>.inbox-resizer::after { top:0; bottom:0; }
+body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-select:none !important; }
+.inbox-chat { flex:1 1 auto; min-width:0; min-height:0; display:flex; padding:12px; }
 .deal-chat.compact { flex:1; min-height:0; display:flex; flex-direction:column; gap:10px; }
 .deal-chat.compact .deal-chat-messages { flex:1; min-height:0; max-height:none; }
 .deal-chat.compact textarea { min-height:64px; width:100%; padding:10px 12px; border:1px solid #d6dece; border-radius:9px; background:#fff; color:var(--ink); font:inherit; font-size:13px; resize:vertical; }
 .deal-chat.compact textarea:focus { outline:0; border-color:#7f9f55; box-shadow:0 0 0 3px #dcf39e99; }
 .deal-chat.compact form label { font-size:0; gap:0; }
-@media(max-width:1100px) { .inbox-layout { grid-template-columns:250px minmax(0,1fr); }.inbox-conversation-body { grid-template-columns:minmax(0,1fr) minmax(280px,1fr); } }
 @media(max-width:900px) {
  .modal.inbox-modal { width:100%; max-width:100%; height:100%; max-height:100%; margin:0; border:0; border-radius:0; padding:12px; }
- .inbox-layout { grid-template-columns:minmax(0,1fr); }
+ .inbox-list { flex:1 1 auto; }
+ .inbox-resizer,.inbox-list-toggle { display:none; }
  .inbox-modal.has-selection .inbox-list,.inbox-modal:not(.has-selection) .inbox-conversation { display:none; }
  .inbox-back { display:grid; }
  .inbox-conversation-header { flex-wrap:wrap; }
- .inbox-view-switch { display:flex; order:5; flex-basis:100%; }
- .inbox-conversation-body { grid-template-columns:minmax(0,1fr); }
- .inbox-conversation-body.view-chat .inbox-document,.inbox-conversation-body.view-document .inbox-chat { display:none; }
- .inbox-document { border-right:0; }
+ .inbox-sections { order:5; flex-basis:100%; }
+ .inbox-sections button { flex:1; justify-content:center; }
+ .inbox-open-order>span { display:none; }
+ .inbox-conversation-body.side-open .inbox-chat { display:none; }
+ .inbox-side { flex:1 1 auto; }
  .inbox-toasts { right:12px; bottom:12px; }
  .inbox-notifications-menu { position:fixed; top:var(--inbox-menu-top,64px); left:12px; right:12px; width:auto; max-height:calc(100dvh - var(--inbox-menu-top,64px) - 16px); }
 }
@@ -2367,12 +2396,6 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .deal-reject select,.deal-reject textarea { width:100%; padding:9px 10px; border:1px solid #e3cfc8; border-radius:8px; background:#fff; color:var(--ink); font:inherit; font-size:13px; }
 .deal-reject textarea { min-height:64px; resize:vertical; }
 .deal-reject>div { display:flex; gap:8px; flex-wrap:wrap; }
-/* Setting prices: the list steps aside and the document takes most of the panel, the chat stays beside it. */
-@media(min-width:901px) {
- .inbox-modal.pricing .inbox-layout { grid-template-columns:minmax(0,1fr); }
- .inbox-modal.pricing .inbox-list { display:none; }
- .inbox-modal.pricing .inbox-conversation-body { grid-template-columns:minmax(0,1.75fr) minmax(300px,.75fr); }
-}
 /* The quote editor's currency and terms, and the adjustment request, styled like the deal's other forms. */
 .deal-quote-editor select,.deal-quote-editor textarea,.deal-adjustment textarea { width:100%; min-width:0; padding:10px 12px; border:1px solid #dbe2d1; border-radius:7px; background:#fff; color:var(--ink); font:inherit; font-size:13px; }
 .deal-quote-editor select { width:auto; min-width:120px; }

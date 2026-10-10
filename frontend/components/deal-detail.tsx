@@ -40,11 +40,14 @@ const rejectReasons: [string, string][] = [['price_too_high', 'El precio es muy 
   ['found_elsewhere', 'Lo conseguí con otro proveedor'], ['delay', 'La respuesta tarda demasiado'], ['other', 'Otro motivo']];
 const openOrder = ['pending', 'reviewed', 'quoted', 'adjustment'];
 
-// embedded: the Documento column of the conversations panel, next to its chat. There it shows no chat of its own (the assistant's
-// questions go to the panel's), never opens the order for review by itself, and puts the decisions above the tabs.
-export default function DealDetail({ account, orderId, reference, side, onClose, onChanged, embedded = false, onCopyToChat, onPricing }: {
+// embedded: the side panel of the conversations panel, next to its chat. There it shows no chat of its own (the assistant's
+// questions go to the panel's), never opens the order for review by itself, and puts the decisions above the section.
+export type DealTab = 'order' | 'quote' | 'chat' | 'history';
+
+// tab/onTab: the conversations panel shows the sections from its own header, so it holds the tab and the deal hides its tab bar.
+export default function DealDetail({ account, orderId, reference, side, onClose, onChanged, embedded = false, onCopyToChat, onPricing, tab: shownTab, onTab }: {
   account: Account; orderId: string; reference?: string; side: 'client' | 'supplier'; onClose?: () => void; onChanged?: () => void;
-  embedded?: boolean; onCopyToChat?: (text: string) => void; onPricing?: (pricing: boolean) => void;
+  embedded?: boolean; onCopyToChat?: (text: string) => void; onPricing?: (pricing: boolean) => void; tab?: DealTab; onTab?: (tab: DealTab) => void;
 }) {
   const supplier = side === 'supplier';
   const base = `/api/market/accounts/${account.id}`;
@@ -54,8 +57,12 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
-  const [tab, setTab] = useState<'order' | 'quote' | 'chat' | 'history'>('order');
+  const [ownTab, setOwnTab] = useState<DealTab>('order');
+  const tab = shownTab ?? ownTab;
+  const onTabRef = useRef(onTab); onTabRef.current = onTab;
+  const setTab = useCallback((value: DealTab) => { if (onTabRef.current) onTabRef.current(value); else setOwnTab(value); }, []);
   const [quoteVisited, setQuoteVisited] = useState(false);
+  useEffect(() => { if (tab === 'quote') setQuoteVisited(true); }, [tab]);  // also when the panel's header picks it
   const [adjusting, setAdjusting] = useState(false);
   const [reason, setReason] = useState('');
   const [confirming, setConfirming] = useState(false);
@@ -113,7 +120,7 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   }, [load, orderId, embedded]);
   // In the panel the document is the quotation once there is one.
   const opened = useRef(false);
-  useEffect(() => { if (embedded && deal && !opened.current) { opened.current = true; if (deal.quotation) setTab('quote'); } }, [embedded, deal]);
+  useEffect(() => { if (embedded && deal && !opened.current) { opened.current = true; if (deal.quotation) setTab('quote'); } }, [embedded, deal, setTab]);
   const editable = supplier && !!deal && (['reviewed', 'adjustment'].includes(deal.status) || (deal.status === 'quoted' && revising));
   const draftKey = deal ? `${deal.id}:${deal.quotation?.id || 'new'}` : '';
   useEffect(() => {
@@ -222,9 +229,9 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
         </form>}
         {pendingShortfall && <div className="notice deal-shortfall-alert" role="status"><span>{supplier ? 'Reportaste un faltante: el cliente debe aceptar el acuerdo reducido o cancelarlo.' : 'El proveedor reportó un faltante. Revisa el acuerdo reducido y decide.'}</span>
           <button type="button" className="button soft small" onClick={() => { setTab('quote'); setQuoteVisited(true); }}>Ver faltante</button></div>}
-        <nav className="deal-tabs" aria-label="Secciones del acuerdo">{([
+        {!onTab && <nav className="deal-tabs" aria-label="Secciones del acuerdo">{([
           ['order', 'Artículos', FileText], ['quote', 'Cotización', Handshake], ['chat', 'Conversación', MessageSquare], ['history', 'Actividad', History],
-        ] as const).filter(([value]) => !(embedded && value === 'chat')).map(([value, label, Icon]) => <button type="button" key={value} className={tab === value ? 'selected' : ''} aria-pressed={tab === value} title={value === 'quote' && hasDraft ? 'Hay un borrador de cotización guardado' : undefined} onClick={() => { setTab(value); if (value === 'quote') setQuoteVisited(true); }}><Icon size={15}/>{label}{value === 'quote' && hasDraft && <span className="deal-tab-dot" aria-hidden="true"/>}</button>)}</nav>
+        ] as const).filter(([value]) => !(embedded && value === 'chat')).map(([value, label, Icon]) => <button type="button" key={value} className={tab === value ? 'selected' : ''} aria-pressed={tab === value} title={value === 'quote' && hasDraft ? 'Hay un borrador de cotización guardado' : undefined} onClick={() => { setTab(value); if (value === 'quote') setQuoteVisited(true); }}><Icon size={15}/>{label}{value === 'quote' && hasDraft && <span className="deal-tab-dot" aria-hidden="true"/>}</button>)}</nav>}
         {notice && <div className="notice success" role="status">{notice}</div>}
         {tab === 'order' && <>
           <div className="supplier-request-detail-counts"><span>{deal.line_count} artículos</span><strong>{deal.unit_count.toLocaleString('es-PA')} unidades solicitadas</strong></div>
