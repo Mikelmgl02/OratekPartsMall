@@ -387,3 +387,32 @@ test('someone who buys and sells sees Compras and Ventas apart; the choice is re
   await expect(switcher.getByRole('button', { name: /^Compras/ })).toHaveAttribute('aria-pressed', 'true');  // the purchase it opened
   await expect(list.getByRole('button', { name: /GRUPO RAZOR PARTS/ })).toHaveAttribute('aria-current', 'true');
 });
+
+test('a dated reference shows its last part on the conversation line, whole in its tooltip', async ({ page }) => {
+  await mockInbox(page, { current: pending() });
+  const dated = { ...conversations[0], reference: 'ORD-20261010-55791743' };
+  await page.route(/\/api\/market\/inbox\/conversations(\?.*)?$/, route => route.fulfill({ json: { count: 1, next: null, previous: null, results: [dated] } }));
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Mensajes, 3 sin leer', exact: true }).click();
+  const line = page.getByRole('complementary', { name: 'Tus conversaciones', exact: true }).getByRole('button', { name: /GRUPO RAZOR PARTS/ });
+  await expect(line).toContainText('…55791743');
+  await expect(line).not.toContainText('ORD-20261010');
+  await expect(line).toHaveAttribute('title', /GRUPO RAZOR PARTS · ORD-20261010-55791743/);
+});
+
+test('a page left open while a newer build went live offers to reload, over the conversations panel too', async ({ page }) => {
+  await mockInbox(page, { current: pending() });
+  let checks = 0;
+  await page.route('**/build-version', route => { checks++; return route.fulfill({ json: { deployment: 'otra-version' } }); });
+  await page.goto('/');
+  const notice = page.getByText('Hay una versión nueva de MotionPartes.', { exact: true });
+  await expect(notice).toBeVisible();
+  await page.getByRole('button', { name: 'Mensajes, 3 sin leer', exact: true }).click();
+  const panel = page.getByRole('dialog', { name: 'Conversaciones', exact: true });
+  await expect(panel.getByText('Hay una versión nueva de MotionPartes.', { exact: true })).toBeVisible();  // above the dialog's top layer
+  await Promise.all([page.waitForEvent('load'), panel.getByRole('button', { name: 'Recargar', exact: true }).click()]);
+  await expect(notice).toBeVisible();  // still newer after the reload: the route keeps answering another build
+  await page.getByRole('button', { name: 'Ahora no', exact: true }).click();
+  await expect(notice).toHaveCount(0);
+  expect(checks).toBeGreaterThanOrEqual(2);
+});

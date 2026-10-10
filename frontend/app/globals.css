@@ -2460,3 +2460,8 @@ body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-s
 .inbox-whatsapp-form>div { display:flex; align-items:center; gap:8px; }
 .inbox-whatsapp-consent { color:var(--muted) !important; font-size:11px !important; }
 .inbox-whatsapp-number { display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; margin:0; font-size:12px; color:#4c5745; }
+
+/* A newer build went live while the page was open (components/update-notice.tsx). */
+.update-notice { position:fixed; left:50%; bottom:18px; z-index:1000; transform:translateX(-50%); display:flex; align-items:center; gap:10px; max-width:calc(100vw - 32px); padding:8px 8px 8px 14px; border-radius:12px; background:#232b26; color:#fff; font-size:13px; box-shadow:0 14px 36px #0000003d; }
+.update-notice span { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.update-notice .icon-button { color:#cfd8c8; }

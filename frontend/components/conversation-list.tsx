@@ -4,7 +4,7 @@ import { Check, ChevronDown, ChevronRight, Ellipsis, Folder, FolderMinus, Folder
 import type { Page } from '@/lib/types';
 import { request } from '@/lib/types';
 import { dealStatusLabels } from '@/lib/deal-types';
-import { INBOX_EVENT, type InboxConversation, type InboxGroup, type InboxSide, type InboxSides, type InboxTarget, ago, targetOf } from '@/lib/inbox';
+import { INBOX_EVENT, type InboxConversation, type InboxGroup, type InboxSide, type InboxSides, type InboxTarget, ago, shortReference, targetOf } from '@/lib/inbox';
 
 // The conversations column of the panel, organized like a desktop app's sidebar: Fijadas on top, then the person's own groups (made with
 // Nuevo grupo, collapsible), then Sin grupo. Each conversation is a single line: a status dot, the other party, the order's reference and
@@ -181,7 +181,7 @@ export default function ConversationList({ hidden, floatTop = null, onPeek, sele
         <span className={`inbox-row-dot ${row.status}`} aria-hidden="true"/>
         <span className="inbox-row-name">{row.counterpart.name}</span>
         {twoSided && side === 'all' && <span className={`inbox-row-side ${row.side}`}>{row.side === 'supplier' ? 'Venta' : 'Compra'}</span>}
-        <span className="inbox-row-ref">{row.reference}</span>
+        <span className="inbox-row-ref">{shortReference(row.reference)}</span>
         <span className="sr-only">, {status}{as && `, ${as}`}</span>
         {row.unread > 0 && <span className="inbox-row-unread" aria-label={`${row.unread} sin leer`}>{row.unread}</span>}
       </button>

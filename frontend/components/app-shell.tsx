@@ -6,6 +6,8 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState, type R
 import { createPortal } from 'react-dom';
 import BrandLogo from './brand-logo';
 import { InboxProvider } from './inbox';
+import UpdateNotice from './update-notice';
+import { startUpdateCheck } from '@/lib/update-check';
 
 type ShellContext = { toolbarHost: HTMLDivElement | null; viewport: RefObject<HTMLDivElement | null> };
 const Context = createContext<ShellContext | null>(null);
@@ -17,6 +19,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const value = useMemo(() => ({ toolbarHost, viewport }), [toolbarHost]);
 
   useEffect(() => { viewport.current?.scrollTo({ top: 0, behavior: 'instant' }); }, [pathname]);
+  useEffect(() => startUpdateCheck(), []);
 
   return <Context.Provider value={value}><div className="app-shell">
     <div ref={setToolbarHost} className="app-toolbar">
@@ -25,6 +28,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
       </div></header>
     </div>
     <div ref={viewport} className="app-viewport" data-testid="page-viewport"><InboxProvider>{children}</InboxProvider></div>
+    <UpdateNotice/>
   </div></Context.Provider>;
 }
 

@@ -10,5 +10,8 @@ if (!process.env.NEXT_PUBLIC_AG_GRID_LICENSE_KEY && existsSync(secretFile)) {
   try { process.env.NEXT_PUBLIC_AG_GRID_LICENSE_KEY = value.startsWith('"') ? JSON.parse(value) : value; }
   catch { console.error('The AG Grid license environment value must be a valid quoted or unquoted string.'); process.exit(1); }
 }
+// One id per build, fixed here so every part of `next build` sees the same one: Next stamps it on the pages (a tab that navigates into a newer
+// build reloads) and /build-version serves it, so a tab left open offers to reload (components/update-notice.tsx).
+process.env.NEXT_DEPLOYMENT_ID ||= `build-${Date.now().toString(36)}`;
 const result = spawnSync('npm', ['run', 'build'], { stdio: 'inherit', env: process.env });
 process.exit(result.status ?? 1);

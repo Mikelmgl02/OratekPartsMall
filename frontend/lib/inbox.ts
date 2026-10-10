@@ -30,6 +30,13 @@ export async function markConversationRead(orderId: string, lastMessageId: numbe
   } catch { /* The next message read marks it again. */ }
 }
 
+// A dated reference (ORD-20261010-55791743) on a conversation's line: its last part, "…55791743" (the whole one is in the line's tooltip,
+// the chat's header and the order). Other references stay whole.
+export function shortReference(reference: string) {
+  const match = /^[A-Z]+-\d{8}-([A-Z0-9]+)$/.exec(reference);
+  return match ? `…${match[1]}` : reference;
+}
+
 export function targetOf(row: InboxConversation | InboxNotification): InboxTarget {
   return { orderId: 'order_id' in row ? row.order_id : row.id, reference: row.reference, side: row.side, account: row.account, counterpart: row.counterpart };
 }
