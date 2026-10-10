@@ -24,7 +24,7 @@ from .quote_assistant import applied_runs
 from .quote_assistant_models import QuoteAssistantRun
 from .quote_draft_models import DealQuotationAudit, DealQuotationDraft, DealQuotationLineAudit
 from .quote_drafts import stock_by_line
-from .deal_lifecycle import accept_shortfall, cancel, deliver, lifecycle_data, report_shortfall
+from .deal_lifecycle import accept_shortfall, cancel, deliver, lifecycle_data, reject, report_shortfall
 from .stock_reservations import reserve_confirmed
 from .request_models import (SupplierRequest, DealQuotation, DealQuotationLine, DealEvent,
                              DealMessage, DealCommand, DealShortfall)
@@ -43,7 +43,7 @@ DECIDE_DENIED = ('Tu permiso en la cuenta no permite decidir sobre acuerdos conf
                  'Solicita la aprobación de un administrador de tu cuenta.')
 # Who takes each decision; cancel belongs to either party (mall.deal_lifecycle).
 SUPPLIER_ACTIONS = {'quote', 'return_quote', 'deliver', 'report_shortfall'}
-CLIENT_ACTIONS = {'accept', 'request_adjustment', 'accept_shortfall'}
+CLIENT_ACTIONS = {'accept', 'request_adjustment', 'accept_shortfall', 'reject'}
 SETTINGS_SNAPSHOT = ('version', 'over_stock_policy', 'over_request_policy', 'accept_shortfall_policy', 'publish_min_permission', 'prefill_quantity',
                      'usd_pab_parity')
 
@@ -111,7 +111,7 @@ class DealActionSerializer(serializers.Serializer):
     operation_id = serializers.UUIDField()
     expected_version = serializers.IntegerField(min_value=1)
     action = serializers.ChoiceField(choices=['quote', 'accept', 'request_adjustment', 'return_quote', 'deliver', 'report_shortfall',
-                                              'accept_shortfall', 'cancel'])
+                                              'accept_shortfall', 'cancel', 'reject'])
     quotation_id = serializers.UUIDField(required=False)
     currency = serializers.ChoiceField(choices=['USD', 'PAB'], default='USD')
     terms = serializers.CharField(required=False, default='', allow_blank=True, max_length=5000)
@@ -130,7 +130,8 @@ class DealActionSerializer(serializers.Serializer):
         data['reason'] = data['reason'].strip().upper()
         if data['action'] == 'quote' and not data.get('lines'):
             raise serializers.ValidationError('Agrega las cantidades y precios de la cotización.')
-        if data['action'] != 'quote' and not data.get('quotation_id'):
+        # Rechazar names the quotation the client saw, or none before the first one.
+        if data['action'] not in ('quote', 'reject') and not data.get('quotation_id'):
             raise serializers.ValidationError('Indica la cotización que estás revisando.')
         if data['action'] == 'request_adjustment' and not data['reason']:
             raise serializers.ValidationError('Describe el ajuste que necesitas.')
@@ -138,6 +139,8 @@ class DealActionSerializer(serializers.Serializer):
             raise serializers.ValidationError('Indica las unidades que faltan y el motivo del faltante.')
         if data['action'] == 'cancel' and data.get('reason_code') not in dict(SupplierRequest.CANCEL_REASONS):
             raise serializers.ValidationError('Indica el motivo de la cancelación.')
+        if data['action'] == 'reject' and data.get('reason_code') not in dict(SupplierRequest.CANCEL_REASONS):
+            raise serializers.ValidationError('Indica el motivo por el que rechazas la orden.')
         return data
 
 
@@ -269,7 +272,10 @@ class DealActions(APIView):
         if row.version != data['expected_version']:
             raise RequestConflict('El acuerdo cambió. Actualízalo para revisar su estado y cotización actuales.')
         latest = row.quotations.order_by('-revision').first()
-        if action != 'quote' and (not latest or latest.pk != data['quotation_id']):
+        if action == 'reject':
+            if (latest.pk if latest else None) != data.get('quotation_id'):  # a newer quotation arrived since the client looked
+                raise RequestConflict('La orden cambió. Revisa su cotización actual antes de rechazarla.')
+        elif action != 'quote' and (not latest or latest.pk != data['quotation_id']):
             raise RequestConflict('Esta cotización ya no es la vigente. Actualiza el acuerdo.')
         now, extra_fields = timezone.now(), []
         if action == 'quote':
@@ -342,6 +348,8 @@ class DealActions(APIView):
             description, extra_fields = deliver(row, request.user)
         elif action == 'cancel':
             description, extra_fields = cancel(row, side, request.user, data['reason_code'], data['reason'])
+        elif action == 'reject':
+            description, extra_fields = reject(row, request.user, data['reason_code'], data['reason'])
         else:
             if row.status != 'adjustment':
                 raise RequestConflict('Solo puedes devolver una cotización que tenga un ajuste solicitado.')

@@ -28,7 +28,7 @@ TITLES = {
     'review_started': '{who} empezó a revisar tu orden', 'quote': '{who} publicó la cotización v{revision}',
     'request_adjustment': '{who} solicitó un ajuste', 'return_quote': '{who} devolvió la cotización v{revision} para confirmar',
     'accept': '{who} confirmó el acuerdo', 'deliver': '{who} marcó la orden como entregada', 'report_shortfall': '{who} reportó un faltante',
-    'accept_shortfall': '{who} aceptó el faltante', 'cancel': '{who} canceló el acuerdo',
+    'accept_shortfall': '{who} aceptó el faltante', 'cancel': '{who} canceló el acuerdo', 'reject': '{who} rechazó la orden',
 }
 
 

@@ -1,7 +1,7 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { Bot, Check, FileText, Handshake, History, LoaderCircle, LockKeyhole, MessageSquare, Pencil, RefreshCw, Send, UserRoundCog } from 'lucide-react';
+import { Bot, Check, FileText, Handshake, History, LoaderCircle, LockKeyhole, MessageSquare, Pencil, RefreshCw, Send, UserRoundCog, X } from 'lucide-react';
 import Modal from './modal';
 import { percent } from './price-explanation';
 import DealStatusBadge from './deal-status';
@@ -33,11 +33,18 @@ const stateDescription = {
 const actionNotices: Record<string, string> = {
   accept: 'Acuerdo confirmado por ambas partes · HANDSHAKED.', request_adjustment: 'Ajuste enviado al proveedor.', deliver: 'Acuerdo marcado como entregado.',
   report_shortfall: 'Faltante reportado. El cliente debe aceptar el acuerdo reducido o cancelarlo.', accept_shortfall: 'Aceptaste el acuerdo reducido.',
-  cancel: 'Acuerdo cancelado.',
+  cancel: 'Acuerdo cancelado.', reject: 'Rechazaste la orden.',
 };
+// Rechazar (the client ends an open order) offers the reasons that fit a buyer turning an order down; the note can say more.
+const rejectReasons: [string, string][] = [['not_needed', 'Ya no lo necesito'], ['found_elsewhere', 'Lo conseguí con otro proveedor'],
+  ['delay', 'La respuesta tarda demasiado'], ['other', 'Otro motivo (precio, condiciones…)']];
+const openOrder = ['pending', 'reviewed', 'quoted', 'adjustment'];
 
-export default function DealDetail({ account, orderId, reference, side, onClose, onChanged }: {
+// embedded: the Documento column of the conversations panel, next to its chat. There it shows no chat of its own (the assistant's
+// questions go to the panel's), never opens the order for review by itself, and puts the decisions above the tabs.
+export default function DealDetail({ account, orderId, reference, side, onClose, onChanged, embedded = false, onCopyToChat, onPricing }: {
   account: Account; orderId: string; reference?: string; side: 'client' | 'supplier'; onClose?: () => void; onChanged?: () => void;
+  embedded?: boolean; onCopyToChat?: (text: string) => void; onPricing?: (pricing: boolean) => void;
 }) {
   const supplier = side === 'supplier';
   const base = `/api/market/accounts/${account.id}`;
@@ -52,6 +59,9 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   const [adjusting, setAdjusting] = useState(false);
   const [reason, setReason] = useState('');
   const [confirming, setConfirming] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
+  const [rejectCode, setRejectCode] = useState('');
+  const [rejectNote, setRejectNote] = useState('');
   // A refused accept (for example, stock the supplier relied on changed) points the client to "Solicitar ajuste".
   const [suggestAdjust, setSuggestAdjust] = useState(false);
   const mounted = useRef(false);
@@ -92,12 +102,15 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   }, [detailPath, supplier, acceptDetail]);
   useEffect(() => {
     mounted.current = true;
-    void load(true);
+    void load(!embedded);
     const timer = setInterval(() => { if (!inFlight.current && document.visibilityState === 'visible') void load(); }, 15000);
     // The other party's decision reaches an open deal at once over the inbox's websocket.
     const off = onDealNudge(orderId, ['event'], () => { if (!inFlight.current) void load(); });
     return () => { mounted.current = false; clearInterval(timer); off(); };
-  }, [load, orderId]);
+  }, [load, orderId, embedded]);
+  // In the panel the document is the quotation once there is one.
+  const opened = useRef(false);
+  useEffect(() => { if (embedded && deal && !opened.current) { opened.current = true; if (deal.quotation) setTab('quote'); } }, [embedded, deal]);
   const editable = supplier && !!deal && ['reviewed', 'adjustment'].includes(deal.status);
   const draftKey = deal ? `${deal.id}:${deal.quotation?.id || 'new'}` : '';
   useEffect(() => {
@@ -128,6 +141,7 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
       const result = await request<Deal>(actionPath, { method: 'POST', body: JSON.stringify({ ...payload, operation_id: retry.current.id }) });
       if (!mounted.current) return true;
       retry.current = null; acceptDetail(result); setAdjusting(false); setReason(''); setConfirming(false); setSuggestAdjust(false);
+      setRejecting(false); setRejectCode(''); setRejectNote('');
       setTab('quote');
       setNotice(actionNotices[action] || 'Cotización confirmada por el proveedor y enviada al cliente.');
       onChangedRef.current?.();
@@ -150,6 +164,10 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   // An account ordering from itself has no pair profile (the server refuses self-profiles).
   const pairProfile = supplier && deal?.client.id !== account.id ? loaded?.pricing.profile : undefined;
   const editorMounted = editable && (tab === 'quote' || quoteVisited);
+  // The panel widens the document while the price editor is on screen.
+  const pricing = embedded && editorMounted && tab === 'quote';
+  useEffect(() => { onPricing?.(pricing); }, [pricing, onPricing]);
+  useEffect(() => () => onPricing?.(false), [onPricing]);
   function profileSaved() {
     // A mounted editor reloads its own suggestions (keeping unsaved cells); otherwise the next opening reads the new draft.
     if (editorMounted) { setPricingRevision(value => value + 1); return; }
@@ -159,12 +177,13 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   const activeStep = !deal ? 0 : deal.status === 'pending' ? 0 : deal.status === 'reviewed' ? 1 : deal.status === 'delivered' ? 4
     : ['handshaked', 'cancelled'].includes(deal.status) ? 3 : 2;
   const pendingShortfall = deal?.shortfalls?.find(item => item.status === 'pending');
+  const rejectButton = <button type="button" className="button soft danger small" disabled={busy} aria-expanded={rejecting} onClick={() => { setRejecting(value => !value); setConfirming(false); setAdjusting(false); }}>Rechazar</button>;
   const content = <>
     <div className="deal-detail">
       {error && <div className="notice error" role="alert"><span>{error}</span><button type="button" disabled={busy} onClick={() => { setError(''); void load(!deal); }}>Actualizar acuerdo</button></div>}
       {!deal && !error && <div className="supplier-request-detail-loading" role="status"><span className="sr-only">Cargando orden…</span><div className="skeleton-block"/><div className="skeleton-block"/></div>}
       {deal && <>
-        <div className="supplier-request-detail-header"><div><span>{supplier ? 'Cliente' : 'Proveedor'}</span><h3>{supplier ? deal.client.name : deal.supplier.name}</h3><p>{date(deal.created_at)}</p></div><DealStatusBadge status={deal.status}/></div>
+        {!embedded && <div className="supplier-request-detail-header"><div><span>{supplier ? 'Cliente' : 'Proveedor'}</span><h3>{supplier ? deal.client.name : deal.supplier.name}</h3><p>{date(deal.created_at)}</p></div><DealStatusBadge status={deal.status}/></div>}
         {pairProfile && <div className="deal-pair-profile" role="group" aria-label="Perfil comercial del cliente">
           <p><UserRoundCog size={15}/>{pairProfile.exists ? [loaded?.pricing.price_list && `Lista ${loaded.pricing.price_list.code}`, Number(pairProfile.discount_percent) > 0 && `Desc. ${percent(pairProfile.discount_percent)}`,
             pairProfile.customer_code && `Código ${pairProfile.customer_code}`].filter(Boolean).join(' · ') || 'Perfil comercial sin condiciones especiales'
@@ -177,11 +196,26 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
           const when = deal.status === 'delivered' ? deal.delivered_at : deal.status === 'cancelled' ? deal.cancellation?.cancelled_at : deal.handshaked_at;
           return when ? <strong> {date(when)}</strong> : null;
         })()}</p></div>
+        {embedded && <div className="deal-quick-actions" role="group" aria-label="Decisiones">
+          {supplier && canDecide && ['pending', 'reviewed', 'adjustment'].includes(deal.status) && !pricing && <button type="button" className="button primary small" disabled={busy}
+            onClick={async () => { if (deal.status === 'pending') await load(true); setQuoteVisited(true); setTab('quote'); }}><Pencil size={15}/>Fijar precios</button>}
+          {!supplier && deal.status === 'quoted' && deal.quotation && <>
+            <button type="button" className="button primary small" disabled={busy} onClick={() => { setTab('quote'); setConfirming(true); setAdjusting(false); setRejecting(false); }}><Handshake size={15}/>Confirmar</button>
+            <button type="button" className="button soft small" disabled={busy} onClick={() => { setTab('quote'); setAdjusting(value => !value); setConfirming(false); setRejecting(false); }}>Solicitar ajuste</button>
+          </>}
+          {!supplier && openOrder.includes(deal.status) && rejectButton}
+        </div>}
+        {rejecting && !supplier && openOrder.includes(deal.status) && <form className="deal-reject" aria-label="Rechazar la orden" onSubmit={event => { event.preventDefault(); void act('reject', { quotation_id: deal.quotation?.id, reason_code: rejectCode, reason: rejectNote }); }}>
+          <p><strong>¿Rechazar la orden {deal.reference}?</strong> Se cerrará sin acuerdo y {deal.supplier.name} recibirá el motivo.</p>
+          <label>Motivo<select aria-label="Motivo del rechazo" required value={rejectCode} disabled={busy} onChange={event => setRejectCode(event.target.value)}><option value="">Elige un motivo…</option>{rejectReasons.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          <label>Comentario (opcional)<textarea aria-label="Comentario para el proveedor" maxLength={4000} value={rejectNote} disabled={busy} onChange={event => setRejectNote(event.target.value)} placeholder="Cuéntale al proveedor por qué…"/></label>
+          <div><button type="submit" className="button primary danger small" disabled={busy || !rejectCode}>{busy ? <LoaderCircle size={15} className="spin"/> : <X size={15}/>}Rechazar orden</button><button type="button" className="button soft small" disabled={busy} onClick={() => setRejecting(false)}>Volver</button></div>
+        </form>}
         {pendingShortfall && <div className="notice deal-shortfall-alert" role="status"><span>{supplier ? 'Reportaste un faltante: el cliente debe aceptar el acuerdo reducido o cancelarlo.' : 'El proveedor reportó un faltante. Revisa el acuerdo reducido y decide.'}</span>
           <button type="button" className="button soft small" onClick={() => { setTab('quote'); setQuoteVisited(true); }}>Ver faltante</button></div>}
         <nav className="deal-tabs" aria-label="Secciones del acuerdo">{([
           ['order', 'Artículos', FileText], ['quote', 'Cotización', Handshake], ['chat', 'Conversación', MessageSquare], ['history', 'Actividad', History],
-        ] as const).map(([value, label, Icon]) => <button type="button" key={value} className={tab === value ? 'selected' : ''} aria-pressed={tab === value} title={value === 'quote' && hasDraft ? 'Hay un borrador de cotización guardado' : undefined} onClick={() => { setTab(value); if (value === 'quote') setQuoteVisited(true); }}><Icon size={15}/>{label}{value === 'quote' && hasDraft && <span className="deal-tab-dot" aria-hidden="true"/>}</button>)}</nav>
+        ] as const).filter(([value]) => !(embedded && value === 'chat')).map(([value, label, Icon]) => <button type="button" key={value} className={tab === value ? 'selected' : ''} aria-pressed={tab === value} title={value === 'quote' && hasDraft ? 'Hay un borrador de cotización guardado' : undefined} onClick={() => { setTab(value); if (value === 'quote') setQuoteVisited(true); }}><Icon size={15}/>{label}{value === 'quote' && hasDraft && <span className="deal-tab-dot" aria-hidden="true"/>}</button>)}</nav>
         {notice && <div className="notice success" role="status">{notice}</div>}
         {tab === 'order' && <>
           <div className="supplier-request-detail-counts"><span>{deal.line_count} artículos</span><strong>{deal.unit_count.toLocaleString('es-PA')} unidades solicitadas</strong></div>
@@ -191,6 +225,7 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
           <div className="table-scroll deal-lines supplier-request-lines"><table><thead><tr><th>Código / descripción</th><th>SKU interno</th>{supplier && <th>Tu ID de inventario</th>}<th>Solicitadas</th>{supplier && <th>Disponibles</th>}{priced && <th>Precio sugerido</th>}</tr></thead><tbody>{deal.lines.map(line => <tr key={line.id}><td><strong>{line.codigo}</strong><span>{line.brand || 'SIN MARCA INDICADA'}</span><small>{line.description}</small></td><td>{line.sku}</td>{supplier && <td>{'supplier_invent_id' in line && line.supplier_invent_id}</td>}<td>{line.quantity}</td>{supplier && <td>{'stock' in line && line.stock ? <><strong>{line.stock.available_quantity}</strong><small>Reportadas: {line.stock.reported_quantity} · Reservadas: {line.stock.reserved_quantity}{line.stock.held_for_deal ? ` (${line.stock.held_for_deal} para esta orden)` : ''}</small><small className={line.stock.shortfall ? "stock-shortfall" : "stock-sufficient"}>{line.stock.shortfall ? `Faltan ${line.stock.shortfall} unidades` : "Existencias suficientes"}</small></> : <><strong className="stock-shortfall">Revisar artículo</strong><small>El código o el vínculo con el SKU cambió. Confirma la equivalencia en Inventario.</small></>}</td>}{priced && <td><SuggestedPrice line={suggestions.get(line.id)} currency={priced.currency}/></td>}</tr>)}</tbody></table></div>
           {supplier && ['reviewed', 'adjustment'].includes(deal.status) && <button type="button" className="button primary" onClick={() => { setQuoteVisited(true); setTab('quote'); }}>Preparar cotización<FileText size={16}/></button>}
           {deal.quotation && <button type="button" className="button soft" onClick={() => setTab('quote')}>Ver cotización · v{deal.quotation.revision}<FileText size={16}/></button>}
+          {!embedded && !supplier && ['pending', 'reviewed', 'adjustment'].includes(deal.status) && rejectButton}
         </>}
         <div className="deal-quote-tab" hidden={tab !== 'quote'}>
           {deal.quotation && <QuoteView quote={deal.quotation}/>}
@@ -199,15 +234,16 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
           {editable && (tab === 'quote' || quoteVisited) && (draftLoad?.key === draftKey
             ? <QuoteEditor key={`${draftKey}:${draftLoad.draft ? draftLoad.draft.persisted ? 'saved' : 'virtual' : 'fallback'}`} deal={deal} draft={draftLoad.draft} draftPath={draftPath}
                 disabled={busy} onSend={values => act('quote', values)} onRetryDraft={retryDraft} pricingRevision={pricingRevision} simulatorHref={supplierPricingHref(account.id, 'simulator')}
-                onCopyToChat={text => { setChatInsert({ text, id: Date.now() }); setTab('chat'); }}
+                onCopyToChat={text => { if (embedded) { onCopyToChat?.(text); return; } setChatInsert({ text, id: Date.now() }); setTab('chat'); }}
                 onDraftChange={(persisted, next) => { setHasDraft(persisted); setLiveDraft({ key: draftKey, draft: next }); }}/>
             : <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando borrador de cotización…</div>)}
           {supplier && deal.status === 'adjustment' && deal.quotation && <button type="button" className="button soft" disabled={busy || publishBlocked} onClick={() => void act('return_quote', { quotation_id: deal.quotation!.id })}>Devolver la misma cotización para confirmar<Send size={15}/></button>}
           {supplier && deal.status === 'adjustment' && deal.quotation && publishBlocked && <small className="deal-draft-warning">Solo un miembro con permiso para enviar cotizaciones puede devolverla.</small>}
           {supplier && deal.status === 'adjustment' && deal.quotation && hasDraft && <small className="deal-draft-warning">Si devuelves la misma cotización, se descartará el borrador en curso.</small>}
           {!supplier && deal.status === 'quoted' && deal.quotation && <div className="deal-client-decisions">
-            {confirming ? <div className="notice deal-confirmation"><strong>¿Confirmar este acuerdo por {money(deal.quotation.total, deal.quotation.currency)}?</strong><p>Aceptas las cantidades y condiciones de la cotización v{deal.quotation.revision}. El proveedor ya las confirmó.</p><div><button type="button" className="button primary" disabled={busy} onClick={() => void act('accept', { quotation_id: deal.quotation!.id })}>{busy ? <LoaderCircle size={15} className="spin"/> : <Handshake size={15}/>}Sí, confirmar acuerdo</button><button type="button" className="button soft" disabled={busy} onClick={() => setConfirming(false)}>Volver</button></div></div> : <button type="button" className={`button ${suggestAdjust ? 'soft' : 'primary'}`} disabled={busy} onClick={() => { setConfirming(true); setAdjusting(false); }}>Confirmar cotización<Handshake size={16}/></button>}
-            {!confirming && <button type="button" className={`button ${suggestAdjust ? 'primary' : 'soft'}`} disabled={busy} aria-describedby={suggestAdjust ? 'deal-adjust-hint' : undefined} onClick={() => setAdjusting(value => !value)}>Solicitar ajuste</button>}
+            {confirming ? <div className="notice deal-confirmation"><strong>¿Confirmar este acuerdo por {money(deal.quotation.total, deal.quotation.currency)}?</strong><p>Aceptas las cantidades y condiciones de la cotización v{deal.quotation.revision}. El proveedor ya las confirmó.</p><div><button type="button" className="button primary" disabled={busy} onClick={() => void act('accept', { quotation_id: deal.quotation!.id })}>{busy ? <LoaderCircle size={15} className="spin"/> : <Handshake size={15}/>}Sí, confirmar acuerdo</button><button type="button" className="button soft" disabled={busy} onClick={() => setConfirming(false)}>Volver</button></div></div> : !embedded && <button type="button" className={`button ${suggestAdjust ? 'soft' : 'primary'}`} disabled={busy} onClick={() => { setConfirming(true); setAdjusting(false); setRejecting(false); }}>Confirmar cotización<Handshake size={16}/></button>}
+            {!confirming && !embedded && <button type="button" className={`button ${suggestAdjust ? 'primary' : 'soft'}`} disabled={busy} aria-describedby={suggestAdjust ? 'deal-adjust-hint' : undefined} onClick={() => { setAdjusting(value => !value); setRejecting(false); }}>Solicitar ajuste</button>}
+            {!confirming && !embedded && rejectButton}
             {suggestAdjust && !confirming && <small id="deal-adjust-hint" className="deal-adjust-hint">Pide al proveedor una nueva versión con las unidades que puede confirmar.</small>}
             {adjusting && <form className="deal-adjustment" onSubmit={event => { event.preventDefault(); void act('request_adjustment', { quotation_id: deal.quotation!.id, reason }); }}><label>¿Qué necesitas ajustar?<UppercaseTextarea required maxLength={4000} value={reason} disabled={busy} onChange={event => setReason(event.target.value)} placeholder="INDICA LAS CANTIDADES O CONDICIONES QUE NECESITAS CAMBIAR…"/></label><button type="submit" className="button primary" disabled={busy || !reason.trim()}>{busy ? <LoaderCircle size={15} className="spin"/> : <Send size={15}/>}Enviar ajuste</button></form>}
           </div>}
@@ -217,12 +253,18 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
           {(deal.quotations?.length || 0) > 1 && <details className="deal-quote-history"><summary>Versiones anteriores ({deal.quotations.length - 1})</summary>{deal.quotations.slice(0, -1).map(quote => <QuoteView key={quote.id} quote={quote} historical/>)}</details>}
         </div>
         {/* Keep conversation mounted so refreshes and draft messages survive tab changes. */}
-        <div hidden={tab !== 'chat'}><DealChat account={account} orderId={orderId} active={tab === 'chat'} supplier={supplier} insert={chatInsert}/></div>
+        {!embedded && <div hidden={tab !== 'chat'}><DealChat account={account} orderId={orderId} active={tab === 'chat'} supplier={supplier} insert={chatInsert}/></div>}
         {tab === 'history' && <ol className="deal-events">{deal.events?.length ? deal.events.map(event => <li key={event.id}><span>{date(event.created_at)} · {event.account_name} · {event.actor_name}</span><p>{event.description}</p></li>) : <li>Esta orden se creó antes de habilitar el registro de actividad.</li>}</ol>}
         <div className="deal-footer"><small>Orden {deal.reference} · La entrega se coordina con el proveedor.</small><button type="button" className="button soft small" disabled={busy} onClick={() => { setError(''); void load(); }}><RefreshCw size={14}/>Actualizar</button></div>
       </>}
     </div>
   </>;
+  if (embedded) return <section className="deal-embedded" aria-label="Documento de la orden">
+    {content}
+    {profileOpen && deal && <Modal wide title={`Perfil comercial · ${deal.client.name}`} className="client-profile-modal" onClose={() => setProfileOpen(false)}>
+      <ClientPricingProfile account={account} clientId={deal.client.id} embedded onSaved={profileSaved}/>
+    </Modal>}
+  </section>;
   return supplier ? <section className="deal-order-content" aria-label={`Orden ${deal?.reference || reference || 'del cliente'}`}>
     <div className="deal-page-heading"><span className="eyebrow">ORDEN DE CLIENTE</span><h1>{deal ? `Orden ${deal.reference}` : 'Detalle de la orden'}</h1></div>
     {content}

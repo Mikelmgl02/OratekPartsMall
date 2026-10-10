@@ -111,6 +111,17 @@ def close(row, side, actor, reason, note):
     return CANCEL_FIELDS
 
 
+OPEN_ORDER = ('pending', 'reviewed', 'quoted', 'adjustment')
+
+
+def reject(row, actor, reason, note):
+    """Rechazar: the client turns the order down before any agreement (nothing is reserved yet); it ends cancelled by the client."""
+    if row.status not in OPEN_ORDER:
+        raise RequestConflict('Solo puedes rechazar una orden que aún no se confirmó.')
+    fields = close(row, 'client', actor, reason, note)
+    return f'EL CLIENTE RECHAZÓ LA ORDEN: {CANCEL_REASONS[reason].upper()}.' + (f' {note}' if note else ''), fields
+
+
 def cancel(row, side, actor, reason, note):
     require_open_agreement(row, 'Solo se puede cancelar un acuerdo confirmado que aún no se entregó.')
     fields = close(row, side, actor, reason, note)
