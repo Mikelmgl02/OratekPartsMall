@@ -354,3 +354,36 @@ test('like a desktop sidebar: one line per conversation, pinned ones first, the 
   expect(writes.map(write => `${write.method} ${write.url.replace(/[a-f0-9-]{36}/, 'ID')}`)).toEqual(['POST groups', 'POST conversations/ID/place', 'POST conversations/ID/place',
     'POST conversations/ID/place', 'POST groups/ID', 'DELETE groups/ID']);
 });
+
+test('someone who buys and sells sees Compras and Ventas apart; the choice is remembered and a purchase opened elsewhere shows Compras', async ({ page }) => {
+  await mockInbox(page, { current: pending() });
+  const rows = conversations.map(row => row.id === order2 ? { ...row, side: 'supplier' } : row);  // they sell to AUTOPARTES DEL ISTMO
+  await page.route(/\/accounts\/[^/]+\/requests\/[^/?]+$/, route => route.fulfill({ json: { ...deal, id: order2, reference: 'ORD-0119' } }));  // the sale, seen as its supplier
+  const sides = { client: { conversations: 2, unread: 2 }, supplier: { conversations: 1, unread: 1 } };
+  const asked: string[] = [];
+  await page.route(/\/api\/market\/inbox\/conversations(\?.*)?$/, route => {
+    const side = new URL(route.request().url()).searchParams.get('side'); asked.push(side ?? 'all');
+    const results = rows.filter(row => !side || row.side === side);
+    return route.fulfill({ json: { count: results.length, next: null, previous: null, results, groups: [], sides } });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Mensajes, 3 sin leer', exact: true }).click();
+  const panel = page.getByRole('dialog', { name: 'Conversaciones', exact: true });
+  const list = panel.getByRole('complementary', { name: 'Tus conversaciones', exact: true });
+  const switcher = list.getByRole('group', { name: 'Compras y ventas', exact: true });
+  await expect(switcher.getByRole('button')).toHaveText(['Ambas', 'Compras2', 'Ventas1']);  // with each side's unread messages
+  await expect(list.getByRole('button', { name: /AUTOPARTES DEL ISTMO/ })).toContainText('Venta');
+  await expect(list.getByRole('button', { name: /GRUPO RAZOR PARTS/ })).toContainText('Compra');
+  await switcher.getByRole('button', { name: /^Ventas/ }).click();
+  await expect(list.getByRole('listitem')).toHaveCount(1);
+  await expect(list.getByRole('button', { name: /AUTOPARTES DEL ISTMO/ })).not.toContainText('Venta');  // one side: no tags
+  expect(asked.at(-1)).toBe('supplier');
+  await panel.getByRole('button', { name: 'Cerrar ventana', exact: true }).click();
+  await page.getByRole('button', { name: 'Mensajes, 3 sin leer', exact: true }).click();
+  await expect(switcher.getByRole('button', { name: /^Ventas/ })).toHaveAttribute('aria-pressed', 'true');  // remembered
+  await panel.getByRole('button', { name: 'Cerrar ventana', exact: true }).click();
+  await page.getByRole('button', { name: 'Notificaciones, 2 nuevas', exact: true }).click();
+  await page.getByRole('region', { name: 'Notificaciones', exact: true }).getByRole('button', { name: /GRUPO RAZOR PARTS publicó la cotización v2/ }).click();
+  await expect(switcher.getByRole('button', { name: /^Compras/ })).toHaveAttribute('aria-pressed', 'true');  // the purchase it opened
+  await expect(list.getByRole('button', { name: /GRUPO RAZOR PARTS/ })).toHaveAttribute('aria-current', 'true');
+});

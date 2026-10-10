@@ -9,7 +9,7 @@ import uuid
 from datetime import timedelta
 
 from django.db import IntegrityError, transaction
-from django.db.models import BigIntegerField, Case, Count, F, IntegerField, Max, OuterRef, Q, Subquery, UUIDField, Value, When
+from django.db.models import BigIntegerField, Case, Count, F, IntegerField, Max, OuterRef, Q, Subquery, Sum, UUIDField, Value, When
 from django.db.models.functions import Coalesce, Greatest
 from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
@@ -182,10 +182,18 @@ class InboxConversations(generics.GenericAPIView):
     @extend_schema(responses=OpenApiTypes.OBJECT, description='Los acuerdos de la persona, del más reciente al más antiguo (mensaje o '
                    'cambio de estado), con su lado, la otra parte, el último mensaje y cuántos mensajes no ha leído; primero los fijados, '
                    'luego los de cada grupo de la persona y al final los demás (groups lista sus grupos). search filtra por referencia o '
-                   'nombre de cuenta; unread=1 deja solo los que tienen mensajes sin leer; order=<id> deja ese acuerdo.')
+                   'nombre de cuenta; unread=1 deja solo los que tienen mensajes sin leer; order=<id> deja ese acuerdo; side=client|supplier '
+                   'deja sus compras o sus ventas (sides cuenta las conversaciones y los mensajes sin leer de cada lado).')
     def get(self, request):
         user, cursor = request.user, cursor_for(request.user)
         rows = placed(with_activity(my_deals(user), user, cursor), user)
+        # Someone who both buys and sells sees their purchases (client) and sales (supplier) apart; these counts tell the list they do.
+        sides = {side: {'conversations': 0, 'unread': 0} for side in ('client', 'supplier')}
+        for row in rows.order_by().values('side').annotate(conversations=Count('pk'), unread_messages=Sum('unread')):
+            sides[row['side']] = {'conversations': row['conversations'], 'unread': row['unread_messages'] or 0}
+        side = request.query_params.get('side', '')
+        if side in sides:
+            rows = rows.filter(side=side)
         search = request.query_params.get('search', '').strip()
         if search:
             rows = rows.filter(Q(reference__icontains=search) | Q(client_name__icontains=search) | Q(supplier_name__icontains=search))
@@ -208,6 +216,7 @@ class InboxConversations(generics.GenericAPIView):
                             'pinned': row.list_pinned is not None, 'group': str(row.list_group) if row.list_group else None})
         response = self.get_paginated_response(results)
         response.data['groups'] = groups_of(user)
+        response.data['sides'] = sides
         return response
 
 

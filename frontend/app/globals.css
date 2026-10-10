@@ -2345,6 +2345,11 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .inbox-row[draggable="true"] { -webkit-user-drag:element; }
 .inbox-row-open { flex:1; min-width:0; display:flex; align-items:center; gap:9px; height:34px; padding:0 6px 0 10px; text-align:left; font-size:13px; color:#3d463f; }
 .inbox-row-name { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* Compras and Ventas, for someone who both buys and sells: the switch on top, and in Ambas a tag on each line. */
+.inbox-sides button .inbox-row-unread { min-width:16px; height:16px; padding:0 4px; font-size:9px; }
+.inbox-row-side { flex:0 0 auto; padding:1px 6px; border-radius:5px; font-size:9.5px; font-weight:600; letter-spacing:.2px; }
+.inbox-row-side.client { background:#e6f0f9; color:#245d80; }
+.inbox-row-side.supplier { background:#eaf3df; color:#4f7a2e; }
 .inbox-row-ref { flex:0 0 auto; font-size:10.5px; color:#9aa391; font-variant-numeric:tabular-nums; }
 .inbox-row-open.unread .inbox-row-name { font-weight:700; color:var(--ink); }
 .inbox-row-unread { flex:0 0 auto; min-width:18px; height:18px; padding:0 5px; border-radius:9px; display:grid; place-items:center; background:#6f9a3c; color:#fff; font-size:10px; font-weight:700; }

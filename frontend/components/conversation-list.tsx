@@ -4,21 +4,30 @@ import { Check, ChevronDown, ChevronRight, Ellipsis, Folder, FolderMinus, Folder
 import type { Page } from '@/lib/types';
 import { request } from '@/lib/types';
 import { dealStatusLabels } from '@/lib/deal-types';
-import { INBOX_EVENT, type InboxConversation, type InboxGroup, type InboxTarget, ago, targetOf } from '@/lib/inbox';
+import { INBOX_EVENT, type InboxConversation, type InboxGroup, type InboxSide, type InboxSides, type InboxTarget, ago, targetOf } from '@/lib/inbox';
 
 // The conversations column of the panel, organized like a desktop app's sidebar: Fijadas on top, then the person's own groups (made with
 // Nuevo grupo, collapsible), then Sin grupo. Each conversation is a single line: a status dot, the other party, the order's reference and
 // its unread count (the rest in its tooltip). Its ⋯ menu pins it or moves it to a group; on a desktop it can also be dragged onto one.
 // Pins and groups live on the server (mall/inbox.py), so every device lists them alike; which groups are folded is kept on this device.
+// Someone who both buys and sells gets Ambas · Compras · Ventas on top (their choice kept on this device), and in Ambas each line says
+// which side it is; people on one side never see either.
 const LIST_POLL = 10000;
 const COLLAPSED_KEY = 'motionpartes:inbox:collapsed';
+const SIDE_KEY = 'motionpartes:inbox:side';
 const LOOSE = 'loose', PINNED = 'pinned';
+type SideFilter = 'all' | InboxSide;
+const SIDES: [SideFilter, string][] = [['all', 'Ambas'], ['client', 'Compras'], ['supplier', 'Ventas']];
 type Place = { pinned?: boolean; group?: string | null };
 type Menu = { kind: 'row' | 'group'; id: string; up: boolean; deleting?: boolean } | null;
 const failure = (error: unknown) => error instanceof Error && !(error instanceof TypeError) ? error.message : 'Se perdió la conexión. Inténtalo de nuevo.';
 
 function savedCollapsed(): string[] {
   try { const saved = JSON.parse(localStorage.getItem(COLLAPSED_KEY) || '[]'); return Array.isArray(saved) ? saved : []; } catch { return []; }
+}
+
+function savedSide(): SideFilter {
+  try { const saved = localStorage.getItem(SIDE_KEY); return saved === 'client' || saved === 'supplier' ? saved : 'all'; } catch { return 'all'; }
 }
 
 // The newest conversation, wherever the person keeps it (the list starts with the pinned ones).
@@ -28,8 +37,9 @@ export function mostRecent(rows: InboxConversation[]) {
 
 // floatTop: shown floating over the chat (the panel's peek at a hidden list), that far from the top; onPeek tells the panel the pointer
 // came in or left, or the focus left the list.
-export default function ConversationList({ hidden, floatTop = null, onPeek, selectedId, onChoose, onLoaded }: {
-  hidden: boolean; floatTop?: number | null; onPeek?: (kind: 'enter' | 'leave' | 'blur') => void; selectedId: string | null;
+// selectedSide: the side of the open conversation; one opened from elsewhere (a toast, a notification) brings the list to its side.
+export default function ConversationList({ hidden, floatTop = null, onPeek, selectedId, selectedSide, onChoose, onLoaded }: {
+  hidden: boolean; floatTop?: number | null; onPeek?: (kind: 'enter' | 'leave' | 'blur') => void; selectedId: string | null; selectedSide?: InboxSide;
   onChoose: (target: InboxTarget) => void; onLoaded: (rows: InboxConversation[]) => void;
 }) {
   const [rows, setRows] = useState<InboxConversation[] | null>(null);
@@ -37,6 +47,8 @@ export default function ConversationList({ hidden, floatTop = null, onPeek, sele
   const [next, setNext] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [unreadOnly, setUnreadOnly] = useState(false);
+  const [side, setSide] = useState<SideFilter>(savedSide);
+  const [sides, setSides] = useState<InboxSides | null>(null);
   const [error, setError] = useState('');
   const [collapsed, setCollapsed] = useState<string[]>(savedCollapsed);
   const [menu, setMenu] = useState<Menu>(null);
@@ -47,15 +59,24 @@ export default function ConversationList({ hidden, floatTop = null, onPeek, sele
   const list = useRef<HTMLElement>(null);
   const opener = useRef<HTMLButtonElement | null>(null);
   const onLoadedRef = useRef(onLoaded); onLoadedRef.current = onLoaded;
-  const query = new URLSearchParams({ ...(search.trim() ? { search: search.trim() } : {}), ...(unreadOnly ? { unread: '1' } : {}) }).toString();
+  const query = new URLSearchParams({ ...(search.trim() ? { search: search.trim() } : {}), ...(unreadOnly ? { unread: '1' } : {}),
+    ...(side !== 'all' ? { side } : {}) }).toString();
   const load = useCallback(async () => {
     try {
-      const data = await request<Page<InboxConversation> & { groups?: InboxGroup[] }>(`/api/market/inbox/conversations${query ? `?${query}` : ''}`);
-      setRows(data.results); setNext(data.next); setGroups(data.groups ?? []); setError('');
+      const data = await request<Page<InboxConversation> & { groups?: InboxGroup[]; sides?: InboxSides }>(`/api/market/inbox/conversations${query ? `?${query}` : ''}`);
+      setRows(data.results); setNext(data.next); setGroups(data.groups ?? []); setSides(data.sides ?? null); setError('');
+      // Down to one side (the filter was kept from when there were two): everything again.
+      if (side !== 'all' && !(data.sides && data.sides.client.conversations && data.sides.supplier.conversations)) { setSide('all'); return; }
       onLoadedRef.current(data.results);
     } catch { setError('No se pudieron cargar tus conversaciones.'); }
-  }, [query]);
+  }, [query, side]);
   const hiddenRef = useRef(hidden); hiddenRef.current = hidden;
+  function chooseSide(value: SideFilter) {
+    setSide(value);
+    try { localStorage.setItem(SIDE_KEY, value); } catch { /* this visit only */ }
+  }
+  // A conversation opened from elsewhere on the other side: the list follows it (without changing the side the person chose to keep).
+  useEffect(() => { if (selectedSide) setSide(current => current === 'all' || current === selectedSide ? current : selectedSide); }, [selectedId, selectedSide]);
   useEffect(() => {
     const timer = setTimeout(() => void load(), search ? 250 : 0);
     const every = setInterval(() => { if (document.visibilityState === 'visible' && !hiddenRef.current) void load(); }, LIST_POLL);
@@ -137,6 +158,8 @@ export default function ConversationList({ hidden, floatTop = null, onPeek, sele
   }
 
   const filtering = !!search.trim() || unreadOnly;
+  const twoSided = !!sides && sides.client.conversations > 0 && sides.supplier.conversations > 0;
+  const oneSide = twoSided && side !== 'all';
   const known = new Set(groups.map(group => group.id));
   const pinned = rows?.filter(row => row.pinned) ?? [];
   const inGroup = (id: string) => rows?.filter(row => !row.pinned && row.group === id) ?? [];
@@ -157,6 +180,7 @@ export default function ConversationList({ hidden, floatTop = null, onPeek, sele
         title={[`${row.counterpart.name} · ${row.reference}`, `${status} · ${ago(row.activity)}`, as, last].filter(Boolean).join('\n')} onClick={() => onChoose(targetOf(row))}>
         <span className={`inbox-row-dot ${row.status}`} aria-hidden="true"/>
         <span className="inbox-row-name">{row.counterpart.name}</span>
+        {twoSided && side === 'all' && <span className={`inbox-row-side ${row.side}`}>{row.side === 'supplier' ? 'Venta' : 'Compra'}</span>}
         <span className="inbox-row-ref">{row.reference}</span>
         <span className="sr-only">, {status}{as && `, ${as}`}</span>
         {row.unread > 0 && <span className="inbox-row-unread" aria-label={`${row.unread} sin leer`}>{row.unread}</span>}
@@ -175,7 +199,8 @@ export default function ConversationList({ hidden, floatTop = null, onPeek, sele
 
   function groupSection(group: InboxGroup) {
     const items = inGroup(group.id);
-    if (filtering && !items.length) return null;
+    // While filtering, or showing one side, a group shows only when it lists something here (or has nothing at all yet).
+    if (!items.length && (filtering || (oneSide && group.count > 0))) return null;
     const open = !collapsed.includes(group.id) || filtering;
     const unread = items.reduce((total, row) => total + row.unread, 0);
     const menuOpen = menu?.kind === 'group' && menu.id === group.id;
@@ -211,6 +236,11 @@ export default function ConversationList({ hidden, floatTop = null, onPeek, sele
     onPointerEnter={() => onPeek?.('enter')} onPointerLeave={() => onPeek?.('leave')}
     onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) onPeek?.('blur'); }}>
     <div className="inbox-list-tools">
+      {twoSided && sides && <div className="inbox-filter inbox-sides" role="group" aria-label="Compras y ventas">
+        {SIDES.map(([value, label]) => { const unread = value === 'all' ? 0 : sides[value].unread;
+          return <button type="button" key={value} aria-pressed={side === value} onClick={() => chooseSide(value)}>{label}
+            {unread > 0 && <span className="inbox-row-unread" aria-label={`${unread} sin leer`}>{unread}</span>}</button>; })}
+      </div>}
       <label className="inbox-search"><Search size={15}/><span className="sr-only">Buscar conversación</span><input value={search} onChange={event => setSearch(event.target.value)} placeholder="Orden o cuenta…" autoComplete="off"/></label>
       <div className="inbox-list-filters">
         <div className="inbox-filter" role="group" aria-label="Filtrar conversaciones">

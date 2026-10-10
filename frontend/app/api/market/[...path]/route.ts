@@ -33,6 +33,8 @@ async function handle(request: NextRequest, context: Context) {
   }
   if (route === 'inbox/conversations') {
     if (request.nextUrl.searchParams.get('unread') === '1') query.set('unread', '1');
+    const side = request.nextUrl.searchParams.get('side');
+    if (side === 'client' || side === 'supplier') query.set('side', side);
     const order = request.nextUrl.searchParams.get('order');
     if (order && new RegExp(`^${uuid}$`).test(order)) query.set('order', order);
   }

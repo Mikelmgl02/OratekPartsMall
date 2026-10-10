@@ -140,7 +140,7 @@ export default function ConversationsPanel({ initial, onClose, onShowing }: { in
     <div ref={box} className={`inbox-layout${layout.listOpen ? '' : ' list-closed'}`} style={{ '--inbox-list': `${layout.list}px`, '--inbox-side': `${layout.side}px` } as React.CSSProperties}>
       {/* Kept mounted while hidden, so its search, folded groups and scroll stay as they were. */}
       <ConversationList hidden={!layout.listOpen && peekTop === null} floatTop={layout.listOpen ? null : peekTop} onPeek={layout.listOpen ? undefined : peekEvent}
-        selectedId={selected?.orderId ?? null} onChoose={choose} onLoaded={loaded}/>
+        selectedId={selected?.orderId ?? null} selectedSide={selected?.side} onChoose={choose} onLoaded={loaded}/>
       {layout.listOpen && separator('list', 'Ajustar el ancho de las conversaciones')}
       {selected ? <section className="inbox-conversation" aria-label={`Orden ${selected.reference} con ${selected.counterpart.name}`}>
         <header ref={header} className="inbox-conversation-header">

@@ -9,6 +9,8 @@ export type InboxMessage = { id: number; body: string; account_id: string; accou
 // pinned and group: where the person keeps it in their list (Fijadas, one of their groups); the list response also carries their groups.
 export type InboxConversation = { id: string; reference: string; status: DealStatus; side: InboxSide; account: InboxParty; counterpart: InboxParty; unread: number; activity: string; last_message: InboxMessage | null; pinned?: boolean; group?: string | null };
 export type InboxGroup = { id: string; name: string; count: number };
+// Per side, how many conversations and unread messages the person has: someone who both buys and sells sees Compras and Ventas apart.
+export type InboxSides = Record<InboxSide, { conversations: number; unread: number }>;
 export type InboxNotification = { id: number; kind: string; title: string; description: string; order_id: string; reference: string; status: DealStatus; side: InboxSide; account: InboxParty; counterpart: InboxParty; created_at: string; unseen: boolean };
 export type InboxSummary = {
   unread_messages: number; unread_conversations: number; unseen_notifications: number;

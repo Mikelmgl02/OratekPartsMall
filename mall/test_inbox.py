@@ -3,6 +3,7 @@ import uuid
 from rest_framework.test import APITestCase
 
 from .inbox_models import InboxCursor
+from .models import Membership
 from .request_models import DealMessage, SupplierRequest
 from . import test_deals as deal_tests
 
@@ -129,6 +130,22 @@ class InboxTests(APITestCase):
         for number in range(29):
             self.assertEqual(self.mark(self.buyer, 'groups/', {'name': f'Grupo {number}'}).status_code, 201)
         self.assertEqual(self.mark(self.buyer, 'groups/', {'name': 'Uno más'}).status_code, 400)  # 30 at most
+
+    def test_someone_who_buys_and_sells_lists_purchases_and_sales_apart(self):
+        Membership.objects.create(user=self.seller_a, account=self.client_account)  # also buys, for the client account
+        self.client.force_authenticate(self.buyer)
+        response = self.submit()  # one order for each supplier: a sale of supplier A, a purchase from supplier B
+        orders = {row.supplier_id: row for row in SupplierRequest.objects.filter(pk__in=[item['id'] for item in response.data['requests']])}
+        sale, purchase = orders[self.supplier_a.pk], orders[self.supplier_b.pk]
+        self.inbox(self.seller_a)
+        self.say(self.seller_b, self.supplier_b, purchase, 'hola')
+        listing = self.inbox(self.seller_a, 'conversations/')
+        self.assertEqual(listing['sides'], {'client': {'conversations': 1, 'unread': 1}, 'supplier': {'conversations': 1, 'unread': 0}})
+        self.assertEqual([(row['id'], row['side']) for row in self.inbox(self.seller_a, 'conversations/', side='client')['results']], [(str(purchase.pk), 'client')])
+        filtered = self.inbox(self.seller_a, 'conversations/', side='supplier')
+        self.assertEqual(([row['id'] for row in filtered['results']], filtered['sides']['client']['conversations']), ([str(sale.pk)], 1))  # counts ignore the filter
+        self.assertEqual(len(self.inbox(self.seller_a, 'conversations/', side='nada')['results']), 2)
+        self.assertEqual(self.inbox(self.buyer, 'conversations/')['sides']['supplier'], {'conversations': 0, 'unread': 0})  # only buys
 
     def test_notifications_list_what_the_other_party_did_until_seen(self):
         order = self.order()
