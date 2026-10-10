@@ -9,3 +9,6 @@ Pillow==12.3.0
 django-storages[s3]==1.14.6
 boto3==1.43.108
 pywebpush==2.5.0
+channels==4.3.2
+channels-redis==4.3.0
+daphne==4.2.3

@@ -13,6 +13,7 @@ import type { Deal, DealMessage, Quotation } from '@/lib/deal-types';
 import type { QuotationTrace, QuoteDraft, QuoteDraftEnvelope, QuoteDraftLine } from '@/lib/pricing-types';
 import { supplierPricingHref, supplierSectionHref } from '@/lib/supplier-navigation';
 import { markConversationRead } from '@/lib/inbox';
+import { onDealNudge, realtimeLive } from '@/lib/realtime';
 
 const QuoteEditor = dynamic(() => import('./quotation-editor'), { ssr: false, loading: () => <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando editor de cotización…</div> });
 const ClientPricingProfile = dynamic(() => import('./client-pricing-profile'), { ssr: false, loading: () => <div className="loading"><LoaderCircle className="spin"/>Cargando perfil comercial…</div> });
@@ -93,8 +94,10 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
     mounted.current = true;
     void load(true);
     const timer = setInterval(() => { if (!inFlight.current && document.visibilityState === 'visible') void load(); }, 15000);
-    return () => { mounted.current = false; clearInterval(timer); };
-  }, [load]);
+    // The other party's decision reaches an open deal at once over the inbox's websocket.
+    const off = onDealNudge(orderId, ['event'], () => { if (!inFlight.current) void load(); });
+    return () => { mounted.current = false; clearInterval(timer); off(); };
+  }, [load, orderId]);
   const editable = supplier && !!deal && ['reviewed', 'adjustment'].includes(deal.status);
   const draftKey = deal ? `${deal.id}:${deal.quotation?.id || 'new'}` : '';
   useEffect(() => {
@@ -303,9 +306,10 @@ export function DealChat({ account, orderId, active, supplier, insert, compact =
   const sendLock = useRef(false);
   const readUpTo = useRef(0);
   const merge = (items: DealMessage[]) => setMessages(values => [...new Map([...values, ...items].map(value => [value.id, value])).values()].sort((a, b) => a.id - b.id));
+  const fetched = useRef(0);
   const fetchMessages = useCallback(async () => {
     if (loading.current) return;
-    loading.current = true;
+    loading.current = true; fetched.current = Date.now();
     try {
       let more = true;
       while (more && mounted.current) {
@@ -321,7 +325,13 @@ export function DealChat({ account, orderId, active, supplier, insert, compact =
     } catch (caught) { if (mounted.current) setError(failure(caught)); }
     finally { loading.current = false; }
   }, [path]);
-  useEffect(() => { mounted.current = true; void fetchMessages(); const timer = setInterval(() => { if (document.visibilityState === 'visible') void fetchMessages(); }, 3000); return () => { mounted.current = false; clearInterval(timer); }; }, [fetchMessages]);
+  // New messages arrive at once over the inbox's websocket; while it is connected the 3-second poll becomes a 30-second safety net.
+  useEffect(() => {
+    mounted.current = true; void fetchMessages();
+    const timer = setInterval(() => { if (document.visibilityState === 'visible' && !(realtimeLive() && Date.now() - fetched.current < 30000)) void fetchMessages(); }, 3000);
+    const off = onDealNudge(orderId, ['message'], () => void fetchMessages());
+    return () => { mounted.current = false; clearInterval(timer); off(); };
+  }, [fetchMessages, orderId]);
   useEffect(() => { if (active) void fetchMessages(); }, [active, fetchMessages]);
   useEffect(() => {
     const last = messages.at(-1)?.id;

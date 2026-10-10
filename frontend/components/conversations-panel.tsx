@@ -9,6 +9,7 @@ import type { Account, Page } from '@/lib/types';
 import { request } from '@/lib/types';
 import type { Deal } from '@/lib/deal-types';
 import { INBOX_EVENT, InboxConversation, InboxTarget, ago, targetOf } from '@/lib/inbox';
+import { onDealNudge } from '@/lib/realtime';
 
 const LIST_POLL = 10000, DOCUMENT_POLL = 15000;
 // The chat and the deal detail need only the account's id (and its side) to talk to the account-scoped deal API.
@@ -108,8 +109,9 @@ function DealDocument({ target }: { target: InboxTarget }) {
     const load = () => request<Deal>(path).then(value => { if (active) { setDeal(value); setError(''); } }).catch(() => { if (active) setError('No se pudo cargar la orden.'); });
     void load();
     const timer = setInterval(() => { if (document.visibilityState === 'visible') void load(); }, DOCUMENT_POLL);
-    return () => { active = false; clearInterval(timer); };
-  }, [path]);
+    const off = onDealNudge(target.orderId, ['event'], () => void load());  // a new quotation, a confirmation…
+    return () => { active = false; clearInterval(timer); off(); };
+  }, [path, target.orderId]);
   if (error && !deal) return <div className="inbox-document"><p className="notice error" role="alert">{error}</p></div>;
   if (!deal) return <div className="inbox-document"><p className="inbox-empty"><LoaderCircle size={15} className="spin"/>Cargando documento…</p></div>;
   const units = deal.lines.reduce((total, line) => total + line.quantity, 0);

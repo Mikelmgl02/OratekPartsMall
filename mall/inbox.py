@@ -192,6 +192,8 @@ class InboxConversationRead(APIView):
         mark, _ = ConversationRead.objects.get_or_create(user=request.user, order=row)
         ConversationRead.objects.filter(pk=mark.pk).update(last_message_id=Greatest('last_message_id', Value(upto)))
         mark.refresh_from_db()
+        from .realtime import publish_later  # the person's other tabs and devices update their badges
+        publish_later({request.user.pk}, 'read', row.pk)
         return Response({'order_id': str(row.pk), 'last_message_id': mark.last_message_id})
 
 
@@ -223,4 +225,6 @@ class InboxNotificationsSeen(APIView):
         upto = min(data.validated_data['last_event_id'], DealEvent.objects.aggregate(top=Max('id'))['top'] or 0)
         InboxCursor.objects.filter(pk=cursor.pk).update(seen_event_id=Greatest('seen_event_id', Value(upto)))
         cursor.refresh_from_db()
+        from .realtime import publish_later
+        publish_later({request.user.pk}, 'read')
         return Response({'seen_event_id': cursor.seen_event_id})

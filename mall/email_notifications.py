@@ -23,7 +23,7 @@ from rest_framework.views import APIView
 from .inbox import cursor_for, event_title
 from .inbox_models import ConversationRead, InboxCursor
 from .models import DealEvent, User
-from .push import dispatch, other_side
+from . import push
 
 log = logging.getLogger(__name__)
 RESEND_URL = 'https://api.resend.com/emails'
@@ -46,7 +46,7 @@ def link(order):
 
 def recipients(order, account_id, actor_id, preference):
     """The other party's people with an address who did not turn this kind of email off."""
-    users = other_side(order, account_id, actor_id)
+    users = push.other_side(order, account_id, actor_id)
     off = InboxCursor.objects.filter(user_id__in=users, **{preference: False}).values('user_id')
     return list(User.objects.filter(pk__in=users, is_active=True).exclude(pk__in=off).exclude(email='').order_by('pk'))
 
@@ -116,7 +116,7 @@ def message_saved(sender, instance, created=False, raw=False, **kwargs):
         emails = [(user.email, *compose(user, order, account, f'Nuevo mensaje de {message.account.name} · {order.reference}',
                                         f'{author} de {message.account.name} te escribió en la orden {order.reference}. Puede haber más '
                                         'mensajes en la conversación.', quote, 'Responder en MotionPartes')) for user in people]
-        dispatch(lambda: deliver(emails))
+        push.dispatch(lambda: deliver(emails))
     transaction.on_commit(collect)
 
 
@@ -133,7 +133,7 @@ def event_saved(sender, instance, created=False, raw=False, **kwargs):
         emails = [(user.email, *compose(user, order, their_account(order, event.account_id, user), f'{title} · {order.reference}',
                                         f'{title} (orden {order.reference}).', event.description if event.kind == 'request_adjustment' else '',
                                         'Ver la orden')) for user in people]
-        dispatch(lambda: deliver(emails))
+        push.dispatch(lambda: deliver(emails))
     transaction.on_commit(collect)
 
 

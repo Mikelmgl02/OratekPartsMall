@@ -155,3 +155,25 @@ test('the bell menu keeps the email notices each person wants, and hides them wh
   await expect(email.getByRole('checkbox', { name: 'Mensajes nuevos, cuando no estés en MotionPartes', exact: true })).not.toBeChecked();
   expect(saved).toEqual([{ messages: false }]);
 });
+
+test('with the websocket connected, a nudge brings the new message at once (polling slows to a safety net)', async ({ page }) => {
+  let socket: { send: (message: string) => void } | null = null;
+  await page.routeWebSocket(/\/ws\/inbox\/$/, ws => { socket = ws; });  // stands in for the realtime service
+  const summary = { current: pending() };
+  await mockInbox(page, summary);
+  const later = { id: 13, message_id: 'd', body: '¿Confirmamos el lunes?', account_id: sup.id, account_name: sup.name, actor_name: 'Carlos Ruiz', created_at: new Date().toISOString() };
+  let current = messages;
+  await page.route(/\/deals\/[^/]+\/messages(\?.*)?$/, route => route.fulfill({ json: { results: route.request().url().includes('after=') ? current.filter(item => item.id > 12) : current, cursor: current.at(-1)!.id, has_more: false, has_earlier: false, assistant_notice: false } }));
+  await page.goto('/');
+  await expect.poll(() => socket !== null).toBe(true);
+  await page.getByRole('button', { name: 'Mensajes, 3 sin leer', exact: true }).click();
+  const log = page.getByRole('dialog', { name: 'Conversaciones', exact: true }).getByRole('log', { name: 'Mensajes del acuerdo', exact: true });
+  await expect(log).toContainText('SÍ, PODEMOS ENTREGAR EL LUNES ANTES DE LAS 12.');
+  current = [...messages, later];
+  summary.current = { ...pending(), unread_messages: 4 };
+  await page.waitForTimeout(3500);  // past the 3-second poll: while connected it waits 30 s
+  await expect(log).not.toContainText('¿Confirmamos el lunes?');
+  socket!.send(JSON.stringify({ kind: 'message', order_id: order }));
+  await expect(log).toContainText('¿Confirmamos el lunes?', { timeout: 1500 });
+  await expect(page.getByRole('button', { name: 'Mensajes, 4 sin leer', exact: true })).toBeVisible({ timeout: 1500 });
+});

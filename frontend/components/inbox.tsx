@@ -5,10 +5,11 @@ import { Bell, BellOff, BellRing, LoaderCircle, MessagesSquare, Smartphone, X } 
 import { ApiError, request } from '@/lib/types';
 import { INBOX_EVENT, InboxConversation, InboxNotification, InboxSummary, InboxTarget, ago, inboxChanged, targetOf } from '@/lib/inbox';
 import { PushState, disablePush, enablePush, pushStatus, syncPush } from '@/lib/push';
+import { connectRealtime } from '@/lib/realtime';
 import type { Page } from '@/lib/types';
 
 const ConversationsPanel = dynamic(() => import('./conversations-panel'), { ssr: false });
-const POLL = 15000, IDLE_POLL = 60000, TOAST_TIME = 7000;
+const POLL = 15000, LIVE_POLL = 60000, IDLE_POLL = 60000, TOAST_TIME = 7000;
 type Toast = { key: string; title: string; body: string; target: InboxTarget };
 type Inbox = { available: boolean; summary: InboxSummary | null; open: (target?: InboxTarget) => void; showing: string | null; register: () => () => void };
 const Context = createContext<Inbox | null>(null);
@@ -25,6 +26,7 @@ export function InboxProvider({ children }: { children: ReactNode }) {
   const [consumers, setConsumers] = useState(0);
   const register = useCallback(() => { setConsumers(count => count + 1); return () => setConsumers(count => count - 1); }, []);
   const polling = consumers > 0;
+  const [live, setLive] = useState(false);
   const seen = useRef<{ message: number; event: number } | null>(null);
   const showingRef = useRef(showing);
   showingRef.current = showing;
@@ -52,11 +54,16 @@ export function InboxProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!polling) return;
     void poll();
-    const timer = setInterval(() => void poll(), available ? POLL : IDLE_POLL);
+    const timer = setInterval(() => void poll(), !available ? IDLE_POLL : live ? LIVE_POLL : POLL);
     const now = () => void poll();
     window.addEventListener(INBOX_EVENT, now); window.addEventListener('focus', now); document.addEventListener('visibilitychange', now);
     return () => { clearInterval(timer); window.removeEventListener(INBOX_EVENT, now); window.removeEventListener('focus', now); document.removeEventListener('visibilitychange', now); };
-  }, [poll, available, polling]);
+  }, [poll, available, polling, live]);
+  // Signed in, the inbox's websocket nudges every open page (and the summary polls once a minute instead of every 15 s).
+  useEffect(() => {
+    if (!available || !polling) return;
+    return connectRealtime(setLive);
+  }, [available, polling]);
   const open = useCallback((target?: InboxTarget) => setPanel({ target, key: Date.now() }), []);
   // A push notification's link (?conversacion=<deal>) or its click on an open page names only the deal: look up its conversation.
   const openOrder = useCallback(async (orderId: string) => {

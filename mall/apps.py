@@ -39,3 +39,7 @@ class MallConfig(AppConfig):
         from . import email_notifications
         post_save.connect(email_notifications.message_saved, sender=DealMessage, dispatch_uid='email_deal_message')
         post_save.connect(email_notifications.event_saved, sender=DealEvent, dispatch_uid='email_deal_event')
+        # ... and nudges the open pages of both parties over the websocket (off without REDIS_URL).
+        from . import realtime
+        post_save.connect(realtime.message_saved, sender=DealMessage, dispatch_uid='realtime_deal_message')
+        post_save.connect(realtime.event_saved, sender=DealEvent, dispatch_uid='realtime_deal_event')

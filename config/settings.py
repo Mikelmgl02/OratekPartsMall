@@ -118,6 +118,11 @@ VAPID_SUBJECT = os.getenv('VAPID_SUBJECT', '')
 RESEND_API_KEY = os.getenv('RESEND_API_KEY', '')
 EMAIL_FROM_ADDRESS = os.getenv('EMAIL_FROM_ADDRESS', '')
 EMAIL_FROM_NAME = os.getenv('EMAIL_FROM_NAME', 'MotionPartes')
+# The deal inbox's websocket (mall.realtime, config.asgi): Redis carries its nudges from the web workers to the socket server.
+# Without REDIS_URL nothing is published and pages keep polling.
+REDIS_URL = os.getenv('REDIS_URL', '')
+ASGI_APPLICATION = 'config.asgi.application'
+CHANNEL_LAYERS = {'default': {'BACKEND': 'channels_redis.core.RedisChannelLayer', 'CONFIG': {'hosts': [REDIS_URL]}}} if REDIS_URL else {}
 # The public address of the site, for links in emails.
 SITE_URL = os.getenv('SITE_URL', 'http://localhost:8080')
 GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-3.5-flash-lite')

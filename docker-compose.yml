@@ -46,6 +46,8 @@ services:
       EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS:-}
       EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-MotionPartes}
       SITE_URL: ${SITE_URL:-http://localhost:8080}
+      # Carries the deal inbox's websocket nudges from the web workers to the realtime service; empty turns them off.
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       # Quotation assistant: dark until QUOTE_ASSISTANT_MONTHLY_USD > 0. Token prices are placeholders; set them from Google's price sheet.
       QUOTE_ASSISTANT_MONTHLY_USD: ${QUOTE_ASSISTANT_MONTHLY_USD:-0}
       AI_MONTHLY_BUDGET_USD: ${AI_MONTHLY_BUDGET_USD:-200}
@@ -73,6 +75,8 @@ services:
       - staticfiles:/vol/web/static
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     expose:
       - "8000"
@@ -109,6 +113,42 @@ services:
       start_period: 60s
     restart: unless-stopped
 
+  redis:
+    image: redis:7-alpine
+    # Only the inbox's websocket nudges go through it: nothing to keep across restarts.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # The deal inbox's websocket (/ws/inbox/, config.asgi on daphne). It runs no migrations: the app service does.
+  realtime:
+    image: ${COMPOSE_PROJECT_NAME:-partsmall}-app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["daphne", "-b", "0.0.0.0", "-p", "8001", "--proxy-headers", "config.asgi:application"]
+    environment: *api_environment
+    volumes:
+      - .:/app
+    depends_on:
+      app:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    expose:
+      - "8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8001), 3).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+
   frontend:
     build:
       context: ./frontend
@@ -142,6 +182,8 @@ services:
       app:
         condition: service_healthy
       frontend:
+        condition: service_healthy
+      realtime:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/health/"]
