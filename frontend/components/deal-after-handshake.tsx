@@ -1,10 +1,12 @@
 'use client';
 import { useState } from 'react';
+import dynamic from 'next/dynamic';
 import { CircleX, LoaderCircle, PackageCheck, TriangleAlert } from 'lucide-react';
 import { UppercaseTextarea } from './uppercase-field';
 import { ApiError } from '@/lib/types';
 import { cancelReasons, cancelSides, shortfallReasons, type Deal, type DealAgreement } from '@/lib/deal-types';
 
+const AgreementGrid = dynamic(() => import('./agreement-grid'), { ssr: false, loading: () => <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando acuerdo…</div> });
 const date = (value: string) => new Date(value).toLocaleString('es-PA', { timeZone: 'America/Panama', dateStyle: 'medium', timeStyle: 'short' });
 const money = (value: string | number, currency = 'USD') => new Intl.NumberFormat('es-PA', { style: 'currency', currency }).format(Number(value));
 const units = (count: number) => `${count.toLocaleString('es-PA')} ${count === 1 ? 'unidad' : 'unidades'}`;
@@ -104,8 +106,5 @@ export default function DealAfterHandshake({ deal, supplier, busy, act, canDecid
 function AgreementTable({ agreement, currency }: { agreement: DealAgreement; currency: string }) {
   return <section className="deal-agreement" aria-label="Acuerdo vigente"><div className="deal-quote-heading"><div><h3>Acuerdo vigente</h3><small>Las unidades acordadas menos los faltantes aceptados</small></div>
     <strong>{money(agreement.total, currency)}</strong></div>
-    <div className="table-scroll"><table><thead><tr><th>Artículo</th><th>Acordadas</th><th>Faltantes</th><th>Quedan</th><th>Importe</th></tr></thead><tbody>{agreement.lines.map(line => <tr key={line.order_line_id}>
-      <td><strong>{line.codigo}</strong><small>{line.description}</small></td><td>{line.agreed}</td>
-      <td>{line.missing || line.pending_missing ? <>{line.missing > 0 && <span>{line.missing} aceptadas</span>}{line.pending_missing > 0 && <small>{line.pending_missing} por responder</small>}</> : '—'}</td>
-      <td><strong>{line.final}</strong></td><td>{money(line.total, currency)}</td></tr>)}</tbody></table></div></section>;
+    <AgreementGrid agreement={agreement} currency={currency}/></section>;
 }

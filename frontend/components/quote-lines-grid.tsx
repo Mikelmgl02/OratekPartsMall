@@ -1,9 +1,10 @@
 'use client';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef } from 'react';
 import type { ColDef } from 'ag-grid-community';
 import type { CustomCellRendererProps } from 'ag-grid-react';
 import ClientGrid from './client-grid';
 import type { Quotation } from '@/lib/deal-types';
+import { useNarrow } from '@/lib/use-narrow';
 
 // A quotation's lines in a grid, like the order's items (deal-lines-grid.tsx): sortable, sized to its rows up to a dozen, then scrolling.
 // Narrower than four columns fit (a phone, the conversations panel's side at its usual width) it keeps two: the item, and the amount with
@@ -23,14 +24,7 @@ function AmountCell({ data, context }: Cell) {
 
 export default function QuoteLinesGrid({ quote, label }: { quote: Quotation; label: string }) {
   const box = useRef<HTMLDivElement>(null);
-  const [narrow, setNarrow] = useState(false);
-  useEffect(() => {
-    const element = box.current;
-    if (!element) return;
-    const observer = new ResizeObserver(([entry]) => { if (entry.contentRect.width) setNarrow(entry.contentRect.width < NARROW); });
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
+  const narrow = useNarrow(box, NARROW);
   const currency = quote.currency;
   const columns = useMemo<ColDef<Line>[]>(() => {
     const item: ColDef<Line> = { colId: 'item', headerName: 'Artículo', flex: 2, minWidth: narrow ? 150 : 220, valueGetter: ({ data }) => data?.codigo, cellRenderer: ItemCell,

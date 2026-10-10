@@ -1222,9 +1222,11 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .deal-after-form textarea { line-height: 1.6; resize: vertical; }
 .deal-after-form .table-scroll table { min-width: 0; width: 100%; }
 .deal-after-form td input { width: 72px; text-align: right; }
-.deal-after-form td small, .deal-agreement td small { display: block; font-size: 10px; color: var(--muted); margin-top: 3px; }
-.deal-agreement { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; min-width: 0; }
-.deal-agreement td span { display: block; }
+.deal-after-form td small { display: block; font-size: 10px; color: var(--muted); margin-top: 3px; }
+/* Like the quotation's card: its lines (agreement-grid.tsx) flush under the heading. */
+.deal-agreement { border: 1px solid var(--line); border-radius: 14px; overflow: hidden; min-width: 0; }
+.deal-agreement .ag-root-wrapper { border: 0; border-radius: 0; }
+.agreement-lines .pending { color: #8a6a24; }
 .button.danger { color: #9a4b3c; }
 .button.primary.danger { background: #b2563f; border-color: #b2563f; color: white; }
 .supplier-request-alert.shortfall { background: #fff4df; color: #8a6a24; }
