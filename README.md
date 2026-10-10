@@ -125,6 +125,8 @@ Imports preserve supplier item UUIDs, mappings, reservations and stock history. 
 
 **Borrador** (`?vista=cesta`) contains editable browser-local cart items. Sending removes the submitted items from the draft and opens database-backed **Enviadas** (`?vista=solicitudes`). One private order is created per supplier and client account. Later submissions append to the oldest `pending` order for that pair, accumulating quantities for the same supplier item, capped at 9,999. Once review starts, later sends create or append to another pending order. Existing orders and their item identities are preserved. Contribution records retain each cart addition and its original submission receipt; replaying the same UUID returns the exact saved receipt even if the order has grown or progressed.
 
+**No orders to oneself.** An account that both buys and sells never orders from itself: sending refuses any item of the client account's own stock (400, naming the item, and nothing of that send is created), the catalog marks the account's own offers **Tu cuenta** without add buttons, and a basket that still holds some (added before, or on another device) shows them with **Quitar estos artículos** and keeps **Enviar solicitud** disabled until they are gone. Self-orders sent before this rule stay valid; such a deal names the side it cancels as.
+
 The supplier opens an order using `POST /api/v1/accounts/<supplier_id>/requests/<order_id>/review/`. This idempotent transition records the reviewing employee, locks the order's items and moves it to `reviewed` (**En revisión**). GET remains a read-only operation. Supplier-only stock details are advisory and are never exposed to clients.
 
 The following transitions are enforced by the API as well as the interface:

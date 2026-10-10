@@ -486,3 +486,30 @@ test('the supplier list marks orders with a saved draft or a pending approval re
   expect(drafts).toEqual([]);
   expect(unexpected).toEqual([]);
 });
+
+test('an account that both buys and sells never orders from itself: its own items must leave the basket, and its offers are marked', async ({ page }) => {
+  const both: Account = { id: supplierAccount, name: 'REPUESTOS CENTRAL', roles: ['supplier_retail', 'client_business'], capabilities: ['supplier', 'client'] };
+  const unexpected = await mockSession(page, [both]);
+  await page.addInitScript(({ accountId, lines }) => localStorage.setItem(`partsmall:basket:${accountId}`, JSON.stringify(lines)), { accountId: supplierAccount, lines: clientDraft() });
+  await page.route(`/api/market/catalog/${partId}/suppliers`, route => route.fulfill({ json: [
+    { supplier_id: supplierAccount, supplier_name: 'REPUESTOS CENTRAL', in_stock: true, items: [{ id: itemA, codigo: 'PROPIO-1', brand: 'KSM', description: 'DISCO PROPIO' }] },
+    { supplier_id: otherSupplierAccount, supplier_name: 'DISTRIBUIDORA MOTOR', in_stock: true, items: [{ id: itemC, codigo: 'AJENO-1', brand: 'KSM', description: 'DISCO AJENO' }] },
+  ] }));
+  await page.goto('/?vista=cesta');
+  const basket = page.getByRole('main', { name: 'Cesta de solicitudes', exact: true });
+  const own = basket.getByRole('region', { name: 'Solicitud para REPUESTOS CENTRAL', exact: true });
+  await expect(own.getByRole('alert')).toContainText('Estos artículos son de tu propia cuenta. No puedes pedirte una cotización a ti mismo');
+  await expect(basket.getByRole('button', { name: 'Enviar solicitud', exact: true })).toBeDisabled();
+  await expect(basket).toContainText('Quita de la cesta los artículos de tu propia cuenta para enviar la solicitud.');
+  await own.getByRole('button', { name: 'Quitar estos artículos', exact: true }).click();
+  await expect(basket.getByRole('article')).toHaveCount(1);  // DISTRIBUIDORA MOTOR's item stays
+  await expect(basket.getByRole('button', { name: 'Enviar solicitud', exact: true })).toBeEnabled();
+  await basket.getByRole('button', { name: 'Volver al catálogo', exact: true }).click();
+  await page.getByRole('button', { name: 'Ver DISCO DE FRENO', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('heading', { name: 'REPUESTOS CENTRALTu cuenta', exact: true })).toBeVisible();
+  await expect(dialog).toContainText('Es tu propio inventario: no puedes pedirte una cotización a ti mismo.');
+  await expect(dialog.getByRole('button', { name: 'Agregar PROPIO-1 de REPUESTOS CENTRAL a la cesta', exact: true })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Agregar AJENO-1 de DISTRIBUIDORA MOTOR a la cesta', exact: true })).toBeVisible();
+  expect(unexpected).toEqual([]);
+});

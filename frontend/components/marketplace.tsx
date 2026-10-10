@@ -217,6 +217,7 @@ export default function Catálogo() {
   }
   function addToBasket(part: Part, offer: Offer, quantity: number) {
     if (loadedBasketKey !== basketKey || !Number.isFinite(quantity)) return;
+    if (!preview && offer.supplier_id === accountId) { setNotice('Es tu propio inventario: no puedes pedirte una cotización a ti mismo.'); return; }
     const units = Math.max(1, Math.min(9999, Math.trunc(quantity)));
     const key = `${part.id}:${offer.supplier_id}${offer.selected_item ? `:${offer.selected_item.id}` : ''}`;
     const existing = currentBasket.find(line => line.offer.supplier_id === offer.supplier_id &&

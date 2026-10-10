@@ -2465,3 +2465,10 @@ body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-s
 .update-notice { position:fixed; left:50%; bottom:18px; z-index:1000; transform:translateX(-50%); display:flex; align-items:center; gap:10px; max-width:calc(100vw - 32px); padding:8px 8px 8px 14px; border-radius:12px; background:#232b26; color:#fff; font-size:13px; box-shadow:0 14px 36px #0000003d; }
 .update-notice span { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .update-notice .icon-button { color:#cfd8c8; }
+
+/* An account never orders from itself: its own offers are marked in the catalog, and any left in the basket must go before sending. */
+.own-offer-tag { margin-left:8px; padding:2px 7px; border-radius:6px; background:#eef2e8; color:#5f6c55; font-size:10px; font-weight:600; letter-spacing:.3px; vertical-align:middle; }
+.own-offer-note { margin:6px 0 0; color:var(--muted); font-size:12px; }
+.basket-page-supplier.own { border-color:#f0c8b4; }
+.basket-own-warning { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:0 24px 8px; background:#fff3ec; border-color:#f0c8b4; color:#8a4a2c; font-size:12px; }
+.basket-own-warning .button { flex:0 0 auto; text-decoration:none; }

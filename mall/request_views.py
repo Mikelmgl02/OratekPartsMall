@@ -320,6 +320,8 @@ def submit_request(*, client, actor, data):
             raise RequestConflict(f'El SKU, código o marca del artículo {item.codigo} cambió desde que lo agregaste. Selecciónalo otra vez en el catálogo.')
         if item.part_id and item.part_id not in parts:
             raise RequestConflict('El SKU de un artículo cambió mientras se preparaba la solicitud. Actualiza tu cesta.')
+        if item.supplier_id == client.pk:  # an account that also sells never orders from itself
+            raise ValidationError(f'{item.codigo} es de tu propia cuenta: no puedes pedirte una cotización a ti mismo. Quítalo de la cesta.')
         if (not supplier.active or not any(role.capability == 'supplier' for role in supplier.roles.all())
                 or item.matching_status != 'matched' or not part or not part.active or part.merged_into_id):
             raise ValidationError(f'El artículo {item.codigo} ya no está disponible para solicitar una cotización.')

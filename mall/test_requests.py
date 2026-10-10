@@ -128,6 +128,16 @@ class SupplierRequestWorkflowTests(APITestCase):
         for line in SupplierRequestLine.objects.select_related('request', 'supplier_item'):
             self.assertEqual(line.request.supplier_id, line.supplier_item.supplier_id)
 
+    def test_an_account_that_also_buys_never_orders_from_itself(self):
+        self.supplier_a.roles.add(Role.objects.get(code='client_business'))  # PROVEEDOR A also buys
+        self.client.force_authenticate(self.seller_a)
+        refused = self.submit(self.payload([(self.item_a, 1), (self.item_b, 2)]), account=self.supplier_a)
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn('58411-1R000-G es de tu propia cuenta', str(refused.data))
+        self.assertFalse(SupplierRequest.objects.exists())  # nothing sent, not even the other supplier's line
+        sent = self.submit(self.payload([(self.item_b, 2)]), account=self.supplier_a)
+        self.assertEqual((sent.status_code, [row['supplier']['name'] for row in sent.data['requests']]), (200, ['PROVEEDOR B']))
+
     def test_supplier_cannot_list_read_or_review_another_suppliers_lines(self):
         response = self.submit()
         supplier_a_id = next(row['id'] for row in response.data['requests'] if row['supplier']['id'] == str(self.supplier_a.pk))

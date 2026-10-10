@@ -153,9 +153,12 @@ class DealLifecycleTests(APITestCase):
         self.assertEqual(check()['problems'], {})
 
     def test_an_account_on_both_sides_names_the_side_it_cancels_as(self):
+        # Accounts can no longer order from themselves (request_views.submit_request); deals sent before that rule remain, so one is
+        # made here from an ordinary order.
         self.supplier_a.roles.add(Role.objects.get(code='client_business'))
-        self.client.force_authenticate(self.seller_a)
-        sent = self.submit(self.payload([(self.item_a, 2)]), account=self.supplier_a)
+        self.client.force_authenticate(self.buyer)
+        sent = self.submit(self.payload([(self.item_a, 2)]))
+        SupplierRequest.objects.filter(pk=sent.data['requests'][0]['id']).update(client=self.supplier_a, client_name=self.supplier_a.name)
         order = SupplierRequest.objects.get(pk=sent.data['requests'][0]['id'])
         self.review(order)
         quotation = self.quote(order).data['quotation']['id']
