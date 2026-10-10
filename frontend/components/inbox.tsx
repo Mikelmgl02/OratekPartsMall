@@ -1,9 +1,11 @@
 'use client';
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import dynamic from 'next/dynamic';
-import { Bell, LoaderCircle, MessagesSquare, X } from 'lucide-react';
+import { Bell, BellOff, BellRing, LoaderCircle, MessagesSquare, X } from 'lucide-react';
 import { ApiError, request } from '@/lib/types';
-import { INBOX_EVENT, InboxNotification, InboxSummary, InboxTarget, ago, inboxChanged, targetOf } from '@/lib/inbox';
+import { INBOX_EVENT, InboxConversation, InboxNotification, InboxSummary, InboxTarget, ago, inboxChanged, targetOf } from '@/lib/inbox';
+import { PushState, disablePush, enablePush, pushStatus, syncPush } from '@/lib/push';
+import type { Page } from '@/lib/types';
 
 const ConversationsPanel = dynamic(() => import('./conversations-panel'), { ssr: false });
 const POLL = 15000, IDLE_POLL = 60000, TOAST_TIME = 7000;
@@ -56,6 +58,35 @@ export function InboxProvider({ children }: { children: ReactNode }) {
     return () => { clearInterval(timer); window.removeEventListener(INBOX_EVENT, now); window.removeEventListener('focus', now); document.removeEventListener('visibilitychange', now); };
   }, [poll, available, polling]);
   const open = useCallback((target?: InboxTarget) => setPanel({ target, key: Date.now() }), []);
+  // A push notification's link (?conversacion=<deal>) or its click on an open page names only the deal: look up its conversation.
+  const openOrder = useCallback(async (orderId: string) => {
+    try {
+      const data = await request<Page<InboxConversation>>(`/api/market/inbox/conversations?order=${encodeURIComponent(orderId)}`);
+      open(data.results[0] ? targetOf(data.results[0]) : undefined);
+    } catch { open(); }
+  }, [open]);
+  const synced = useRef(false);
+  useEffect(() => {
+    if (!available) { synced.current = false; return; }
+    if (synced.current) return;
+    synced.current = true;
+    void syncPush();
+    const url = new URL(window.location.href), orderId = url.searchParams.get('conversacion');
+    if (orderId) {
+      url.searchParams.delete('conversacion');
+      window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+      void openOrder(orderId);
+    }
+  }, [available, openOrder]);
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return;
+    const message = (event: MessageEvent) => {
+      if (event.data?.type === 'motionpartes:push') inboxChanged();
+      if (event.data?.type === 'motionpartes:open-conversation' && event.data.order_id) void openOrder(String(event.data.order_id));
+    };
+    navigator.serviceWorker.addEventListener('message', message);
+    return () => navigator.serviceWorker.removeEventListener('message', message);
+  }, [openOrder]);
   return <Context.Provider value={{ available, summary, open, showing, register }}>
     {children}
     {panel && <ConversationsPanel key={panel.key} initial={panel.target} onShowing={setShowing} onClose={() => { setPanel(null); setShowing(null); }}/>}
@@ -112,6 +143,7 @@ function NotificationsMenu() {
     <button type="button" className="basket-button inbox-button" aria-expanded={open} aria-haspopup="true" onClick={() => setOpen(value => !value)} aria-label={unseen ? `Notificaciones, ${unseen} nuevas` : 'Notificaciones'}><Bell size={20}/>{unseen > 0 && <span className="basket-count inbox-count">{count(unseen)}</span>}</button>
     {open && <section className="inbox-notifications-menu" aria-label="Notificaciones">
       <header><h2>Notificaciones</h2><small>Lo que la otra parte hizo en tus órdenes</small></header>
+      <PushSwitch/>
       {error && <p className="notice error" role="alert">{error}</p>}
       {!items && !error ? <p className="inbox-empty"><LoaderCircle size={15} className="spin"/>Cargando…</p> : items && !items.length ? <p className="inbox-empty">Aún no tienes notificaciones.</p>
         : <ul>{items?.map(item => <li key={item.id}><button type="button" className={item.unseen ? 'unseen' : ''} onClick={() => { setOpen(false); inbox.open(targetOf(item)); }}>
@@ -119,5 +151,27 @@ function NotificationsMenu() {
         </button></li>)}</ul>}
       {more && items && <button type="button" className="button text small" onClick={() => void load(items.at(-1)?.id)}>Ver anteriores</button>}
     </section>}
+  </div>;
+}
+
+// Browser notifications: messages and deal updates arrive even with MotionPartes closed. Hidden where the browser or the server cannot send them.
+function PushSwitch() {
+  const [status, setStatus] = useState<{ state: PushState; key: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  useEffect(() => { pushStatus().then(setStatus).catch(() => setStatus(null)); }, []);
+  if (!status || status.state === 'unsupported' || status.state === 'unconfigured') return null;
+  async function change(on: boolean) {
+    setBusy(true); setError('');
+    try { const state = on ? await enablePush(status!.key) : await disablePush(); setStatus({ ...status!, state }); }
+    catch { setError(on ? 'No se pudieron activar las notificaciones en este navegador.' : 'No se pudieron desactivar las notificaciones.'); }
+    finally { setBusy(false); }
+  }
+  return <div className={`inbox-push ${status.state}`}>
+    {status.state === 'blocked' ? <p><BellOff size={16}/>Las notificaciones están bloqueadas en este navegador. Permítelas en la configuración del sitio para recibirlas.</p>
+      : status.state === 'on' ? <p><BellRing size={16}/><span>Notificaciones del navegador activas</span><button type="button" className="button text small" disabled={busy} onClick={() => void change(false)}>Desactivar</button></p>
+      : <button type="button" className="button soft small" disabled={busy} onClick={() => void change(true)}>{busy ? <LoaderCircle size={15} className="spin"/> : <BellRing size={15}/>}Recibir notificaciones en este navegador</button>}
+    {status.state === 'off' && <small>Te avisamos de mensajes y cambios en tus órdenes aunque MotionPartes esté cerrado.</small>}
+    {error && <small className="inbox-push-error" role="alert">{error}</small>}
   </div>;
 }

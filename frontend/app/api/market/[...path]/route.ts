@@ -8,8 +8,8 @@ async function handle(request: NextRequest, context: Context) {
   const { path } = await context.params;
   const route = path.join('/');
   const uuid = '[a-f0-9-]{36}';
-  const readable = new RegExp(`^(accounts|catalog|catalog/suggest|inbox|inbox/conversations|inbox/notifications|wishlist|wishlist/state|catalog/${uuid}/technical|catalog/${uuid}/suppliers|accounts/${uuid}/inventory|accounts/${uuid}/inventory/${uuid}/ledger|accounts/${uuid}/deals/${uuid}/messages|accounts/${uuid}/requests|accounts/${uuid}/requests/${uuid}|accounts/${uuid}/sent-requests|accounts/${uuid}/sent-requests/${uuid}|accounts/${uuid}/catalog/${uuid}/request-state|accounts/${uuid}/pricing/settings|accounts/${uuid}/requests/${uuid}/draft|accounts/${uuid}/requests/${uuid}/draft/assistant|accounts/${uuid}/requests/${uuid}/quotations/${uuid}/trace|accounts/${uuid}/(pricing/history|price-lists|prices|prices/${uuid}/history|clients|clients/${uuid}/profile|pricing-rules))$`);
-  const writable = new RegExp(`^(analytics/events|inbox/conversations/${uuid}/read|inbox/notifications/seen|accounts/${uuid}/(inventory/ingest|requests|requests/${uuid}/review|deals/${uuid}/actions|deals/${uuid}/messages|pricing/settings|requests/${uuid}/draft|requests/${uuid}/draft/discard|requests/${uuid}/draft/reprice|requests/${uuid}/draft/assistant|requests/${uuid}/draft/assistant/${uuid}/decisions|price-lists|price-lists/${uuid}|prices|clients/${uuid}/profile|pricing-rules|pricing-rules/${uuid}|pricing-rules/${uuid}/archive|pricing/simulate))$`);
+  const readable = new RegExp(`^(accounts|catalog|catalog/suggest|inbox|inbox/conversations|inbox/notifications|inbox/push|wishlist|wishlist/state|catalog/${uuid}/technical|catalog/${uuid}/suppliers|accounts/${uuid}/inventory|accounts/${uuid}/inventory/${uuid}/ledger|accounts/${uuid}/deals/${uuid}/messages|accounts/${uuid}/requests|accounts/${uuid}/requests/${uuid}|accounts/${uuid}/sent-requests|accounts/${uuid}/sent-requests/${uuid}|accounts/${uuid}/catalog/${uuid}/request-state|accounts/${uuid}/pricing/settings|accounts/${uuid}/requests/${uuid}/draft|accounts/${uuid}/requests/${uuid}/draft/assistant|accounts/${uuid}/requests/${uuid}/quotations/${uuid}/trace|accounts/${uuid}/(pricing/history|price-lists|prices|prices/${uuid}/history|clients|clients/${uuid}/profile|pricing-rules))$`);
+  const writable = new RegExp(`^(analytics/events|inbox/conversations/${uuid}/read|inbox/notifications/seen|inbox/push|inbox/push/remove|accounts/${uuid}/(inventory/ingest|requests|requests/${uuid}/review|deals/${uuid}/actions|deals/${uuid}/messages|pricing/settings|requests/${uuid}/draft|requests/${uuid}/draft/discard|requests/${uuid}/draft/reprice|requests/${uuid}/draft/assistant|requests/${uuid}/draft/assistant/${uuid}/decisions|price-lists|price-lists/${uuid}|prices|clients/${uuid}/profile|pricing-rules|pricing-rules/${uuid}|pricing-rules/${uuid}/archive|pricing/simulate))$`);
   const wishlistWritable = new RegExp(`^wishlist/${uuid}$`);
   const allowed = request.method === 'GET' ? readable.test(route) : request.method === 'POST' ? writable.test(route) : ['PUT', 'DELETE'].includes(request.method) && wishlistWritable.test(route);
   if (!allowed) return json({ detail: 'La ruta solicitada no existe.' }, 404);
@@ -30,7 +30,11 @@ async function handle(request: NextRequest, context: Context) {
     if (matching && ['matched', 'pending', 'review', 'unmatched'].includes(matching)) query.set('matching_status', matching);
     if (ordering && /^[-a-z_,]{1,120}$/.test(ordering)) query.set('ordering', ordering);
   }
-  if (route === 'inbox/conversations' && request.nextUrl.searchParams.get('unread') === '1') query.set('unread', '1');
+  if (route === 'inbox/conversations') {
+    if (request.nextUrl.searchParams.get('unread') === '1') query.set('unread', '1');
+    const order = request.nextUrl.searchParams.get('order');
+    if (order && new RegExp(`^${uuid}$`).test(order)) query.set('order', order);
+  }
   // Rules filter by one client of the pair (a uuid) or by scope.
   if (new RegExp(`^accounts/${uuid}/pricing-rules$`).test(route)) {
     const client = request.nextUrl.searchParams.get('client'), scope = request.nextUrl.searchParams.get('scope');

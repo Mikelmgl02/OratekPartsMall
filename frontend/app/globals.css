@@ -2309,3 +2309,11 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
  .inbox-document { border-right:0; }
  .inbox-toasts { right:12px; bottom:12px; }
 }
+.inbox-push { display:grid; gap:4px; margin:4px 0 8px; padding:10px; border-radius:9px; background:#f6f8f1; }
+.inbox-push p { display:flex; align-items:center; gap:8px; margin:0; font-size:12px; color:#4c5745; line-height:1.5; }
+.inbox-push p>svg { flex-shrink:0; color:#6f9a3c; }
+.inbox-push p>span { flex:1; }
+.inbox-push.blocked p>svg { color:#a06b3b; }
+.inbox-push>.button { justify-content:center; }
+.inbox-push>small { color:var(--muted); font-size:11px; line-height:1.5; }
+.inbox-push-error { color:#a33b2b !important; }

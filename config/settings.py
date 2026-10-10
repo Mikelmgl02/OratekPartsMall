@@ -110,6 +110,10 @@ SPECTACULAR_SETTINGS = {"TITLE": "MotionPartes API", "VERSION": "0.1.0", "COMPON
     # OEM reference library (superuser-only). Labels must match OEMReference.status.
     "OEMReferenceStatusEnum": [("verified", "Verificado"), ("declared", "Declarado"), ("inferred", "Inferido"), ("disputed", "En disputa")]}}
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY') or os.getenv('GEM_API_KEY', '')
+# Browser push notifications of the deal inbox (mall.push); off while any is empty. python -m mall.vapid_keys makes a pair.
+VAPID_PUBLIC_KEY = os.getenv('VAPID_PUBLIC_KEY', '')
+VAPID_PRIVATE_KEY = os.getenv('VAPID_PRIVATE_KEY', '')
+VAPID_SUBJECT = os.getenv('VAPID_SUBJECT', '')
 GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-3.5-flash-lite')
 
 

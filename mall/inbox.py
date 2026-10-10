@@ -4,6 +4,8 @@ of what the other party did on them. Read by polling (no websocket); nothing her
 A person takes part in a deal through a membership of its client account (with the client capability) or of its supplier account
 (with the supplier capability), the rule of deal_views.participant. Unread messages are the ones someone else wrote after the person's
 read mark; notifications are the deal events of accounts the person does not belong to."""
+import uuid
+
 from django.db import IntegrityError, transaction
 from django.db.models import BigIntegerField, Case, Count, F, IntegerField, Max, OuterRef, Q, Subquery, Value, When
 from django.db.models.functions import Coalesce, Greatest
@@ -88,17 +90,23 @@ def own_side(row):
 def message_preview(message, user):
     if message is None:
         return None
-    body = message.body if len(message.body) <= SNIPPET else f'{message.body[:SNIPPET - 1]}…'
-    return {'id': message.pk, 'body': body, 'account_id': str(message.account_id), 'account_name': message.account.name,
+    return {'id': message.pk, 'body': snippet(message.body), 'account_id': str(message.account_id), 'account_name': message.account.name,
             'actor_name': message.actor.get_full_name() or message.actor.username, 'mine': message.actor_id == user.pk,
             'created_at': iso(message.created_at)}
 
 
-def notification_data(event, deal, cursor):
+def event_title(event):
     revision = event.quotation.revision if event.quotation_id else ''
-    title = TITLES.get(event.kind, '{who} actualizó la orden').format(who=event.account.name, revision=revision)
+    return TITLES.get(event.kind, '{who} actualizó la orden').format(who=event.account.name, revision=revision)
+
+
+def snippet(body):
+    return body if len(body) <= SNIPPET else f'{body[:SNIPPET - 1]}…'
+
+
+def notification_data(event, deal, cursor):
     mine, counterpart = own_side(deal)
-    return {'id': event.pk, 'kind': event.kind, 'title': title, 'description': event.description, 'order_id': str(deal.pk),
+    return {'id': event.pk, 'kind': event.kind, 'title': event_title(event), 'description': event.description, 'order_id': str(deal.pk),
             'reference': deal.reference, 'status': deal.status, 'side': deal.side, 'account': mine,
             'counterpart': counterpart, 'created_at': iso(event.created_at), 'unseen': event.pk > cursor.seen_event_id}
 
@@ -134,7 +142,7 @@ class InboxSummary(APIView):
 class InboxConversations(generics.GenericAPIView):
     @extend_schema(responses=OpenApiTypes.OBJECT, description='Los acuerdos de la persona, del más reciente al más antiguo (mensaje o '
                    'cambio de estado), con su lado, la otra parte, el último mensaje y cuántos mensajes no ha leído. search filtra por '
-                   'referencia o nombre de cuenta; unread=1 deja solo los que tienen mensajes sin leer.')
+                   'referencia o nombre de cuenta; unread=1 deja solo los que tienen mensajes sin leer; order=<id> deja ese acuerdo.')
     def get(self, request):
         user, cursor = request.user, cursor_for(request.user)
         rows = with_activity(my_deals(user), user, cursor)
@@ -143,6 +151,12 @@ class InboxConversations(generics.GenericAPIView):
             rows = rows.filter(Q(reference__icontains=search) | Q(client_name__icontains=search) | Q(supplier_name__icontains=search))
         if request.query_params.get('unread') == '1':
             rows = rows.filter(unread__gt=0)
+        order = request.query_params.get('order', '')
+        if order:  # a push notification's link names its deal
+            try:
+                rows = rows.filter(pk=uuid.UUID(order))
+            except ValueError:
+                rows = rows.none()
         page = self.paginate_queryset(rows.order_by('-activity', '-pk'))
         messages = DealMessage.objects.select_related('account', 'actor').in_bulk([row.last_message_id for row in page if row.last_message_id])
         results = []

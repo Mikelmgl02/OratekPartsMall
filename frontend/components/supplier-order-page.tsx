@@ -9,6 +9,7 @@ import DealDetail from './deal-detail';
 import SupplierOrderSkeleton from './supplier-order-skeleton';
 import { AppToolbar } from './app-shell';
 import { InboxButtons } from './inbox';
+import { forgetPush } from '@/lib/push';
 import { Account, Page, SessionUser, request } from '@/lib/types';
 import { supplierRequestsHref } from '@/lib/supplier-navigation';
 import { useRouter } from 'next/navigation';
@@ -49,7 +50,7 @@ export default function SupplierOrderPage({ accountId, orderId }: { accountId: s
   async function logout() {
     if (signingOut) return;
     setSigningOut(true); setError('');
-    try { await request('/api/session', { method: 'DELETE' }); router.replace('/'); router.refresh(); }
+    try { await forgetPush(); await request('/api/session', { method: 'DELETE' }); router.replace('/'); router.refresh(); }
     catch { setError('No se pudo cerrar la sesión. Inténtalo de nuevo.'); }
     finally { setSigningOut(false); }
   }

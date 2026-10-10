@@ -30,3 +30,9 @@ class MallConfig(AppConfig):
         from .oem_links import part_pre_save, part_saved
         pre_save.connect(part_pre_save, sender=Part, dispatch_uid='oem_links_pre_save')
         post_save.connect(part_saved, sender=Part, dispatch_uid='oem_links_save')
+
+        # A message or a deal event pushes a browser notification to the other party (once committed; off without VAPID keys).
+        from .models import DealEvent, DealMessage
+        from .push import event_saved, message_saved
+        post_save.connect(message_saved, sender=DealMessage, dispatch_uid='push_deal_message')
+        post_save.connect(event_saved, sender=DealEvent, dispatch_uid='push_deal_event')

@@ -8,3 +8,4 @@ defusedxml==0.7.1
 Pillow==12.3.0
 django-storages[s3]==1.14.6
 boto3==1.43.108
+pywebpush==2.5.0

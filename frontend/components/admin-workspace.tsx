@@ -11,6 +11,7 @@ import AdminOEMSection from './admin-oem-section';
 import AdminAnalytics from './admin-analytics';
 import AdminTechnical from './admin-technical';
 import { AppToolbar, usePageViewport } from './app-shell';
+import { forgetPush } from '@/lib/push';
 import { AdminSection, ManagedAccount, ManagedInvitation, ManagedRole, ManagedUser, Member, Page, SessionUser, request } from '@/lib/types';
 
 type Row = ManagedAccount | ManagedUser | ManagedInvitation;
@@ -68,7 +69,7 @@ export default function AdminWorkspace({ user, section = 'accounts' }: { user: S
   }, [tab, query, page, revision, isAccessSection]);
   function saved(text: string) { setRevision(value => value + 1); setNotice(text); }
   async function logout() {
-    try { await request('/api/session', { method: 'DELETE' }); router.replace('/'); router.refresh(); }
+    try { await forgetPush(); await request('/api/session', { method: 'DELETE' }); router.replace('/'); router.refresh(); }
     catch (error) { setError(message(error)); }
   }
   async function manageAccount(id: string) {

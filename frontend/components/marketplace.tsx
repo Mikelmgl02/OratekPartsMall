@@ -12,6 +12,7 @@ import { isCodeSearch, matchesSearch } from '@/lib/catalog-search';
 import StoreSearch from './store-search';
 import { InboxButtons } from './inbox';
 import { inboxChanged } from '@/lib/inbox';
+import { forgetPush } from '@/lib/push';
 import AuthModal from './auth-modal';
 import AccountMenu from './account-menu';
 import PartDetail from './part-detail';
@@ -268,7 +269,7 @@ export default function Catálogo() {
   }
   async function logout() {
     sessionGeneration.current += 1;
-    try { await request('/api/session', { method: 'DELETE' }); inboxChanged(); sessionGeneration.current += 1; setAuthenticated(false); setUser(null); setAccounts([]); setAccountId(''); setView('catalog'); setDetail(null); setBasketPage(false); setError(''); }
+    try { await forgetPush(); await request('/api/session', { method: 'DELETE' }); inboxChanged(); sessionGeneration.current += 1; setAuthenticated(false); setUser(null); setAccounts([]); setAccountId(''); setView('catalog'); setDetail(null); setBasketPage(false); setError(''); }
     catch (error) { setNotice(error instanceof Error ? error.message : 'No se pudo cerrar la sesión.'); }
   }
   const totalParts = preview ? visibleParts.length : catalog.count;

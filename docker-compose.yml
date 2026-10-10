@@ -39,6 +39,9 @@ services:
       GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-120}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-${GEM_API_KEY:-}}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash-lite}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-}
       # Quotation assistant: dark until QUOTE_ASSISTANT_MONTHLY_USD > 0. Token prices are placeholders; set them from Google's price sheet.
       QUOTE_ASSISTANT_MONTHLY_USD: ${QUOTE_ASSISTANT_MONTHLY_USD:-0}
       AI_MONTHLY_BUDGET_USD: ${AI_MONTHLY_BUDGET_USD:-200}

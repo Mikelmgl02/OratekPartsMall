@@ -22,3 +22,14 @@ class InboxCursor(models.Model):
     message_floor = models.BigIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+
+class PushSubscription(models.Model):
+    """A browser that agreed to receive this person's deal notifications (Web Push). The endpoint names the browser: when another person
+    signs in there and turns notifications on, the subscription moves to them. Push services drop an endpoint with 404/410; so do we."""
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='push_subscriptions')
+    endpoint = models.URLField(max_length=1000, unique=True)
+    p256dh = models.CharField(max_length=200)
+    auth = models.CharField(max_length=100)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
