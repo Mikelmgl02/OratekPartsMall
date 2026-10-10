@@ -8,8 +8,9 @@ class ConversationRead(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='conversation_reads')
     order = models.ForeignKey('mall.SupplierRequest', on_delete=models.CASCADE, related_name='reads')
     last_message_id = models.BigIntegerField(default=0)
-    # When the person was last emailed about unread messages of this deal (one email per conversation per cooldown).
+    # When the person was last emailed (or sent a WhatsApp) about unread messages of this deal (one per conversation per cooldown).
     emailed_at = models.DateTimeField(null=True, blank=True)
+    whatsapp_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -26,6 +27,14 @@ class InboxCursor(models.Model):
     active_at = models.DateTimeField(null=True, blank=True)
     email_messages = models.BooleanField(default=True, verbose_name='correo por mensajes nuevos')
     email_updates = models.BooleanField(default=True, verbose_name='correo por cambios en las órdenes')
+    # WhatsApp needs the person's explicit consent (Meta's opt-in rule): nothing is sent until whatsapp_opt_in_at is set, and replying
+    # BAJA or STOP clears it.
+    whatsapp_number = models.CharField(max_length=20, blank=True, default='', verbose_name='número de WhatsApp')
+    whatsapp_opt_in_at = models.DateTimeField(null=True, blank=True, verbose_name='aceptó avisos por WhatsApp')
+    whatsapp_messages = models.BooleanField(default=True, verbose_name='WhatsApp por mensajes nuevos')
+    whatsapp_updates = models.BooleanField(default=True, verbose_name='WhatsApp por cambios en las órdenes')
+    # The last automatic answer to a message the person wrote to the notices number (at most one per WHATSAPP_REPLY_EVERY).
+    whatsapp_replied_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -39,3 +48,22 @@ class PushSubscription(models.Model):
     auth = models.CharField(max_length=100)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+
+class WhatsAppMessage(models.Model):
+    """Every WhatsApp notice sent, with what Meta's webhook later said about it (sent → delivered → read, or failed)."""
+    STATUSES = [('queued', 'En cola'), ('accepted', 'Aceptado por WhatsApp'), ('sent', 'Enviado'), ('delivered', 'Entregado'), ('read', 'Leído'),
+                ('failed', 'Falló')]
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='whatsapp_messages')
+    order = models.ForeignKey('mall.SupplierRequest', on_delete=models.SET_NULL, null=True, blank=True, related_name='whatsapp_messages')
+    number = models.CharField(max_length=20)
+    template = models.CharField(max_length=80)
+    kind = models.CharField(max_length=40)
+    wamid = models.CharField(max_length=128, blank=True, default='', db_index=True, verbose_name='id del mensaje en WhatsApp')
+    status = models.CharField(max_length=10, choices=STATUSES, default='queued')
+    error = models.CharField(max_length=300, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-id']

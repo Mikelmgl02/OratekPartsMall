@@ -43,3 +43,7 @@ class MallConfig(AppConfig):
         from . import realtime
         post_save.connect(realtime.message_saved, sender=DealMessage, dispatch_uid='realtime_deal_message')
         post_save.connect(realtime.event_saved, sender=DealEvent, dispatch_uid='realtime_deal_event')
+        # ... and a WhatsApp notice to those who opted in (off without the WhatsApp Cloud API settings).
+        from . import whatsapp
+        post_save.connect(whatsapp.message_saved, sender=DealMessage, dispatch_uid='whatsapp_deal_message')
+        post_save.connect(whatsapp.event_saved, sender=DealEvent, dispatch_uid='whatsapp_deal_event')

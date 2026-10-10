@@ -118,6 +118,18 @@ VAPID_SUBJECT = os.getenv('VAPID_SUBJECT', '')
 RESEND_API_KEY = os.getenv('RESEND_API_KEY', '')
 EMAIL_FROM_ADDRESS = os.getenv('EMAIL_FROM_ADDRESS', '')
 EMAIL_FROM_NAME = os.getenv('EMAIL_FROM_NAME', 'MotionPartes')
+# WhatsApp notices of the deal inbox (mall.whatsapp, Meta's WhatsApp Cloud API); off without the token and the phone number id.
+WHATSAPP_ACCESS_TOKEN = os.getenv('WHATSAPP_ACCESS_TOKEN', '')
+WHATSAPP_PHONE_NUMBER_ID = os.getenv('WHATSAPP_PHONE_NUMBER_ID', '')
+WHATSAPP_API_VERSION = os.getenv('WHATSAPP_API_VERSION', 'v23.0')
+WHATSAPP_TEMPLATE_LANGUAGE = os.getenv('WHATSAPP_TEMPLATE_LANGUAGE', 'es')
+WHATSAPP_TEMPLATE_UPDATE = os.getenv('WHATSAPP_TEMPLATE_UPDATE', 'motionpartes_novedad_orden')
+WHATSAPP_TEMPLATE_MESSAGE = os.getenv('WHATSAPP_TEMPLATE_MESSAGE', 'motionpartes_mensaje_nuevo')
+# The webhook (statuses, replies, BAJA): Meta signs it with the app secret and checks the verify token when it is set up.
+WHATSAPP_APP_SECRET = os.getenv('WHATSAPP_APP_SECRET', '')
+WHATSAPP_VERIFY_TOKEN = os.getenv('WHATSAPP_VERIFY_TOKEN', '')
+# Numbers typed without a country code (Panamá: 7 or 8 digits) get this one.
+WHATSAPP_DEFAULT_COUNTRY_CODE = os.getenv('WHATSAPP_DEFAULT_COUNTRY_CODE', '507')
 # The deal inbox's websocket (mall.realtime, config.asgi): Redis carries its nudges from the web workers to the socket server.
 # Without REDIS_URL nothing is published and pages keep polling.
 REDIS_URL = os.getenv('REDIS_URL', '')

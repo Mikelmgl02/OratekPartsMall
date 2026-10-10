@@ -177,3 +177,38 @@ test('with the websocket connected, a nudge brings the new message at once (poll
   await expect(log).toContainText('¿Confirmamos el lunes?', { timeout: 1500 });
   await expect(page.getByRole('button', { name: 'Mensajes, 4 sin leer', exact: true })).toBeVisible({ timeout: 1500 });
 });
+
+test('WhatsApp notices need the number and an explicit consent; each kind can be turned off', async ({ page }) => {
+  await mockInbox(page, { current: pending() });
+  const saved: Record<string, unknown>[] = [];
+  let state = { enabled: false, number: '', opted_in: false, messages: true, updates: true };
+  await page.route(/\/api\/market\/inbox\/whatsapp$/, route => {
+    if (route.request().method() === 'POST') {
+      const body = route.request().postDataJSON(); saved.push(body);
+      state = { ...state, ...(body.number ? { number: '+50761234567' } : {}), ...('opt_in' in body ? { opted_in: body.opt_in } : {}), ...('updates' in body ? { updates: body.updates } : {}) };
+    }
+    return route.fulfill({ json: state });
+  });
+  await page.goto('/');
+  const bell = page.getByRole('button', { name: 'Notificaciones, 2 nuevas', exact: true });
+  await bell.click();
+  const menu = page.getByRole('region', { name: 'Notificaciones', exact: true });
+  await expect(menu.getByRole('button', { name: /REPUESTOS PANAMÁ confirmó el acuerdo/ })).toBeVisible();
+  await expect(menu.getByRole('group', { name: 'Avisos por WhatsApp', exact: true })).toHaveCount(0);  // the server sends none
+  await bell.click();
+  state = { ...state, enabled: true };
+  await bell.click();
+  const whatsapp = menu.getByRole('group', { name: 'Avisos por WhatsApp', exact: true });
+  await whatsapp.getByLabel('Tu número de WhatsApp').fill('6123 4567');
+  const activate = whatsapp.getByRole('button', { name: 'Activar avisos', exact: true });
+  await expect(activate).toBeDisabled();  // consent first
+  await whatsapp.getByRole('checkbox', { name: /Acepto recibir avisos de MotionPartes por WhatsApp/ }).check();
+  await activate.click();
+  await expect(whatsapp).toContainText('Activos en +50761234567');
+  expect(saved[0]).toEqual({ number: '6123 4567', opt_in: true });
+  await whatsapp.getByRole('checkbox', { name: 'Cambios en tus órdenes', exact: true }).uncheck();
+  await expect.poll(() => saved.at(-1)).toEqual({ updates: false });
+  await whatsapp.getByRole('button', { name: 'Desactivar', exact: true }).click();
+  await expect.poll(() => saved.at(-1)).toEqual({ opt_in: false });
+  await expect(whatsapp.getByLabel('Tu número de WhatsApp')).toHaveValue('+50761234567');
+});

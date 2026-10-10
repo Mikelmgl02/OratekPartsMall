@@ -2377,3 +2377,9 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .deal-quote-editor select,.deal-quote-editor textarea,.deal-adjustment textarea { width:100%; min-width:0; padding:10px 12px; border:1px solid #dbe2d1; border-radius:7px; background:#fff; color:var(--ink); font:inherit; font-size:13px; }
 .deal-quote-editor select { width:auto; min-width:120px; }
 .deal-quote-editor textarea,.deal-adjustment textarea { line-height:1.6; resize:vertical; }
+.inbox-whatsapp-form { display:grid; gap:8px; }
+.inbox-whatsapp-form>label:first-child { display:grid; gap:4px; }
+.inbox-whatsapp-form input[type="tel"] { width:100%; padding:8px 10px; border:1px solid #d6dece; border-radius:8px; background:#fff; color:var(--ink); font:inherit; font-size:13px; }
+.inbox-whatsapp-form>div { display:flex; align-items:center; gap:8px; }
+.inbox-whatsapp-consent { color:var(--muted) !important; font-size:11px !important; }
+.inbox-whatsapp-number { display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; margin:0; font-size:12px; color:#4c5745; }

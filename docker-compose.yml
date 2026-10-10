@@ -46,6 +46,15 @@ services:
       EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS:-}
       EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-MotionPartes}
       SITE_URL: ${SITE_URL:-http://localhost:8080}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_API_VERSION: ${WHATSAPP_API_VERSION:-v23.0}
+      WHATSAPP_TEMPLATE_LANGUAGE: ${WHATSAPP_TEMPLATE_LANGUAGE:-es}
+      WHATSAPP_TEMPLATE_UPDATE: ${WHATSAPP_TEMPLATE_UPDATE:-motionpartes_novedad_orden}
+      WHATSAPP_TEMPLATE_MESSAGE: ${WHATSAPP_TEMPLATE_MESSAGE:-motionpartes_mensaje_nuevo}
+      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
+      WHATSAPP_DEFAULT_COUNTRY_CODE: ${WHATSAPP_DEFAULT_COUNTRY_CODE:-507}
       # Carries the deal inbox's websocket nudges from the web workers to the realtime service; empty turns them off.
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       # Quotation assistant: dark until QUOTE_ASSISTANT_MONTHLY_USD > 0. Token prices are placeholders; set them from Google's price sheet.

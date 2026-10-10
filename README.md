@@ -168,6 +168,18 @@ Configure it with `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and `VAPID_SUBJECT` (a
 
 Configure `RESEND_API_KEY`, `EMAIL_FROM_ADDRESS` (an address of a domain verified in Resend), `EMAIL_FROM_NAME` (default `MotionPartes`) and `SITE_URL` (the public address used in links, default `http://localhost:8080`) in `.env`, then recreate the app service. Without the key or the address, nothing is emailed and the preferences are hidden.
 
+**Avisos por WhatsApp.** The third channel (`mall/whatsapp.py`, Meta's WhatsApp Cloud API): one MotionPartes number notifies every supplier's staff and every client, and each notice's **Ver en MotionPartes** button opens the conversation on the site, where it continues. Nobody gets anything without opting in: in the bell menu (**Avisos por WhatsApp**) the person gives their number (a local number gets `WHATSAPP_DEFAULT_COUNTRY_CODE`, 507) and ticks the consent; a new number asks for consent again, and they keep or turn off *Mensajes nuevos* and *Cambios en tus órdenes* (`GET`/`POST inbox/whatsapp/`, migration `0051_whatsapp_notices`). Deal events of the other party go out right away; messages only while the person is away from MotionPartes and at most once per conversation every 30 minutes (each WhatsApp is billed by Meta). Template parameters carry no prices or stock, and every send is logged (`WhatsAppMessage`: queued → accepted → sent → delivered → read, or failed with Meta's reason). Replies to the number get one answer every 12 hours pointing back to the site; replying **BAJA** (or STOP, SALIR, CANCELAR) withdraws the consent. Sent after the commit, from a background thread, best effort.
+
+Setting it up in Meta:
+1. A WhatsApp Business account with the MotionPartes number; verify the business early, which raises how many people the number may message per day.
+2. A system user with a permanent token (`whatsapp_business_messaging`) → `WHATSAPP_ACCESS_TOKEN`; the number's *Phone number ID* → `WHATSAPP_PHONE_NUMBER_ID`.
+3. Two templates, category **Utility**, language Spanish (`es`), each with a *Visit website* button "Ver en MotionPartes" whose URL is `https://<site>/?conversacion={{1}}` (dynamic; MotionPartes fills the deal id):
+   - `motionpartes_novedad_orden`: «Novedad en tu orden {{1}}: {{2}}. Ábrela en MotionPartes para ver el detalle.» (samples: `ORD-0123`, `GRUPO RAZOR PARTS publicó la cotización v2`);
+   - `motionpartes_mensaje_nuevo`: «Tienes un mensaje nuevo de {{1}} sobre la orden {{2}}: «{{3}}». Responde desde MotionPartes.» (samples: `TALLER CENTRAL`, `ORD-0123`, `¿Pueden entregar el lunes?`).
+   Other names or languages go in `WHATSAPP_TEMPLATE_UPDATE`, `WHATSAPP_TEMPLATE_MESSAGE` and `WHATSAPP_TEMPLATE_LANGUAGE`. Keep them free of promotional wording, or Meta reclassifies them as Marketing (pricier).
+4. The webhook: callback `https://<site>/api/v1/whatsapp/webhook/`, verify token = `WHATSAPP_VERIFY_TOKEN` (any secret string), subscribed to `messages`; the app secret → `WHATSAPP_APP_SECRET` (unsigned or wrongly signed calls are refused).
+5. Recreate the app service. Without the token or the phone number id nothing is sent and the bell menu hides the section.
+
 Order lists retain the existing `/requests/` and `/sent-requests/` routes, with account-scoped search, pagination and every status filter, plus `status=agreements` for every deal both parties confirmed (open, delivered or cancelled), which **Historial de compras** uses. `GET .../catalog/<part_id>/request-state/` reports units in mutually exclusive lifecycle states, including historical merged-SKU snapshots. Open orders (`pending`, `reviewed`, `quoted`, `adjustment`) count requested units; `handshaked_quantity` (**En acuerdos**) counts the units of the quotation the client accepted, which can differ from the requested units (0 for lines quoted as unavailable), less accepted shortfalls; `delivered_quantity` (**Entregadas**) counts delivered deals the same way, and cancelled deals count nothing. Requested units the supplier did not agree to are not reported as a state; they remain visible on the order (requested line `quantity` vs. the accepted quotation, `unit_count` vs. `quoted_unit_count`). `sent_quantity` remains the total of requested units. Stock figures remain supplier-only, including reported/reserved/available quantities and shortfalls.
 
 ## Precios privados y cotización asistida
@@ -363,6 +375,8 @@ All routes use `/api/v1/` unless noted.
 | GET / POST | `inbox/push/` | Whether the server sends browser notifications and its VAPID public key / save this browser's subscription for the person |
 | POST | `inbox/push/remove/` | `{endpoint}`: stop notifying this browser (turned off, or signing out) |
 | GET / POST | `inbox/email/` | Whether the server sends email, the person's address, and their `messages` / `updates` email preferences / change them |
+| GET / POST | `inbox/whatsapp/` | Whether the server sends WhatsApp notices, the person's number, consent and `messages` / `updates` preferences / change them (`number` + `opt_in`) |
+| GET / POST | `whatsapp/webhook/` | Meta's webhook: verification (GET) and signed delivery statuses and replies (POST); public |
 | GET | `catalog/{part_id}/suppliers/` | Available supplier groups with matching item IDs, codes, brands and descriptions |
 | GET | `wishlist/?search=ABC&page=1` | Personal saved SKUs, newest first, with current stock bands and catalog availability |
 | GET | `wishlist/state/` | Current user's saved part IDs and count for persistent hearts |

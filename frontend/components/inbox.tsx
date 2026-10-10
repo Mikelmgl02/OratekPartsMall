@@ -160,6 +160,7 @@ function NotificationsMenu() {
         </button></li>)}</ul>}
       {more && items && <button type="button" className="button text small" onClick={() => void load(items.at(-1)?.id)}>Ver anteriores</button>}
       <EmailSwitches/>
+      <WhatsAppSwitches/>
     </section>}
   </div>;
 }
@@ -204,6 +205,51 @@ function EmailSwitches() {
     <legend>Avisos por correo a <strong>{preferences.address}</strong></legend>
     <label><input type="checkbox" checked={preferences.messages} onChange={event => void change('messages', event.target.checked)}/>Mensajes nuevos, cuando no estés en MotionPartes</label>
     <label><input type="checkbox" checked={preferences.updates} onChange={event => void change('updates', event.target.checked)}/>Cambios en tus órdenes</label>
+    {error && <small className="inbox-push-error" role="alert">{error}</small>}
+  </fieldset>;
+}
+
+type WhatsAppPreferences = { enabled: boolean; number: string; opted_in: boolean; messages: boolean; updates: boolean };
+
+// WhatsApp notices (mall/whatsapp.py): only after the person gives their number and explicit consent (Meta's opt-in rule).
+function WhatsAppSwitches() {
+  const [preferences, setPreferences] = useState<WhatsAppPreferences | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [number, setNumber] = useState('');
+  const [consent, setConsent] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  useEffect(() => { request<WhatsAppPreferences>('/api/market/inbox/whatsapp').then(value => { setPreferences(value); setNumber(value.number); }).catch(() => setPreferences(null)); }, []);
+  if (!preferences?.enabled) return null;
+  async function save(changes: Record<string, unknown>) {
+    setBusy(true); setError('');
+    try {
+      const value = await request<WhatsAppPreferences>('/api/market/inbox/whatsapp', { method: 'POST', body: JSON.stringify(changes) });
+      setPreferences(value); setNumber(value.number); setEditing(false); setConsent(false);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : 'No se pudo guardar. Inténtalo de nuevo.'); }
+    finally { setBusy(false); }
+  }
+  async function toggle(key: 'messages' | 'updates', value: boolean) {
+    setPreferences(current => current && { ...current, [key]: value });  // at once; undone if it cannot be saved
+    setError('');
+    try { setPreferences(await request<WhatsAppPreferences>('/api/market/inbox/whatsapp', { method: 'POST', body: JSON.stringify({ [key]: value }) })); }
+    catch { setPreferences(current => current && { ...current, [key]: !value }); setError('No se pudo guardar tu preferencia. Inténtalo de nuevo.'); }
+  }
+  const asking = editing || !preferences.opted_in;
+  return <fieldset className="inbox-email inbox-whatsapp">
+    <legend>Avisos por WhatsApp</legend>
+    {asking ? <form className="inbox-whatsapp-form" onSubmit={event => { event.preventDefault(); void save({ number, opt_in: true }); }}>
+      <label>Tu número de WhatsApp<input type="tel" inputMode="tel" autoComplete="tel" required value={number} disabled={busy} onChange={event => setNumber(event.target.value)} placeholder="+507 6123 4567"/></label>
+      <label className="inbox-whatsapp-consent"><input type="checkbox" required checked={consent} disabled={busy} onChange={event => setConsent(event.target.checked)}/>Acepto recibir avisos de MotionPartes por WhatsApp. Puedo darme de baja cuando quiera respondiendo BAJA.</label>
+      <div><button type="submit" className="button primary small" disabled={busy || !consent || !number.trim()}>{busy && <LoaderCircle size={14} className="spin"/>}Activar avisos</button>
+        {editing && <button type="button" className="button text small" disabled={busy} onClick={() => { setEditing(false); setNumber(preferences.number); setConsent(false); }}>Cancelar</button>}</div>
+    </form> : <>
+      <p className="inbox-whatsapp-number">Activos en <strong>{preferences.number}</strong>
+        <button type="button" className="button text small" disabled={busy} onClick={() => setEditing(true)}>Cambiar número</button>
+        <button type="button" className="button text small" disabled={busy} onClick={() => void save({ opt_in: false })}>Desactivar</button></p>
+      <label><input type="checkbox" checked={preferences.messages} disabled={busy} onChange={event => void toggle('messages', event.target.checked)}/>Mensajes nuevos, cuando no estés en MotionPartes</label>
+      <label><input type="checkbox" checked={preferences.updates} disabled={busy} onChange={event => void toggle('updates', event.target.checked)}/>Cambios en tus órdenes</label>
+    </>}
     {error && <small className="inbox-push-error" role="alert">{error}</small>}
   </fieldset>;
 }
