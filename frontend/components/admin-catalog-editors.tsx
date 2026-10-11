@@ -92,7 +92,7 @@ export function PartEditor({ part, initialTab = 'general', onClose, onSaved }: {
   </Modal>;
 }
 
-function PartPicker({ label, value, initial, onChange, exclude }: { label: string; value: string; initial?: Choice; onChange: (value: string) => void; exclude?: string }) {
+export function PartPicker({ label, value, initial, onChange, exclude }: { label: string; value: string; initial?: Choice; onChange: (value: string) => void; exclude?: string }) {
   const [search, setSearch] = useState(''); const [data, setData] = useState<Page<ManagedPart> | null>(null); const [error, setError] = useState(''); const [revision, setRevision] = useState(0);
   // Keep the selected option even when it is outside the current result page.
   const [selected, setSelected] = useState<Choice | undefined>(initial);

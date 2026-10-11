@@ -22,6 +22,11 @@ def enqueue_matching(*args, **kwargs):
         transaction.on_commit(_enqueue)
 
 
+def request_another_pass():
+    """From inside a pass: one more pass after this one, for a stage that stopped with work left (enqueue_matching is muted there)."""
+    _enqueue()
+
+
 MATCHING_LOCK = 724631109  # pg advisory lock key of a matching pass (quote assistant 724631110, suffix table 724631111)
 
 

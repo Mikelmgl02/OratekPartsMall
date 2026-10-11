@@ -13,6 +13,7 @@ from mall.analytics import AnalyticsDashboard, UsageEvents
 from mall.deal_admin import DealAdminCancel, DealAdminDetail, DealAdminList
 from mall.apiag_connection import ApiagConnectionTest, ApiagConnectionView
 from mall.apiag_sync_views import ApiagStatusView, ApiagSyncRequestView
+from mall.sku_proposal_views import ProposalBulk, ProposalDetail, ProposalList, ProposalSummary
 from mall.wishlist import WishlistList, WishlistState, WishlistDetail
 from mall.catalog_import import CatalogImport, CatalogImportJobView
 from mall.catalog_classification import CatalogClassification
@@ -58,6 +59,10 @@ urlpatterns = [
     path('api/v1/management/deals/<uuid:pk>/', DealAdminDetail.as_view()),
     path('api/v1/management/deals/<uuid:pk>/cancel/', DealAdminCancel.as_view()),
     path('api/v1/management/catalog/', management.CatalogList.as_view()),
+    path('api/v1/management/catalog/proposals/', ProposalList.as_view()),
+    path('api/v1/management/catalog/proposals/summary/', ProposalSummary.as_view()),
+    path('api/v1/management/catalog/proposals/bulk/', ProposalBulk.as_view()),
+    path('api/v1/management/catalog/proposals/<uuid:pk>/', ProposalDetail.as_view()),
     path('api/v1/management/part-types/', PartTypeList.as_view()),
     path('api/v1/management/part-types/<uuid:pk>/', PartTypeDetail.as_view()),
     path('api/v1/management/part-types/<uuid:pk>/template/', TemplateDetail.as_view()),

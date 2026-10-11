@@ -128,6 +128,10 @@ def _process_queue(*, force=False, use_ai=True):
             stage('suppliers')
             summary['matched_items'] = reconcile_items(MatchIndex(), stats=summary)
             MatchingCase.objects.filter(item__matching_status='matched', status__in=['review', 'unmatched']).update(status='resolved')
+            if settings.SKU_PROPOSALS_STAGE:
+                from .sku_proposals import proposals_stage
+                stage('proposals')
+                summary['proposals'] = proposals_stage()
             stage('ai')
             summary['ai_analyzed'] = analyze_ambiguous(stats=summary) if use_ai else 0
             summary['review'] = MatchingCase.objects.filter(status='review').count()
