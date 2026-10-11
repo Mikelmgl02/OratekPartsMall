@@ -9,7 +9,7 @@ and email. One MotionPartes number notifies every supplier's staff and every cli
   MotionPartes." with the account, the reference and the start of the message, sent only to people away from the app, at most once per
   conversation every COOLDOWN.
 (Meta refuses a template body that starts or ends with a variable.)
-Both buttons: URL https://<site>/?conversacion={{1}}, filled with the deal id.
+Both buttons: URL https://<site>/?conversacion={{1}}, filled with the deal id and the recipient's sign-in hint (mall.login_hints).
 
 When Meta refuses a template as unusable (missing or still under review, paused, disabled), the notice goes as plain text with the same
 words and the link; WhatsApp delivers such a text only within 24 hours of the person's last message to the number.
@@ -39,6 +39,7 @@ from rest_framework.views import APIView
 from . import push
 from .email_notifications import ACTIVE
 from .inbox import cursor_for, event_title
+from . import login_hints
 from .inbox_models import ConversationRead, InboxCursor, WhatsAppMessage
 from .models import DealEvent
 
@@ -94,9 +95,9 @@ def as_text(payload):
     """A template notice as a plain text message: the template's words with its values, and the link of its button."""
     notice = payload['template']
     values = [item['text'] for item in notice['components'][0]['parameters']]
-    order_id = notice['components'][1]['parameters'][0]['text']
+    conversation = notice['components'][1]['parameters'][0]['text']  # the deal and the recipient's sign-in hint
     text = re.sub(r'\{\{(\d+)\}\}', lambda match: values[int(match.group(1)) - 1], body_of(notice['name']))
-    link = f"{settings.SITE_URL.rstrip('/')}/?conversacion={order_id}"
+    link = f"{settings.SITE_URL.rstrip('/')}/?conversacion={conversation}"
     return {'messaging_product': 'whatsapp', 'to': payload['to'], 'type': 'text', 'text': {'preview_url': True, 'body': f'{text}\n\nVer en MotionPartes: {link}'}}
 
 
@@ -107,11 +108,11 @@ def meta_code(detail):
         return None
 
 
-def template(number, name, body, order_id):
+def template(number, name, body, conversation):
     return {'messaging_product': 'whatsapp', 'to': number.lstrip('+'), 'type': 'template', 'template': {
         'name': name, 'language': {'code': settings.WHATSAPP_TEMPLATE_LANGUAGE}, 'components': [
             {'type': 'body', 'parameters': [{'type': 'text', 'text': value} for value in body]},
-            {'type': 'button', 'sub_type': 'url', 'index': '0', 'parameters': [{'type': 'text', 'text': str(order_id)}]}]}}
+            {'type': 'button', 'sub_type': 'url', 'index': '0', 'parameters': [{'type': 'text', 'text': str(conversation)}]}]}}
 
 
 def accepted(log_id, result, **extra):
@@ -160,7 +161,7 @@ def queue(people, order, kind, name, body):
     jobs = []
     for cursor in people:
         row = WhatsAppMessage.objects.create(user_id=cursor.user_id, order=order, number=cursor.whatsapp_number, template=name, kind=kind)
-        jobs.append((row.pk, template(cursor.whatsapp_number, name, body, order.pk)))
+        jobs.append((row.pk, template(cursor.whatsapp_number, name, body, login_hints.conversation(order.pk, cursor.user_id))))
     return jobs
 
 

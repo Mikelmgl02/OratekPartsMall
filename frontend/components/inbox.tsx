@@ -78,7 +78,8 @@ export function InboxProvider({ children }: { children: ReactNode }) {
     if (synced.current) return;
     synced.current = true;
     void syncPush();
-    const url = new URL(window.location.href), orderId = url.searchParams.get('conversacion');
+    // A notice's link may add the recipient's sign-in hint after the deal (<deal>~<hint>); only the deal matters here.
+    const url = new URL(window.location.href), orderId = url.searchParams.get('conversacion')?.split('~')[0];
     if (orderId) {
       url.searchParams.delete('conversacion');
       window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);

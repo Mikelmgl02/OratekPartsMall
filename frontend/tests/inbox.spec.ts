@@ -416,3 +416,28 @@ test('a page left open while a newer build went live offers to reload, over the 
   await expect(notice).toHaveCount(0);
   expect(checks).toBeGreaterThanOrEqual(2);
 });
+
+test('a notice link opened signed out goes straight to the sign-in with the username filled in, then opens the conversation', async ({ page }) => {
+  await mockInbox(page, { current: pending() });
+  let signedIn = false;
+  const hints: string[] = [];
+  await page.route('**/api/session', route => {
+    if (route.request().method() === 'POST') {
+      expect(route.request().postDataJSON()).toEqual({ username: 'FRANCISCO', password: 'Clave938!' });
+      signedIn = true;
+      return route.fulfill({ json: { authenticated: true } });
+    }
+    return route.fulfill({ json: signedIn ? { authenticated: true, user: { id: 1, username: 'FRANCISCO', first_name: 'Francisco', last_name: '', is_superuser: false },
+      accounts: { count: 1, next: null, previous: null, results: [acct] } } : { authenticated: false } });
+  });
+  await page.route(/\/api\/session\/hint\?/, route => { hints.push(new URL(route.request().url()).searchParams.get('hint')!); return route.fulfill({ json: { username: 'FRANCISCO' } }); });
+  await page.goto(`/?conversacion=${order}~MQ:1xFlI0:firma-de-prueba`);
+  const signIn = page.getByRole('dialog', { name: 'Bienvenido a MotionPartes', exact: true });
+  await expect(signIn.getByRole('status')).toContainText('Inicia sesión para abrir la conversación de tu aviso.');
+  await expect(signIn.getByLabel('Usuario', { exact: true })).toHaveValue('FRANCISCO');
+  await expect(signIn.getByLabel('Contraseña', { exact: true })).toBeFocused();  // only the password is left
+  expect(hints).toEqual(['MQ:1xFlI0:firma-de-prueba']);
+  await signIn.getByLabel('Contraseña', { exact: true }).fill('Clave938!');
+  await signIn.locator('form').getByRole('button', { name: 'Iniciar sesión' }).click();
+  await expect(page.getByRole('dialog', { name: 'Conversaciones', exact: true }).getByRole('region', { name: 'Orden ORD-0123 con GRUPO RAZOR PARTS', exact: true })).toBeVisible();
+});

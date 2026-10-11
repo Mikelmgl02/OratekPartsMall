@@ -5,7 +5,7 @@ from django.conf.urls.static import static
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from rest_framework.authtoken.views import ObtainAuthToken
 from rest_framework.throttling import AnonRateThrottle
-from mall import email_notifications, inbox, management, push, views, whatsapp
+from mall import email_notifications, inbox, login_hints, management, push, views, whatsapp
 from mall.technical_api import (PartTypeList, PartTypeDetail, TemplateDetail, ApplicationList, ApplicationDetail,
                                ItemTechnicalDetail, CatalogTechnicalDetail)
 from mall.matching_views import MatchingOverview, MatchingReview
@@ -50,6 +50,7 @@ urlpatterns = [
     path('api/v1/auth/logout/', views.LogoutView.as_view()),
     path('api/v1/auth/me/', management.ProfileView.as_view()),
     path('api/v1/auth/password/', management.PasswordChangeView.as_view()),
+    path('api/v1/auth/login-hint/', login_hints.LoginHint.as_view()),
     path('api/v1/analytics/events/', UsageEvents.as_view()),
     path('api/v1/management/analytics/', AnalyticsDashboard.as_view()),
     path('api/v1/management/deals/', DealAdminList.as_view()),

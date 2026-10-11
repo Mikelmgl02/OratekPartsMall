@@ -98,7 +98,20 @@ export default function Catálogo() {
   const activeBasketKey = useRef(basketKey);
   activeBasketKey.current = basketKey;
 
-  function openAuth(mode: 'login' | 'signup' = 'login') { setAuthMode(mode); setAuthOpen(true); }
+  const [authUsername, setAuthUsername] = useState('');
+  function openAuth(mode: 'login' | 'signup' = 'login', username = '') { setAuthMode(mode); setAuthUsername(username); setAuthOpen(true); }
+  // A notice's link opened signed out (?conversacion=<deal>~<hint>): straight to the sign-in, with the username the notice was sent to;
+  // once signed in, the inbox opens the conversation.
+  const noticeLinkHandled = useRef(false);
+  useEffect(() => {
+    if (!sessionReady || authenticated || noticeLinkHandled.current) return;
+    const value = new URL(window.location.href).searchParams.get('conversacion');
+    if (!value) return;
+    noticeLinkHandled.current = true;
+    const hint = value.split('~')[1];
+    (hint ? request<{ username: string }>(`/api/session/hint?hint=${encodeURIComponent(hint)}`).then(data => data.username).catch(() => '') : Promise.resolve(''))
+      .then(username => openAuth('login', username));
+  }, [sessionReady, authenticated]);
 
   const loadSession = useCallback(async () => {
     const generation = ++sessionGeneration.current;
@@ -356,7 +369,7 @@ export default function Catálogo() {
       <div className="store-footer-brand section-container"><BrandLogo/><p>Conectamos repuestos. Conectamos personas.</p>{user?.is_superuser && <Link href="/administracion">Administración<ArrowUpRight size={12}/></Link>}<span className="footer-caption"><Globe2 size={15}/>Para tu próxima reparación.</span></div>
     </footer>
     {filtersOpen && <Modal title="Filtrar repuestos" drawer className="catalog-filter-drawer" onClose={() => setFiltersOpen(false)}><CatalogFilterPanel facets={facets} filters={filters} loading={busy || initialLoading} onChange={changeFilters}/><div className="filter-drawer-footer"><button className="button primary" onClick={() => setFiltersOpen(false)}>{busy ? 'Ver resultados · Actualizando…' : `Ver ${totalParts.toLocaleString('es')} ${totalParts === 1 ? 'repuesto' : 'repuestos'}`}<ArrowRight size={16}/></button></div></Modal>}
-    {authOpen && <AuthModal initialMode={authMode} onClose={() => setAuthOpen(false)} onSuccess={async () => {applySearch(''); changeFilters(emptyFilters); setView('catalog'); await loadSession();}}/>}
+    {authOpen && <AuthModal initialMode={authMode} initialUsername={authUsername} onClose={() => setAuthOpen(false)} onSuccess={async () => {applySearch(''); changeFilters(emptyFilters); setView('catalog'); await loadSession();}}/>}
     {detail && <PartDetail key={`${accountId}:${detail.id}`} part={detail} preview={preview} canQuote={canQuote} accountId={accountId} basketLines={currentBasket} onClose={() => setDetail(null)} onAdd={(offer, quantity) => addToBasket(detail, offer, quantity)} onBasket={() => setBasketPage(true)} saved={wishlist.ids.has(detail.id)} saving={wishlist.pending.has(detail.id)} onFavorite={() => toggleFavorite(detail)}/>}
     {helpOpen && <Modal title="Una forma más fácil de encontrar repuestos" onClose={() => setHelpOpen(false)}><div className="how-steps">{[{Icon: Search, title: 'Encuentra tu repuesto', text: 'Busca en el catálogo compartido por nombre, marca o código.'}, {Icon: Store, title: 'Elige tus proveedores', text: 'Consulta quién tiene existencias y agrega repuestos a tu cesta.'}, {Icon: LockKeyhole, title: 'Solicita una cotización privada', text: 'Cada proveedor cotizará sus propios repuestos. Los precios serán privados.'}, {Icon: Truck, title: 'Confirma tu acuerdo', text: 'Revisa la cotización, solicita ajustes si los necesitas y confirma las condiciones con el proveedor.'}].map(({Icon, title, text}, i) => <div key={title}><span className="round-icon"><Icon size={21}/></span><div><small>0{i+1}</small><h3>{title}</h3><p>{text}</p></div></div>)}</div><div className="notice">Envía tu cesta para crear órdenes por proveedor. El proveedor revisa y cotiza; tú confirmas o solicitas ajustes. Cuando ambas partes confirman, el acuerdo queda cerrado y aparece en tu historial.</div><p className="private-note">Estadísticas para mejorar el catálogo: al iniciar sesión registramos tus visitas, búsquedas, repuestos consultados y artículos agregados a la cesta. Solo los superusuarios pueden consultar estas estadísticas; no usamos rastreadores externos.</p></Modal>}
     {notice && <div className="toast" role="status"><Check size={17}/>{notice}<button aria-label="Cerrar notificación" onClick={() => setNotice('')}><X size={14}/></button></div>}

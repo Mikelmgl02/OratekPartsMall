@@ -40,8 +40,10 @@ def from_header():
     return f'{settings.EMAIL_FROM_NAME} <{settings.EMAIL_FROM_ADDRESS}>' if settings.EMAIL_FROM_NAME else settings.EMAIL_FROM_ADDRESS
 
 
-def link(order):
-    return f'{settings.SITE_URL.rstrip("/")}/?conversacion={order.pk}'
+def link(order, user):
+    """The deal's conversation, with the person's sign-in hint (mall.login_hints) for when they open it signed out."""
+    from .login_hints import conversation
+    return f'{settings.SITE_URL.rstrip("/")}/?conversacion={conversation(order.pk, user.pk)}'
 
 
 def recipients(order, account_id, actor_id, preference):
@@ -63,7 +65,7 @@ def their_account(order, account_id, user=None):
 def compose(user, order, account, subject, lead, quote, action):
     """(subject, text, html) for one person: the lead sentence, an optional quoted text, and the button to the conversation."""
     name = user.first_name or user.username
-    url = link(order)
+    url = link(order, user)
     footer = ('Recibes este correo porque participas en esta orden en MotionPartes. Puedes desactivar estos avisos en la campana de '
               'notificaciones de MotionPartes.')
     text = '\n\n'.join(part for part in [f'Hola {name}:', lead, f'"{quote}"' if quote else '', f'{action}: {url}', f'Cuenta: {account}', footer] if part)

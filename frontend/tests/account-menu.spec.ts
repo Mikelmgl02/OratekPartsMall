@@ -51,6 +51,7 @@ test('desktop hover crosses into the menu and closes when the pointer leaves', a
 test('keyboard disclosure focuses links, escapes back to the trigger and closes on tabbing out', async ({page}) => {
   await fixture(page);
   await page.goto('/');
+  await expect(trigger(page)).toBeEnabled();  // disabled until the session is read: focusing it earlier does nothing
   await trigger(page).focus();
   await page.keyboard.press('ArrowDown');
   await expect(panel(page).getByRole('button', {name:'Mis favoritos 2', exact:true})).toBeFocused();

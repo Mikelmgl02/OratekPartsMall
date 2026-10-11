@@ -2499,3 +2499,6 @@ body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-s
 .admin-user-notices dl div { display:grid; grid-template-columns:96px 1fr; gap:10px; font-size:12px; }
 .admin-user-notices dt { color:var(--muted); }
 .admin-user-notices dd { margin:0; color:var(--ink); overflow-wrap:anywhere; }
+
+/* A notice's link opened signed out: the sign-in says why it opened, with the username already filled in. */
+.auth-link-notice { margin:0; font-size:13px; }

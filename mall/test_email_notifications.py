@@ -1,3 +1,4 @@
+import re
 import json
 import uuid
 from datetime import timedelta
@@ -10,6 +11,7 @@ from rest_framework.test import APITestCase
 
 from .inbox_models import ConversationRead, InboxCursor
 from .request_models import DealEvent, DealMessage
+from . import login_hints
 from . import test_deals as deal_tests
 
 RESEND = {'RESEND_API_KEY': 're_test', 'EMAIL_FROM_ADDRESS': 'avisos@example.invalid', 'EMAIL_FROM_NAME': 'MotionPartes',
@@ -51,8 +53,10 @@ class EmailNotificationTests(APITestCase):
         [email] = self.sent(urlopen)
         self.assertEqual((email['to'], email['from'], email['subject']),
                          ([self.seller_a.email], 'MotionPartes <avisos@example.invalid>', f'CLIENTE ORIGINAL te envió una orden · {order.reference}'))
-        self.assertIn(f'https://motionpartes.example.invalid/?conversacion={order.pk}', email['text'])
-        self.assertIn(f'href="https://motionpartes.example.invalid/?conversacion={order.pk}"', email['html'])
+        link = re.search(r'https://motionpartes\.example\.invalid/\?conversacion=([^\s"]+)', email['text']).group(1)
+        deal, hint = link.split('~')
+        self.assertEqual((deal, login_hints.username(hint)), (str(order.pk), self.seller_a.username))  # the deal, and who it was sent to
+        self.assertIn(f'href="https://motionpartes.example.invalid/?conversacion={link}"', email['html'])
         self.assertIn('Cuenta: PROVEEDOR A', email['text'])
         self.client.force_authenticate(self.seller_a)
         with self.captureOnCommitCallbacks(execute=True):

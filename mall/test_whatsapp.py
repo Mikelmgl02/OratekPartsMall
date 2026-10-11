@@ -3,6 +3,7 @@ import hmac
 import io
 import json
 import urllib.error
+import time
 import uuid
 from datetime import timedelta
 from unittest.mock import patch
@@ -14,7 +15,7 @@ from rest_framework.test import APITestCase
 
 from .inbox_models import ConversationRead, InboxCursor, WhatsAppMessage
 from . import test_deals as deal_tests
-from . import whatsapp_templates
+from . import login_hints, whatsapp_templates
 
 CLOUD = {'WHATSAPP_ACCESS_TOKEN': 'EAAG-prueba', 'WHATSAPP_PHONE_NUMBER_ID': '1055', 'WHATSAPP_API_VERSION': 'v23.0', 'WHATSAPP_APP_SECRET': 'secreto',
          'WHATSAPP_VERIFY_TOKEN': 'verifica', 'RESEND_API_KEY': '', 'VAPID_PRIVATE_KEY': '', 'CHANNEL_LAYERS': {},
@@ -106,7 +107,8 @@ class WhatsAppTests(APITestCase):
         self.assertEqual(payload['template']['name'], 'motionpartes_novedad_orden')
         body, button = payload['template']['components']
         self.assertEqual([item['text'] for item in body['parameters']], [order.reference, 'PROVEEDOR A empezó a revisar tu orden'])
-        self.assertEqual((button['sub_type'], button['parameters'][0]['text']), ('url', str(order.pk)))
+        deal, hint = button['parameters'][0]['text'].split('~')
+        self.assertEqual((button['sub_type'], deal, login_hints.username(hint)), ('url', str(order.pk), self.buyer.username))  # who it went to
         row = WhatsAppMessage.objects.get(user=self.buyer)
         self.assertEqual((row.status, row.wamid, row.kind, row.order_id), ('accepted', 'wamid.UNO', 'review_started', order.pk))
 
@@ -155,8 +157,9 @@ class WhatsAppTests(APITestCase):
             self.client.post(f'{self.url(self.supplier_a)}{order.pk}/review/', {}, format='json')
         template, text = sent
         self.assertEqual((template['type'], text['type'], text['to']), ('template', 'text', '50761111111'))
-        self.assertEqual(text['text']['body'], f'Novedad en tu orden {order.reference}: PROVEEDOR A empezó a revisar tu orden. Ábrela en MotionPartes para '
-                                               f'ver el detalle.\n\nVer en MotionPartes: https://motionpartes.example.invalid/?conversacion={order.pk}')
+        body, link = text['text']['body'].split('\n\nVer en MotionPartes: ')
+        self.assertEqual(body, f'Novedad en tu orden {order.reference}: PROVEEDOR A empezó a revisar tu orden. Ábrela en MotionPartes para ver el detalle.')
+        self.assertEqual(link, f"https://motionpartes.example.invalid/?conversacion={template['template']['components'][1]['parameters'][0]['text']}")
         row = WhatsAppMessage.objects.get(user=self.buyer)
         self.assertEqual((row.status, row.wamid, row.template), ('accepted', 'wamid.TEXTO', 'motionpartes_novedad_orden (texto)'))
         self.assertIn('enviado como texto', row.error)
@@ -213,3 +216,20 @@ class WhatsAppTemplateTests(SimpleTestCase):
         self.assertEqual(buttons['buttons'][0]['url'], 'https://motionpartes.example.invalid/?conversacion={{1}}')
         self.assertFalse(body['text'].startswith('{{') or body['text'].endswith('}}'))  # Meta refuses that
         self.assertEqual(out.getvalue().splitlines(), ['motionpartes_novedad_orden (es): APPROVED', 'motionpartes_mensaje_nuevo (es): creada, PENDING'])
+
+
+class LoginHintTests(APITestCase):
+    def setUp(self):
+        from .models import User
+        self.user = User.objects.create_user('aviso', 'aviso@example.invalid', 'Aviso938!clave')
+
+    def test_a_link_hint_names_its_person_only_while_valid(self):
+        hint = login_hints.hint(self.user.pk)
+        self.assertNotIn('aviso', hint)  # opaque
+        self.assertEqual(self.client.get('/api/v1/auth/login-hint/', {'hint': hint}).data, {'username': 'aviso'})  # no sign-in needed
+        self.assertEqual(self.client.get('/api/v1/auth/login-hint/', {'hint': hint[:-2] + 'xx'}).status_code, 404)  # altered
+        with patch('django.core.signing.time.time', return_value=time.time() + (login_hints.HINT_DAYS + 1) * 86400):
+            self.assertIsNone(login_hints.username(hint))  # expired
+        self.user.is_active = False
+        self.user.save()
+        self.assertEqual(self.client.get('/api/v1/auth/login-hint/', {'hint': hint}).status_code, 404)
