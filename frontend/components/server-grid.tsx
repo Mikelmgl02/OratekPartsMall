@@ -4,7 +4,7 @@ import { RefreshCw } from 'lucide-react';
 import { AgGridReact } from 'ag-grid-react';
 import type { AgGridReactProps } from 'ag-grid-react';
 import type { ColDef, GetRowIdParams, GridApi, GridState, IServerSideDatasource, StateUpdatedEvent } from 'ag-grid-community';
-import { gridLocale, motionGridTheme, fixedColumns } from '@/lib/ag-grid';
+import { gridLocale, motionGridTheme, fixedColumns, swipeableHeader } from '@/lib/ag-grid';
 import { Page, request } from '@/lib/types';
 import { usePageViewport } from './app-shell';
 
@@ -69,6 +69,7 @@ export default function ServerGrid<T>({ storageKey, label, path, params, columns
   // or two) never clips them; in a dialog they open in the dialog, whose top layer would otherwise cover them.
   const [popupParent, setPopupParent] = useState<HTMLElement | null>(null);
   useLayoutEffect(() => { setPopupParent(frame.current?.closest('dialog') ?? document.body); }, []);
+  useEffect(() => frame.current ? swipeableHeader(frame.current) : undefined, []);
   // The datasource reads the current filters from refs: AG Grid keeps one datasource and asks it again after a refresh.
   const current = useRef({ params, ordering, generation: 0 });
   current.current.params = params; current.current.ordering = ordering;

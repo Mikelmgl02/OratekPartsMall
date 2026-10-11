@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ClipboardCheck, CloudOff, LoaderCircle, PackageMinus, RefreshCcw, RotateCcw, Send, Sparkles, TriangleAlert, Undo2 } from 'lucide-react';
 import { AgGridReact, type CustomCellEditorProps, type CustomCellRendererProps } from 'ag-grid-react';
 import type { CellClickedEvent, ColDef, GetRowIdParams, GridReadyEvent, ValueSetterParams } from 'ag-grid-community';
-import { gridLocale, motionGridTheme, fixedColumns } from '@/lib/ag-grid';
+import { gridLocale, motionGridTheme, fixedColumns, swipeableHeader } from '@/lib/ag-grid';
 import type { Deal, QuotePayload } from '@/lib/deal-types';
 import type { AssistantProposal, AssistantState, DraftException, DraftPricing, DraftStock, DraftSuggestion, PriceExplanation, PriceSource, PublishException, QuoteDraft,
   QuoteDraftEnvelope, QuoteDraftLineChange, QuoteDraftSave, RepricedLine, RepriceScope } from '@/lib/pricing-types';
@@ -643,6 +643,7 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autosave]);
   // Menus and popup editors open on the page (or in the dialog, whose top layer would otherwise cover them), never clipped by the grid.
+  useEffect(() => host.current ? swipeableHeader(host.current) : undefined, []);
   function ready(event: GridReadyEvent<QuoteRow>) {
     event.api.setGridOption('popupParent', host.current?.closest('dialog') ?? document.body);
   }

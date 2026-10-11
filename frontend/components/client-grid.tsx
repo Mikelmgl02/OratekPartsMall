@@ -1,8 +1,8 @@
 'use client';
-import { type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AgGridReact, type AgGridReactProps } from 'ag-grid-react';
 import type { ColDef, GetRowIdParams } from 'ag-grid-community';
-import { fixedColumns, gridLocale, motionGridTheme } from '@/lib/ag-grid';
+import { fixedColumns, gridLocale, motionGridTheme, swipeableHeader } from '@/lib/ag-grid';
 
 const HEADER = 42;
 
@@ -29,6 +29,7 @@ export default function ClientGrid<T>({ label, rows, columns, rowId, rowHeight =
   const frame = useRef<HTMLDivElement>(null);
   const [popupParent, setPopupParent] = useState<HTMLElement | null>(null);
   useLayoutEffect(() => { if (frame.current) setPopupParent(frame.current.closest('dialog') ?? document.body); }, [rows.length > 0]);
+  useEffect(() => frame.current ? swipeableHeader(frame.current) : undefined, [rows.length > 0]);
   if (!rows.length && empty) return <>{empty}</>;
   const height = HEADER + Math.max(1, Math.min(rows.length, maxRows)) * rowHeight + 2;
   return <div ref={frame} className={`quotation-grid admin-grid ${className}`} role="region" aria-label={label} style={{ height, ['--admin-row-height' as string]: `${rowHeight - 2}px` }}>

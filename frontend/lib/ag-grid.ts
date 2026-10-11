@@ -26,3 +26,27 @@ function withoutChooser(params: GetMainMenuItemsParams): DefaultMenuItem[] {
   return items.filter((item, index) => item !== 'separator' || (index > 0 && index < items.length - 1 && items[index - 1] !== 'separator'));
 }
 export const fixedColumns: Pick<ColDef, 'lockVisible' | 'mainMenuItems'> = { lockVisible: true, mainMenuItems: withoutChooser };
+
+// Touch screens: a sideways swipe across a grid's header moves its columns, like a swipe across its rows (the grid never scrolls the
+// header itself, it follows the rows). Passive listeners: the page's own scrolling is untouched. Returns the cleanup.
+export function swipeableHeader(root: HTMLElement) {
+  let last: number | null = null;
+  const start = (event: TouchEvent) => {
+    last = event.touches.length === 1 && (event.target as Element | null)?.closest('.ag-header') ? event.touches[0].clientX : null;
+  };
+  const move = (event: TouchEvent) => {
+    if (last === null || event.touches.length !== 1) return;
+    const x = event.touches[0].clientX, body = root.querySelector<HTMLElement>('.ag-center-cols-viewport');
+    if (body) body.scrollLeft += last - x;
+    last = x;
+  };
+  const end = () => { last = null; };
+  root.addEventListener('touchstart', start, { passive: true });
+  root.addEventListener('touchmove', move, { passive: true });
+  root.addEventListener('touchend', end);
+  root.addEventListener('touchcancel', end);
+  return () => {
+    root.removeEventListener('touchstart', start); root.removeEventListener('touchmove', move);
+    root.removeEventListener('touchend', end); root.removeEventListener('touchcancel', end);
+  };
+}

@@ -158,3 +158,23 @@ test('a short grid’s column menu opens over the panel instead of being clipped
   await grid.getByRole('columnheader', { name: 'Artículo' }).dragTo(page.locator('body'), { targetPosition: { x: 20, y: 20 } });  // dragged out of the grid
   await expect(grid.getByRole('columnheader')).toHaveCount(headers);
 });
+
+test.describe('on a touch screen', () => {
+  test.use({ hasTouch: true });
+  test('a sideways swipe on a grid’s header or rows moves its columns', async ({ page }) => {
+    const many = Array.from({ length: 6 }, (_, index) => ({ ...line, id: `44444444-4444-4444-8444-${String(index).padStart(12, '0')}`, codigo: `COD-${index}`, sku: `SKU-${index}` }));
+    const { document } = await panel(page, 'supplier', 'pending', false, many);
+    const grid = document.getByRole('region', { name: 'Artículos de la orden', exact: true });
+    const columns = grid.locator('.ag-center-cols-viewport');
+    expect(await columns.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);  // wider than the side panel
+    const cdp = await page.context().newCDPSession(page);
+    const swipe = async (box: { x: number; y: number; width: number; height: number }) => cdp.send('Input.synthesizeScrollGesture',
+      { x: box.x + box.width / 2, y: box.y + box.height / 2, xDistance: -150, yDistance: 0, gestureSourceType: 'touch', speed: 800 });
+    const left = () => columns.evaluate(element => element.scrollLeft);
+    await swipe((await grid.locator('.ag-header-viewport').boundingBox())!);
+    await expect.poll(left).toBeGreaterThan(100);  // the header, which never scrolls by itself
+    const afterHeader = await left();
+    await swipe((await grid.getByRole('row').nth(1).boundingBox())!);
+    await expect.poll(left).toBeGreaterThan(afterHeader);  // and the rows
+  });
+});
