@@ -19,14 +19,15 @@ EXAMPLE_DEAL = '55791743-7458-49da-adf8-51a03b3819a1'
 
 
 def definitions(settings):
+    from .whatsapp import BODIES  # the same words the notices (and their plain-text fallback) use
     link = settings.SITE_URL.rstrip('/') + '/?conversacion='
     button = {'type': 'BUTTONS', 'buttons': [{'type': 'URL', 'text': 'Ver en MotionPartes', 'url': link + '{{1}}', 'example': [link + EXAMPLE_DEAL]}]}
     return [
         {'name': settings.WHATSAPP_TEMPLATE_UPDATE, 'language': settings.WHATSAPP_TEMPLATE_LANGUAGE, 'category': 'UTILITY', 'components': [
-            {'type': 'BODY', 'text': 'Novedad en tu orden {{1}}: {{2}}. Ábrela en MotionPartes para ver el detalle.',
+            {'type': 'BODY', 'text': BODIES['update'],
              'example': {'body_text': [['ORD-20261010-55791743', 'GRUPO RAZOR PARTS publicó la cotización v2']]}}, button]},
         {'name': settings.WHATSAPP_TEMPLATE_MESSAGE, 'language': settings.WHATSAPP_TEMPLATE_LANGUAGE, 'category': 'UTILITY', 'components': [
-            {'type': 'BODY', 'text': 'Tienes un mensaje nuevo de {{1}} sobre la orden {{2}}: «{{3}}». Responde desde MotionPartes.',
+            {'type': 'BODY', 'text': BODIES['message'],
              'example': {'body_text': [['GRUPO RAZOR PARTS', 'ORD-20261010-55791743', '¿Pueden entregar el lunes?']]}}, button]},
     ]
 

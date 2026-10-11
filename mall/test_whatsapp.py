@@ -136,6 +136,31 @@ class WhatsAppTests(APITestCase):
         self.assertEqual(row.status, 'failed')
         self.assertIn('Template name does not exist', row.error)
 
+    def test_a_template_not_yet_usable_goes_as_text_with_the_link(self, urlopen):
+        sent = []
+
+        def answer(request, timeout=None):
+            payload = json.loads(request.data)
+            sent.append(payload)
+            if payload['type'] == 'template':  # still under review at Meta
+                raise urllib.error.HTTPError('https://graph.facebook.com', 404, 'Not Found', {},
+                                             io.BytesIO(b'{"error":{"code":132001,"message":"(#132001) Template name does not exist in the translation"}}'))
+            return Reply({'messages': [{'id': 'wamid.TEXTO'}]})
+        urlopen.side_effect = answer
+        order = self.order()
+        self.opt_in(self.buyer, '+50761111111')
+        sent.clear()
+        self.client.force_authenticate(self.seller_a)
+        with self.captureOnCommitCallbacks(execute=True):
+            self.client.post(f'{self.url(self.supplier_a)}{order.pk}/review/', {}, format='json')
+        template, text = sent
+        self.assertEqual((template['type'], text['type'], text['to']), ('template', 'text', '50761111111'))
+        self.assertEqual(text['text']['body'], f'Novedad en tu orden {order.reference}: PROVEEDOR A empezó a revisar tu orden. Ábrela en MotionPartes para '
+                                               f'ver el detalle.\n\nVer en MotionPartes: https://motionpartes.example.invalid/?conversacion={order.pk}')
+        row = WhatsAppMessage.objects.get(user=self.buyer)
+        self.assertEqual((row.status, row.wamid, row.template), ('accepted', 'wamid.TEXTO', 'motionpartes_novedad_orden (texto)'))
+        self.assertIn('enviado como texto', row.error)
+
     def test_the_webhook_is_verified_signed_and_keeps_the_delivery_status(self, urlopen):
         self.assertEqual(self.client.get('/api/v1/whatsapp/webhook/', {'hub.mode': 'subscribe', 'hub.verify_token': 'verifica', 'hub.challenge': '42'}).content, b'42')
         self.assertEqual(self.client.get('/api/v1/whatsapp/webhook/', {'hub.mode': 'subscribe', 'hub.verify_token': 'otro', 'hub.challenge': '42'}).status_code, 403)

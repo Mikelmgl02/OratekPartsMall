@@ -11,6 +11,9 @@ and email. One MotionPartes number notifies every supplier's staff and every cli
 (Meta refuses a template body that starts or ends with a variable.)
 Both buttons: URL https://<site>/?conversacion={{1}}, filled with the deal id.
 
+When Meta refuses a template as unusable (missing or still under review, paused, disabled), the notice goes as plain text with the same
+words and the link; WhatsApp delivers such a text only within 24 hours of the person's last message to the number.
+
 Nobody gets anything without opting in (number and consent in the bell menu); replying BAJA or STOP opts out, and other replies get a
 short answer pointing back to the site. Off until WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID are set. Sent after the commit from
 a thread, best effort; every send is logged (WhatsAppMessage) and Meta's webhook keeps its status."""
@@ -76,6 +79,34 @@ def graph(payload):
         return json.load(response)
 
 
+# The two templates' bodies as Meta approves them (python -m mall.whatsapp_templates creates them from these), and the plain-text fallback.
+BODIES = {'update': 'Novedad en tu orden {{1}}: {{2}}. Ábrela en MotionPartes para ver el detalle.',
+          'message': 'Tienes un mensaje nuevo de {{1}} sobre la orden {{2}}: «{{3}}». Responde desde MotionPartes.'}
+# Meta's errors for a template that cannot be used (does not exist or awaits review, wrong format, too long, paused, disabled).
+TEMPLATE_UNUSABLE = {132000, 132001, 132005, 132007, 132012, 132015, 132016}
+
+
+def body_of(name):
+    return {settings.WHATSAPP_TEMPLATE_UPDATE: BODIES['update'], settings.WHATSAPP_TEMPLATE_MESSAGE: BODIES['message']}.get(name)
+
+
+def as_text(payload):
+    """A template notice as a plain text message: the template's words with its values, and the link of its button."""
+    notice = payload['template']
+    values = [item['text'] for item in notice['components'][0]['parameters']]
+    order_id = notice['components'][1]['parameters'][0]['text']
+    text = re.sub(r'\{\{(\d+)\}\}', lambda match: values[int(match.group(1)) - 1], body_of(notice['name']))
+    link = f"{settings.SITE_URL.rstrip('/')}/?conversacion={order_id}"
+    return {'messaging_product': 'whatsapp', 'to': payload['to'], 'type': 'text', 'text': {'preview_url': True, 'body': f'{text}\n\nVer en MotionPartes: {link}'}}
+
+
+def meta_code(detail):
+    try:
+        return json.loads(detail).get('error', {}).get('code')
+    except (ValueError, AttributeError):
+        return None
+
+
 def template(number, name, body, order_id):
     return {'messaging_product': 'whatsapp', 'to': number.lstrip('+'), 'type': 'template', 'template': {
         'name': name, 'language': {'code': settings.WHATSAPP_TEMPLATE_LANGUAGE}, 'components': [
@@ -83,14 +114,34 @@ def template(number, name, body, order_id):
             {'type': 'button', 'sub_type': 'url', 'index': '0', 'parameters': [{'type': 'text', 'text': str(order_id)}]}]}}
 
 
+def accepted(log_id, result, **extra):
+    WhatsAppMessage.objects.filter(pk=log_id).update(status='accepted', wamid=(result.get('messages') or [{}])[0].get('id', ''),
+                                                     updated_at=timezone.now(), **extra)
+
+
+def fallback(log_id, payload, code):
+    """The template cannot be used: the same notice as plain text (delivered within the 24-hour window of the person's last message)."""
+    name = payload['template']['name']
+    try:
+        accepted(log_id, graph(as_text(payload)), template=f'{name} (texto)'[:80], error=f'Plantilla no disponible ({code}); enviado como texto')
+        log.info('WhatsApp notice %s sent as text: template %s unusable (%s)', log_id, name, code)
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode(errors='replace')[:200]
+        WhatsAppMessage.objects.filter(pk=log_id).update(status='failed', error=f'Plantilla no disponible ({code}); texto: {error.code} {detail}'[:300],
+                                                         updated_at=timezone.now())
+        log.warning('WhatsApp notice %s refused as text too: %s %s', log_id, error.code, detail)
+
+
 def deliver(jobs):
     for log_id, payload in jobs:
         try:
-            result = graph(payload)
-            WhatsAppMessage.objects.filter(pk=log_id).update(status='accepted', wamid=(result.get('messages') or [{}])[0].get('id', ''),
-                                                             updated_at=timezone.now())
+            accepted(log_id, graph(payload))
         except urllib.error.HTTPError as error:  # Meta explains in the body (template not approved, number not on WhatsApp…)
             detail = error.read().decode(errors='replace')[:300]
+            code = meta_code(detail)
+            if code in TEMPLATE_UNUSABLE and payload.get('type') == 'template' and body_of(payload['template']['name']):
+                fallback(log_id, payload, code)
+                continue
             WhatsAppMessage.objects.filter(pk=log_id).update(status='failed', error=f'{error.code} {detail}'[:300], updated_at=timezone.now())
             log.warning('WhatsApp notice %s refused: %s %s', log_id, error.code, detail)
         except Exception as error:  # one failure must not stop the others
