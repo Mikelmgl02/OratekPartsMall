@@ -7,12 +7,14 @@ import uuid
 from datetime import timedelta
 from unittest.mock import patch
 
-from django.test import override_settings
+from django.conf import settings
+from django.test import SimpleTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from .inbox_models import ConversationRead, InboxCursor, WhatsAppMessage
 from . import test_deals as deal_tests
+from . import whatsapp_templates
 
 CLOUD = {'WHATSAPP_ACCESS_TOKEN': 'EAAG-prueba', 'WHATSAPP_PHONE_NUMBER_ID': '1055', 'WHATSAPP_API_VERSION': 'v23.0', 'WHATSAPP_APP_SECRET': 'secreto',
          'WHATSAPP_VERIFY_TOKEN': 'verifica', 'RESEND_API_KEY': '', 'VAPID_PRIVATE_KEY': '', 'CHANNEL_LAYERS': {},
@@ -163,3 +165,26 @@ class WhatsAppTests(APITestCase):
         [goodbye] = self.sent(urlopen)
         self.assertIn('ya no recibirás avisos', goodbye['text']['body'])
         self.assertIsNone(InboxCursor.objects.get(user=self.buyer).whatsapp_opt_in_at)
+
+
+@override_settings(**CLOUD, WHATSAPP_BUSINESS_ACCOUNT_ID='99')
+@patch('urllib.request.urlopen')
+class WhatsAppTemplateTests(SimpleTestCase):
+    def test_creates_only_the_missing_templates_with_the_sites_link(self, urlopen):
+        calls = []
+
+        def answer(request, timeout=None):
+            calls.append((request.get_method(), request.full_url, json.loads(request.data) if request.data else None))
+            if request.get_method() == 'GET':
+                return Reply({'data': [{'name': 'motionpartes_novedad_orden', 'language': 'es', 'status': 'APPROVED'}]})
+            return Reply({'id': '1', 'status': 'PENDING'})
+        urlopen.side_effect = answer
+        out = io.StringIO()
+        self.assertEqual(whatsapp_templates.run(settings, True, out), 0)
+        posted = [body for method, _, body in calls if method == 'POST']
+        self.assertEqual([body['name'] for body in posted], ['motionpartes_mensaje_nuevo'])  # the approved one is left alone
+        self.assertTrue(all(url.startswith('https://graph.facebook.com/v23.0/99/message_templates') for _, url, _ in calls))
+        body, buttons = posted[0]['components']
+        self.assertEqual(buttons['buttons'][0]['url'], 'https://motionpartes.example.invalid/?conversacion={{1}}')
+        self.assertFalse(body['text'].startswith('{{') or body['text'].endswith('}}'))  # Meta refuses that
+        self.assertEqual(out.getvalue().splitlines(), ['motionpartes_novedad_orden (es): APPROVED', 'motionpartes_mensaje_nuevo (es): creada, PENDING'])

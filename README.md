@@ -187,6 +187,7 @@ Setting it up in Meta:
    - `motionpartes_novedad_orden`: «Novedad en tu orden {{1}}: {{2}}. Ábrela en MotionPartes para ver el detalle.» (samples: `ORD-0123`, `GRUPO RAZOR PARTS publicó la cotización v2`);
    - `motionpartes_mensaje_nuevo`: «Tienes un mensaje nuevo de {{1}} sobre la orden {{2}}: «{{3}}». Responde desde MotionPartes.» (samples: `TALLER CENTRAL`, `ORD-0123`, `¿Pueden entregar el lunes?`).
    Other names or languages go in `WHATSAPP_TEMPLATE_UPDATE`, `WHATSAPP_TEMPLATE_MESSAGE` and `WHATSAPP_TEMPLATE_LANGUAGE`. Keep them free of promotional wording, or Meta reclassifies them as Marketing (pricier).
+   With `WHATSAPP_BUSINESS_ACCOUNT_ID` set (the *WhatsApp Business Account ID* of API Setup), `docker compose exec -T app python -m mall.whatsapp_templates --create` creates the missing ones exactly so, with the button on `SITE_URL`; without `--create` it reports each one's status (PENDING, APPROVED, REJECTED with Meta's reason). Meta fixes the button's address on approval, so each environment creates its own.
 4. The webhook: callback `https://<site>/api/v1/whatsapp/webhook/`, verify token = `WHATSAPP_VERIFY_TOKEN` (any secret string), subscribed to `messages`; the app secret → `WHATSAPP_APP_SECRET` (unsigned or wrongly signed calls are refused).
 5. Recreate the app service. Without the token or the phone number id nothing is sent and the bell menu hides the section.
 

@@ -125,6 +125,8 @@ EMAIL_FROM_NAME = os.getenv('EMAIL_FROM_NAME', 'MotionPartes')
 # WhatsApp notices of the deal inbox (mall.whatsapp, Meta's WhatsApp Cloud API); off without the token and the phone number id.
 WHATSAPP_ACCESS_TOKEN = os.getenv('WHATSAPP_ACCESS_TOKEN', '')
 WHATSAPP_PHONE_NUMBER_ID = os.getenv('WHATSAPP_PHONE_NUMBER_ID', '')
+# The WhatsApp Business account that owns the templates (python -m mall.whatsapp_templates creates them).
+WHATSAPP_BUSINESS_ACCOUNT_ID = os.getenv('WHATSAPP_BUSINESS_ACCOUNT_ID', '')
 WHATSAPP_API_VERSION = os.getenv('WHATSAPP_API_VERSION', 'v23.0')
 WHATSAPP_TEMPLATE_LANGUAGE = os.getenv('WHATSAPP_TEMPLATE_LANGUAGE', 'es')
 WHATSAPP_TEMPLATE_UPDATE = os.getenv('WHATSAPP_TEMPLATE_UPDATE', 'motionpartes_novedad_orden')
