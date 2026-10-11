@@ -48,6 +48,7 @@ async function mockSession(page: Page, accounts = supplierAccounts.slice(0, 1)) 
     await route.fulfill({ status: 404, json: { detail: 'Ruta no prevista en esta prueba.' } });
   });
   await page.route('**/api/market/wishlist/state', route => route.fulfill({ json: { part_ids: [], count: 0 } }));
+  await page.route(/\/api\/market\/accounts\/[^/]+\/apiag$/, route => route.fulfill({ json: { connected: false } }));  // the inventory panel's apiag-cloud card
   await page.route('**/api/market/analytics/events', route => route.fulfill({ status: 202, json: { recorded: true } }));
   await page.route('**/api/session', route => route.fulfill({ json: { authenticated: true,
     user: { id: 43, username: 'USUARIO DE PRUEBA', first_name: '', last_name: '', is_superuser: false },

@@ -36,6 +36,7 @@ async function fixture(page: Page) {
   let blockAccept = false;
   const unexpected: string[] = [];
   await page.route('**/api/**', route => { if (signedOutInbox(route)) return; unexpected.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`); return route.fulfill({status:404, json:{detail:'Ruta no prevista'}}); });
+  await page.route(/\/api\/market\/accounts\/[^/]+\/apiag$/, route => route.fulfill({ json: { connected: false } }));  // the inventory panel's apiag-cloud card
   await page.route('**/api/session', route => route.fulfill({json:{authenticated:true, user:{id:801, username:'EMPLEADO', is_superuser:false}, accounts:{...empty, count:2, results:accounts}}}));
   await page.route('**/api/market/analytics/events', route => route.fulfill({status:202, json:{recorded:true}}));
   await page.route('**/api/market/wishlist/state', route => route.fulfill({json:{part_ids:[], count:0}}));
