@@ -6,6 +6,7 @@
    later entries take out (shortfall, settle, release) leaves exactly what it still holds: its quantity while open, nothing once settled or
    released. A settled reservation has its settle entry, a released one a shortfall or release entry, an open one neither a settle nor a
    release; each entry belongs to its reservation's item.
+3. Sucursales: an apiag-cloud item's units per sucursal add up to its reported count, and only apiag-cloud items have them.
 Read-only, on one consistent snapshot. Prints counts and a few examples; exits 1 when something does not reconcile.
 """
 import argparse
@@ -21,6 +22,7 @@ PROBLEMS = {
     'negative': 'Movimientos que dejan un saldo negativo',
     'reserved': 'Artículos cuyas unidades reservadas no coinciden con sus reservas abiertas',
     'reservation': 'Reservas sin su movimiento de reserva o de descuento',
+    'branches': 'Artículos cuyas existencias por sucursal no suman su saldo',
 }
 
 
@@ -46,7 +48,8 @@ def snapshot():
 
 
 def check(examples=10):
-    from .models import StockEntry, SupplierItem
+    from django.db.models import Sum
+    from .models import StockEntry, SupplierItem, SupplierItemBranchStock
     from .request_models import StockReservation
     found, samples = Counter(), defaultdict(list)
 
@@ -107,6 +110,11 @@ def check(examples=10):
         for pk, (label, _, reserved) in items.items():
             if reserved != held[pk]:
                 problem('reserved', f'{label}: reserva {reserved} unidades, sus reservas abiertas suman {held[pk]}')
+        for pk, source, total in (SupplierItemBranchStock.objects.values('item_id').annotate(total=Sum('quantity'))
+                                  .values_list('item_id', 'item__source', 'total').iterator(chunk_size=5000)):
+            label, reported, _ = items[pk]
+            if source != 'apiag' or total != reported:
+                problem('branches', f'{label} ({source}): sus sucursales suman {total}, su saldo es {reported}')
     return {'items': len(items), 'entries': entries, 'reservations': reservations, 'out_of_order': out_of_order,
             'problems': {kind: {'count': found[kind], 'examples': samples[kind]} for kind in PROBLEMS if found[kind]}}
 

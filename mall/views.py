@@ -11,8 +11,8 @@ from rest_framework.views import APIView
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from .list_ordering import StableOrdering
-from .models import Account, Invitation, Membership, Part, StockEntry, SupplierItem, User
-from .serializers import AccountSerializer, InventorySerializer, OfferSerializer, PartSerializer, SignupResponseSerializer, SignupSerializer, StockEntrySerializer, SupplierItemSerializer
+from .models import Account, Invitation, Membership, Part, StockEntry, SupplierItem, SupplierItemBranchStock, User
+from .serializers import AccountSerializer, InventorySerializer, OfferSerializer, PartSerializer, SignupResponseSerializer, SignupSerializer, StockEntrySerializer, SupplierItemSerializer, SupplierStockSerializer
 from .services import ingest_inventory
 from .catalog_availability import catalog_availability
 from .catalog_filters import apply_filters, catalog_facets, filter_values
@@ -141,7 +141,7 @@ MATCHING_FILTERS = {'matched': Q(matching_status='matched'), 'pending': Q(matchi
 
 
 class InventoryList(generics.ListAPIView):
-    serializer_class = SupplierItemSerializer
+    serializer_class = SupplierStockSerializer
     filter_backends = [filters.SearchFilter, StableOrdering]
     search_fields = ['codigo', 'brand', 'supplier_invent_id', 'description', 'part__sku']
     ordering_fields = ['codigo', 'brand', 'supplier_invent_id', 'source', 'available', 'reserved_quantity', 'matching_status', 'updated_at']
@@ -154,7 +154,8 @@ class InventoryList(generics.ListAPIView):
     def get_queryset(self):
         supplier = account_for(self.request.user, self.kwargs['account_id'], 'supplier')
         # available mirrors SupplierItem.available_quantity (never below zero) so the grid can sort by it.
-        rows = (SupplierItem.objects.filter(supplier=supplier).select_related('part')
+        branches = SupplierItemBranchStock.objects.select_related('sucursal').order_by('sucursal__nombre', 'sucursal_id')
+        rows = (SupplierItem.objects.filter(supplier=supplier).select_related('part').prefetch_related(Prefetch('branch_stock', queryset=branches))
                 .annotate(available=Greatest(F('reported_quantity') - F('reserved_quantity'), Value(0))).order_by('supplier_invent_id', 'id'))
         matching = self.request.query_params.get('matching_status', '')
         if matching:
@@ -169,6 +170,8 @@ class InventoryIngest(APIView):
         supplier = account_for(request.user, account_id, 'supplier')
         serializer = InventorySerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        if serializer.validated_data['source'] == 'apiag':  # only the pull (mall.apiag_sync) writes them, with their sucursales
+            raise ValidationError({'source': 'Los artículos de apiag-cloud solo se actualizan desde su sincronización.'})
         item = ingest_inventory(supplier=supplier, actor=request.user, data=serializer.validated_data)
         return Response(SupplierItemSerializer(item).data)
 

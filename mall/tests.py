@@ -4,6 +4,7 @@ from django.db import DatabaseError
 from django.utils import timezone
 from rest_framework.test import APITestCase
 from .models import Account, Invitation, Membership, Part, PartCode, Role, StockEntry, SupplierItem, User
+from .services import ingest_inventory
 
 class HealthTests(APITestCase):
     def test_health_is_available_without_authentication(self):
@@ -36,7 +37,7 @@ class FoundationTests(APITestCase):
         self.url = f'/api/v1/accounts/{self.account.pk}/inventory/ingest/'
 
     def ingest(self, **changes):
-        data = {'update_id': 'event-1', 'supplier_invent_id': 'stable-1', 'codigo': 'abc', 'brand': 'acme', 'source': 'apiag', 'quantity': 10}
+        data = {'update_id': 'event-1', 'supplier_invent_id': 'stable-1', 'codigo': 'abc', 'brand': 'acme', 'source': 'upload', 'quantity': 10}
         data.update(changes)
         return self.client.post(self.url, data, format='json')
 
@@ -137,8 +138,13 @@ class FoundationTests(APITestCase):
         self.assertEqual(len(response.data['results'][0]['roles']), 2)
 
     def test_source_ownership(self):
-        self.ingest()
+        # An item the apiag-cloud pull keeps (mall.apiag_sync) is not written by hand, through either source.
+        ingest_inventory(supplier=self.account, actor=self.user, data={'update_id': 'event-1', 'supplier_invent_id': 'stable-1', 'codigo': 'ABC',
+                                                                        'brand': 'ACME', 'source': 'apiag', 'quantity': 10})
         self.assertEqual(self.ingest(update_id='event-2', source='upload').status_code, 400)
+        refused = self.ingest(update_id='event-3', source='apiag')
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn('source', refused.data)
         self.assertEqual(StockEntry.objects.count(), 1)
 
     def test_offers_aggregate_without_stock_or_prices(self):

@@ -21,6 +21,14 @@ function ItemCell({ data }: InventoryCell) {
 function MatchCell({ data }: InventoryCell) {
   return data ? <span className={`status ${data.matching_status}`}>{data.matching_status === 'matched' ? 'Vinculado' : data.matching_status === 'review' ? 'Por revisar' : 'Pendiente'}</span> : null;
 }
+// apiag-cloud items: units per sucursal (their sum is the item's stock); manual records have none.
+function BranchCell({ data }: InventoryCell) {
+  if (!data) return null;
+  if (data.source !== 'apiag') return <span className="admin-grid-muted">—</span>;
+  const rows = data.branch_stock ?? [];
+  if (!rows.length) return <span className="admin-grid-muted">Sin existencias</span>;
+  return <span className="admin-grid-text">{rows.slice(0, 2).map(row => `${row.nombre} ${number(row.disponible)}`).join(' · ')}{rows.length > 2 ? ` · +${rows.length - 2}` : ''}</span>;
+}
 function LedgerCell({ data, context }: InventoryCell) {
   return data ? <button type="button" className="button ghost small" aria-label={`Ver movimientos de ${data.codigo}`} onClick={() => context.openLedger(data)}><History size={14} aria-hidden="true"/>Movimientos</button> : null;
 }
@@ -31,6 +39,8 @@ export const inventoryColumns: ColDef<StockItem>[] = [
   { colId: 'source', headerName: 'Origen', valueGetter: ({ data }) => data ? data.source === 'apiag' ? 'apiag-cloud' : 'Carga manual' : '', width: 140, cellClass: 'admin-grid-text muted' },
   { colId: 'available', headerName: 'Disponibles', field: 'available_quantity', valueFormatter: ({ value }) => number(value), width: 124, type: 'rightAligned', cellClass: right('admin-grid-number') },
   { colId: 'reserved', headerName: 'Reservadas', field: 'reserved_quantity', valueFormatter: ({ value }) => number(value), width: 120, type: 'rightAligned', cellClass: right() },
+  { colId: 'branches', headerName: 'Por sucursal', width: 220, cellRenderer: BranchCell,
+    tooltipValueGetter: ({ data }) => data?.branch_stock?.map(row => `${row.nombre}: ${number(row.disponible)}`).join(' · ') },
   { colId: 'match', headerName: 'Coincidencia', width: 150, cellRenderer: MatchCell },
   { colId: 'history', headerName: 'Historial', width: 170, cellRenderer: LedgerCell, suppressHeaderMenuButton: true, resizable: false },
 ];

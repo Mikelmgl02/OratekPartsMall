@@ -26,7 +26,16 @@ export type CatalogFilters = { category: string[]; subcategory: string[]; availa
 export type CatalogPage = Page<Part> & { facets?: CatalogFacets };
 export type OfferItem = { id: string; codigo: string; brand: string; description: string };
 export type Offer = { supplier_id: string; supplier_name: string; in_stock: boolean; items?: OfferItem[]; selected_item?: OfferItem };
-export type StockItem = { references?: { brand: string; code: string }[]; id: string; supplier_invent_id: string; part: string | null; codigo: string; brand: string; description: string; matching_status: 'pending' | 'matched' | 'review'; source: 'upload' | 'apiag'; reported_quantity: number; reserved_quantity: number; available_quantity: number; updated_at: string };
+export type StockItem = { branch_stock?: BranchStock[]; references?: { brand: string; code: string }[]; id: string; supplier_invent_id: string; part: string | null; codigo: string; brand: string; description: string; matching_status: 'pending' | 'matched' | 'review'; source: 'upload' | 'apiag'; reported_quantity: number; reserved_quantity: number; available_quantity: number; updated_at: string };
+// apiag-cloud items: units per sucursal the supplier publishes (their sum is reported_quantity).
+export type BranchStock = { sucursal: string; nombre: string; disponible: number };
+// The supplier's pull from apiag-cloud (mall.apiag_sync_views). The token never comes back.
+export type ApiagSyncState = 'idle' | 'queued' | 'running' | 'completed' | 'failed' | 'paused';
+export type ApiagSyncCounts = Partial<Record<'received' | 'created' | 'updated' | 'unchanged' | 'withdrawn' | 'refused' | 'conflicts' | 'pages', number>>;
+export type ApiagSyncStatus = { connected: false } | { connected: true; server: string; token_readable: boolean; state: ApiagSyncState; can_sync: boolean;
+  interval_minutes: number; last_started_at: string | null; last_finished_at: string | null; last_success_at: string | null; next_run_at: string | null;
+  error: { code: string; message: string } | null; last_mode: 'full' | 'changes' | 'day' | null; counts: ApiagSyncCounts; samples: string[];
+  progress: ApiagSyncCounts & { mode?: string }; sucursales: { id: string; nombre: string }[] };
 export type ManagedPart = Pick<Part, 'id' | 'sku' | 'is_OEM' | 'name' | 'description' | 'category' | 'subcategory' | 'part_type' | 'codes' | 'images'> & { active: boolean; stock_record_count: number; merged_count?: number; identity?: { ref_type: 'unknown' | 'oem' | 'company'; brand: string; status: 'oem' | 'choose_oem' | 'oem_available' | 'needs_oem' } };
 export type ManagedStockItem = StockItem & { supplier: string; supplier_name: string; part_name: string | null; part_sku: string | null };
 export type ManagedAlternate = PartReference & { id: number; part: string; part_name: string; part_sku: string; code: string; brand: string };

@@ -13,6 +13,7 @@ import socket
 import ssl
 import threading
 import time
+import zlib
 from urllib.parse import urlsplit
 
 from django.conf import settings
@@ -105,8 +106,9 @@ def failure(error, host, expired):
     return 'unreachable', f'{host} cortó la conexión sin responder.'
 
 
-def get(server_url, path, token):
-    """(HTTP status, body, headers) of a GET to the supplier's apiag-cloud. Raises Unreachable."""
+def get(server_url, path, token, max_bytes=65536):
+    """(HTTP status, body, headers) of a GET to the supplier's apiag-cloud (path may carry a query string). Raises Unreachable, also for
+    a body over max_bytes once unpacked: the stock feed's pages are larger than the ping's, so its caller raises the limit."""
     parts = urlsplit(server_url)
     host = parts.hostname
     if not settings.DEBUG:
@@ -119,22 +121,36 @@ def get(server_url, path, token):
     try:
         try:
             connection.request('GET', parts.path + path, headers={'Host': host_header, 'Authorization': f'Bearer {token}',
-                                                                 'Accept': 'application/json', 'User-Agent': 'MotionPartes'})
+                                                                 'Accept': 'application/json', 'Accept-Encoding': 'gzip',
+                                                                 'User-Agent': 'MotionPartes'})
             response = connection.getresponse()
         except Unreachable:
             raise
         except (OSError, http.client.HTTPException, ValueError) as error:
             raise Unreachable(*failure(error, host, connection.expired))
         try:
-            body = response.read(65536)
+            body = response.read(max_bytes + 1)
         except (OSError, http.client.HTTPException):
             body = b''  # the status still says what happened
         if connection.expired:  # cut off by the deadline: whatever was parsed is incomplete
             raise Unreachable(*failure(None, host, True))
+        if 'gzip' in (response.headers.get('Content-Encoding') or '').lower():
+            body = unpack(body, max_bytes, host)
+        if len(body) > max_bytes:
+            raise Unreachable('unexpected', f'La respuesta de {host} es más grande de lo esperado.')
         return response.status, body, response.headers
     finally:
         deadline.cancel()
         connection.close()
+
+
+def unpack(body, max_bytes, host):
+    """A gzip body, unpacked to at most max_bytes + 1 bytes (so a compressed bomb stops there)."""
+    try:
+        inflater = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        return inflater.decompress(body, max_bytes + 1)
+    except zlib.error:
+        raise Unreachable('unexpected', f'{host} envió una respuesta comprimida dañada.')
 
 
 def detail(body):

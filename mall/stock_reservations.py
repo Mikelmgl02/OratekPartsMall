@@ -16,7 +16,7 @@ from django.db import connection
 from django.utils import timezone
 from rest_framework.exceptions import APIException
 
-from .models import Account, StockEntry, StockReservation, SupplierItem
+from .models import Account, StockEntry, StockReservation, SupplierItem, SupplierItemBranchStock
 
 
 def share_accounts(order):
@@ -113,6 +113,10 @@ def correct_shortfall(order, missing, actor):
                                  f'unidades y el faltante quita {units}. No se guardó nada; avisa al administrador.')
         counted = min(units, item.reported_quantity)  # a count already below the missing units has nothing more to give
         item.reported_quantity -= counted
+        if counted and item.source == 'apiag':
+            # A shortfall names no sucursal: the rows go (their sum would no longer be the count) and the next pull listing the item
+            # rebuilds them from apiag-cloud, whose count stays the supplier's own.
+            SupplierItemBranchStock.objects.filter(item=item).delete()
         item.reserved_quantity -= units
         StockEntry.objects.create(item=item, reservation=reservation, kind='shortfall', quantity=counted or units, direction='debit',
                                   balance_type='stock' if counted else 'reservation', reserved_delta=units, reserved_direction='debit',
@@ -125,6 +129,18 @@ def correct_shortfall(order, missing, actor):
         reservation.save(update_fields=['quantity', 'status', 'released_at'])
         taken += units
     return taken
+
+
+def settle_synced(order, actor):
+    """Entregado, for items kept by the apiag-cloud pull: once the supplier invoices the sale there, apiag-cloud's own count leaves those
+    units out, so the deal's open reservations on them settle now (they would otherwise be discounted twice, the pull never settles).
+    Items counted by Excel keep waiting for the next upload, which asks. Returns the units settled."""
+    items, held = held_by(order)
+    by_item = {}
+    for reservation in held:
+        if items[reservation.item_id].source == 'apiag':
+            by_item.setdefault(reservation.item_id, []).append(reservation.pk)
+    return sum(settle(items[item_id], reservations, actor, 'entregado · apiag-cloud') for item_id, reservations in sorted(by_item.items(), key=lambda pair: str(pair[0])))
 
 
 def release_deal(order, actor):

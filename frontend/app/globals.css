@@ -427,6 +427,20 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .status.review { background:#fbebdf; color:#a98055; }
 .inventory-panel .pagination { padding-bottom:0; }
 .integration-note { display:flex; align-items:center; gap:15px; margin-top:25px; padding:22px; border:1px dashed #d5dfc6; border-radius:11px; }
+.integration-note.apiag-live { display:flex; align-items:flex-start; gap:16px; margin:0 0 18px; }
+.apiag-live-body { flex:1; min-width:0; display:flex; flex-direction:column; gap:6px; }
+.apiag-live-body p { margin:0; }
+.apiag-live-body .notice { margin:4px 0 0; }
+.apiag-live-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.apiag-live-head h3 { margin:0; }
+.apiag-live-samples summary { cursor:pointer; font-size:11px; }
+.apiag-live-samples ul { margin:6px 0 0; padding-left:18px; font-size:11px; }
+.ledger-branches { margin:0 0 16px; }
+.ledger-branches h3 { font-size:13px; margin:0 0 8px; }
+.ledger-branches table { width:auto; min-width:240px; }
+.ledger-branches th, .ledger-branches td { padding:6px 10px; font-size:12px; }
+.ledger-branches td { text-align:right; font-weight:700; }
+@media (max-width: 760px) { .integration-note.apiag-live { flex-wrap:wrap; } .integration-note.apiag-live > button { width:100%; justify-content:center; } }
 .apiag-mark { border-radius:9px; background:#e6eedb; color:#8da575; width:42px; height:42px; display:grid; place-items:center; font-size:23px; font-weight:800; }
 .integration-note h3 { font-size:12px; margin-bottom:7px; }
 .integration-note p { font-size:10px; color:#8ea47b; line-height:1.6; }

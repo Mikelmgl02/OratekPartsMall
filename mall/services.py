@@ -14,7 +14,7 @@ def matching_part(codigo, brand):
     return matches[0] if len(matches) == 1 else None
 
 @transaction.atomic
-def ingest_inventory(*, supplier, actor, data):
+def ingest_inventory(*, supplier, actor, data, queue_matching=True):
     # Serialize writes per supplier, including creation and idempotency checks.
     Account.objects.select_for_update().get(pk=supplier.pk)
     digest = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
@@ -47,7 +47,8 @@ def ingest_inventory(*, supplier, actor, data):
             reported_after=item.reported_quantity, reserved_after=item.reserved_quantity,
             actor=actor, reference=data['update_id'])
     InventoryUpdate.objects.create(supplier=supplier, key=data['update_id'], payload_hash=digest, item=item)
-    if changed or item.matching_status != 'matched':
+    # queue_matching=False: the caller knows only the quantity moved (the apiag-cloud pull), which changes nothing to match.
+    if changed or (queue_matching and item.matching_status != 'matched'):
         enqueue_matching()
     return item
 

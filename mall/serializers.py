@@ -98,6 +98,19 @@ class SupplierItemSerializer(serializers.ModelSerializer):
         fields = ['id', 'supplier_invent_id', 'part', 'codigo', 'brand', 'description', 'references', 'matching_status', 'source', 'reported_quantity', 'reserved_quantity', 'available_quantity', 'updated_at']
         read_only_fields = fields
 
+class SupplierStockSerializer(SupplierItemSerializer):
+    """The supplier's own inventory rows: plus the units per sucursal of an apiag-cloud item (prefetched as `branch_stock`)."""
+    branch_stock = serializers.SerializerMethodField()
+
+    class Meta(SupplierItemSerializer.Meta):
+        fields = SupplierItemSerializer.Meta.fields + ['branch_stock']
+        read_only_fields = fields
+
+    @extend_schema_field({'type': 'array', 'items': {'type': 'object', 'properties': {
+        'sucursal': {'type': 'string'}, 'nombre': {'type': 'string'}, 'disponible': {'type': 'integer'}}}})
+    def get_branch_stock(self, item):
+        return [{'sucursal': row.sucursal.apiag_id, 'nombre': row.sucursal.nombre, 'disponible': row.quantity} for row in item.branch_stock.all()]
+
 class InventorySerializer(serializers.Serializer):
     update_id = serializers.CharField(max_length=120)
     supplier_invent_id = serializers.CharField(max_length=120)

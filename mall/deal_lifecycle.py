@@ -4,7 +4,8 @@ row (these functions set its fields and return the extra fields to save) and wri
 
 Stock follows mall.stock_reservations: a shortfall takes the missing units out of the supplier's count and the reservation at once (they never
 come back as available, and the client's answer does not change that); a cancellation releases what the deal still holds; a delivery moves
-no stock, because the reservation stays until the supplier's next upload says its count already discounts the order.
+no stock, because the reservation stays until the supplier's next upload says its count already discounts the order. Items kept by the
+apiag-cloud pull settle at delivery instead: apiag-cloud's count leaves the sale out once the supplier invoices it there.
 """
 from collections import defaultdict
 from decimal import Decimal
@@ -14,7 +15,7 @@ from rest_framework.exceptions import ValidationError
 
 from .request_models import DealShortfall, DealShortfallLine, SupplierRequest
 from .request_views import RequestConflict
-from .stock_reservations import correct_shortfall, release_deal
+from .stock_reservations import correct_shortfall, release_deal, settle_synced
 
 SHORTFALL_REASONS = dict(DealShortfall.REASONS)
 CANCEL_REASONS = dict(SupplierRequest.CANCEL_REASONS)
@@ -99,6 +100,7 @@ def deliver(row, actor):
     if pending_shortfall(row):
         raise RequestConflict('El cliente todavía debe responder al faltante reportado.')
     row.status, row.delivered_at, row.delivered_by = 'delivered', timezone.now(), actor
+    settle_synced(row, actor)  # apiag-cloud items: their pulled count already leaves the sale out
     return f'EL PROVEEDOR MARCÓ EL ACUERDO COMO ENTREGADO: {units(agreement(row)["units"])}.', ['delivered_at', 'delivered_by']
 
 

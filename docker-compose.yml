@@ -125,6 +125,27 @@ services:
       start_period: 60s
     restart: unless-stopped
 
+  apiag-sync:
+    # Pulls each supplier's apiag-cloud into their inventory (mall.apiag_sync), one pull at a time.
+    image: ${COMPOSE_PROJECT_NAME:-partsmall}-app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "mall.apiag_sync_runner"]
+    environment: *api_environment
+    volumes:
+      - .:/app
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "mall.apiag_sync_runner", "--healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
   redis:
     image: redis:7-alpine
     # Only the inbox's websocket nudges go through it: nothing to keep across restarts.

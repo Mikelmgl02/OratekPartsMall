@@ -12,6 +12,7 @@ from mall.matching_views import MatchingOverview, MatchingReview
 from mall.analytics import AnalyticsDashboard, UsageEvents
 from mall.deal_admin import DealAdminCancel, DealAdminDetail, DealAdminList
 from mall.apiag_connection import ApiagConnectionTest, ApiagConnectionView
+from mall.apiag_sync_views import ApiagStatusView, ApiagSyncRequestView
 from mall.wishlist import WishlistList, WishlistState, WishlistDetail
 from mall.catalog_import import CatalogImport, CatalogImportJobView
 from mall.catalog_classification import CatalogClassification
@@ -182,6 +183,8 @@ urlpatterns = [
     path('api/v1/whatsapp/webhook/', whatsapp.WhatsAppWebhook.as_view()),
     path('api/v1/catalog/<uuid:pk>/technical/', CatalogTechnicalDetail.as_view()),
     path('api/v1/catalog/<uuid:part_id>/suppliers/', views.OffersView.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/apiag/', ApiagStatusView.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/apiag/sync/', ApiagSyncRequestView.as_view()),
     path('api/v1/accounts/<uuid:account_id>/inventory/', views.InventoryList.as_view()),
     path('api/v1/accounts/<uuid:account_id>/inventory/ingest/', views.InventoryIngest.as_view()),
     path('api/v1/accounts/<uuid:account_id>/inventory/import/', SupplierInventoryImport.as_view()),

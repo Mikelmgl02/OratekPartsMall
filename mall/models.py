@@ -323,3 +323,4 @@ from .oem_finder_models import OEMFinderRun, OEMReviewCase, OEMFinderChange, OEM
 from .oem_reference_models import OEMReference, OEMReferenceSource, OEMCrossReference, OEMCrossReferenceRetired, PartOEMLink
 from .catalog_split_models import CatalogSplit, CatalogSeparation
 from .apiag_models import ApiagConnection
+from .apiag_sync_models import ApiagSucursal, ApiagSync, SupplierItemBranchStock

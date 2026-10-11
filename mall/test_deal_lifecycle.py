@@ -1,6 +1,7 @@
 import json
 import uuid
 
+from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from . import test_deals as deal_tests
@@ -69,6 +70,33 @@ class DealLifecycleTests(APITestCase):
         self.client.force_authenticate(self.buyer)
         state = self.client.get(f'/api/v1/accounts/{self.client_account.pk}/catalog/{self.part.pk}/request-state/').data['totals']
         self.assertEqual((state['handshaked_quantity'], state['delivered_quantity']), (0, 5))
+        self.assertEqual(check()['problems'], {})
+
+    def test_delivery_settles_what_apiag_cloud_items_hold(self):
+        # apiag-cloud's count leaves the sale out once invoiced there, and the pull never settles: delivery does, for those items only.
+        SupplierItem.objects.filter(pk=self.item_a.pk).update(source='apiag')
+        order, quotation = self.handshake()
+        self.assertEqual(self.counts(self.item_a), (10, 3, 7))
+        self.assertEqual(self.supplier(order, 'deliver', quotation).status_code, 200)
+        self.assertEqual(self.counts(self.item_a), (10, 0, 10))
+        self.assertEqual(dict(StockReservation.objects.values_list('item_id', 'status')), {self.item_a.pk: 'settled', self.item_a2.pk: 'open'})
+        settle = StockEntry.objects.filter(item=self.item_a, kind='settle').get()
+        self.assertEqual((settle.quantity, settle.reference), (3, f'{order.reference} · entregado · apiag-cloud'))
+        self.assertEqual(check()['problems'], {})
+
+    def test_a_shortfall_on_an_apiag_cloud_item_drops_its_sucursal_rows(self):
+        from .apiag_sync_models import ApiagSucursal, SupplierItemBranchStock
+        SupplierItem.objects.filter(pk=self.item_a.pk).update(source='apiag')
+        matriz = ApiagSucursal.objects.create(account=self.supplier_a, apiag_id='1', nombre='MATRIZ', seen_at=timezone.now())
+        david = ApiagSucursal.objects.create(account=self.supplier_a, apiag_id='2', nombre='DAVID', seen_at=timezone.now())
+        SupplierItemBranchStock.objects.create(item=self.item_a, sucursal=matriz, quantity=7)
+        SupplierItemBranchStock.objects.create(item=self.item_a, sucursal=david, quantity=3)
+        order, quotation = self.handshake()
+        lines = self.lines(order)
+        reported = self.supplier(order, 'report_shortfall', quotation, shortfall=[{'order_line_id': lines[self.item_a.pk], 'missing': 2}], reason_code='no_stock')
+        self.assertEqual(reported.status_code, 200, reported.data)
+        self.assertEqual(self.counts(self.item_a), (8, 1, 7))
+        self.assertFalse(SupplierItemBranchStock.objects.filter(item=self.item_a).exists())  # no sucursal named: the next pull rebuilds them
         self.assertEqual(check()['problems'], {})
 
     def test_a_shortfall_corrects_stock_at_once_and_changes_the_agreement_only_when_the_client_accepts(self):

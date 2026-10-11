@@ -114,6 +114,9 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY') or os.getenv('GEM_API_KEY', '')
 APIAG_TOKEN_KEYS = [key.strip() for key in os.getenv('APIAG_TOKEN_KEYS', '').split(',') if key.strip()]
 # With DJANGO_DEBUG=1 inside Docker, an apiag-cloud saved as localhost is reached through this host (the computer running Docker).
 APIAG_LOCALHOST = os.getenv('APIAG_LOCALHOST', 'host.docker.internal' if os.path.exists('/.dockerenv') else '')
+# The apiag-sync service (mall.apiag_sync): minutes between pulls of each connection, and the local time of the daily 24-hour pass.
+APIAG_SYNC_MINUTES = max(1, int(os.getenv('APIAG_SYNC_MINUTES', '5')))
+APIAG_SYNC_DAILY_AT = os.getenv('APIAG_SYNC_DAILY_AT', '03:30')
 # Browser push notifications of the deal inbox (mall.push); off while any is empty. python -m mall.vapid_keys makes a pair.
 VAPID_PUBLIC_KEY = os.getenv('VAPID_PUBLIC_KEY', '')
 VAPID_PRIVATE_KEY = os.getenv('VAPID_PRIVATE_KEY', '')
