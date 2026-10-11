@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useId, useRef, useState } from 'react';
-import { ChevronDown, Heart, History, List, LoaderCircle, LogOut, ShieldCheck, ShoppingBag, Store, UserRound } from 'lucide-react';
+import { ChevronDown, CircleUserRound, Heart, History, List, LoaderCircle, LogOut, ShieldCheck, ShoppingBag, Store, UserRound } from 'lucide-react';
 import { Account, SessionUser, roleLabel } from '@/lib/types';
 
 type AccountMenuProps = {
@@ -138,6 +138,7 @@ export default function AccountMenu({ user, ready, accounts, accountId, favorite
                 {account && <p className="account-menu-roles">{account.roles.map(role => roleLabel[role] || role).join(' · ')}</p>}
                 {account?.capabilities.includes('client') && <button className="account-menu-link" onClick={() => go(onPurchases)}><History size={17}/><span>Historial de compras</span></button>}
                 {account?.capabilities.includes('supplier') && <button className="account-menu-link" onClick={() => go(onSupplier)}><Store size={17}/><span>Panel de proveedor</span></button>}
+                <Link className="account-menu-link" href="/perfil" onClick={() => close()}><CircleUserRound size={17}/><span>Mi perfil</span></Link>
                 {user.is_superuser && <Link className="account-menu-link" href="/administracion" onClick={() => close()}><ShieldCheck size={17}/><span>Administración</span></Link>}
               </> : <>
                 <button className="account-menu-link" onClick={() => go(onSignIn)}><UserRound size={17}/><span>Acceder a mi cuenta</span></button>

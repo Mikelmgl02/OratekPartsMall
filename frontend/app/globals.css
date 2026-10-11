@@ -2472,3 +2472,30 @@ body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-s
 .basket-page-supplier.own { border-color:#f0c8b4; }
 .basket-own-warning { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:0 24px 8px; background:#fff3ec; border-color:#f0c8b4; color:#8a4a2c; font-size:12px; }
 .basket-own-warning .button { flex:0 0 auto; text-decoration:none; }
+
+/* Mi perfil (/perfil): the person's data, password, notices and accounts, in cards. */
+.profile-page { display:grid; gap:20px; padding-top:20px; padding-bottom:48px; }
+.profile-heading { display:flex; align-items:center; gap:16px; }
+.profile-heading h1 { margin:4px 0 2px; font-size:28px; }
+.profile-heading p { margin:0; color:var(--muted); font-size:13px; }
+.profile-avatar { display:grid; place-items:center; width:58px; height:58px; flex:0 0 58px; border-radius:50%; background:var(--green); color:#2f4a1f; font-size:20px; font-weight:700; }
+.profile-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap:18px; align-items:start; }
+.profile-card { display:grid; gap:14px; padding:22px; border:1px solid var(--line); border-radius:16px; background:#fff; min-width:0; }
+.profile-card h2 { display:flex; align-items:center; gap:8px; margin:0; font-size:17px; }
+.profile-card .stack-form { gap:12px; }
+.profile-note { margin:0; color:var(--muted); font-size:12px; line-height:1.55; }
+.profile-note.warning { color:#a14c2d; }
+.profile-card input[readonly] { background:#f4f6f1; color:var(--muted); }
+.profile-card .notice { display:flex; align-items:center; gap:8px; margin:0; }
+.profile-notices { display:grid; gap:12px; }
+.profile-notices .inbox-email { margin:0; }
+.profile-accounts { list-style:none; margin:0; padding:0; display:grid; gap:8px; }
+.profile-accounts li { display:grid; gap:2px; padding:10px 12px; border:1px solid var(--line); border-radius:10px; }
+.profile-accounts span { color:var(--muted); font-size:12px; }
+.profile-accounts small { color:#5f6c55; font-size:11px; font-weight:600; }
+.admin-user-notices { display:grid; gap:8px; }
+.admin-user-notices h3 { margin:0; font-size:14px; }
+.admin-user-notices dl { display:grid; gap:6px; margin:0; }
+.admin-user-notices dl div { display:grid; grid-template-columns:96px 1fr; gap:10px; font-size:12px; }
+.admin-user-notices dt { color:var(--muted); }
+.admin-user-notices dd { margin:0; color:var(--ink); overflow-wrap:anywhere; }

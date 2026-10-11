@@ -49,6 +49,7 @@ urlpatterns = [
     path('api/v1/auth/login/', LoginView.as_view()),
     path('api/v1/auth/logout/', views.LogoutView.as_view()),
     path('api/v1/auth/me/', management.ProfileView.as_view()),
+    path('api/v1/auth/password/', management.PasswordChangeView.as_view()),
     path('api/v1/analytics/events/', UsageEvents.as_view()),
     path('api/v1/management/analytics/', AnalyticsDashboard.as_view()),
     path('api/v1/management/deals/', DealAdminList.as_view()),

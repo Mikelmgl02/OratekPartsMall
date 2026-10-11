@@ -337,6 +337,8 @@ Superusers can open **Administración → Estadísticas** to see 7-, 30- or 90-d
 
 ## Endpoints
 
+**Mi perfil** (`/perfil`, from the account menu) is each person's own page: their names and email (changing the email asks for the current password, since notices go there), their password (the current one first; a new one signs out their other devices while this browser keeps its session through `/api/session/password`), their notices (the bell's switches for the browser, email and WhatsApp) and the accounts they belong to. The username, used to sign in, does not change. The admin's **Editar usuario** shows the same notices read only: each person chooses their own, and WhatsApp needs the person's own consent.
+
 All routes use `/api/v1/` unless noted.
 
 | Method | Route | Purpose |
@@ -344,7 +346,8 @@ All routes use `/api/v1/` unless noted.
 | POST | `auth/signup/` | Accept an unexpired, single-use invitation |
 | POST | `auth/login/` | Username/password to API token |
 | POST | `auth/logout/` | Revoke token and end session |
-| GET | `auth/me/` | Current identity and superuser status |
+| GET / PATCH | `auth/me/` | Current identity and superuser status; the person changes their names, and their email with `current_password` (**Mi perfil**) |
+| POST | `auth/password/` | New password with the current one; replaces the person's token (their other devices are signed out) |
 | POST | `analytics/events/` | Authenticated internal usage event, validated and retry-safe |
 | GET | `management/analytics/` | Superuser demand and supplier review statistics; `days` accepts 7, 30 or 90; `reliability` lists per supplier the deals confirmed in the period and those it failed (a shortfall after the handshake or its own cancellation) |
 | GET | `management/deals/` | **Acuerdos**: deals of every account with lifecycle dates and units, never prices (D5); `status` (or `agreements`), `search` |
@@ -372,7 +375,7 @@ All routes use `/api/v1/` unless noted.
 | POST / DELETE | `management/accounts/{id}/apiag/` | Save (a blank `access_token` keeps the saved one) / remove the supplier's apiag-cloud server URL and access token; responses never carry the token |
 | POST | `management/accounts/{id}/apiag/test/` | Probar conexión: ping that apiag-cloud with the form's URL and token (blank = the saved one) without saving; answers `ok`, `status`, `message`, `http_status`, `elapsed_ms` |
 | GET | `management/users/` | Superuser user directory |
-| GET / PATCH | `management/users/{id}/` | User profile and activation |
+| GET / PATCH | `management/users/{id}/` | User profile and activation; GET also shows, read only, how the person gets notices (email, WhatsApp consent, browser devices) |
 | GET | `management/roles/` | Available account types |
 | POST | `management/memberships/` | Assign user to account |
 | PATCH / DELETE | `management/memberships/{id}/` | Change permission or remove account access |

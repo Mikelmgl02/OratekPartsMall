@@ -165,8 +165,8 @@ function NotificationsMenu() {
   </div>;
 }
 
-// Browser notifications: messages and deal updates arrive even with MotionPartes closed. Hidden where the browser or the server cannot send them.
-function PushSwitch() {
+// Browser notifications (also in Mi perfil): messages and deal updates arrive even with MotionPartes closed. Hidden where the browser or the server cannot send them.
+export function PushSwitch() {
   const [status, setStatus] = useState<{ state: PushState; key: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -191,7 +191,7 @@ function PushSwitch() {
 type EmailPreferences = { enabled: boolean; address: string; messages: boolean; updates: boolean };
 
 // Email notices (mall/email_notifications.py): new messages while the person is away from MotionPartes, and changes in their orders.
-function EmailSwitches() {
+export function EmailSwitches() {
   const [preferences, setPreferences] = useState<EmailPreferences | null>(null);
   const [error, setError] = useState('');
   useEffect(() => { request<EmailPreferences>('/api/market/inbox/email').then(setPreferences).catch(() => setPreferences(null)); }, []);
@@ -212,7 +212,7 @@ function EmailSwitches() {
 type WhatsAppPreferences = { enabled: boolean; number: string; opted_in: boolean; messages: boolean; updates: boolean };
 
 // WhatsApp notices (mall/whatsapp.py): only after the person gives their number and explicit consent (Meta's opt-in rule).
-function WhatsAppSwitches() {
+export function WhatsAppSwitches() {
   const [preferences, setPreferences] = useState<WhatsAppPreferences | null>(null);
   const [editing, setEditing] = useState(false);
   const [number, setNumber] = useState('');

@@ -200,6 +200,31 @@ function ApiagEditor({ account, onClose, onSaved }: { account: ManagedAccount; o
   </Modal>;
 }
 
+// How the person gets notices (mall.management.ManagedUserDetailSerializer): read only, since each person chooses their own and WhatsApp needs
+// their own consent.
+type UserNotices = { email: { available: boolean; address: string; messages: boolean; updates: boolean };
+  whatsapp: { available: boolean; number: string; opted_in_at: string | null; messages: boolean; updates: boolean };
+  push: { available: boolean; devices: number }; last_seen_at: string | null };
+const noticeKinds = (channel: { messages: boolean; updates: boolean }) => [channel.messages && 'mensajes', channel.updates && 'cambios en órdenes'].filter(Boolean).join(' y ') || 'ninguno';
+const shortDate = (value: string) => new Date(value).toLocaleDateString('es-PA', { timeZone: 'America/Panama', day: 'numeric', month: 'short', year: 'numeric' });
+
+function UserNoticesSummary({ userId }: { userId: number }) {
+  const [notices, setNotices] = useState<UserNotices | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => { request<{ notices: UserNotices }>(`${base}/users/${userId}`).then(data => setNotices(data.notices)).catch(() => setFailed(true)); }, [userId]);
+  return <div className="admin-user-notices"><h3>Avisos</h3>
+    {failed ? <p className="form-footnote">No se pudieron cargar sus avisos.</p> : !notices ? <p className="form-footnote"><LoaderCircle size={14} className="spin"/>Cargando…</p> : <dl>
+      <div><dt>Correo</dt><dd>{notices.email.available ? `${noticeKinds(notices.email)} · ${notices.email.address}` : 'No configurado en el servidor'}</dd></div>
+      <div><dt>WhatsApp</dt><dd>{!notices.whatsapp.available ? 'No configurado en el servidor' : notices.whatsapp.opted_in_at
+        ? `${notices.whatsapp.number} · activo desde ${shortDate(notices.whatsapp.opted_in_at)} · ${noticeKinds(notices.whatsapp)}`
+        : notices.whatsapp.number ? `${notices.whatsapp.number} · desactivado` : 'No activado'}</dd></div>
+      <div><dt>Navegador</dt><dd>{!notices.push.available ? 'No configurado en el servidor' : notices.push.devices ? `${notices.push.devices} ${notices.push.devices === 1 ? 'dispositivo' : 'dispositivos'}` : 'Ninguno'}</dd></div>
+      <div><dt>Último uso</dt><dd>{notices.last_seen_at ? shortDate(notices.last_seen_at) : 'Sin registro'}</dd></div>
+    </dl>}
+    <p className="form-footnote">Cada persona elige sus avisos en Mi perfil; WhatsApp necesita su propio consentimiento.</p>
+  </div>;
+}
+
 function UserEditor({ user, onClose, onSaved, onManage }: { user: ManagedUser; onClose: () => void; onSaved: () => void; onManage: (id: string) => void }) {
   const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
   async function submit(event: React.FormEvent<HTMLFormElement>) {
@@ -211,6 +236,7 @@ function UserEditor({ user, onClose, onSaved, onManage }: { user: ManagedUser; o
     <div className="form-row"><label>Nombre<input autoComplete="off" name="first_name" defaultValue={user.first_name} maxLength={150}/></label><label>Apellido<input autoComplete="off" name="last_name" defaultValue={user.last_name} maxLength={150}/></label></div><label>Correo electrónico<input autoComplete="off" name="email" type="email" required defaultValue={user.email}/></label>
     <label className="admin-checkbox"><input autoComplete="off" type="checkbox" name="is_active" defaultChecked={user.is_active} disabled={user.is_superuser}/>Usuario activo</label><p className="form-footnote">{user.is_superuser ? 'Este usuario es superusuario y debe mantenerse activo.' : 'Al desactivarlo se bloqueará su acceso a todas sus cuentas.'}</p>
     {user.memberships.length > 0 && <div className="admin-user-accounts"><h3>Cuentas asignadas</h3>{user.memberships.map(member => <div key={member.id}><span>{member.account_name}<small>{member.permission_label}</small></span><button type="button" className="button text small" onClick={() => onManage(member.account)}>Gestionar</button></div>)}</div>}
+    <UserNoticesSummary userId={user.id}/>
     <FormError error={error}/><SaveButton busy={busy}>Guardar usuario</SaveButton>
   </form></Modal>;
 }

@@ -1,10 +1,13 @@
 import uuid
 from datetime import timedelta
 
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import Count, F, Q, Value
 from django.db.models.functions import Greatest
 from django.utils import timezone
+from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema, extend_schema_field
 from rest_framework import filters, generics, permissions, serializers
 from rest_framework.response import Response
@@ -27,17 +30,66 @@ class IsSuperuser(permissions.BasePermission):
 
 
 class ProfileSerializer(serializers.ModelSerializer):
+    """The signed-in person's own profile ("Mi perfil"): they change their names freely, and their email (where notices go) only with
+    their current password. The username, used to sign in, stays as it is."""
+    current_password = serializers.CharField(write_only=True, required=False, trim_whitespace=False)
+
     class Meta:
         model = User
-        fields = ['id', 'username', 'first_name', 'last_name', 'is_superuser']
-        read_only_fields = fields
+        fields = ['id', 'username', 'first_name', 'last_name', 'email', 'is_superuser', 'current_password']
+        read_only_fields = ['id', 'username', 'is_superuser']
+        extra_kwargs = {'email': {'required': False, 'allow_blank': False}}
+
+    def validate_email(self, email):
+        email = email.strip().lower()
+        if User.objects.filter(email__iexact=email).exclude(pk=self.instance.pk).exists():
+            raise serializers.ValidationError('Este correo electrónico ya está registrado.')
+        return email
+
+    def validate(self, data):
+        if 'email' in data and data['email'] != (self.instance.email or '').lower():
+            if not self.instance.check_password(data.get('current_password') or ''):
+                raise serializers.ValidationError({'current_password': ['Escribe tu contraseña actual para cambiar tu correo.']})
+        data.pop('current_password', None)
+        return data
 
 
-class ProfileView(generics.RetrieveAPIView):
+class ProfileView(generics.RetrieveUpdateAPIView):
     serializer_class = ProfileSerializer
+    http_method_names = ['get', 'patch', 'head', 'options']
 
     def get_object(self):
         return self.request.user
+
+
+class PasswordChangeSerializer(serializers.Serializer):
+    current_password = serializers.CharField(trim_whitespace=False)
+    new_password = serializers.CharField(trim_whitespace=False)
+
+    def validate(self, data):
+        user = self.context['request'].user
+        if not user.check_password(data['current_password']):
+            raise serializers.ValidationError({'current_password': ['Tu contraseña actual no es correcta.']})
+        try:
+            validate_password(data['new_password'], user)
+        except DjangoValidationError as error:
+            raise serializers.ValidationError({'new_password': error.messages})
+        return data
+
+
+class PasswordChangeView(APIView):
+    @extend_schema(request=PasswordChangeSerializer, responses=OpenApiTypes.OBJECT, description='Cambia la contraseña de la persona con la actual. '
+                   'Su token se reemplaza: las sesiones de sus otros dispositivos se cierran y esta recibe el nuevo.')
+    def post(self, request):
+        data = PasswordChangeSerializer(data=request.data, context={'request': request})
+        data.is_valid(raise_exception=True)
+        user = request.user
+        with transaction.atomic():
+            user.set_password(data.validated_data['new_password'])
+            user.save(update_fields=['password'])
+            Token.objects.filter(user=user).delete()
+            token = Token.objects.create(user=user)
+        return Response({'token': token.key})
 
 
 class MembershipSerializer(serializers.ModelSerializer):
@@ -615,8 +667,35 @@ class UserList(SuperuserMixin, generics.ListAPIView):
     queryset = User.objects.prefetch_related('membership_set__account').order_by('username', 'id')
 
 
+class ManagedUserDetailSerializer(ManagedUserSerializer):
+    """One user, with how they get notices (read only: each channel is the person's own choice, and WhatsApp needs their own consent)."""
+    notices = serializers.SerializerMethodField()
+
+    class Meta(ManagedUserSerializer.Meta):
+        fields = ManagedUserSerializer.Meta.fields + ['notices']
+        read_only_fields = ManagedUserSerializer.Meta.read_only_fields + ['notices']
+
+    @extend_schema_field(OpenApiTypes.OBJECT)
+    def get_notices(self, user):
+        from .email_notifications import email_enabled
+        from .inbox_models import InboxCursor, PushSubscription
+        from .push import push_enabled
+        from .whatsapp import whatsapp_enabled
+        cursor = InboxCursor.objects.filter(user=user).first()
+        opted_in = cursor.whatsapp_opt_in_at if cursor else None
+        return {
+            'email': {'available': email_enabled(), 'address': user.email, 'messages': cursor.email_messages if cursor else True,
+                      'updates': cursor.email_updates if cursor else True},
+            'whatsapp': {'available': whatsapp_enabled(), 'number': cursor.whatsapp_number if cursor else '',
+                         'opted_in_at': opted_in.isoformat() if opted_in else None,
+                         'messages': cursor.whatsapp_messages if cursor else True, 'updates': cursor.whatsapp_updates if cursor else True},
+            'push': {'available': push_enabled(), 'devices': PushSubscription.objects.filter(user=user).count()},
+            'last_seen_at': cursor.active_at.isoformat() if cursor and cursor.active_at else None,
+        }
+
+
 class UserDetail(SuperuserMixin, generics.RetrieveUpdateAPIView):
-    serializer_class = ManagedUserSerializer
+    serializer_class = ManagedUserDetailSerializer
     queryset = UserList.queryset
     http_method_names = ['get', 'patch', 'head', 'options']
 

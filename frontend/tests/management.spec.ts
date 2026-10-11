@@ -525,6 +525,10 @@ test('superuser manages accounts, employee access, users, and invitations', asyn
   await page.getByRole('button', { name: 'Asignar cuenta', exact: true }).click();
   await expect(page.getByText('Cuenta asignada al usuario.', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: `Editar usuario ${process.env.E2E_USERNAME}` }).click();
+  const notices = page.getByRole('dialog').locator('.admin-user-notices');  // how the person gets notices, read only
+  await expect(notices.getByRole('heading', { name: 'Avisos', exact: true })).toBeVisible();
+  await expect(notices.getByText('Correo', { exact: true })).toBeVisible();
+  await expect(notices.getByText('WhatsApp', { exact: true })).toBeVisible();
   await page.getByLabel('Nombre', { exact: true }).fill('Ana');
   await page.getByLabel('Apellido', { exact: true }).fill('Pérez');
   await page.getByRole('button', { name: 'Guardar usuario', exact: true }).click();
