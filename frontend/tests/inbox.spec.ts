@@ -460,3 +460,19 @@ test('a notice link opened signed out goes straight to the sign-in with the user
   await signIn.locator('form').getByRole('button', { name: 'Iniciar sesión' }).click();
   await expect(page.getByRole('dialog', { name: 'Conversaciones', exact: true }).getByRole('region', { name: 'Orden ORD-0123 con GRUPO RAZOR PARTS', exact: true })).toBeVisible();
 });
+
+test.describe('on a touch phone', () => {
+  test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  test('fields are 16px, so iOS does not zoom in when the chat composer gets focus', async ({ page }) => {
+    await mockInbox(page, { current: pending() });
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Mensajes, 3 sin leer', exact: true }).click();
+    const panel = page.getByRole('dialog', { name: 'Conversaciones', exact: true });
+    await expect(panel.getByPlaceholder('Orden o cuenta…')).toHaveCSS('font-size', '16px');
+    await panel.getByRole('button', { name: /GRUPO RAZOR PARTS/ }).click();
+    const composer = panel.getByLabel('Mensaje del acuerdo', { exact: true });
+    await expect(composer).toHaveCSS('font-size', '16px');
+    await composer.focus();
+    expect(await page.evaluate(() => window.visualViewport?.scale ?? 1)).toBe(1);
+  });
+});

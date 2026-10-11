@@ -2507,3 +2507,9 @@ body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-s
 .inbox-whatsapp-verified { display:inline-flex; align-items:center; gap:3px; margin-left:6px; padding:1px 6px; border-radius:6px; background:#eaf3df; color:#4f7a2e; font-size:10px; font-weight:600; }
 .inbox-whatsapp-sent { margin:0; font-size:12px; line-height:1.5; color:var(--ink); }
 .inbox-whatsapp-form input[autocomplete="one-time-code"] { letter-spacing:4px; font-variant-numeric:tabular-nums; max-width:140px; }
+
+/* iOS Safari zooms into any field under 16px when it gets focus (the chat composer, searches, forms). On touch screens every field is 16px,
+   so the page stays put while typing; desktop keeps its compact sizes, and pinch zoom still works. */
+@media (hover: none) and (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]), textarea, select { font-size: 16px !important; }
+}
