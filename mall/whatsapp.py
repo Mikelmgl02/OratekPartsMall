@@ -37,6 +37,7 @@ from rest_framework import permissions, serializers
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .deal_attachments import describe
 from . import push
 from .email_notifications import ACTIVE
 from .inbox import cursor_for, event_title
@@ -140,9 +141,11 @@ def fallback(log_id, payload, code):
 
 
 def deliver(jobs):
+    from .whatsapp_bridge import send_file
+    uploaded = {}  # chat files already uploaded to Meta in this delivery
     for log_id, payload in jobs:
         try:
-            accepted(log_id, graph(payload))
+            accepted(log_id, send_file(payload, uploaded) if '_attachment' in payload else graph(payload))
         except urllib.error.HTTPError as error:  # Meta explains in the body (template not approved, number not on WhatsApp…)
             detail = error.read().decode(errors='replace')[:300]
             code = meta_code(detail)
@@ -199,7 +202,7 @@ def message_saved(sender, instance, created=False, raw=False, **kwargs):
     message, order = instance, instance.order
 
     def collect():
-        from .whatsapp_bridge import continuing, relay_text, window_open
+        from .whatsapp_bridge import continuing, relay_files, relay_text, window_open
         # Asking for an adjustment also writes its reason as a message: the adjustment's own notice covers it.
         if DealEvent.objects.filter(order=order, actor_id=message.actor_id, kind='request_adjustment', description=message.body).exists():
             return
@@ -227,9 +230,13 @@ def message_saved(sender, instance, created=False, raw=False, **kwargs):
                 mark, _ = ConversationRead.objects.get_or_create(user_id=target.user_id, order=order)
                 ConversationRead.objects.filter(pk=mark.pk).update(whatsapp_at=now)
         first = {target.number: not continuing(target.number, order, now) for target in relays}  # before this relay is logged
-        jobs = [(log_row(target, order, 'message', f'{settings.WHATSAPP_TEMPLATE_MESSAGE} (relevo)'[:80]).pk,
-                 relay_text(target.number, message, order, conversation_of(order, target), first[target.number])) for target in relays]
-        body = [param(message.account.name, 60), param(order.reference, 32), param(message.body, 120)]
+        jobs = []
+        for target in relays:  # the text (named at the start of a stretch), then each file as its own message
+            conversation = conversation_of(order, target)
+            payloads = [relay_text(target.number, message, order, conversation, first[target.number]), *relay_files(target.number, message, conversation)]
+            jobs += [(log_row(target, order, 'message', f'{settings.WHATSAPP_TEMPLATE_MESSAGE} ({"archivo" if "_attachment" in payload else "relevo"})'[:80]).pk,
+                      payload) for payload in payloads if payload]
+        body = [param(message.account.name, 60), param(order.reference, 32), param(describe(message), 120)]
         jobs += queue(notices, order, 'message', settings.WHATSAPP_TEMPLATE_MESSAGE, body)
         if jobs:
             push.dispatch(lambda: deliver(jobs))

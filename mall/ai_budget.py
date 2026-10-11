@@ -24,7 +24,8 @@ TOKEN_FIELDS = ('input_tokens', 'output_tokens', 'thinking_tokens')
 # the quotation assistant records its own, per supplier.
 FEATURE_LABELS = {'quote_assistant': 'Asistente de cotización', 'catalog_classification': 'Clasificación de importaciones',
                   'catalog_assistant': 'Asistente de inventario', 'catalog_grouping': 'Agrupación de SKU', 'category_suggestions': 'Tipos de repuesto',
-                  'oem_lookup': 'Referencias OEM', 'matching': 'Emparejamiento de proveedores'}
+                  'oem_lookup': 'Referencias OEM', 'matching': 'Emparejamiento de proveedores',
+                  'chat_transcription': 'Transcripción de notas de voz'}
 logger = logging.getLogger(__name__)
 
 

@@ -2534,3 +2534,25 @@ body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-s
 /* The WhatsApp bridge: a message that came in by WhatsApp says so; an account's own number sits under it in Mi perfil. */
 .deal-chat-whatsapp { font-style:normal; color:#2f7a52; font-weight:600; }
 .profile-accounts .inbox-whatsapp { margin-top:8px; }
+
+/* Files in a deal's chat (deal-detail.tsx ChatFiles) and the ones about to be sent with the next message. */
+.deal-chat-files { display:grid; gap:8px; justify-items:start; }
+.deal-chat-messages article p + .deal-chat-files { margin-top:8px; }
+.deal-chat-image img { display:block; max-width:min(280px,100%); max-height:280px; border-radius:10px; object-fit:cover; border:1px solid var(--line); background:#f4f6f4; }
+.deal-chat-audio { margin:0; display:grid; gap:6px; max-width:100%; }
+.deal-chat-audio audio { width:min(280px,100%); height:36px; }
+.deal-chat-audio figcaption { font-size:12.5px; line-height:1.5; color:#33403a; white-space:pre-wrap; overflow-wrap:anywhere; }
+.deal-chat-audio figcaption span { display:block; font-size:10.5px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; color:#6b776f; }
+.deal-chat-video { display:block; max-width:min(320px,100%); max-height:280px; border-radius:10px; background:#111; }
+.deal-chat-document { display:inline-flex; align-items:center; gap:8px; max-width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:10px; background:#fff; color:inherit; font-size:13px; text-decoration:none; }
+.deal-chat-document:hover { border-color:#9fb8a6; }
+.deal-chat-document span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.deal-chat-document small, .deal-chat-attached small { flex:none; color:#6b776f; }
+.deal-chat-file-failed { display:flex; align-items:center; gap:6px; color:#8a5a12; font-size:12px; }
+.deal-chat-attached { display:flex; flex-wrap:wrap; gap:6px; margin:0; padding:0; list-style:none; }
+.deal-chat-attached li { display:inline-flex; align-items:center; gap:6px; max-width:100%; padding:3px 4px 3px 10px; border:1px solid var(--line); border-radius:999px; background:#eef3ef; font-size:12px; }
+.deal-chat-attached span { max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.deal-chat-attached button { display:inline-grid; place-items:center; width:22px; height:22px; border:0; border-radius:50%; background:transparent; cursor:pointer; }
+.deal-chat-attached button:hover { background:#dce6df; }
+.deal-chat-send>.deal-chat-attach { flex:0 0 auto; margin-right:auto; padding-inline:10px; }
+.deal-chat.compact .deal-chat-send>.deal-chat-attach { flex:0 0 auto; }

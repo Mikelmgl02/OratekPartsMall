@@ -1,7 +1,7 @@
 'use client';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { ArrowDown, Bot, Check, FileText, Handshake, History, LoaderCircle, LockKeyhole, MessageSquare, Pencil, RefreshCw, Send, UserRoundCog, X } from 'lucide-react';
+import { ArrowDown, Bot, Check, FileText, FileWarning, Handshake, History, LoaderCircle, LockKeyhole, MessageSquare, Paperclip, Pencil, RefreshCw, Send, UserRoundCog, X } from 'lucide-react';
 import Modal from './modal';
 import { percent } from './price-explanation';
 import DealStatusBadge from './deal-status';
@@ -9,7 +9,7 @@ import DealAfterHandshake from './deal-after-handshake';
 import { UppercaseTextarea } from './uppercase-field';
 import { Account, ApiError, request } from '@/lib/types';
 import type { SupplierRequestLine } from '@/lib/request-types';
-import type { Deal, DealMessage, Quotation } from '@/lib/deal-types';
+import type { Deal, DealAttachment, DealMessage, Quotation } from '@/lib/deal-types';
 import type { QuotationTrace, QuoteDraft, QuoteDraftEnvelope, QuoteDraftLine } from '@/lib/pricing-types';
 import { supplierPricingHref, supplierSectionHref } from '@/lib/supplier-navigation';
 import { markConversationRead } from '@/lib/inbox';
@@ -336,10 +336,34 @@ function QuoteTrace({ path, currency }: { path: string; currency: string }) {
 }
 
 // Also the chat of the global conversations panel (compact: without the introduction). While it shows, it marks what it shows as read.
+// Chat files (mall.deal_attachments): what the server takes, per message.
+const CHAT_FILES = 5, CHAT_FILE_MB = 16, CHAT_TOTAL_MB = 32;
+const CHAT_ACCEPT = 'image/*,application/pdf,.xlsx,.xls,.docx,.doc,.csv,.txt,audio/*,video/*';
+const FILE_WORDS: Record<DealAttachment['kind'], string> = { image: 'la foto', document: 'el documento', audio: 'el audio', video: 'el video' };
+function fileSize(bytes: number) {
+  return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / (1024 * 1024)).toFixed(1).replace('.', ',')} MB`;
+}
+
+// A message's files: photos open full size, audio and video play in place (a voice note with its transcript), documents open or download.
+function ChatFiles({ base, files }: { base: string; files: DealAttachment[] }) {
+  return <div className="deal-chat-files">{files.map(file => {
+    const href = `${base}/${file.id}`;
+    if (file.failed) return <p key={file.id} className="deal-chat-file-failed"><FileWarning size={15}/>No se pudo recibir {FILE_WORDS[file.kind]} enviado por WhatsApp.</p>;
+    if (file.kind === 'image') return <a key={file.id} className="deal-chat-image" href={href} target="_blank" rel="noopener" aria-label={`Abrir ${file.name}`}><img src={href} alt={file.name} loading="lazy"/></a>;
+    if (file.kind === 'audio') return <figure key={file.id} className="deal-chat-audio"><audio controls preload="none" src={href} aria-label={file.voice ? 'Nota de voz' : file.name}/>
+      {file.voice ? file.transcript ? <figcaption><span>Transcripción automática</span>{file.transcript}</figcaption> : null : <figcaption>{file.name}</figcaption>}</figure>;
+    if (file.kind === 'video') return <video key={file.id} className="deal-chat-video" controls preload="metadata" src={href} aria-label={file.name}/>;
+    return <a key={file.id} className="deal-chat-document" href={href} target="_blank" rel="noopener"><FileText size={18}/><span>{file.name}</span><small>{fileSize(file.size)}</small></a>;
+  })}</div>;
+}
+
 export function DealChat({ account, orderId, active, supplier, insert, compact = false }: { account: Account; orderId: string; active: boolean; supplier: boolean; insert: { text: string; id: number } | null; compact?: boolean }) {
   const path = `/api/market/accounts/${account.id}/deals/${orderId}/messages`;
+  const filesPath = `/api/market/accounts/${account.id}/deals/${orderId}/attachments`;
   const [messages, setMessages] = useState<DealMessage[]>([]);
   const [body, setBody] = useState('');
+  const [files, setFiles] = useState<File[]>([]);
+  const picker = useRef<HTMLInputElement>(null);
   // Privacy disclosure (D3): the supplier enabled its AI assistant, which may read this conversation.
   const [assistantNotice, setAssistantNotice] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -353,7 +377,7 @@ export function DealChat({ account, orderId, active, supplier, insert, compact =
   const mounted = useRef(false);
   const loading = useRef(false);
   const cursor = useRef<number | null>(null);
-  const pending = useRef<{ body: string; id: string } | null>(null);
+  const pending = useRef<{ body: string; files: File[]; id: string } | null>(null);
   const sendLock = useRef(false);
   const readUpTo = useRef(0);
   // The latest message stays in view: after sending, and when one arrives, the log goes all the way down once it is drawn. Someone
@@ -435,14 +459,35 @@ export function DealChat({ account, orderId, active, supplier, insert, compact =
     } catch (caught) { if (mounted.current) setError(failure(caught)); }
     finally { if (mounted.current) setLoadingEarlier(false); }
   }
+  // Files to send with the next message, checked against what the server takes.
+  function attach(chosen: File[]) {
+    if (!chosen.length) return;
+    const next = [...files, ...chosen];
+    const large = next.find(file => file.size > CHAT_FILE_MB * 1024 * 1024);
+    if (next.length > CHAT_FILES) setError(`Envía hasta ${CHAT_FILES} archivos por mensaje.`);
+    else if (large) setError(`«${large.name}» pesa más de ${CHAT_FILE_MB} MB.`);
+    else if (next.reduce((total, file) => total + file.size, 0) > CHAT_TOTAL_MB * 1024 * 1024) setError(`Los archivos de un mensaje pueden pesar hasta ${CHAT_TOTAL_MB} MB en total.`);
+    else { setFiles(next); setError(''); }
+  }
+  function pasted(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const images = [...event.clipboardData.files].filter(file => file.type.startsWith('image/'));
+    if (images.length) { event.preventDefault(); attach(images.map((file, index) => new File([file], file.name && file.name !== 'image.png' ? file.name : `captura-${Date.now()}-${index + 1}.png`, { type: file.type }))); }
+  }
   async function send() {
-    const text = body.trim(); if (!text || sendLock.current) return;
+    const text = body.trim(); if ((!text && !files.length) || sendLock.current) return;
     sendLock.current = true; setSending(true); setError('');
-    if (pending.current?.body !== text) pending.current = { body: text, id: crypto.randomUUID() };
+    if (pending.current?.body !== text || pending.current.files.length !== files.length || pending.current.files.some((file, index) => file !== files[index]))
+      pending.current = { body: text, files, id: crypto.randomUUID() };
     try {
-      const message = await request<DealMessage>(path, { method: 'POST', body: JSON.stringify({ body: text, message_id: pending.current.id }) });
+      let message: DealMessage;
+      if (files.length) {
+        const form = new FormData();
+        form.append('message_id', pending.current.id); form.append('body', text);
+        for (const file of files) form.append('files', file);
+        message = await request<DealMessage>(filesPath, { method: 'POST', body: form });
+      } else message = await request<DealMessage>(path, { method: 'POST', body: JSON.stringify({ body: text, message_id: pending.current.id }) });
       if (!mounted.current) return;
-      stick.current = true; merge([message]); setBody(''); setCopied(false); pending.current = null; void fetchMessages();
+      stick.current = true; merge([message]); setBody(''); setFiles([]); setCopied(false); pending.current = null; void fetchMessages();
     } catch (caught) { if (mounted.current) setError(failure(caught)); }
     finally { sendLock.current = false; if (mounted.current) { setSending(false); requestAnimationFrame(() => composer.current?.focus()); } }
   }
@@ -457,9 +502,10 @@ export function DealChat({ account, orderId, active, supplier, insert, compact =
       : 'El proveedor usa un asistente de IA (Google Gemini) que puede leer las notas de tu orden y esta conversación para preparar tu cotización. No recibe precios ni existencias.'}</p>}
     {error && <div className="notice error" role="alert">{error}<button type="button" onClick={() => void fetchMessages()}>Actualizar mensajes</button></div>}
     {hasEarlier && <button type="button" className="button soft small" disabled={loadingEarlier} onClick={() => void earlier()}>Cargar mensajes anteriores</button>}
-    <div ref={log} className="deal-chat-messages" role="log" aria-label="Mensajes del acuerdo" aria-live="polite" onScroll={scrolled}>{!ready && !error ? <p>Cargando mensajes…</p> : !messages.length ? <p className="deal-chat-empty">Inicia la conversación sobre esta orden.</p> : messages.map(message => <article key={message.id} className={message.account_id === account.id ? 'own' : ''}><header><strong>{message.account_name}</strong><span>{message.actor_name} · {date(message.created_at)}{message.channel === 'whatsapp' && <em className="deal-chat-whatsapp"> · vía WhatsApp</em>}</span></header><p>{message.body}</p></article>)}</div>
+    <div ref={log} className="deal-chat-messages" role="log" aria-label="Mensajes del acuerdo" aria-live="polite" onScroll={scrolled}>{!ready && !error ? <p>Cargando mensajes…</p> : !messages.length ? <p className="deal-chat-empty">Inicia la conversación sobre esta orden.</p> : messages.map(message => <article key={message.id} className={message.account_id === account.id ? 'own' : ''}><header><strong>{message.account_name}</strong><span>{message.actor_name} · {date(message.created_at)}{message.channel === 'whatsapp' && <em className="deal-chat-whatsapp"> · vía WhatsApp</em>}</span></header>{message.body && <p>{message.body}</p>}{!!message.attachments?.length && <ChatFiles base={filesPath} files={message.attachments}/>}</article>)}</div>
     {newBelow && <button type="button" className="deal-chat-new" onClick={toLatest}><ArrowDown size={14}/>Mensajes nuevos</button>}
-    <form onSubmit={event => { event.preventDefault(); void send(); }}><label>Mensaje<textarea ref={composer} aria-label="Mensaje del acuerdo" required maxLength={4000} readOnly={sending} value={body} onChange={event => { setBody(event.target.value); setCopied(false); }} onKeyDown={composerKey} placeholder="Escribe a la otra parte…"/></label>
-      {copied && <small className="deal-chat-copied" role="status">Pregunta del asistente copiada. Revísala y envíala cuando quieras.</small>}<div className="deal-chat-send"><small className="deal-chat-hint">Enter para enviar · Shift+Enter para otra línea</small><button type="submit" className="button primary" disabled={sending || !body.trim()}>{sending ? <LoaderCircle size={15} className="spin"/> : <Send size={15}/>}Enviar mensaje</button></div></form>
+    <form onSubmit={event => { event.preventDefault(); void send(); }}><label>Mensaje<textarea ref={composer} aria-label="Mensaje del acuerdo" required={!files.length} maxLength={4000} readOnly={sending} value={body} onChange={event => { setBody(event.target.value); setCopied(false); }} onKeyDown={composerKey} onPaste={pasted} placeholder={files.length ? 'Agrega un mensaje (opcional)…' : 'Escribe a la otra parte…'}/></label>
+      {!!files.length && <ul className="deal-chat-attached" aria-label="Archivos para enviar">{files.map((file, index) => <li key={`${file.name}-${index}`}><Paperclip size={13}/><span>{file.name}</span><small>{fileSize(file.size)}</small><button type="button" disabled={sending} aria-label={`Quitar ${file.name}`} onClick={() => setFiles(values => values.filter((_, other) => other !== index))}><X size={13}/></button></li>)}</ul>}
+      {copied && <small className="deal-chat-copied" role="status">Pregunta del asistente copiada. Revísala y envíala cuando quieras.</small>}<div className="deal-chat-send"><input ref={picker} type="file" multiple hidden accept={CHAT_ACCEPT} aria-label="Elegir archivos" onChange={event => { attach([...(event.target.files || [])]); event.target.value = ''; }}/><button type="button" className="button soft deal-chat-attach" disabled={sending} onClick={() => picker.current?.click()} aria-label="Adjuntar archivos" title="Fotos, PDF, Excel, Word, audio o video"><Paperclip size={15}/></button><small className="deal-chat-hint">Enter para enviar · Shift+Enter para otra línea</small><button type="submit" className="button primary" disabled={sending || (!body.trim() && !files.length)}>{sending ? <LoaderCircle size={15} className="spin"/> : <Send size={15}/>}Enviar mensaje</button></div></form>
   </section>;
 }

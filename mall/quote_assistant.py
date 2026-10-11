@@ -24,6 +24,7 @@ from django.db.models import Q
 from django.utils import timezone
 from rest_framework.exceptions import APIException
 
+from .deal_attachments import describe
 from .ai_budget import (AssistantDisabled, AssistantUnavailable, check_monthly, check_run_caps, estimate_cost, feature_budget, record_usage,
                         revision_runs, token_cost)
 from .catalog_classification import ClassificationProviderError, ClassificationUnavailable, generate_json, provider_configuration
@@ -178,7 +179,7 @@ def build_input(row, latest, lines):
         if client and reason and message.body.strip() == reason:
             reason = ''
             continue
-        chat.append({'author': 'CLIENTE' if client else 'PROVEEDOR', 'kind': 'mensaje', 'text': clean(message.body, MESSAGE_CAP, supplier=not client)})
+        chat.append({'author': 'CLIENTE' if client else 'PROVEEDOR', 'kind': 'mensaje', 'text': clean(describe(message), MESSAGE_CAP, supplier=not client)})
     chat = chat[-MAX_MESSAGES:]
     # The total cap drops the oldest messages first; the notes and the reason (8,000 characters at most) always fit.
     while chat and sum(len(text['text']) for text in texts + chat) > TEXT_CAP:

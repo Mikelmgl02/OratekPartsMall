@@ -16,6 +16,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .availability import record_accept_check, shortfall_since_quote
+from .deal_attachments import attachment_data, store, validate_uploads
 from .models import Membership
 from .pricing_engine import ENGINE_VERSION, client_profile, price_lines
 from .pricing_models import pricing_settings, record_pricing_event
@@ -374,7 +375,9 @@ class DealActions(APIView):
 
 class MessageSerializer(serializers.Serializer):
     message_id = serializers.UUIDField()
-    body = serializers.CharField(max_length=4000, trim_whitespace=True)  # kept as typed, like any chat
+    body = serializers.CharField(max_length=4000, trim_whitespace=True, allow_blank=True, required=False, default='')  # kept as typed
+    # Sent as multipart (mall.deal_attachments): photos, documents, audio or video; a message with files may have no text.
+    files = serializers.ListField(child=serializers.FileField(), required=False, write_only=True)
 
 
 class MessageCursor(serializers.Serializer):
@@ -390,7 +393,8 @@ class MessageCursor(serializers.Serializer):
 def message_data(message):
     return {'id': message.pk, 'message_id': str(message.message_id), 'body': message.body,
             'account_id': str(message.account_id), 'account_name': message.account.name,
-            'actor_name': message.actor.get_full_name() or message.actor.username, 'channel': message.channel, 'created_at': iso(message.created_at)}
+            'actor_name': message.actor.get_full_name() or message.actor.username, 'channel': message.channel,
+            'attachments': [attachment_data(attachment) for attachment in message.attachments.all()], 'created_at': iso(message.created_at)}
 
 
 class DealMessages(APIView):
@@ -400,7 +404,7 @@ class DealMessages(APIView):
         filters = MessageCursor(data=request.query_params)
         filters.is_valid(raise_exception=True)
         after = filters.validated_data.get('after')
-        messages = row.messages.select_related('account', 'actor')
+        messages = row.messages.select_related('account', 'actor').prefetch_related('attachments')
         before = filters.validated_data.get('before')
         if before is not None:
             page = list(reversed(list(messages.filter(id__lt=before).order_by('-id')[:100])))
@@ -423,10 +427,15 @@ class DealMessages(APIView):
         serializer = MessageSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+        files = validate_uploads(request.FILES.getlist('files'))
+        if not data['body'] and not files:
+            raise ValidationError({'body': ['Escribe un mensaje o adjunta un archivo.']})
         message = row.messages.filter(account=account, message_id=data['message_id']).first()
-        if message:
+        if message:  # the same send again (a retry): the message as it was saved
             if message.body != data['body']:
                 raise RequestConflict('Este identificador ya se utilizó para otro mensaje.')
         else:
-            message = DealMessage.objects.create(order=row, account=account, actor=request.user, **data)
+            message = DealMessage.objects.create(order=row, account=account, actor=request.user, message_id=data['message_id'], body=data['body'])
+            for upload, kind, content_type, name in files:
+                store(message, kind, content_type, name, upload.read())
         return Response(message_data(message), status=200)

@@ -307,7 +307,7 @@ from .classification_models import CatalogClassificationState, CatalogClassifica
 from .catalog_assistant_models import CatalogAssistantJob, CatalogAssistantSuggestion, CategorySuggestionCache
 from .supplier_import_models import SupplierInventoryImportJob, SupplierInventoryImportBatch
 from .request_models import (ClientRequestSubmission, SupplierRequest, SupplierRequestLine, RequestContribution,
-                             DealQuotation, DealQuotationLine, DealEvent, DealMessage, DealCommand, StockReservation,
+                             DealQuotation, DealQuotationLine, DealEvent, DealMessage, DealAttachment, DealCommand, StockReservation,
                              DealShortfall, DealShortfallLine)
 from .analytics_models import UsageEvent, UsageVisit
 from .inbox_models import AccountWhatsApp, ConversationRead, InboxCursor, InboxGroup, PushSubscription, WhatsAppContact, WhatsAppMessage

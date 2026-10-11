@@ -64,6 +64,22 @@ if any((DO_SPACES_KEY, DO_SPACES_SECRET, DO_SPACES_BUCKET)):
             'object_parameters': {'CacheControl': 'public, max-age=31536000, immutable'},
         },
     }
+# Files in the deals' chats (mall.deal_attachments): private, served only to the deal's parties through the API, never by a public URL.
+# On Spaces when configured (private objects under <prefix>/private), else on the app's disk; CHAT_MEDIA_STORAGE=local keeps a development
+# machine off the shared bucket.
+CHAT_MEDIA_STORAGE = os.getenv('CHAT_MEDIA_STORAGE', '').strip().lower() or ('spaces' if 'OPTIONS' in STORAGES['catalog_media'] else 'local')
+CHAT_MEDIA_ROOT = BASE_DIR / 'private_media'
+CHAT_MEDIA_MAX_BYTES = 16 * 1024 * 1024  # each file (WhatsApp's own limit for audio and video)
+CHAT_MEDIA_MAX_FILES = 5  # per message
+STORAGES['chat_media'] = {'BACKEND': 'django.core.files.storage.FileSystemStorage', 'OPTIONS': {'location': CHAT_MEDIA_ROOT, 'base_url': None}}
+if CHAT_MEDIA_STORAGE == 'spaces' and 'OPTIONS' in STORAGES['catalog_media']:
+    STORAGES['chat_media'] = {'BACKEND': 'storages.backends.s3.S3Storage', 'OPTIONS': {
+        **{key: STORAGES['catalog_media']['OPTIONS'][key] for key in ('access_key', 'secret_key', 'bucket_name', 'region_name', 'endpoint_url',
+                                                                     'signature_version', 'addressing_style')},
+        'default_acl': 'private', 'querystring_auth': True, 'custom_domain': None, 'file_overwrite': False,
+        'location': f'{DO_SPACES_MEDIA_PREFIX}/private', 'object_parameters': {'CacheControl': 'private, no-store'}}}
+# Voice notes that arrive by WhatsApp are transcribed with Gemini (the platform AI budget counts it); 0 turns it off.
+CHAT_TRANSCRIPTION = os.getenv('CHAT_TRANSCRIPTION', '1') == '1'
 REST_FRAMEWORK = {"DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework.authentication.TokenAuthentication", "rest_framework.authentication.SessionAuthentication"], "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"], "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema", "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination", "PAGE_SIZE": 50, "DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.AnonRateThrottle"], "DEFAULT_THROTTLE_RATES": {"anon": "20/min"}}
 SPECTACULAR_SETTINGS = {"TITLE": "MotionPartes API", "VERSION": "0.1.0", "COMPONENT_SPLIT_REQUEST": True, "ENUM_NAME_OVERRIDES": {
     # Shared choice sets get one stable name; values and labels must match the fields exactly.

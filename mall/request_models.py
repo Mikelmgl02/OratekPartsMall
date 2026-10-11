@@ -5,6 +5,8 @@ from django.conf import settings
 from django.db import models
 from django.db.models import Q
 
+from .media_storage import chat_attachment_path, chat_storage
+
 
 class ClientRequestSubmission(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -210,7 +212,7 @@ class DealMessage(models.Model):
     account = models.ForeignKey('mall.Account', on_delete=models.PROTECT)
     actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     message_id = models.UUIDField()
-    body = models.TextField()
+    body = models.TextField(blank=True)  # empty only when the message carries files
     # Written in MotionPartes, or a WhatsApp reply the bridge brought into the chat (mall.whatsapp_bridge).
     channel = models.CharField(max_length=10, choices=[('app', 'MotionPartes'), ('whatsapp', 'WhatsApp')], default='app')
     created_at = models.DateTimeField(auto_now_add=True)
@@ -218,6 +220,27 @@ class DealMessage(models.Model):
     class Meta:
         ordering = ['id']
         constraints = [models.UniqueConstraint(fields=['order', 'account', 'message_id'], name='unique_deal_message_send')]
+
+
+class DealAttachment(models.Model):
+    """A file in a deal's chat (mall.deal_attachments): sent from MotionPartes, or received by WhatsApp (a voice note with its transcript).
+    Private: only the deal's parties get it, through the API."""
+    KINDS = [('image', 'Foto'), ('document', 'Documento'), ('audio', 'Audio'), ('video', 'Video')]
+    message = models.ForeignKey(DealMessage, on_delete=models.CASCADE, related_name='attachments')
+    token = models.UUIDField(default=uuid.uuid4, editable=False)  # its folder in the storage, so names never collide
+    file = models.FileField(storage=chat_storage, upload_to=chat_attachment_path, max_length=500, blank=True)
+    kind = models.CharField(max_length=10, choices=KINDS)
+    name = models.CharField(max_length=200)
+    content_type = models.CharField(max_length=100)
+    size = models.PositiveIntegerField(default=0)
+    voice = models.BooleanField(default=False)  # a WhatsApp voice note, as opposed to an audio file
+    # Received but not stored (Meta refused the download, or the file was too large): the chat says it could not be received.
+    failed = models.BooleanField(default=False)
+    transcript = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['id']
 
 
 class DealCommand(models.Model):

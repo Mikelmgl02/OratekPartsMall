@@ -19,6 +19,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .deal_attachments import describe
 from .inbox_models import ConversationRead, InboxCursor, InboxGroup
 from .models import Account, DealEvent, DealMessage, SupplierRequest
 
@@ -124,7 +125,7 @@ def own_side(row):
 def message_preview(message, user):
     if message is None:
         return None
-    return {'id': message.pk, 'body': snippet(message.body), 'account_id': str(message.account_id), 'account_name': message.account.name,
+    return {'id': message.pk, 'body': snippet(describe(message)), 'account_id': str(message.account_id), 'account_name': message.account.name,
             'actor_name': message.actor.get_full_name() or message.actor.username, 'mine': message.actor_id == user.pk,
             'created_at': iso(message.created_at)}
 

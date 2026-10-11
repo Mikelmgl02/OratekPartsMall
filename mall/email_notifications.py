@@ -20,6 +20,7 @@ from rest_framework import serializers
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .deal_attachments import describe
 from .inbox import cursor_for, event_title
 from .inbox_models import ConversationRead, InboxCursor
 from .models import DealEvent, User
@@ -113,7 +114,8 @@ def message_saved(sender, instance, created=False, raw=False, **kwargs):
             mark, _ = ConversationRead.objects.get_or_create(user=user, order=order)
             ConversationRead.objects.filter(pk=mark.pk).update(emailed_at=now)
         author = message.actor.get_full_name() or message.actor.username
-        quote = message.body if len(message.body) <= QUOTED else f'{message.body[:QUOTED - 1]}…'
+        text = describe(message)  # a message of only files says what they are
+        quote = text if len(text) <= QUOTED else f'{text[:QUOTED - 1]}…'
         account = their_account(order, message.account_id)
         emails = [(user.email, *compose(user, order, account, f'Nuevo mensaje de {message.account.name} · {order.reference}',
                                         f'{author} de {message.account.name} te escribió en la orden {order.reference}. Puede haber más '

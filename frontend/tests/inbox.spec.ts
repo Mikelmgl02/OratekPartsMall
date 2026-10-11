@@ -518,3 +518,55 @@ test('the chat goes all the way down when a message is sent or arrives; reading 
   await expect(log).toContainText('Mi respuesta');
   await expect.poll(below).toBeLessThan(2);  // sending: all the way down
 });
+
+test('the chat shows its files (a voice note with its transcript) and sends photos and documents, with or without text', async ({ page }) => {
+  await mockInbox(page, { current: pending() });
+  const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+  const file = (id: number, kind: string, name: string, content_type: string, extra = {}) => ({ id, kind, name, content_type, size: 48213, voice: false, failed: false, transcript: '', ...extra });
+  const chat = [
+    { ...messages[0], id: 20, body: '¿ASÍ ES EL TAMBOR?', attachments: [file(501, 'image', 'tambor.jpg', 'image/jpeg')] },
+    { ...messages[1], id: 21, body: '', channel: 'whatsapp', attachments: [file(502, 'audio', 'audio-20261011.ogg', 'audio/ogg', { voice: true, transcript: 'Sí, ese mismo, lo tengo en bodega.' })] },
+    { ...messages[2], id: 22, body: 'TE PASO LA LISTA', attachments: [file(503, 'document', 'lista de precios.pdf', 'application/pdf', { size: 2.4 * 1024 * 1024 }), file(504, 'video', 'video.mp4', 'video/mp4', { failed: true })] },
+  ];
+  const sent: { type: string; body: string }[] = [];
+  await page.route(/\/deals\/[^/]+\/messages(\?.*)?$/, route => route.fulfill({ json: { results: route.request().url().includes('after=') ? [] : chat, cursor: 22, has_more: false, has_earlier: false, assistant_notice: false } }));
+  await page.route(/\/deals\/[^/]+\/attachments\/\d+$/, route => route.fulfill({ body: Buffer.from(''), contentType: 'application/octet-stream' }));
+  await page.route(/\/deals\/[^/]+\/attachments\/501$/, route => route.fulfill({ body: PNG, contentType: 'image/png' }));
+  await page.route(/\/deals\/[^/]+\/attachments$/, route => {
+    const request = route.request();
+    sent.push({ type: request.headers()['content-type'] || '', body: request.postDataBuffer()?.toString('latin1') || '' });
+    const reply = { id: 30, message_id: 'n', body: '', account_id: acct.id, account_name: acct.name, actor_name: 'Francisco', created_at: new Date().toISOString(), attachments: [file(505, 'document', 'factura.pdf', 'application/pdf')] };
+    chat.push(reply);
+    return route.fulfill({ json: reply });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Mensajes, 3 sin leer', exact: true }).click();
+  const log = page.getByRole('dialog', { name: 'Conversaciones', exact: true }).getByRole('log', { name: 'Mensajes del acuerdo', exact: true });
+  await expect(log.getByRole('link', { name: 'Abrir tambor.jpg', exact: true }).getByRole('img', { name: 'tambor.jpg' })).toBeVisible();
+  await log.getByRole('img', { name: 'tambor.jpg' }).scrollIntoViewIfNeeded();  // photos load as they come into view
+  await expect.poll(() => log.getByRole('img', { name: 'tambor.jpg' }).evaluate(image => (image as HTMLImageElement).naturalWidth)).toBe(1);  // loaded
+  const voice = log.getByRole('article').filter({ has: page.getByLabel('Nota de voz', { exact: true }) });
+  await expect(voice).toContainText('vía WhatsApp');
+  await expect(voice.getByRole('figure')).toContainText('Transcripción automáticaSí, ese mismo, lo tengo en bodega.');
+  await expect(log.getByRole('link', { name: /lista de precios\.pdf/ })).toContainText('2,4 MB');
+  await expect(log).toContainText('No se pudo recibir el video enviado por WhatsApp.');
+
+  const conversation = page.getByRole('region', { name: 'Orden ORD-0123 con GRUPO RAZOR PARTS', exact: true });
+  const picker = conversation.getByLabel('Elegir archivos', { exact: true });
+  await picker.setInputFiles({ name: 'grande.mp4', mimeType: 'video/mp4', buffer: Buffer.alloc(17 * 1024 * 1024) });
+  await expect(conversation.getByRole('alert')).toContainText('«grande.mp4» pesa más de 16 MB.');
+  await picker.setInputFiles([{ name: 'factura.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4') }, { name: 'otra.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4') }]);
+  const attached = conversation.getByRole('list', { name: 'Archivos para enviar', exact: true });
+  await expect(attached.getByRole('listitem')).toHaveCount(2);
+  await attached.getByRole('button', { name: 'Quitar otra.pdf', exact: true }).click();
+  await expect(attached.getByRole('listitem')).toHaveText([/factura\.pdf/]);
+  const composer = conversation.getByLabel('Mensaje del acuerdo', { exact: true });
+  await expect(composer).toHaveAttribute('placeholder', 'Agrega un mensaje (opcional)…');
+  await conversation.getByRole('button', { name: 'Enviar mensaje', exact: true }).click();  // a file and no text
+  await expect(log.getByRole('link', { name: /factura\.pdf/ })).toBeVisible();
+  expect(sent).toHaveLength(1);
+  expect(sent[0].type).toContain('multipart/form-data');
+  expect(sent[0].body).toContain('filename="factura.pdf"');
+  expect(sent[0].body).not.toContain('otra.pdf');
+  await expect(attached).toHaveCount(0);
+});

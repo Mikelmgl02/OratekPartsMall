@@ -18,6 +18,7 @@ from rest_framework import serializers
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .deal_attachments import describe
 from .inbox import event_title, snippet
 from .inbox_models import PushSubscription
 from .models import Account, Membership
@@ -89,7 +90,7 @@ def notify_later(order, account_id, actor_id, build):
 def message_saved(sender, instance, created=False, raw=False, **kwargs):
     if created and not raw and push_enabled():
         notify_later(instance.order, instance.account_id, instance.actor_id,
-                     lambda: (f'{instance.account.name} · {instance.order.reference}', snippet(instance.body)))
+                     lambda: (f'{instance.account.name} · {instance.order.reference}', snippet(describe(instance))))
 
 
 def event_saved(sender, instance, created=False, raw=False, **kwargs):

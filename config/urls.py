@@ -5,7 +5,7 @@ from django.conf.urls.static import static
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from rest_framework.authtoken.views import ObtainAuthToken
 from rest_framework.throttling import AnonRateThrottle
-from mall import email_notifications, inbox, login_hints, management, push, views, whatsapp, whatsapp_accounts, whatsapp_verification
+from mall import deal_attachments, email_notifications, inbox, login_hints, management, push, views, whatsapp, whatsapp_accounts, whatsapp_verification
 from mall.technical_api import (PartTypeList, PartTypeDetail, TemplateDetail, ApplicationList, ApplicationDetail,
                                ItemTechnicalDetail, CatalogTechnicalDetail)
 from mall.matching_views import MatchingOverview, MatchingReview
@@ -146,6 +146,7 @@ urlpatterns = [
     path('api/v1/accounts/<uuid:account_id>/requests/<uuid:pk>/quotations/<uuid:quotation_id>/trace/', QuotationTrace.as_view()),
     path('api/v1/accounts/<uuid:account_id>/deals/<uuid:pk>/actions/', DealActions.as_view()),
     path('api/v1/accounts/<uuid:account_id>/deals/<uuid:pk>/messages/', DealMessages.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/deals/<uuid:pk>/attachments/<int:attachment_id>/', deal_attachments.DealAttachmentFile.as_view()),
     path('api/v1/accounts/<uuid:account_id>/pricing/settings/', PricingSettingsView.as_view()),
     path('api/v1/accounts/<uuid:account_id>/pricing/history/', PricingHistory.as_view()),
     path('api/v1/accounts/<uuid:account_id>/price-lists/', PriceListsView.as_view()),

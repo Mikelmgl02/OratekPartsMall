@@ -9,13 +9,15 @@ from datetime import timedelta
 from unittest.mock import patch
 
 from django.conf import settings
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from .inbox_models import AccountWhatsApp, ConversationRead, InboxCursor, WhatsAppContact, WhatsAppMessage
 from .models import Membership
-from .request_models import DealMessage
+from .request_models import DealAttachment, DealMessage
+from .test_deal_attachments import ChatStorage
 from . import test_deals as deal_tests
 from . import login_hints, whatsapp_templates
 
@@ -361,9 +363,9 @@ class WhatsAppBridgeTests(APITestCase):
     def test_what_cannot_go_into_a_deal_gets_a_pointer_and_baja_still_opts_out(self, urlopen):
         self.answering(urlopen)
         self.opt_in(self.buyer, '+50761111111')
-        self.write('+50761111111', '', 'wamid.FOTO', kind='image')
+        self.write('+50761111111', '', 'wamid.MAPA', kind='location')
         [pointer] = self.sent(urlopen)
-        self.assertIn('solo pasamos mensajes de texto', pointer['text']['body'])
+        self.assertIn('pasamos a la orden textos, fotos, documentos, audios y videos', pointer['text']['body'])
         WhatsAppContact.objects.update(replied_at=None)
         WhatsAppMessage.objects.create(user=self.buyer, order=self.order(), number='+50761111111', template='motionpartes_novedad_orden',
                                        kind='quote', status='failed')  # a notice that never reached them
@@ -435,3 +437,148 @@ class WhatsAppBridgeTests(APITestCase):
         self.write('+50769999999', 'Gracias, esperamos la cotización', 'wamid.CUENTA', context=notice_id)
         message = DealMessage.objects.get(order=order, channel='whatsapp')
         self.assertEqual((message.account, message.actor), (self.client_account, self.buyer))  # on the account's behalf, signed by who verified it
+
+
+class Raw(Reply):
+    def __init__(self, data):
+        self.data = data
+
+
+class FakeMeta:
+    """Meta for the media tests: the files people sent (their address, then their bytes), uploads and sends, every call recorded."""
+
+    def __init__(self, files=None, refuse_upload=False):
+        self.files, self.refuse_upload, self.calls = files or {}, refuse_upload, []
+        self.counter, self.media = iter(range(1, 1000)), iter(range(1, 1000))
+
+    def __call__(self, request, timeout=None):
+        url, method = request.full_url, request.get_method()
+        self.calls.append((method, url, request.data))
+        if url.startswith('https://lookaside.fbsbx.com/'):
+            return Raw(self.files[url.rsplit('=', 1)[1]][0])
+        if method == 'GET':
+            media_id = url.rsplit('/', 1)[1]
+            if media_id not in self.files:
+                raise urllib.error.HTTPError(url, 404, 'Not Found', {}, io.BytesIO(b'{"error":{"code":100}}'))
+            content, mime = self.files[media_id]
+            return Reply({'url': f'https://lookaside.fbsbx.com/whatsapp_business/attachments/?mid={media_id}', 'mime_type': mime,
+                          'file_size': len(content), 'id': media_id})
+        if url.endswith('/1055/media'):
+            if self.refuse_upload:
+                raise urllib.error.HTTPError(url, 400, 'Bad Request', {}, io.BytesIO(b'{"error":{"code":131053}}'))
+            return Reply({'id': f'MEDIA{next(self.media)}'})
+        return Reply({'messages': [{'id': f'wamid.OUT{next(self.counter)}'}]})
+
+    def sent(self):
+        payloads = [json.loads(data) for method, url, data in self.calls if url.endswith('/1055/messages')]
+        self.calls.clear()
+        return payloads
+
+    def uploads(self):
+        return [data for method, url, data in self.calls if url.endswith('/1055/media')]
+
+
+@override_settings(**CLOUD)
+@patch('mall.push.dispatch', lambda job: job())
+@patch('urllib.request.urlopen')
+class WhatsAppMediaTests(ChatStorage, APITestCase):
+    """Files through the bridge: photos, documents, audio and video people send by WhatsApp land in the deal's chat (a voice note with
+    its transcript), and the chat's files reach WhatsApp while the window is open."""
+    account = deal_tests.DealWorkflowTests.account
+    item = deal_tests.DealWorkflowTests.item
+    url = deal_tests.DealWorkflowTests.url
+    payload = deal_tests.DealWorkflowTests.payload
+    submit = deal_tests.DealWorkflowTests.submit
+    opt_in = WhatsAppTests.opt_in
+    order = WhatsAppTests.order
+    webhook = WhatsAppTests.webhook
+    review = WhatsAppBridgeTests.review
+
+    def setUp(self):
+        deal_tests.DealWorkflowTests.setUp(self)
+        self.use_memory_storage()
+
+    def arrives(self, message):
+        with self.captureOnCommitCallbacks(execute=True):
+            self.assertEqual(self.webhook({'messages': [{'from': '50761111111', **message}]}).status_code, 200)
+
+    def test_a_photo_sent_by_whatsapp_lands_in_the_chat_with_its_caption_once(self, urlopen):
+        meta = urlopen.side_effect = FakeMeta({'1111': (b'\xff\xd8\xff-foto', 'image/jpeg')})
+        order = self.order()
+        self.opt_in(self.buyer, '+50761111111')
+        self.review(order)
+        meta.sent()
+        photo = {'id': 'wamid.FOTO', 'type': 'image', 'image': {'id': '1111', 'mime_type': 'image/jpeg', 'caption': 'Este es el que necesito'}}
+        self.arrives(photo)
+        message = DealMessage.objects.get(order=order, channel='whatsapp')
+        [attachment] = message.attachments.all()
+        self.assertEqual((message.body, message.actor, attachment.kind, attachment.content_type, attachment.failed),
+                         ('Este es el que necesito', self.buyer, 'image', 'image/jpeg', False))
+        self.assertRegex(attachment.name, r'^foto-\d{8}-\d{6}\.jpg$')
+        self.assertEqual(attachment.file.read(), b'\xff\xd8\xff-foto')
+        self.assertEqual([payload['type'] for payload in meta.sent()], ['reaction'])
+        self.arrives(photo)  # Meta delivers it again
+        self.assertEqual(DealMessage.objects.filter(channel='whatsapp').count(), 1)
+        self.arrives({'id': 'wamid.LIKE', 'type': 'reaction', 'reaction': {'message_id': 'wamid.OUT1', 'emoji': '👍'}})
+        self.assertEqual(meta.sent(), [])  # a reaction: nothing for the chat, no pointer
+
+    def test_a_voice_note_is_transcribed_and_its_words_reach_the_other_side(self, urlopen):
+        meta = urlopen.side_effect = FakeMeta({'2222': (b'OggS-voz', 'audio/ogg; codecs=opus')})
+        order = self.order()
+        self.opt_in(self.buyer, '+50761111111')
+        self.opt_in(self.seller_a, '+50762222222')
+        self.review(order)
+        meta.sent()
+        with patch('mall.catalog_classification.provider_configuration', return_value=('clave', 'modelo')), \
+                patch('mall.catalog_classification.generate_json', return_value={'text': ' Necesito el tambor\n para mañana '}) as gemini:
+            self.arrives({'id': 'wamid.VOZ', 'type': 'audio', 'audio': {'id': '2222', 'mime_type': 'audio/ogg; codecs=opus', 'voice': True}})
+        [attachment] = DealAttachment.objects.all()
+        self.assertEqual((attachment.kind, attachment.voice, attachment.transcript, attachment.content_type),
+                         ('audio', True, 'Necesito el tambor para mañana', 'audio/ogg'))
+        sent_to_gemini = gemini.call_args.args[0]['contents'][0]['parts'][0]['inline_data']
+        self.assertEqual((sent_to_gemini['mime_type'], gemini.call_args.kwargs['feature']), ('audio/ogg', 'chat_transcription'))
+        notice = next(payload for payload in meta.sent() if payload['type'] == 'template')  # the supplier's window is closed
+        self.assertEqual(notice['to'], '50762222222')
+        self.assertEqual(notice['template']['components'][0]['parameters'][2]['text'], '🎤 Nota de voz: «Necesito el tambor para mañana»')
+
+    def test_a_file_meta_will_not_give_still_shows_as_not_received(self, urlopen):
+        meta = urlopen.side_effect = FakeMeta()
+        order = self.order()
+        self.opt_in(self.buyer, '+50761111111')
+        self.review(order)
+        meta.sent()
+        self.arrives({'id': 'wamid.DOC', 'type': 'document', 'document': {'id': '3333', 'mime_type': 'application/pdf', 'filename': 'factura.pdf'}})
+        [attachment] = DealAttachment.objects.all()
+        self.assertEqual((attachment.name, attachment.failed, attachment.file.name), ('factura.pdf', True, ''))
+        self.assertEqual(meta.sent(), [])  # no ✅ for what did not arrive
+        with override_settings(CHAT_MEDIA_MAX_BYTES=4):
+            meta.files['4444'] = (b'demasiado', 'video/mp4')
+            self.arrives({'id': 'wamid.VIDEO', 'type': 'video', 'video': {'id': '4444', 'mime_type': 'video/mp4'}})
+        self.assertTrue(DealAttachment.objects.get(kind='video').failed)
+
+    def chat_files(self, *files):
+        self.client.force_authenticate(self.seller_a)
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(f'/api/v1/accounts/{self.supplier_a.pk}/deals/{self.deal.pk}/messages/',
+                                        {'message_id': str(uuid.uuid4()), 'body': '', 'files': list(files)}, format='multipart')
+        self.assertEqual(response.status_code, 200)
+
+    def test_the_chats_files_reach_whatsapp_as_media_or_as_a_link(self, urlopen):
+        meta = urlopen.side_effect = FakeMeta()
+        self.deal = self.order()
+        self.opt_in(self.buyer, '+50761111111')
+        WhatsAppContact.objects.create(number='+50761111111', last_inbound_at=timezone.now())
+        self.chat_files(SimpleUploadedFile('tambor.jpg', b'\xff\xd8\xff-foto', 'image/jpeg'),
+                        SimpleUploadedFile('detalle.webp', b'RIFF-webp', 'image/webp'), SimpleUploadedFile('lista.pdf', b'%PDF-1.4', 'application/pdf'))
+        self.assertEqual(len(meta.uploads()), 3)
+        heading, photo, webp, pdf = meta.sent()
+        self.assertTrue(heading['text']['body'].startswith(f'*PROVEEDOR A* · {self.deal.reference}\n\nEscribe aquí'))  # files only: just who
+        self.assertEqual((photo['type'], photo['image']), ('image', {'id': 'MEDIA1'}))
+        self.assertEqual((webp['type'], webp['document']), ('document', {'id': 'MEDIA2', 'filename': 'detalle.webp'}))  # WhatsApp shows no webp photos
+        self.assertEqual(pdf['document'], {'id': 'MEDIA3', 'filename': 'lista.pdf'})
+        self.assertEqual(WhatsAppMessage.objects.filter(template='motionpartes_mensaje_nuevo (archivo)', status='accepted').count(), 3)
+
+        meta.refuse_upload = True  # Meta will not take it: the link goes instead
+        self.chat_files(SimpleUploadedFile('plano.pdf', b'%PDF-1.4', 'application/pdf'))
+        [link] = meta.sent()  # the conversation goes on: no heading
+        self.assertTrue(link['text']['body'].startswith('📎 plano.pdf: https://motionpartes.example.invalid/?conversacion='))

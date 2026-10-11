@@ -82,6 +82,9 @@ services:
       DO_SPACES_CDN_ENABLED: ${DO_SPACES_CDN_ENABLED:-true}
       DO_SPACES_CDN_ENDPOINT: ${DO_SPACES_CDN_ENDPOINT:-}
       DO_SPACES_MEDIA_PREFIX: ${DO_SPACES_MEDIA_PREFIX:-motionpartes/media}
+      # Chat files: private on Spaces when configured, or local (the app's disk); local keeps development off the shared bucket.
+      CHAT_MEDIA_STORAGE: ${CHAT_MEDIA_STORAGE:-}
+      CHAT_TRANSCRIPTION: ${CHAT_TRANSCRIPTION:-1}
     volumes:
       - .:/app
       - staticfiles:/vol/web/static

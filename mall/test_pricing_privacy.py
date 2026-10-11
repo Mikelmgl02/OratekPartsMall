@@ -375,7 +375,7 @@ class PricingPrivacyTests(APITestCase):
             'supplier_item_id', 'supplier_id', 'codigo', 'brand', 'sent_quantity', 'pending_quantity', 'reviewed_quantity',
             'quoted_quantity', 'adjustment_quantity', 'handshaked_quantity', 'delivered_quantity'}))
         message = self.client.post(self.messages(order), {'message_id': str(uuid.uuid4()), 'body': 'GRACIAS'}, format='json').data
-        self.assertEqual(set(message), {'id', 'message_id', 'body', 'account_id', 'account_name', 'actor_name', 'channel', 'created_at'})
+        self.assertEqual(set(message), {'id', 'message_id', 'body', 'account_id', 'account_name', 'actor_name', 'channel', 'attachments', 'created_at'})
         # The only assistant datum a client receives is the D3 disclosure flag on the conversation.
         listed = self.client.get(self.messages(order)).data
         self.assertEqual((set(listed), set(listed['results'][0]), listed['assistant_notice']),

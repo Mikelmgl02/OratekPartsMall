@@ -25,7 +25,9 @@ export type Quotation = {
   lines: { order_line_id: string; codigo: string; sku: string; description: string; quantity: number; unit_price: string; total: string }[];
 };
 export type DealEvent = { id: number; kind: string; description: string; account_name: string; actor_name: string; created_at: string; quotation_id: string | null };
-export type DealMessage = { id: number; message_id: string; body: string; account_id: string; account_name: string; actor_name: string; created_at: string; channel?: 'app' | 'whatsapp' };
+// A file in a deal's chat (mall.deal_attachments): opened through /api/market/accounts/<account>/deals/<deal>/attachments/<id>.
+export type DealAttachment = { id: number; kind: 'image' | 'document' | 'audio' | 'video'; name: string; content_type: string; size: number; voice: boolean; failed: boolean; transcript: string };
+export type DealMessage = { id: number; message_id: string; body: string; account_id: string; account_name: string; actor_name: string; created_at: string; channel?: 'app' | 'whatsapp'; attachments?: DealAttachment[] };
 export type Deal = (ClientRequestDetail | SupplierRequestDetail) & {
   version: number; client: { id: string; name: string }; supplier: { id: string; name: string };
   quotations: Quotation[]; quotation: Quotation | null; events: DealEvent[]; handshaked_at: string | null;
