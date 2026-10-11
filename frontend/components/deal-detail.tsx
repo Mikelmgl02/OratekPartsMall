@@ -1,7 +1,7 @@
 'use client';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { Bot, Check, FileText, Handshake, History, LoaderCircle, LockKeyhole, MessageSquare, Pencil, RefreshCw, Send, UserRoundCog, X } from 'lucide-react';
+import { ArrowDown, Bot, Check, FileText, Handshake, History, LoaderCircle, LockKeyhole, MessageSquare, Pencil, RefreshCw, Send, UserRoundCog, X } from 'lucide-react';
 import Modal from './modal';
 import { percent } from './price-explanation';
 import DealStatusBadge from './deal-status';
@@ -356,6 +356,12 @@ export function DealChat({ account, orderId, active, supplier, insert, compact =
   const pending = useRef<{ body: string; id: string } | null>(null);
   const sendLock = useRef(false);
   const readUpTo = useRef(0);
+  // The latest message stays in view: after sending, and when one arrives, the log goes all the way down once it is drawn. Someone
+  // scrolled up more than a screen (reading earlier messages) gets "Mensajes nuevos" instead. Pinned to the bottom, the log stays there
+  // when it changes size (a phone's keyboard opening).
+  const atBottom = useRef(true);
+  const stick = useRef(false);
+  const [newBelow, setNewBelow] = useState(false);
   const merge = (items: DealMessage[]) => setMessages(values => [...new Map([...values, ...items].map(value => [value.id, value])).values()].sort((a, b) => a.id - b.id));
   const fetched = useRef(0);
   const fetchMessages = useCallback(async () => {
@@ -368,9 +374,9 @@ export function DealChat({ account, orderId, active, supplier, insert, compact =
         if (!mounted.current) return;
         if (cursor.current === null) setHasEarlier(data.has_earlier);
         setAssistantNotice(data.assistant_notice === true);
-        const wasAtBottom = !log.current || log.current.scrollHeight - log.current.scrollTop - log.current.clientHeight < 70;
+        const box = log.current, reading = !!box && box.scrollHeight - box.scrollTop - box.clientHeight > box.clientHeight;
         merge(data.results);
-        if (wasAtBottom && data.results.length) requestAnimationFrame(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; });
+        if (data.results.length) { if (cursor.current === null || !reading) stick.current = true; else setNewBelow(true); }
         cursor.current = data.cursor; more = data.has_more; setReady(true); setError('');
       }
     } catch (caught) { if (mounted.current) setError(failure(caught)); }
@@ -384,6 +390,29 @@ export function DealChat({ account, orderId, active, supplier, insert, compact =
     return () => { mounted.current = false; clearInterval(timer); off(); };
   }, [fetchMessages, orderId]);
   useEffect(() => { if (active) void fetchMessages(); }, [active, fetchMessages]);
+  useLayoutEffect(() => {
+    if (!stick.current || !log.current) return;
+    stick.current = false; atBottom.current = true;
+    log.current.scrollTop = log.current.scrollHeight;
+    setNewBelow(false);
+  }, [messages]);
+  useEffect(() => {
+    const box = log.current;
+    if (!box) return;
+    const observer = new ResizeObserver(() => { if (atBottom.current) box.scrollTop = box.scrollHeight; });
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, []);
+  function scrolled() {
+    const box = log.current;
+    if (!box) return;
+    atBottom.current = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+    if (atBottom.current) setNewBelow(false);
+  }
+  function toLatest() {
+    log.current?.scrollTo({ top: log.current.scrollHeight, behavior: 'smooth' });
+    atBottom.current = true; setNewBelow(false);
+  }
   useEffect(() => {
     const last = messages.at(-1)?.id;
     if (!active || !last || last <= readUpTo.current || document.visibilityState !== 'visible') return;
@@ -413,7 +442,7 @@ export function DealChat({ account, orderId, active, supplier, insert, compact =
     try {
       const message = await request<DealMessage>(path, { method: 'POST', body: JSON.stringify({ body: text, message_id: pending.current.id }) });
       if (!mounted.current) return;
-      merge([message]); setBody(''); setCopied(false); pending.current = null; void fetchMessages();
+      stick.current = true; merge([message]); setBody(''); setCopied(false); pending.current = null; void fetchMessages();
     } catch (caught) { if (mounted.current) setError(failure(caught)); }
     finally { sendLock.current = false; if (mounted.current) { setSending(false); requestAnimationFrame(() => composer.current?.focus()); } }
   }
@@ -428,7 +457,8 @@ export function DealChat({ account, orderId, active, supplier, insert, compact =
       : 'El proveedor usa un asistente de IA (Google Gemini) que puede leer las notas de tu orden y esta conversación para preparar tu cotización. No recibe precios ni existencias.'}</p>}
     {error && <div className="notice error" role="alert">{error}<button type="button" onClick={() => void fetchMessages()}>Actualizar mensajes</button></div>}
     {hasEarlier && <button type="button" className="button soft small" disabled={loadingEarlier} onClick={() => void earlier()}>Cargar mensajes anteriores</button>}
-    <div ref={log} className="deal-chat-messages" role="log" aria-label="Mensajes del acuerdo" aria-live="polite">{!ready && !error ? <p>Cargando mensajes…</p> : !messages.length ? <p className="deal-chat-empty">Inicia la conversación sobre esta orden.</p> : messages.map(message => <article key={message.id} className={message.account_id === account.id ? 'own' : ''}><header><strong>{message.account_name}</strong><span>{message.actor_name} · {date(message.created_at)}</span></header><p>{message.body}</p></article>)}</div>
+    <div ref={log} className="deal-chat-messages" role="log" aria-label="Mensajes del acuerdo" aria-live="polite" onScroll={scrolled}>{!ready && !error ? <p>Cargando mensajes…</p> : !messages.length ? <p className="deal-chat-empty">Inicia la conversación sobre esta orden.</p> : messages.map(message => <article key={message.id} className={message.account_id === account.id ? 'own' : ''}><header><strong>{message.account_name}</strong><span>{message.actor_name} · {date(message.created_at)}</span></header><p>{message.body}</p></article>)}</div>
+    {newBelow && <button type="button" className="deal-chat-new" onClick={toLatest}><ArrowDown size={14}/>Mensajes nuevos</button>}
     <form onSubmit={event => { event.preventDefault(); void send(); }}><label>Mensaje<textarea ref={composer} aria-label="Mensaje del acuerdo" required maxLength={4000} readOnly={sending} value={body} onChange={event => { setBody(event.target.value); setCopied(false); }} onKeyDown={composerKey} placeholder="Escribe a la otra parte…"/></label>
       {copied && <small className="deal-chat-copied" role="status">Pregunta del asistente copiada. Revísala y envíala cuando quieras.</small>}<div className="deal-chat-send"><small className="deal-chat-hint">Enter para enviar · Shift+Enter para otra línea</small><button type="submit" className="button primary" disabled={sending || !body.trim()}>{sending ? <LoaderCircle size={15} className="spin"/> : <Send size={15}/>}Enviar mensaje</button></div></form>
   </section>;

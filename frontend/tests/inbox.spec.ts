@@ -476,3 +476,43 @@ test.describe('on a touch phone', () => {
     expect(await page.evaluate(() => window.visualViewport?.scale ?? 1)).toBe(1);
   });
 });
+
+test('the chat goes all the way down when a message is sent or arrives; reading earlier ones, it offers the new one instead', async ({ page }) => {
+  await mockInbox(page, { current: pending() });
+  const chat = Array.from({ length: 30 }, (_, index) => ({ id: index + 1, message_id: `m${index}`, body: `MENSAJE ${index + 1}`, account_id: index % 2 ? sup.id : acct.id,
+    account_name: index % 2 ? sup.name : acct.name, actor_name: index % 2 ? 'Carlos Ruiz' : 'Francisco', created_at: iso(60 - index) }));
+  const arrive = (id: number, body: string) => chat.push({ id, message_id: `r${id}`, body, account_id: sup.id, account_name: sup.name, actor_name: 'Carlos Ruiz', created_at: new Date().toISOString() });
+  await page.route(/\/deals\/[^/]+\/messages(\?.*)?$/, route => {
+    if (route.request().method() === 'POST') {
+      const body = route.request().postDataJSON();
+      const sent = { id: 500 + chat.length, message_id: body.message_id, body: body.body, account_id: acct.id, account_name: acct.name, actor_name: 'Francisco', created_at: new Date().toISOString() };
+      chat.push(sent);
+      return route.fulfill({ json: sent });
+    }
+    const after = Number(new URL(route.request().url()).searchParams.get('after') || 0);
+    return route.fulfill({ json: { results: chat.filter(message => message.id > after), cursor: Math.max(...chat.map(message => message.id)), has_more: false, has_earlier: false } });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Mensajes, 3 sin leer', exact: true }).click();
+  const log = page.getByRole('dialog', { name: 'Conversaciones', exact: true }).getByRole('log', { name: 'Mensajes del acuerdo', exact: true });
+  const below = () => log.evaluate(element => Math.round(element.scrollHeight - element.scrollTop - element.clientHeight));
+  await expect(log).toContainText('MENSAJE 30');
+  await expect.poll(below).toBeLessThan(2);  // opens on the latest
+  arrive(200, 'LLEGÓ AHORA');
+  await expect(log).toContainText('LLEGÓ AHORA', { timeout: 8000 });
+  await expect.poll(below).toBeLessThan(2);  // a message arrives: all the way down
+  await log.evaluate(element => { element.scrollTop = 0; element.dispatchEvent(new Event('scroll')); });  // reading earlier messages
+  arrive(201, 'OTRO MÁS');
+  const newer = page.getByRole('button', { name: 'Mensajes nuevos', exact: true });
+  await expect(newer).toBeVisible({ timeout: 8000 });
+  expect(await below()).toBeGreaterThan(100);  // left where they were reading
+  await newer.click();
+  await expect.poll(below).toBeLessThan(2);
+  await expect(newer).toHaveCount(0);
+  await log.evaluate(element => { element.scrollTop = 0; element.dispatchEvent(new Event('scroll')); });
+  const composer = page.getByLabel('Mensaje del acuerdo', { exact: true });
+  await composer.fill('Mi respuesta');
+  await composer.press('Enter');
+  await expect(log).toContainText('Mi respuesta');
+  await expect.poll(below).toBeLessThan(2);  // sending: all the way down
+});

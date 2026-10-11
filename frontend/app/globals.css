@@ -2513,3 +2513,6 @@ body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-s
 @media (hover: none) and (pointer: coarse) {
   input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]), textarea, select { font-size: 16px !important; }
 }
+
+/* A message arrived while someone reads earlier ones (deal-detail.tsx DealChat): a way down to it, instead of moving them. */
+.deal-chat-new { align-self:center; display:inline-flex; align-items:center; gap:6px; margin-top:-4px; padding:6px 12px; border-radius:999px; background:#232b26; color:#fff; font-size:12px; font-weight:600; box-shadow:0 6px 16px #19221b2e; }
