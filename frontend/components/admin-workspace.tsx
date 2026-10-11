@@ -203,7 +203,7 @@ function ApiagEditor({ account, onClose, onSaved }: { account: ManagedAccount; o
 // How the person gets notices (mall.management.ManagedUserDetailSerializer): read only, since each person chooses their own and WhatsApp needs
 // their own consent.
 type UserNotices = { email: { available: boolean; address: string; messages: boolean; updates: boolean };
-  whatsapp: { available: boolean; number: string; opted_in_at: string | null; messages: boolean; updates: boolean };
+  whatsapp: { available: boolean; number: string; opted_in_at: string | null; verified: boolean; messages: boolean; updates: boolean };
   push: { available: boolean; devices: number }; last_seen_at: string | null };
 const noticeKinds = (channel: { messages: boolean; updates: boolean }) => [channel.messages && 'mensajes', channel.updates && 'cambios en órdenes'].filter(Boolean).join(' y ') || 'ninguno';
 const shortDate = (value: string) => new Date(value).toLocaleDateString('es-PA', { timeZone: 'America/Panama', day: 'numeric', month: 'short', year: 'numeric' });
@@ -216,7 +216,7 @@ function UserNoticesSummary({ userId }: { userId: number }) {
     {failed ? <p className="form-footnote">No se pudieron cargar sus avisos.</p> : !notices ? <p className="form-footnote"><LoaderCircle size={14} className="spin"/>Cargando…</p> : <dl>
       <div><dt>Correo</dt><dd>{notices.email.available ? `${noticeKinds(notices.email)} · ${notices.email.address}` : 'No configurado en el servidor'}</dd></div>
       <div><dt>WhatsApp</dt><dd>{!notices.whatsapp.available ? 'No configurado en el servidor' : notices.whatsapp.opted_in_at
-        ? `${notices.whatsapp.number} · activo desde ${shortDate(notices.whatsapp.opted_in_at)} · ${noticeKinds(notices.whatsapp)}`
+        ? `${notices.whatsapp.number} · ${notices.whatsapp.verified ? `verificado, activo desde ${shortDate(notices.whatsapp.opted_in_at)}` : 'sin verificar (no recibe avisos)'} · ${noticeKinds(notices.whatsapp)}`
         : notices.whatsapp.number ? `${notices.whatsapp.number} · desactivado` : 'No activado'}</dd></div>
       <div><dt>Navegador</dt><dd>{!notices.push.available ? 'No configurado en el servidor' : notices.push.devices ? `${notices.push.devices} ${notices.push.devices === 1 ? 'dispositivo' : 'dispositivos'}` : 'Ninguno'}</dd></div>
       <div><dt>Último uso</dt><dd>{notices.last_seen_at ? shortDate(notices.last_seen_at) : 'Sin registro'}</dd></div>

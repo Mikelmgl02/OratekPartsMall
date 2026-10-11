@@ -57,6 +57,13 @@ class InboxCursor(models.Model):
     whatsapp_updates = models.BooleanField(default=True, verbose_name='WhatsApp por cambios en las órdenes')
     # The last automatic answer to a message the person wrote to the notices number (at most one per WHATSAPP_REPLY_EVERY).
     whatsapp_replied_at = models.DateTimeField(null=True, blank=True)
+    # A number is used only once the person proves it is theirs: a code sent there by WhatsApp (mall.whatsapp_verification), kept only as
+    # a hash, valid for a few minutes and a few attempts. Until then the number waits here, and an earlier verified number keeps working.
+    whatsapp_verified_at = models.DateTimeField(null=True, blank=True, verbose_name='número de WhatsApp verificado')
+    whatsapp_pending_number = models.CharField(max_length=20, blank=True, default='')
+    whatsapp_code_hash = models.CharField(max_length=64, blank=True, default='')
+    whatsapp_code_sent_at = models.DateTimeField(null=True, blank=True)
+    whatsapp_code_attempts = models.PositiveSmallIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

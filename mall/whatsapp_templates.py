@@ -29,6 +29,11 @@ def definitions(settings):
         {'name': settings.WHATSAPP_TEMPLATE_MESSAGE, 'language': settings.WHATSAPP_TEMPLATE_LANGUAGE, 'category': 'UTILITY', 'components': [
             {'type': 'BODY', 'text': BODIES['message'],
              'example': {'body_text': [['GRUPO RAZOR PARTS', 'ORD-20261010-55791743', '¿Pueden entregar el lunes?']]}}, button]},
+        # A number's verification code (mall.whatsapp_verification): Meta writes the text of Authentication templates itself.
+        {'name': settings.WHATSAPP_TEMPLATE_CODE, 'language': settings.WHATSAPP_TEMPLATE_LANGUAGE, 'category': 'AUTHENTICATION', 'components': [
+            {'type': 'BODY', 'add_security_recommendation': True},
+            {'type': 'FOOTER', 'code_expiration_minutes': 10},
+            {'type': 'BUTTONS', 'buttons': [{'type': 'OTP', 'otp_type': 'COPY_CODE', 'text': 'Copiar código'}]}]},
     ]
 
 

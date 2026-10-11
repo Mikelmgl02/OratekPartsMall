@@ -153,7 +153,8 @@ def deliver(jobs):
 def recipients(order, account_id, actor_id, preference):
     """The other party's people who opted in with a number and want this kind of notice."""
     users = push.other_side(order, account_id, actor_id)
-    return list(InboxCursor.objects.filter(user_id__in=users, user__is_active=True, whatsapp_opt_in_at__isnull=False, **{preference: True})
+    return list(InboxCursor.objects.filter(user_id__in=users, user__is_active=True, whatsapp_opt_in_at__isnull=False, whatsapp_verified_at__isnull=False,
+                                           **{preference: True})
                 .exclude(whatsapp_number='').order_by('user_id'))
 
 
@@ -207,10 +208,18 @@ class WhatsAppPreferences(serializers.Serializer):
     opt_in = serializers.BooleanField(required=False)
     messages = serializers.BooleanField(required=False)
     updates = serializers.BooleanField(required=False)
+    cancel = serializers.BooleanField(required=False)  # drops the number waiting for its code
 
 
 def preferences(cursor):
+    """active: notices go to number (consent given and the number verified). pending_number waits for the code sent at code_sent_at."""
+    from .whatsapp_verification import CODE_TTL, RESEND_AFTER
+    sent = cursor.whatsapp_code_sent_at if cursor.whatsapp_pending_number else None
     return {'enabled': whatsapp_enabled(), 'number': cursor.whatsapp_number, 'opted_in': cursor.whatsapp_opt_in_at is not None,
+            'verified': cursor.whatsapp_verified_at is not None, 'active': cursor.whatsapp_opt_in_at is not None and cursor.whatsapp_verified_at is not None,
+            'pending_number': cursor.whatsapp_pending_number, 'code_sent_at': sent.isoformat() if sent else None,
+            'code_expires_at': (sent + CODE_TTL).isoformat() if sent and cursor.whatsapp_code_hash else None,
+            'resend_at': (sent + RESEND_AFTER).isoformat() if sent else None,
             'messages': cursor.whatsapp_messages, 'updates': cursor.whatsapp_updates}
 
 
@@ -220,32 +229,36 @@ class InboxWhatsApp(APIView):
     def get(self, request):
         return Response(preferences(cursor_for(request.user)))
 
-    @extend_schema(request=WhatsAppPreferences, responses=OpenApiTypes.OBJECT, description='opt_in=true con number registra el consentimiento '
-                   '(un número nuevo lo pide de nuevo); opt_in=false lo retira. messages y updates eligen los avisos.')
+    @extend_schema(request=WhatsAppPreferences, responses=OpenApiTypes.OBJECT, description='opt_in=true con number da el consentimiento: un '
+                   'número no verificado recibe un código por WhatsApp y queda pendiente hasta confirmarlo en inbox/whatsapp/verify/ (number '
+                   'sin cambios y ya verificado se reactiva sin código). opt_in=false retira el consentimiento; cancel=true descarta el número '
+                   'pendiente; messages y updates eligen los avisos.')
     def post(self, request):
+        from .whatsapp_verification import CLEARED, start
         if not whatsapp_enabled():
             return Response({'detail': 'Los avisos por WhatsApp no están configurados.'}, status=409)
         data = WhatsAppPreferences(data=request.data)
         data.is_valid(raise_exception=True)
         values, cursor = data.validated_data, cursor_for(request.user)
         changes = {field: values[key] for key, field in [('messages', 'whatsapp_messages'), ('updates', 'whatsapp_updates')] if key in values}
-        if 'number' in values:
-            number = normalize_number(values['number'])
+        if values.get('cancel'):
+            changes.update(CLEARED)
+        if 'number' in values or values.get('opt_in') is True:
+            number = normalize_number(values['number']) if 'number' in values else cursor.whatsapp_number or None
             if number is None:
                 raise serializers.ValidationError({'number': 'Escribe tu número de WhatsApp con el código de país, por ejemplo +507 6123 4567.'})
-            if number != cursor.whatsapp_number and not values.get('opt_in'):
-                raise serializers.ValidationError({'opt_in': 'Acepta recibir avisos en el número nuevo.'})
-            changes['whatsapp_number'] = number
-        if values.get('opt_in') is True:
-            if not changes.get('whatsapp_number', cursor.whatsapp_number):
-                raise serializers.ValidationError({'number': 'Indica tu número de WhatsApp.'})
-            if cursor.whatsapp_opt_in_at is None or changes.get('whatsapp_number', cursor.whatsapp_number) != cursor.whatsapp_number:
-                changes['whatsapp_opt_in_at'] = timezone.now()  # consent belongs to the number it was given for
+            if not values.get('opt_in'):
+                raise serializers.ValidationError({'opt_in': 'Acepta recibir avisos en el número.'})
+            if number == cursor.whatsapp_number and cursor.whatsapp_verified_at:
+                if cursor.whatsapp_opt_in_at is None:
+                    changes['whatsapp_opt_in_at'] = timezone.now()  # back on, in a number already proven theirs
+            else:
+                start(request.user, cursor, number)  # a code to the number; it waits until the person confirms it
         elif values.get('opt_in') is False:
-            changes['whatsapp_opt_in_at'] = None
+            changes.update(whatsapp_opt_in_at=None, **CLEARED)
         if changes:
             InboxCursor.objects.filter(pk=cursor.pk).update(**changes)
-            cursor.refresh_from_db()
+        cursor.refresh_from_db()
         return Response(preferences(cursor))
 
 

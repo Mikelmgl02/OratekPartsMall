@@ -53,9 +53,12 @@ class WhatsAppTests(APITestCase):
             return deal_tests.DealWorkflowTests.order(self)
 
     def opt_in(self, user, number):
+        """Consent and the code typed back (its sending stubbed, so the tests count only notices)."""
         self.client.force_authenticate(user)
-        response = self.client.post('/api/v1/inbox/whatsapp/', {'number': number, 'opt_in': True}, format='json')
-        self.assertEqual(response.status_code, 200)
+        with patch('mall.whatsapp_verification.send', return_value=True), patch('mall.whatsapp_verification.secrets.randbelow', return_value=123456):
+            self.assertEqual(self.client.post('/api/v1/inbox/whatsapp/', {'number': number, 'opt_in': True}, format='json').status_code, 200)
+        response = self.client.post('/api/v1/inbox/whatsapp/verify/', {'code': '123456'}, format='json')
+        self.assertEqual((response.status_code, response.data['active']), (200, True))
         InboxCursor.objects.filter(user=user).update(active_at=None)
         return response.data
 
@@ -77,21 +80,75 @@ class WhatsAppTests(APITestCase):
         self.client.force_authenticate(None)
         return self.client.generic('POST', '/api/v1/whatsapp/webhook/', body, content_type='application/json', HTTP_X_HUB_SIGNATURE_256=signature)
 
-    def test_people_opt_in_with_their_number_and_choose_their_notices(self, urlopen):
+    def code(self, number, digits, **extra):
+        with patch('mall.whatsapp_verification.secrets.randbelow', return_value=digits):
+            return self.client.post('/api/v1/inbox/whatsapp/', {'number': number, 'opt_in': True, **extra}, format='json')
+
+    def verify(self, code):
+        return self.client.post('/api/v1/inbox/whatsapp/verify/', {'code': code}, format='json')
+
+    def test_a_number_is_used_only_once_its_owner_types_the_code_sent_to_it(self, urlopen):
+        urlopen.side_effect = lambda request, timeout=None: Reply({'messages': [{'id': 'wamid.CODIGO'}]})
         self.client.force_authenticate(self.buyer)
-        self.assertEqual(self.client.get('/api/v1/inbox/whatsapp/').data,
-                         {'enabled': True, 'number': '', 'opted_in': False, 'messages': True, 'updates': True})
+        self.assertEqual(self.client.get('/api/v1/inbox/whatsapp/').data, {'enabled': True, 'number': '', 'opted_in': False, 'verified': False, 'active': False,
+            'pending_number': '', 'code_sent_at': None, 'code_expires_at': None, 'resend_at': None, 'messages': True, 'updates': True})
         self.assertEqual(self.client.post('/api/v1/inbox/whatsapp/', {'number': '6123-4567'}, format='json').status_code, 400)  # no consent
         self.assertEqual(self.client.post('/api/v1/inbox/whatsapp/', {'number': '12', 'opt_in': True}, format='json').status_code, 400)
-        data = self.client.post('/api/v1/inbox/whatsapp/', {'number': '6123 4567', 'opt_in': True}, format='json').data
-        self.assertEqual((data['number'], data['opted_in']), ('+50761234567', True))  # a local number gets Panamá's code
+        urlopen.assert_not_called()
+        data = self.code('6123 4567', 4242).data
+        self.assertEqual((data['pending_number'], data['number'], data['active']), ('+50761234567', '', False))  # a local number gets Panamá's code
+        [payload] = self.sent(urlopen)
+        self.assertEqual((payload['to'], payload['template']['name'], payload['template']['components'][0]['parameters'][0]['text']),
+                         ('50761234567', 'motionpartes_codigo', '004242'))
+        self.assertEqual(WhatsAppMessage.objects.get(kind='verify').status, 'accepted')
+        self.assertEqual(self.verify('000000').data['code'], ['El código no es correcto. Te quedan 4 intentos.'])
+        data = self.verify('004242').data
+        self.assertEqual((data['number'], data['active'], data['verified'], data['pending_number']), ('+50761234567', True, True, ''))
         self.assertEqual(self.client.post('/api/v1/inbox/whatsapp/', {'updates': False}, format='json').data['updates'], False)
-        self.assertEqual(self.client.post('/api/v1/inbox/whatsapp/', {'opt_in': False}, format='json').data['opted_in'], False)
-        self.assertEqual(self.client.post('/api/v1/inbox/whatsapp/', {'number': '+1 (305) 555-0100', 'opt_in': True}, format='json').data['number'], '+13055550100')
+        self.assertEqual(self.client.post('/api/v1/inbox/whatsapp/', {'opt_in': False}, format='json').data['active'], False)
+        self.assertEqual(self.client.post('/api/v1/inbox/whatsapp/', {'number': '+507 6123 4567', 'opt_in': True}, format='json').data['active'], True)
+        self.assertEqual(self.sent(urlopen), [])  # back on, in a number already proven: no code
+        self.assertEqual(self.code('+1 (305) 555-0100', 1).status_code, 429)  # a minute between codes
+        with patch('mall.whatsapp_verification.RESEND_AFTER', timedelta(0)):
+            data = self.code('+1 (305) 555-0100', 1).data
+        self.assertEqual((data['number'], data['active'], data['pending_number']), ('+50761234567', True, '+13055550100'))  # the old one keeps working
+        self.assertEqual(self.client.post('/api/v1/inbox/whatsapp/', {'cancel': True}, format='json').data['pending_number'], '')
         with override_settings(WHATSAPP_ACCESS_TOKEN=''):
             self.assertEqual(self.client.get('/api/v1/inbox/whatsapp/').data['enabled'], False)
             self.assertEqual(self.client.post('/api/v1/inbox/whatsapp/', {'opt_in': True}, format='json').status_code, 409)
-        urlopen.assert_not_called()
+
+    def test_a_code_expires_runs_out_of_attempts_and_cannot_be_asked_for_endlessly(self, urlopen):
+        urlopen.side_effect = lambda request, timeout=None: Reply({'messages': [{'id': 'wamid.CODIGO'}]})
+        self.client.force_authenticate(self.buyer)
+        self.code('+50761234567', 111111)
+        InboxCursor.objects.filter(user=self.buyer).update(whatsapp_code_sent_at=timezone.now() - timedelta(minutes=11))
+        self.assertEqual(self.verify('111111').data['code'], ['El código venció. Pide uno nuevo.'])
+        with patch('mall.whatsapp_verification.RESEND_AFTER', timedelta(0)):
+            self.code('+50761234567', 222222)
+            for _ in range(4):
+                self.verify('999999')
+            self.assertEqual(self.verify('999999').data['code'], ['Demasiados intentos. Pide un código nuevo.'])
+            self.assertEqual(self.verify('222222').data['code'], ['Pide un código primero.'])  # that code is gone
+            for digits in range(3):
+                self.assertEqual(self.code('+50761234567', digits).status_code, 200)
+            self.assertEqual(self.code('+50761234567', 7).status_code, 429)  # five an hour
+        self.assertFalse(InboxCursor.objects.get(user=self.buyer).whatsapp_verified_at)
+
+    def test_a_code_goes_as_text_while_its_template_awaits_approval_and_unverified_numbers_get_no_notices(self, urlopen):
+        def answer(request, timeout=None):
+            if json.loads(request.data)['type'] == 'template':
+                raise urllib.error.HTTPError('https://graph.facebook.com', 404, 'Not Found', {}, io.BytesIO(b'{"error":{"code":132001,"message":"no"}}'))
+            return Reply({'messages': [{'id': 'wamid.TEXTO'}]})
+        urlopen.side_effect = answer
+        self.client.force_authenticate(self.buyer)
+        self.code('+50761234567', 5)
+        template, text = self.sent(urlopen)
+        self.assertEqual(text['text']['body'], 'Tu código de verificación de MotionPartes es 000005. Vence en 10 minutos. No lo compartas con nadie.')
+        self.assertEqual(WhatsAppMessage.objects.get(kind='verify').template, 'motionpartes_codigo (texto)')
+        order = self.order()
+        InboxCursor.objects.filter(user=self.seller_a).update(whatsapp_number='+50762222222', whatsapp_opt_in_at=timezone.now(), active_at=None)  # consent, never verified
+        self.say(self.buyer, self.client_account, order, 'hola')
+        self.assertEqual(self.sent(urlopen), [])
 
     def test_a_deal_event_reaches_the_other_party_that_opted_in_with_a_link_to_the_deal(self, urlopen):
         urlopen.side_effect = lambda request, timeout=None: Reply({'messages': [{'id': 'wamid.UNO'}]})
@@ -210,12 +267,15 @@ class WhatsAppTemplateTests(SimpleTestCase):
         out = io.StringIO()
         self.assertEqual(whatsapp_templates.run(settings, True, out), 0)
         posted = [body for method, _, body in calls if method == 'POST']
-        self.assertEqual([body['name'] for body in posted], ['motionpartes_mensaje_nuevo'])  # the approved one is left alone
+        self.assertEqual([body['name'] for body in posted], ['motionpartes_mensaje_nuevo', 'motionpartes_codigo'])  # the approved one is left alone
         self.assertTrue(all(url.startswith('https://graph.facebook.com/v23.0/99/message_templates') for _, url, _ in calls))
+        code = posted[1]
+        self.assertEqual((code['category'], code['components'][2]['buttons'][0]['otp_type']), ('AUTHENTICATION', 'COPY_CODE'))  # codes: Meta's own text
         body, buttons = posted[0]['components']
         self.assertEqual(buttons['buttons'][0]['url'], 'https://motionpartes.example.invalid/?conversacion={{1}}')
         self.assertFalse(body['text'].startswith('{{') or body['text'].endswith('}}'))  # Meta refuses that
-        self.assertEqual(out.getvalue().splitlines(), ['motionpartes_novedad_orden (es): APPROVED', 'motionpartes_mensaje_nuevo (es): creada, PENDING'])
+        self.assertEqual(out.getvalue().splitlines(), ['motionpartes_novedad_orden (es): APPROVED', 'motionpartes_mensaje_nuevo (es): creada, PENDING',
+                                                       'motionpartes_codigo (es): creada, PENDING'])
 
 
 class LoginHintTests(APITestCase):

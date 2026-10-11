@@ -181,14 +181,24 @@ test('with the websocket connected, a nudge brings the new message at once (poll
   await expect(page.getByRole('button', { name: 'Mensajes, 4 sin leer', exact: true })).toBeVisible({ timeout: 1500 });
 });
 
-test('WhatsApp notices need the number and an explicit consent; each kind can be turned off', async ({ page }) => {
+test('WhatsApp notices need the number, an explicit consent and the code sent there; each kind can be turned off', async ({ page }) => {
   await mockInbox(page, { current: pending() });
-  const saved: Record<string, unknown>[] = [];
-  let state = { enabled: false, number: '', opted_in: false, messages: true, updates: true };
-  await page.route(/\/api\/market\/inbox\/whatsapp$/, route => {
+  const saved: { url: string; body: Record<string, unknown> }[] = [];
+  let state = { enabled: false, number: '', opted_in: false, verified: false, active: false, pending_number: '', code_sent_at: null as string | null,
+    code_expires_at: null as string | null, resend_at: null as string | null, messages: true, updates: true };
+  await page.route(/\/api\/market\/inbox\/whatsapp(\/verify)?$/, route => {
     if (route.request().method() === 'POST') {
-      const body = route.request().postDataJSON(); saved.push(body);
-      state = { ...state, ...(body.number ? { number: '+50761234567' } : {}), ...('opt_in' in body ? { opted_in: body.opt_in } : {}), ...('updates' in body ? { updates: body.updates } : {}) };
+      const verify = new URL(route.request().url()).pathname.endsWith('/verify'), body = route.request().postDataJSON();
+      saved.push({ url: verify ? 'verify' : 'whatsapp', body });
+      if (verify) {
+        if (body.code !== '123456') return route.fulfill({ status: 400, json: { code: ['El código no es correcto. Te quedan 4 intentos.'] } });
+        state = { ...state, number: state.pending_number, opted_in: true, verified: true, active: true, pending_number: '', code_sent_at: null, code_expires_at: null, resend_at: null };
+      } else if (body.number) {
+        const sent = Date.now();
+        state = { ...state, pending_number: '+50761234567', code_sent_at: new Date(sent).toISOString(), code_expires_at: new Date(sent + 600000).toISOString(), resend_at: new Date(sent + 60000).toISOString() };
+      } else {
+        state = { ...state, ...('opt_in' in body ? { opted_in: body.opt_in, active: body.opt_in && state.verified } : {}), ...('updates' in body ? { updates: body.updates } : {}) };
+      }
     }
     return route.fulfill({ json: state });
   });
@@ -203,16 +213,25 @@ test('WhatsApp notices need the number and an explicit consent; each kind can be
   await bell.click();
   const whatsapp = menu.getByRole('group', { name: 'Avisos por WhatsApp', exact: true });
   await whatsapp.getByLabel('Tu número de WhatsApp').fill('6123 4567');
-  const activate = whatsapp.getByRole('button', { name: 'Activar avisos', exact: true });
-  await expect(activate).toBeDisabled();  // consent first
+  const send = whatsapp.getByRole('button', { name: 'Enviar código', exact: true });
+  await expect(send).toBeDisabled();  // consent first
   await whatsapp.getByRole('checkbox', { name: /Acepto recibir avisos de MotionPartes por WhatsApp/ }).check();
-  await activate.click();
-  await expect(whatsapp).toContainText('Activos en +50761234567');
-  expect(saved[0]).toEqual({ number: '6123 4567', opt_in: true });
+  await send.click();
+  await expect(whatsapp).toContainText('Te enviamos un código por WhatsApp a +50761234567. Escríbelo para activar los avisos.');
+  expect(saved[0]).toEqual({ url: 'whatsapp', body: { number: '6123 4567', opt_in: true } });
+  await expect(whatsapp.getByRole('button', { name: /^Reenviar en \d+ s$/ })).toBeDisabled();  // a minute between codes
+  const code = whatsapp.getByLabel('Código de verificación', { exact: true });
+  await code.fill('111111');
+  await whatsapp.getByRole('button', { name: 'Confirmar', exact: true }).click();
+  await expect(whatsapp.getByRole('alert')).toContainText('El código no es correcto. Te quedan 4 intentos.');
+  await code.fill('123456');
+  await whatsapp.getByRole('button', { name: 'Confirmar', exact: true }).click();
+  await expect(whatsapp).toContainText('Activos en +50761234567Verificado');
+  expect(saved.at(-1)).toEqual({ url: 'verify', body: { code: '123456' } });
   await whatsapp.getByRole('checkbox', { name: 'Cambios en tus órdenes', exact: true }).uncheck();
-  await expect.poll(() => saved.at(-1)).toEqual({ updates: false });
+  await expect.poll(() => saved.at(-1)?.body).toEqual({ updates: false });
   await whatsapp.getByRole('button', { name: 'Desactivar', exact: true }).click();
-  await expect.poll(() => saved.at(-1)).toEqual({ opt_in: false });
+  await expect.poll(() => saved.at(-1)?.body).toEqual({ opt_in: false });
   await expect(whatsapp.getByLabel('Tu número de WhatsApp')).toHaveValue('+50761234567');
 });
 

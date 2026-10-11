@@ -688,6 +688,7 @@ class ManagedUserDetailSerializer(ManagedUserSerializer):
                       'updates': cursor.email_updates if cursor else True},
             'whatsapp': {'available': whatsapp_enabled(), 'number': cursor.whatsapp_number if cursor else '',
                          'opted_in_at': opted_in.isoformat() if opted_in else None,
+                         'verified': bool(cursor and cursor.whatsapp_verified_at),
                          'messages': cursor.whatsapp_messages if cursor else True, 'updates': cursor.whatsapp_updates if cursor else True},
             'push': {'available': push_enabled(), 'devices': PushSubscription.objects.filter(user=user).count()},
             'last_seen_at': cursor.active_at.isoformat() if cursor and cursor.active_at else None,

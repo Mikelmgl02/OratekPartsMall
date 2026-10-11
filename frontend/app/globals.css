@@ -2502,3 +2502,8 @@ body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-s
 
 /* A notice's link opened signed out: the sign-in says why it opened, with the username already filled in. */
 .auth-link-notice { margin:0; font-size:13px; }
+
+/* WhatsApp: the number is confirmed with a code sent there (mall.whatsapp_verification). */
+.inbox-whatsapp-verified { display:inline-flex; align-items:center; gap:3px; margin-left:6px; padding:1px 6px; border-radius:6px; background:#eaf3df; color:#4f7a2e; font-size:10px; font-weight:600; }
+.inbox-whatsapp-sent { margin:0; font-size:12px; line-height:1.5; color:var(--ink); }
+.inbox-whatsapp-form input[autocomplete="one-time-code"] { letter-spacing:4px; font-variant-numeric:tabular-nums; max-width:140px; }

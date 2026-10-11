@@ -131,6 +131,8 @@ WHATSAPP_API_VERSION = os.getenv('WHATSAPP_API_VERSION', 'v23.0')
 WHATSAPP_TEMPLATE_LANGUAGE = os.getenv('WHATSAPP_TEMPLATE_LANGUAGE', 'es')
 WHATSAPP_TEMPLATE_UPDATE = os.getenv('WHATSAPP_TEMPLATE_UPDATE', 'motionpartes_novedad_orden')
 WHATSAPP_TEMPLATE_MESSAGE = os.getenv('WHATSAPP_TEMPLATE_MESSAGE', 'motionpartes_mensaje_nuevo')
+# The Authentication template that carries a number's verification code (mall.whatsapp_verification).
+WHATSAPP_TEMPLATE_CODE = os.getenv('WHATSAPP_TEMPLATE_CODE', 'motionpartes_codigo')
 # The webhook (statuses, replies, BAJA): Meta signs it with the app secret and checks the verify token when it is set up.
 WHATSAPP_APP_SECRET = os.getenv('WHATSAPP_APP_SECRET', '')
 WHATSAPP_VERIFY_TOKEN = os.getenv('WHATSAPP_VERIFY_TOKEN', '')

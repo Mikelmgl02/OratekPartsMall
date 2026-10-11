@@ -1,7 +1,7 @@
 'use client';
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import dynamic from 'next/dynamic';
-import { Bell, BellOff, BellRing, LoaderCircle, MessagesSquare, Smartphone, X } from 'lucide-react';
+import { BadgeCheck, Bell, BellOff, BellRing, LoaderCircle, MessagesSquare, Smartphone, X } from 'lucide-react';
 import { ApiError, request } from '@/lib/types';
 import { INBOX_EVENT, InboxConversation, InboxNotification, InboxSummary, InboxTarget, ago, inboxChanged, targetOf } from '@/lib/inbox';
 import { PushState, disablePush, enablePush, pushStatus, syncPush } from '@/lib/push';
@@ -210,47 +210,72 @@ export function EmailSwitches() {
   </fieldset>;
 }
 
-type WhatsAppPreferences = { enabled: boolean; number: string; opted_in: boolean; messages: boolean; updates: boolean };
+type WhatsAppPreferences = { enabled: boolean; number: string; opted_in: boolean; verified: boolean; active: boolean; pending_number: string;
+  code_sent_at: string | null; code_expires_at: string | null; resend_at: string | null; messages: boolean; updates: boolean };
+const WHATSAPP = '/api/market/inbox/whatsapp';
 
-// WhatsApp notices (mall/whatsapp.py): only after the person gives their number and explicit consent (Meta's opt-in rule).
+// WhatsApp notices (mall.whatsapp): only after the person gives their number and explicit consent (Meta's opt-in rule), and proves the
+// number is theirs with the code sent there by WhatsApp (mall.whatsapp_verification). A new number waits for its code while the old one
+// keeps working. In the bell menu and in Mi perfil.
 export function WhatsAppSwitches() {
   const [preferences, setPreferences] = useState<WhatsAppPreferences | null>(null);
   const [editing, setEditing] = useState(false);
   const [number, setNumber] = useState('');
   const [consent, setConsent] = useState(false);
+  const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  useEffect(() => { request<WhatsAppPreferences>('/api/market/inbox/whatsapp').then(value => { setPreferences(value); setNumber(value.number); }).catch(() => setPreferences(null)); }, []);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => { request<WhatsAppPreferences>(WHATSAPP).then(value => { setPreferences(value); setNumber(value.number); }).catch(() => setPreferences(null)); }, []);
+  const pending = preferences?.pending_number || '';
+  useEffect(() => {  // the resend countdown and the code's expiry
+    if (!pending) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [pending]);
   if (!preferences?.enabled) return null;
-  async function save(changes: Record<string, unknown>) {
+  async function save(path: string, changes: Record<string, unknown>) {
     setBusy(true); setError('');
     try {
-      const value = await request<WhatsAppPreferences>('/api/market/inbox/whatsapp', { method: 'POST', body: JSON.stringify(changes) });
-      setPreferences(value); setNumber(value.number); setEditing(false); setConsent(false);
+      const value = await request<WhatsAppPreferences>(path, { method: 'POST', body: JSON.stringify(changes) });
+      setPreferences(value); setNumber(value.number || number); setEditing(false); setConsent(false); setCode(''); setNow(Date.now());
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'No se pudo guardar. Inténtalo de nuevo.'); }
     finally { setBusy(false); }
   }
   async function toggle(key: 'messages' | 'updates', value: boolean) {
     setPreferences(current => current && { ...current, [key]: value });  // at once; undone if it cannot be saved
     setError('');
-    try { setPreferences(await request<WhatsAppPreferences>('/api/market/inbox/whatsapp', { method: 'POST', body: JSON.stringify({ [key]: value }) })); }
+    try { setPreferences(await request<WhatsAppPreferences>(WHATSAPP, { method: 'POST', body: JSON.stringify({ [key]: value }) })); }
     catch { setPreferences(current => current && { ...current, [key]: !value }); setError('No se pudo guardar tu preferencia. Inténtalo de nuevo.'); }
   }
-  const asking = editing || !preferences.opted_in;
+  const wait = preferences.resend_at ? Math.max(0, Math.ceil((Date.parse(preferences.resend_at) - now) / 1000)) : 0;
+  const expired = !!pending && (!preferences.code_expires_at || Date.parse(preferences.code_expires_at) <= now);
+  const unverified = preferences.opted_in && !preferences.verified;  // consent given before numbers were verified
   return <fieldset className="inbox-email inbox-whatsapp">
     <legend>Avisos por WhatsApp</legend>
-    {asking ? <form className="inbox-whatsapp-form" onSubmit={event => { event.preventDefault(); void save({ number, opt_in: true }); }}>
-      <label>Tu número de WhatsApp<input type="tel" inputMode="tel" autoComplete="tel" required value={number} disabled={busy} onChange={event => setNumber(event.target.value)} placeholder="+507 6123 4567"/></label>
-      <label className="inbox-whatsapp-consent"><input type="checkbox" required checked={consent} disabled={busy} onChange={event => setConsent(event.target.checked)}/>Acepto recibir avisos de MotionPartes por WhatsApp. Puedo darme de baja cuando quiera respondiendo BAJA.</label>
-      <div><button type="submit" className="button primary small" disabled={busy || !consent || !number.trim()}>{busy && <LoaderCircle size={14} className="spin"/>}Activar avisos</button>
-        {editing && <button type="button" className="button text small" disabled={busy} onClick={() => { setEditing(false); setNumber(preferences.number); setConsent(false); }}>Cancelar</button>}</div>
-    </form> : <>
-      <p className="inbox-whatsapp-number">Activos en <strong>{preferences.number}</strong>
-        <button type="button" className="button text small" disabled={busy} onClick={() => setEditing(true)}>Cambiar número</button>
-        <button type="button" className="button text small" disabled={busy} onClick={() => void save({ opt_in: false })}>Desactivar</button></p>
+    {preferences.active && <>
+      <p className="inbox-whatsapp-number">Activos en <strong>{preferences.number}</strong><span className="inbox-whatsapp-verified"><BadgeCheck size={13}/>Verificado</span>
+        {!pending && !editing && <button type="button" className="button text small" disabled={busy} onClick={() => { setEditing(true); setNumber(''); }}>Cambiar número</button>}
+        <button type="button" className="button text small" disabled={busy} onClick={() => void save(WHATSAPP, { opt_in: false })}>Desactivar</button></p>
       <label><input type="checkbox" checked={preferences.messages} disabled={busy} onChange={event => void toggle('messages', event.target.checked)}/>Mensajes nuevos, cuando no estés en MotionPartes</label>
       <label><input type="checkbox" checked={preferences.updates} disabled={busy} onChange={event => void toggle('updates', event.target.checked)}/>Cambios en tus órdenes</label>
     </>}
+    {pending ? <form className="inbox-whatsapp-form" aria-label="Confirmar número de WhatsApp" onSubmit={event => { event.preventDefault(); void save(`${WHATSAPP}/verify`, { code }); }}>
+      <p className="inbox-whatsapp-sent">Te enviamos un código por WhatsApp a <strong>{pending}</strong>. Escríbelo para {preferences.active ? 'cambiar tu número' : 'activar los avisos'}.</p>
+      <label>Código de verificación<input inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} required value={code} disabled={busy}
+        onChange={event => setCode(event.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="123456"/></label>
+      {expired && <small className="inbox-push-error">El código venció. Pide uno nuevo.</small>}
+      <div><button type="submit" className="button primary small" disabled={busy || code.length !== 6 || expired}>{busy && <LoaderCircle size={14} className="spin"/>}Confirmar</button>
+        <button type="button" className="button text small" disabled={busy || wait > 0} onClick={() => void save(WHATSAPP, { number: pending, opt_in: true })}>{wait > 0 ? `Reenviar en ${wait} s` : 'Reenviar código'}</button>
+        <button type="button" className="button text small" disabled={busy} onClick={() => void save(WHATSAPP, { cancel: true })}>{preferences.active ? 'Mantener mi número' : 'Cambiar número'}</button></div>
+    </form> : (!preferences.active || editing) && <form className="inbox-whatsapp-form" onSubmit={event => { event.preventDefault(); void save(WHATSAPP, { number, opt_in: true }); }}>
+      {unverified && <small>Confirma tu número para seguir recibiendo avisos: te enviaremos un código por WhatsApp.</small>}
+      <label>{editing ? 'Tu número nuevo de WhatsApp' : 'Tu número de WhatsApp'}<input type="tel" inputMode="tel" autoComplete="tel" required value={number} disabled={busy} onChange={event => setNumber(event.target.value)} placeholder="+507 6123 4567"/></label>
+      <label className="inbox-whatsapp-consent"><input type="checkbox" required checked={consent} disabled={busy} onChange={event => setConsent(event.target.checked)}/>Acepto recibir avisos de MotionPartes por WhatsApp. Puedo darme de baja cuando quiera respondiendo BAJA.</label>
+      <div><button type="submit" className="button primary small" disabled={busy || !consent || !number.trim()}>{busy && <LoaderCircle size={14} className="spin"/>}Enviar código</button>
+        {editing && <button type="button" className="button text small" disabled={busy} onClick={() => { setEditing(false); setNumber(preferences.number); setConsent(false); }}>Cancelar</button>}</div>
+      <small>Te enviaremos un código de 6 dígitos por WhatsApp para confirmar que el número es tuyo.</small>
+    </form>}
     {error && <small className="inbox-push-error" role="alert">{error}</small>}
   </fieldset>;
 }
