@@ -400,9 +400,14 @@ class WhatsAppBridgeTests(APITestCase):
         self.say(self.buyer, self.client_account, order, '¿Tienen el tambor?\nEs urgente.')
         [relay] = self.sent(urlopen)
         self.assertEqual(relay['type'], 'text')
-        self.assertTrue(relay['text']['body'].startswith(f'*CLIENTE ORIGINAL* · {order.reference}\n¿Tienen el tambor?\nEs urgente.\n\nResponde a este mensaje'))
+        self.assertTrue(relay['text']['body'].startswith(f'*CLIENTE ORIGINAL* · {order.reference}\n¿Tienen el tambor?\nEs urgente.\n\nEscribe aquí'))
         self.say(self.buyer, self.client_account, order, 'otro')
-        self.assertEqual(len(self.sent(urlopen)), 1)  # each message while the window is open, no cooldown
+        [relay] = self.sent(urlopen)  # each message while the window is open, no cooldown
+        self.assertEqual(relay['text']['body'], 'otro')  # the conversation goes on: only the text, like any chat
+        WhatsAppMessage.objects.update(created_at=timezone.now() - timedelta(minutes=31))
+        self.say(self.buyer, self.client_account, order, 'sigo aquí')
+        [relay] = self.sent(urlopen)
+        self.assertTrue(relay['text']['body'].startswith(f'*CLIENTE ORIGINAL* · {order.reference}\nsigo aquí\n\n'))  # after a pause, named again
         WhatsAppContact.objects.update(last_inbound_at=timezone.now() - timedelta(hours=25))
         self.say(self.buyer, self.client_account, order, 'y otro')
         [notice] = self.sent(urlopen)

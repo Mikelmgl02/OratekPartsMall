@@ -8,8 +8,8 @@
   FIND_DEAL. Meta's ✅ reaction confirms it. BAJA or STOP opts the number out; anything else gets a short pointer to the site, at most once
   every REPLY_EVERY. Meta may deliver a webhook twice: a message is brought in once.
 - Outbound (mall.whatsapp.message_saved): a chat message to someone whose window is open, away from the app (or whose latest message in
-  that conversation came by WhatsApp), goes in full as plain text right away, so they can answer it from WhatsApp; with the window closed,
-  the template notice."""
+  that conversation came by WhatsApp), goes in full as plain text right away, so they can answer it from WhatsApp; only the first of a
+  stretch (STRETCH) names the account and the order, the rest read like any chat. With the window closed, the template notice."""
 import re
 import uuid
 from datetime import timedelta
@@ -24,17 +24,28 @@ from .whatsapp import OPT_OUT, REPLY_EVERY, graph, normalize_number, reply
 WINDOW = timedelta(hours=24)
 FIND_DEAL = timedelta(days=7)
 BODY_LIMIT = 3500  # WhatsApp takes 4096 characters; the header and the link come around it
+STRETCH = timedelta(minutes=30)  # a relay this soon after the last WhatsApp about the same order continues that conversation
 
 
 def window_open(number, now=None):
     return WhatsAppContact.objects.filter(number=number, last_inbound_at__gt=(now or timezone.now()) - WINDOW).exists()
 
 
-def relay_text(number, message, order, conversation):
-    """A chat message in full, to answer from WhatsApp: who wrote it, the order, and the link to its conversation."""
-    link = f"{settings.SITE_URL.rstrip('/')}/?conversacion={conversation}"
-    body = (f'*{message.account.name}* · {order.reference}\n{message.body[:BODY_LIMIT]}\n\n'
-            f'Responde a este mensaje para contestar en la orden, o ábrela en MotionPartes: {link}')
+def continuing(number, order, now):
+    """Whether the last WhatsApp with this number, either way (codes aside), was about this order within STRETCH: the conversation is
+    going on there, and its next message needs no header."""
+    last = (WhatsAppMessage.objects.filter(number=number).exclude(kind='verify').exclude(status='failed').order_by('-id')
+            .values_list('order_id', 'created_at').first())
+    return bool(last) and last[0] == order.pk and last[1] >= now - STRETCH
+
+
+def relay_text(number, message, order, conversation, first=True):
+    """A chat message in full, to answer from WhatsApp, like any chat: the first of a stretch says who wrote it and about which order,
+    with the link to its conversation (one number carries every order); the ones following it, only the text."""
+    body = message.body[:BODY_LIMIT]
+    if first:
+        link = f"{settings.SITE_URL.rstrip('/')}/?conversacion={conversation}"
+        body = f'*{message.account.name}* · {order.reference}\n{body}\n\nEscribe aquí para contestar en la orden, o ábrela en MotionPartes: {link}'
     return {'messaging_product': 'whatsapp', 'to': number.lstrip('+'), 'type': 'text', 'text': {'preview_url': False, 'body': body}}
 
 

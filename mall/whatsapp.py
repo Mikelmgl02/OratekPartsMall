@@ -199,7 +199,7 @@ def message_saved(sender, instance, created=False, raw=False, **kwargs):
     message, order = instance, instance.order
 
     def collect():
-        from .whatsapp_bridge import relay_text, window_open
+        from .whatsapp_bridge import continuing, relay_text, window_open
         # Asking for an adjustment also writes its reason as a message: the adjustment's own notice covers it.
         if DealEvent.objects.filter(order=order, actor_id=message.actor_id, kind='request_adjustment', description=message.body).exists():
             return
@@ -226,8 +226,9 @@ def message_saved(sender, instance, created=False, raw=False, **kwargs):
             if target.user_id:
                 mark, _ = ConversationRead.objects.get_or_create(user_id=target.user_id, order=order)
                 ConversationRead.objects.filter(pk=mark.pk).update(whatsapp_at=now)
+        first = {target.number: not continuing(target.number, order, now) for target in relays}  # before this relay is logged
         jobs = [(log_row(target, order, 'message', f'{settings.WHATSAPP_TEMPLATE_MESSAGE} (relevo)'[:80]).pk,
-                 relay_text(target.number, message, order, conversation_of(order, target))) for target in relays]
+                 relay_text(target.number, message, order, conversation_of(order, target), first[target.number])) for target in relays]
         body = [param(message.account.name, 60), param(order.reference, 32), param(message.body, 120)]
         jobs += queue(notices, order, 'message', settings.WHATSAPP_TEMPLATE_MESSAGE, body)
         if jobs:
