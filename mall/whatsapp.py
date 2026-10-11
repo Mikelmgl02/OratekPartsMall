@@ -42,7 +42,7 @@ from .email_notifications import ACTIVE
 from .inbox import cursor_for, event_title
 from . import login_hints
 from .inbox_models import AccountWhatsApp, ConversationRead, InboxCursor, WhatsAppMessage
-from .models import DealEvent
+from .models import DealEvent, DealMessage
 
 log = logging.getLogger(__name__)
 GRAPH = 'https://graph.facebook.com/{version}/{phone}/messages'
@@ -211,8 +211,12 @@ def message_saved(sender, instance, created=False, raw=False, **kwargs):
                 return target.user_id in notified
             return WhatsAppMessage.objects.filter(account_id=target.account_id, order=order, kind='message', created_at__gte=now - COOLDOWN).exists()
         relays, notices = [], []
-        for target in targets(order, message.account_id, message.actor_id, 'whatsapp_messages'):
-            if target.cursor and target.cursor.active_at and target.cursor.active_at >= now - ACTIVE:
+        recipients = targets(order, message.account_id, message.actor_id, 'whatsapp_messages')
+        # Someone whose latest message here came by WhatsApp is talking from there: the replies follow, even with the site open somewhere.
+        latest = dict(DealMessage.objects.filter(order=order, actor_id__in={target.user_id for target in recipients if target.user_id})
+                      .order_by('actor_id', '-id').distinct('actor_id').values_list('actor_id', 'channel'))
+        for target in recipients:
+            if target.cursor and target.cursor.active_at and target.cursor.active_at >= now - ACTIVE and latest.get(target.user_id) != 'whatsapp':
                 continue  # in MotionPartes right now: the chat shows it
             if window_open(target.number, now):
                 relays.append(target)  # the conversation goes on in WhatsApp: each message, in full

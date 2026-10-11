@@ -374,6 +374,24 @@ class WhatsAppBridgeTests(APITestCase):
         self.write('+50761111111', 'Baja.', 'wamid.BAJA')
         self.assertIsNone(InboxCursor.objects.get(user=self.buyer).whatsapp_opt_in_at)
 
+    def test_someone_writing_from_whatsapp_gets_the_replies_there_even_with_the_site_open(self, urlopen):
+        self.answering(urlopen)
+        order = self.order()
+        self.opt_in(self.buyer, '+50761111111')
+        WhatsAppContact.objects.create(number='+50761111111', last_inbound_at=timezone.now())
+        InboxCursor.objects.filter(user=self.buyer).update(active_at=timezone.now())  # a tab left open on a screen
+        self.say(self.seller_a, self.supplier_a, order, 'primero')
+        self.assertEqual(self.sent(urlopen), [])  # on the site: the chat shows it
+        DealMessage.objects.create(order=order, account=self.client_account, actor=self.buyer, message_id=uuid.uuid4(), body='desde el teléfono',
+                                   channel='whatsapp')
+        self.say(self.seller_a, self.supplier_a, order, '¿Lo confirmas?')
+        [relay] = self.sent(urlopen)
+        self.assertIn('¿Lo confirmas?', relay['text']['body'])
+        self.say(self.buyer, self.client_account, order, 'ya estoy en la página')  # back on the site: the chat again
+        self.sent(urlopen)
+        self.say(self.seller_a, self.supplier_a, order, 'perfecto')
+        self.assertEqual(self.sent(urlopen), [])
+
     def test_chat_messages_go_in_full_while_the_window_is_open_and_as_the_template_after(self, urlopen):
         self.answering(urlopen)
         order = self.order()

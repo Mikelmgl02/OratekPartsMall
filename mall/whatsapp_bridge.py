@@ -7,8 +7,9 @@
   "whatsapp"): the deal of the message it answers (WhatsApp's reply context), or else the last deal notified to that number within
   FIND_DEAL. Meta's ✅ reaction confirms it. BAJA or STOP opts the number out; anything else gets a short pointer to the site, at most once
   every REPLY_EVERY. Meta may deliver a webhook twice: a message is brought in once.
-- Outbound (mall.whatsapp.message_saved): a chat message to someone whose window is open, away from the app, goes in full as plain text
-  right away, so they can answer it from WhatsApp; with the window closed, the template notice."""
+- Outbound (mall.whatsapp.message_saved): a chat message to someone whose window is open, away from the app (or whose latest message in
+  that conversation came by WhatsApp), goes in full as plain text right away, so they can answer it from WhatsApp; with the window closed,
+  the template notice."""
 import re
 import uuid
 from datetime import timedelta
