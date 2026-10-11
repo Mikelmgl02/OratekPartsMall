@@ -1,5 +1,6 @@
 import { expect, Page, test } from '@playwright/test';
 import type { ManagedPart } from '../lib/types';
+import { noNewProducts } from './new-products-route';
 
 const empty = { count: 0, next: null, previous: null, results: [], pending_count: 0 };
 const ids = { disc: '0f200000-0000-4000-8000-000000000001', pump: '0f200000-0000-4000-8000-000000000002' };
@@ -17,7 +18,7 @@ async function fixture(page: Page) {
   const field = { key: 'diameter', label: 'DIÁMETRO', section: 'MEDIDAS', kind: 'number', unit: 'mm', options: [], required: true, position: 0 };
   const sheet = (revision: number, values = {}) => ({ part: ids.disc, part_type: { id: '0f300000-0000-4000-8000-000000000001', category: 'FRENOS', name: 'DISCOS DE FRENO' },
     revision, template: { part_type: '0f300000-0000-4000-8000-000000000001', revision: 2, fields: [field] }, values, applications: [], missing_required: [] });
-  await page.route('**/api/**', route => { unexpected.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`); return route.fulfill({ status: 404, json: { detail: 'Ruta no prevista' } }); });
+  await page.route('**/api/**', route => { if (noNewProducts(route)) return; unexpected.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`); return route.fulfill({ status: 404, json: { detail: 'Ruta no prevista' } }); });
   await page.route('**/api/market/analytics/events', route => route.fulfill({ status: 202, json: { recorded: true } }));
   await page.route(/\/api\/management\/(roles|catalog\/import\/issues|part-types)(?:\?.*)?$/, route => route.fulfill({ json: route.request().url().includes('/roles') ? [] : empty }));
   await page.route('**/api/management/catalog/company-suffixes', route => route.fulfill({ json: { suffixes: [] } }));

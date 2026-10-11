@@ -1,5 +1,6 @@
 import { expect, Page, test } from '@playwright/test';
 import type { ManagedPart } from '../lib/types';
+import { noNewProducts } from './new-products-route';
 
 const empty = { count: 0, next: null, previous: null, results: [], pending_count: 0 };
 const ids = { disc: '0f100000-0000-4000-8000-000000000001', pump: '0f100000-0000-4000-8000-000000000002', wordy: '0f100000-0000-4000-8000-000000000003' };
@@ -16,7 +17,7 @@ async function fixture(page: Page) {
     [ids.wordy]: row(ids.wordy, 'BOMBA-AGUA', 'BOMBA AGUA'), [ids.pump]: row(ids.pump, '16100-29155', 'BOMBA AGUA TOY 22R', true) };
   const unexpected: string[] = [], marks: unknown[] = [], unmarks: unknown[] = [];
   let lists = 0;
-  await page.route('**/api/**', route => { unexpected.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`); return route.fulfill({ status: 404, json: { detail: 'Ruta no prevista' } }); });
+  await page.route('**/api/**', route => { if (noNewProducts(route)) return; unexpected.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`); return route.fulfill({ status: 404, json: { detail: 'Ruta no prevista' } }); });
   await page.route('**/api/market/analytics/events', route => route.fulfill({ status: 202, json: { recorded: true } }));
   await page.route(/\/api\/management\/(roles|catalog\/import\/issues)(?:\?.*)?$/, route => route.fulfill({ json: route.request().url().includes('/roles') ? [] : empty }));
   await page.route(/\/api\/management\/catalog(?:\?.*)?$/, route => {

@@ -1,6 +1,7 @@
 import { expect, Page, test } from '@playwright/test';
 import type { OEMBulkPreview, OEMBulkProgress, OEMReviewCase, OEMReviewPage } from '../lib/oem-review-types';
 import type { OEMRun, OEMRunPage } from '../lib/oem-finder-types';
+import { noNewProducts } from './new-products-route';
 
 const stamp = '2026-10-06T12:00:00Z';
 const empty = { count: 0, next: null, previous: null, results: [], pending_count: 0 };
@@ -52,7 +53,7 @@ async function fixture(page: Page, { unavailable = false } = {}) {
   const unexpected: string[] = [], lists: URLSearchParams[] = [], decisions: Record<string, unknown>[] = [], bulkStarts: Record<string, unknown>[] = [], steps: string[] = [];
   const reverts: Record<string, unknown>[] = [], groupingSearches: string[] = [], suffixSearches: string[] = [];
   let bulkRun: OEMRun | null = null;
-  await page.route('**/api/**', route => { unexpected.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`); return route.fulfill({ status: 404, json: { detail: 'Ruta no prevista' } }); });
+  await page.route('**/api/**', route => { if (noNewProducts(route)) return; unexpected.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`); return route.fulfill({ status: 404, json: { detail: 'Ruta no prevista' } }); });
   await page.route('**/api/market/analytics/events', route => route.fulfill({ status: 202, json: { recorded: true } }));
   await page.route(/\/api\/management\/(roles|catalog\/import\/issues|part-types)(?:\?.*)?$/, route => route.fulfill({ json: route.request().url().includes('/roles') ? [] : empty }));
   await page.route(/\/api\/management\/catalog(?:\?.*)?$/, route => route.fulfill({ json: empty }));

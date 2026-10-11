@@ -1,5 +1,6 @@
 import { expect, Page, test } from '@playwright/test';
 import type { OEMHalt, OEMPendingPage, OEMRun, OEMRunPage, OEMSpotCheck, OEMSpotRow } from '../lib/oem-finder-types';
+import { noNewProducts } from './new-products-route';
 
 const stamp = '2026-10-06T12:00:00Z';
 const empty = { count: 0, next: null, previous: null, results: [], pending_count: 0 };
@@ -25,7 +26,7 @@ async function fixture(page: Page) {
     errors: [], actor: 'motionpartes-oem-finder-service', started_at: stamp, finished_at: stamp, changes: 48, reverted: 0 };
   let halt: OEMHalt | null = null;
   const unexpected: string[] = [], reverts: Record<string, unknown>[] = [], halts: Record<string, unknown>[] = [], lists: string[] = [];
-  await page.route('**/api/**', route => { unexpected.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`); return route.fulfill({ status: 404, json: { detail: 'Ruta no prevista' } }); });
+  await page.route('**/api/**', route => { if (noNewProducts(route)) return; unexpected.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`); return route.fulfill({ status: 404, json: { detail: 'Ruta no prevista' } }); });
   await page.route('**/api/market/analytics/events', route => route.fulfill({ status: 202, json: { recorded: true } }));
   await page.route(/\/api\/management\/(roles|catalog\/import\/issues|part-types)(?:\?.*)?$/, route => route.fulfill({ json: route.request().url().includes('/roles') ? [] : empty }));
   await page.route(/\/api\/management\/catalog(?:\?.*)?$/, route => route.fulfill({ json: empty }));
