@@ -365,6 +365,8 @@ class WhatsAppBridgeTests(APITestCase):
         [pointer] = self.sent(urlopen)
         self.assertIn('solo pasamos mensajes de texto', pointer['text']['body'])
         WhatsAppContact.objects.update(replied_at=None)
+        WhatsAppMessage.objects.create(user=self.buyer, order=self.order(), number='+50761111111', template='motionpartes_novedad_orden',
+                                       kind='quote', status='failed')  # a notice that never reached them
         self.write('+50761111111', 'hola', 'wamid.HOLA')  # never notified about any deal
         [pointer] = self.sent(urlopen)
         self.assertIn('responde a uno de sus avisos', pointer['text']['body'])

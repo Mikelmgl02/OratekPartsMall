@@ -53,8 +53,9 @@ def pointer(number, contact, now, text):
 
 
 def deal_row(number, context_id, now):
-    """The notice or relay a reply belongs to: the one it answers, or the last one to that number within FIND_DEAL."""
-    rows = WhatsAppMessage.objects.filter(number=number, order__isnull=False).exclude(status='received').select_related('order', 'user')
+    """The notice or relay a reply belongs to: the one it answers, or the last one to that number within FIND_DEAL (that Meta took; a failed
+    one never reached them)."""
+    rows = WhatsAppMessage.objects.filter(number=number, order__isnull=False).exclude(status__in=('received', 'failed')).select_related('order', 'user')
     return (rows.filter(wamid=context_id).first() if context_id else None) or rows.filter(created_at__gte=now - FIND_DEAL).order_by('-id').first()
 
 
