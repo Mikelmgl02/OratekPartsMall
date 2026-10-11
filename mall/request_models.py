@@ -211,6 +211,8 @@ class DealMessage(models.Model):
     actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     message_id = models.UUIDField()
     body = models.TextField()
+    # Written in MotionPartes, or a WhatsApp reply the bridge brought into the chat (mall.whatsapp_bridge).
+    channel = models.CharField(max_length=10, choices=[('app', 'MotionPartes'), ('whatsapp', 'WhatsApp')], default='app')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

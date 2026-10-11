@@ -5,7 +5,7 @@ from django.conf.urls.static import static
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from rest_framework.authtoken.views import ObtainAuthToken
 from rest_framework.throttling import AnonRateThrottle
-from mall import email_notifications, inbox, login_hints, management, push, views, whatsapp, whatsapp_verification
+from mall import email_notifications, inbox, login_hints, management, push, views, whatsapp, whatsapp_accounts, whatsapp_verification
 from mall.technical_api import (PartTypeList, PartTypeDetail, TemplateDetail, ApplicationList, ApplicationDetail,
                                ItemTechnicalDetail, CatalogTechnicalDetail)
 from mall.matching_views import MatchingOverview, MatchingReview
@@ -177,6 +177,8 @@ urlpatterns = [
     path('api/v1/inbox/email/', email_notifications.InboxEmail.as_view()),
     path('api/v1/inbox/whatsapp/', whatsapp.InboxWhatsApp.as_view()),
     path('api/v1/inbox/whatsapp/verify/', whatsapp_verification.InboxWhatsAppVerify.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/whatsapp/', whatsapp_accounts.AccountWhatsAppView.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/whatsapp/verify/', whatsapp_accounts.AccountWhatsAppVerify.as_view()),
     path('api/v1/whatsapp/webhook/', whatsapp.WhatsAppWebhook.as_view()),
     path('api/v1/catalog/<uuid:pk>/technical/', CatalogTechnicalDetail.as_view()),
     path('api/v1/catalog/<uuid:part_id>/suppliers/', views.OffersView.as_view()),

@@ -83,3 +83,27 @@ test('signed out, Mi perfil offers to sign in', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Inicia sesión para ver tu perfil.', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Iniciar sesión', exact: true })).toBeVisible();
 });
+
+test('an account’s own WhatsApp: its owner sets it with a code, other members only see it', async ({ page }) => {
+  await mock(page);
+  const other = { id: '22222222-2222-4222-8222-222222222222', name: 'Taller Norte', roles: ['client_business'], capabilities: ['client'], permission: 'owner' };
+  await page.route('**/api/session', route => route.fulfill({ json: { authenticated: true, user, accounts: { count: 2, next: null, previous: null, results: [account, other] } } }));
+  const base = { enabled: true, number: '', opted_in: false, verified: false, active: false, pending_number: '', code_sent_at: null, code_expires_at: null, resend_at: null, messages: true, updates: true };
+  const posts: Record<string, unknown>[] = [];
+  await page.route(`**/api/market/accounts/${account.id}/whatsapp`, route => route.fulfill({ json: { ...base, number: '+50760000000', opted_in: true, verified: true, active: true, can_manage: false } }));
+  await page.route(`**/api/market/accounts/${other.id}/whatsapp`, route => {
+    if (route.request().method() === 'POST') { posts.push(route.request().postDataJSON()); return route.fulfill({ json: { ...base, can_manage: true, pending_number: '+50769999999', code_sent_at: new Date().toISOString(), code_expires_at: new Date(Date.now() + 600000).toISOString(), resend_at: new Date(Date.now() + 60000).toISOString() } }); }
+    return route.fulfill({ json: { ...base, can_manage: true } });
+  });
+  await page.goto('/perfil');
+  const accounts = page.getByRole('region', { name: 'Tus cuentas', exact: true });
+  const staff = accounts.getByRole('listitem').filter({ hasText: 'Frank Motors' }), owner = accounts.getByRole('listitem').filter({ hasText: 'Taller Norte' });
+  await expect(staff.getByRole('group', { name: 'WhatsApp de la cuenta', exact: true })).toContainText('Avisos de la cuenta en +50760000000');
+  await expect(staff.getByRole('group', { name: 'WhatsApp de la cuenta', exact: true })).toContainText('Lo configura el propietario o un administrador de la cuenta.');
+  const whatsapp = owner.getByRole('group', { name: 'WhatsApp de la cuenta', exact: true });
+  await whatsapp.getByLabel('Número de WhatsApp de la cuenta', { exact: true }).fill('6999 9999');
+  await whatsapp.getByRole('checkbox', { name: /Acepto que este número reciba los avisos de la cuenta/ }).check();
+  await whatsapp.getByRole('button', { name: 'Enviar código', exact: true }).click();
+  await expect(whatsapp).toContainText('Te enviamos un código por WhatsApp a +50769999999');
+  expect(posts).toEqual([{ number: '6999 9999', opt_in: true }]);
+});

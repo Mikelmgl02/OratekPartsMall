@@ -69,6 +69,7 @@ function ProfilePage({ user: initial, accounts }: { user: ProfileUser; accounts:
           <strong>{account.name}</strong>
           <span>{account.roles.map(role => roleLabel[role] || role).join(' · ')}</span>
           {account.permission && <small>{permissionNames[account.permission]}</small>}
+          <WhatsAppSwitches account path={`/api/market/accounts/${account.id}/whatsapp`} legend="WhatsApp de la cuenta"/>
         </li>)}</ul> : <p className="profile-note">Todavía no perteneces a ninguna cuenta.</p>}
         <p className="profile-note">Las cuentas y sus permisos los asigna un administrador de MotionPartes.</p>
       </section>

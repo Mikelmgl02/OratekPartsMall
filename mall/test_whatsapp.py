@@ -13,7 +13,9 @@ from django.test import SimpleTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
-from .inbox_models import ConversationRead, InboxCursor, WhatsAppMessage
+from .inbox_models import AccountWhatsApp, ConversationRead, InboxCursor, WhatsAppContact, WhatsAppMessage
+from .models import Membership
+from .request_models import DealMessage
 from . import test_deals as deal_tests
 from . import login_hints, whatsapp_templates
 
@@ -141,6 +143,11 @@ class WhatsAppTests(APITestCase):
             return Reply({'messages': [{'id': 'wamid.TEXTO'}]})
         urlopen.side_effect = answer
         self.client.force_authenticate(self.buyer)
+        self.assertEqual(self.code('+50761234567', 4).status_code, 502)  # never wrote to the number: the text could not arrive, so it is not sent
+        self.assertEqual(len(self.sent(urlopen)), 1)
+        self.assertIn('fuera de la ventana de 24 horas', WhatsAppMessage.objects.get(kind='verify').error)
+        WhatsAppMessage.objects.all().delete()
+        WhatsAppContact.objects.create(number='+50761234567', last_inbound_at=timezone.now())
         self.code('+50761234567', 5)
         template, text = self.sent(urlopen)
         self.assertEqual(text['text']['body'], 'Tu código de verificación de MotionPartes es 000005. Vence en 10 minutos. No lo compartas con nadie.')
@@ -208,6 +215,7 @@ class WhatsAppTests(APITestCase):
         urlopen.side_effect = answer
         order = self.order()
         self.opt_in(self.buyer, '+50761111111')
+        WhatsAppContact.objects.create(number='+50761111111', last_inbound_at=timezone.now() - timedelta(hours=23))  # wrote within 24 hours
         sent.clear()
         self.client.force_authenticate(self.seller_a)
         with self.captureOnCommitCallbacks(execute=True):
@@ -293,3 +301,112 @@ class LoginHintTests(APITestCase):
         self.user.is_active = False
         self.user.save()
         self.assertEqual(self.client.get('/api/v1/auth/login-hint/', {'hint': hint}).status_code, 404)
+
+
+
+@override_settings(**CLOUD)
+@patch('mall.push.dispatch', lambda job: job())
+@patch('urllib.request.urlopen')
+class WhatsAppBridgeTests(APITestCase):
+    """The bridge: replies on WhatsApp go into the deal's chat, chat messages go to WhatsApp while the 24-hour window is open, and an
+    account's own number (WhatsApp de la cuenta) gets the account's notices and answers on its behalf."""
+    setUp = deal_tests.DealWorkflowTests.setUp
+    account = deal_tests.DealWorkflowTests.account
+    item = deal_tests.DealWorkflowTests.item
+    url = deal_tests.DealWorkflowTests.url
+    payload = deal_tests.DealWorkflowTests.payload
+    submit = deal_tests.DealWorkflowTests.submit
+    opt_in = WhatsAppTests.opt_in
+    order = WhatsAppTests.order
+    say = WhatsAppTests.say
+    sent = WhatsAppTests.sent
+    webhook = WhatsAppTests.webhook
+
+    def answering(self, urlopen):
+        counter = iter(range(1, 1000))
+        urlopen.side_effect = lambda request, timeout=None: Reply({'messages': [{'id': f'wamid.OUT{next(counter)}'}]})
+
+    def review(self, order):
+        self.client.force_authenticate(self.seller_a)
+        with self.captureOnCommitCallbacks(execute=True):
+            self.client.post(f'{self.url(self.supplier_a)}{order.pk}/review/', {}, format='json')
+
+    def write(self, number, body, wamid, context=None, kind='text'):
+        message = {'from': number.lstrip('+'), 'id': wamid, 'type': kind, **({'text': {'body': body}} if kind == 'text' else {}),
+                   **({'context': {'id': context}} if context else {})}
+        with self.captureOnCommitCallbacks(execute=True):
+            return self.webhook({'messages': [message]})
+
+    def test_a_reply_on_whatsapp_goes_into_the_deal_chat_once_confirmed_with_a_reaction(self, urlopen):
+        self.answering(urlopen)
+        order = self.order()
+        self.opt_in(self.buyer, '+50761111111')
+        self.review(order)
+        [notice] = self.sent(urlopen)
+        notice_id = WhatsAppMessage.objects.get(kind='review_started').wamid
+        self.assertEqual(self.write('+50761111111', '¿Pueden entregar mañana?', 'wamid.IN1', context=notice_id).status_code, 200)
+        message = DealMessage.objects.get(order=order, channel='whatsapp')
+        self.assertEqual((message.body, message.actor, message.account), ('¿Pueden entregar mañana?', self.buyer, self.client_account))
+        [reaction] = self.sent(urlopen)
+        self.assertEqual((reaction['type'], reaction['reaction']), ('reaction', {'message_id': 'wamid.IN1', 'emoji': '✅'}))
+        self.assertTrue(WhatsAppContact.objects.filter(number='+50761111111').exists())  # its 24-hour window is open
+        self.write('+50761111111', '¿Pueden entregar mañana?', 'wamid.IN1', context=notice_id)  # Meta delivers it again
+        self.assertEqual(DealMessage.objects.filter(order=order, channel='whatsapp').count(), 1)
+        self.write('+50761111111', 'Y el lunes también', 'wamid.IN2')  # no reply context: the last deal notified
+        self.assertEqual(DealMessage.objects.filter(order=order, channel='whatsapp').count(), 2)
+        self.client.force_authenticate(self.seller_a)
+        listed = self.client.get(f'/api/v1/accounts/{self.supplier_a.pk}/deals/{order.pk}/messages/').data['results']
+        self.assertEqual([(row['body'], row['channel']) for row in listed][-1], ('Y el lunes también', 'whatsapp'))
+
+    def test_what_cannot_go_into_a_deal_gets_a_pointer_and_baja_still_opts_out(self, urlopen):
+        self.answering(urlopen)
+        self.opt_in(self.buyer, '+50761111111')
+        self.write('+50761111111', '', 'wamid.FOTO', kind='image')
+        [pointer] = self.sent(urlopen)
+        self.assertIn('solo pasamos mensajes de texto', pointer['text']['body'])
+        WhatsAppContact.objects.update(replied_at=None)
+        self.write('+50761111111', 'hola', 'wamid.HOLA')  # never notified about any deal
+        [pointer] = self.sent(urlopen)
+        self.assertIn('responde a uno de sus avisos', pointer['text']['body'])
+        self.assertFalse(DealMessage.objects.filter(channel='whatsapp').exists())
+        self.write('+50761111111', 'Baja.', 'wamid.BAJA')
+        self.assertIsNone(InboxCursor.objects.get(user=self.buyer).whatsapp_opt_in_at)
+
+    def test_chat_messages_go_in_full_while_the_window_is_open_and_as_the_template_after(self, urlopen):
+        self.answering(urlopen)
+        order = self.order()
+        self.opt_in(self.seller_a, '+50762222222')
+        WhatsAppContact.objects.create(number='+50762222222', last_inbound_at=timezone.now() - timedelta(hours=2))
+        self.say(self.buyer, self.client_account, order, '¿Tienen el tambor?\nEs urgente.')
+        [relay] = self.sent(urlopen)
+        self.assertEqual(relay['type'], 'text')
+        self.assertTrue(relay['text']['body'].startswith(f'*CLIENTE ORIGINAL* · {order.reference}\n¿Tienen el tambor?\nEs urgente.\n\nResponde a este mensaje'))
+        self.say(self.buyer, self.client_account, order, 'otro')
+        self.assertEqual(len(self.sent(urlopen)), 1)  # each message while the window is open, no cooldown
+        WhatsAppContact.objects.update(last_inbound_at=timezone.now() - timedelta(hours=25))
+        self.say(self.buyer, self.client_account, order, 'y otro')
+        [notice] = self.sent(urlopen)
+        self.assertEqual(notice['template']['name'], 'motionpartes_mensaje_nuevo')
+
+    def test_an_accounts_own_number_is_set_by_its_managers_gets_its_notices_and_answers_for_it(self, urlopen):
+        self.answering(urlopen)
+        url = f'/api/v1/accounts/{self.client_account.pk}/whatsapp/'
+        self.client.force_authenticate(self.buyer)  # staff of the client account
+        self.assertEqual(self.client.get(url).data['can_manage'], False)
+        self.assertEqual(self.client.post(url, {'number': '+50769999999', 'opt_in': True}, format='json').status_code, 403)
+        Membership.objects.filter(user=self.buyer, account=self.client_account).update(permission='owner')
+        with patch('mall.whatsapp_verification.secrets.randbelow', return_value=777):
+            self.assertEqual(self.client.post(url, {'number': '+507 6999 9999', 'opt_in': True}, format='json').data['pending_number'], '+50769999999')
+        self.sent(urlopen)
+        data = self.client.post(f'{url}verify/', {'code': '000777'}, format='json').data
+        self.assertEqual((data['number'], data['active'], data['can_manage']), ('+50769999999', True, True))
+        self.assertEqual(AccountWhatsApp.objects.get(account=self.client_account).whatsapp_verified_by, self.buyer)
+        order = self.order()
+        self.review(order)
+        [notice] = self.sent(urlopen)
+        self.assertEqual((notice['to'], notice['template']['name']), ('50769999999', 'motionpartes_novedad_orden'))
+        self.assertEqual(notice['template']['components'][1]['parameters'][0]['text'], str(order.pk))  # no person's sign-in hint
+        notice_id = WhatsAppMessage.objects.get(account=self.client_account, kind='review_started').wamid
+        self.write('+50769999999', 'Gracias, esperamos la cotización', 'wamid.CUENTA', context=notice_id)
+        message = DealMessage.objects.get(order=order, channel='whatsapp')
+        self.assertEqual((message.account, message.actor), (self.client_account, self.buyer))  # on the account's behalf, signed by who verified it

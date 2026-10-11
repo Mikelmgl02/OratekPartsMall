@@ -390,7 +390,7 @@ class MessageCursor(serializers.Serializer):
 def message_data(message):
     return {'id': message.pk, 'message_id': str(message.message_id), 'body': message.body,
             'account_id': str(message.account_id), 'account_name': message.account.name,
-            'actor_name': message.actor.get_full_name() or message.actor.username, 'created_at': iso(message.created_at)}
+            'actor_name': message.actor.get_full_name() or message.actor.username, 'channel': message.channel, 'created_at': iso(message.created_at)}
 
 
 class DealMessages(APIView):

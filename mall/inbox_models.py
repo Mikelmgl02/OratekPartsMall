@@ -80,10 +80,13 @@ class PushSubscription(models.Model):
 
 
 class WhatsAppMessage(models.Model):
-    """Every WhatsApp notice sent, with what Meta's webhook later said about it (sent → delivered → read, or failed)."""
+    """Every WhatsApp notice sent, with what Meta's webhook later said about it (sent → delivered → read, or failed), and every message
+    received (status "received", kind "reply"): the bridge (mall.whatsapp_bridge) finds the deal of a reply through the notice it answers.
+    To a person (user) or to an account's own number (account)."""
     STATUSES = [('queued', 'En cola'), ('accepted', 'Aceptado por WhatsApp'), ('sent', 'Enviado'), ('delivered', 'Entregado'), ('read', 'Leído'),
-                ('failed', 'Falló')]
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='whatsapp_messages')
+                ('failed', 'Falló'), ('received', 'Recibido')]
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True, related_name='whatsapp_messages')
+    account = models.ForeignKey('mall.Account', on_delete=models.CASCADE, null=True, blank=True, related_name='whatsapp_messages')
     order = models.ForeignKey('mall.SupplierRequest', on_delete=models.SET_NULL, null=True, blank=True, related_name='whatsapp_messages')
     number = models.CharField(max_length=20)
     template = models.CharField(max_length=80)
@@ -96,3 +99,32 @@ class WhatsAppMessage(models.Model):
 
     class Meta:
         ordering = ['-id']
+
+
+class WhatsAppContact(models.Model):
+    """A number that wrote to the MotionPartes WhatsApp number. Within 24 hours of its last message (mall.whatsapp_bridge.WINDOW) it can get
+    plain messages (the bridge's relays, the fallbacks of unusable templates); outside it only templates. replied_at throttles the automatic
+    answers to it."""
+    number = models.CharField(max_length=20, unique=True)
+    last_inbound_at = models.DateTimeField()
+    replied_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+class AccountWhatsApp(models.Model):
+    """An account's own WhatsApp number ("WhatsApp de la cuenta"), set by an owner or administrator: it gets the account's notices next to
+    its people's, and what it writes back goes into the deal's chat on the account's behalf (signed by whoever verified it). Verified with a
+    code like a person's number (mall.whatsapp_verification), with the same field names."""
+    account = models.OneToOneField('mall.Account', on_delete=models.CASCADE, primary_key=True, related_name='whatsapp')
+    whatsapp_number = models.CharField(max_length=20, blank=True, default='')
+    whatsapp_opt_in_at = models.DateTimeField(null=True, blank=True)
+    whatsapp_verified_at = models.DateTimeField(null=True, blank=True)
+    whatsapp_verified_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    whatsapp_messages = models.BooleanField(default=True)
+    whatsapp_updates = models.BooleanField(default=True)
+    whatsapp_pending_number = models.CharField(max_length=20, blank=True, default='')
+    whatsapp_code_hash = models.CharField(max_length=64, blank=True, default='')
+    whatsapp_code_sent_at = models.DateTimeField(null=True, blank=True)
+    whatsapp_code_attempts = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)

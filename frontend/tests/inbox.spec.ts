@@ -26,7 +26,7 @@ const deal: Record<string, unknown> & { quotation: unknown } = { id: order, refe
 deal.quotations = [deal.quotation];
 const messages = [
   { id: 10, message_id: 'a', body: 'BUENOS DÍAS, ¿TIENEN LOS DISCOS EN EXISTENCIA?', account_id: acct.id, account_name: acct.name, actor_name: 'Francisco', created_at: iso(40) },
-  { id: 11, message_id: 'b', body: 'SÍ, LOS DOS. TE ENVIAMOS LA COTIZACIÓN V2 CON EL TAMBOR INCLUIDO.', account_id: sup.id, account_name: sup.name, actor_name: 'Carlos Ruiz', created_at: iso(6) },
+  { id: 11, message_id: 'b', body: 'SÍ, LOS DOS. TE ENVIAMOS LA COTIZACIÓN V2 CON EL TAMBOR INCLUIDO.', account_id: sup.id, account_name: sup.name, actor_name: 'Carlos Ruiz', created_at: iso(6), channel: 'whatsapp' },
   { id: 12, message_id: 'c', body: 'SÍ, PODEMOS ENTREGAR EL LUNES ANTES DE LAS 12.', account_id: sup.id, account_name: sup.name, actor_name: 'Carlos Ruiz', created_at: iso(2) },
 ];
 
@@ -79,6 +79,8 @@ test('a notification opens the panel on its deal: the quotation beside the chat,
   const conversation = panel.getByRole('region', { name: 'Orden ORD-0123 con GRUPO RAZOR PARTS', exact: true });
   await expect(conversation.getByRole('region', { name: 'Cotización vigente v2', exact: true })).toContainText('USD 612.40');
   await expect(conversation.getByRole('log', { name: 'Mensajes del acuerdo', exact: true })).toContainText('SÍ, PODEMOS ENTREGAR EL LUNES ANTES DE LAS 12.');
+  await expect(conversation.getByRole('log').getByRole('article').filter({ hasText: 'COTIZACIÓN V2' })).toContainText('Carlos Ruiz · ');
+  await expect(conversation.getByRole('log').getByRole('article').filter({ hasText: 'COTIZACIÓN V2' })).toContainText('vía WhatsApp');  // a reply that came in by WhatsApp
   await expect.poll(() => calls.find(call => call.url.endsWith(`/conversations/${order}/read`))?.body).toEqual({ last_message_id: 12 });
   const composer = conversation.getByLabel('Mensaje del acuerdo', { exact: true });
   await composer.fill('Perfecto, el lunes');

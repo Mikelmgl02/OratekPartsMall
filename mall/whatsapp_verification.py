@@ -1,4 +1,4 @@
-"""Proving a WhatsApp number is the person's before any notice goes there (mall.whatsapp). Saving a number (with consent) sends a 6-digit
+"""Proving a WhatsApp number is the person's (or, for "WhatsApp de la cuenta", the account's) before any notice goes there (mall.whatsapp). Saving a number (with consent) sends a 6-digit
 code to it by WhatsApp; the number becomes the person's notices number only once they type the code back. Until then it waits as the
 pending number, and an earlier verified number keeps working.
 
@@ -56,8 +56,10 @@ def code_text(number, code):
 
 
 def send(user, number, code):
-    """The code to the number: the Authentication template, or plain text when Meta refuses the template as unusable. True if Meta took it."""
+    """The code to the number: the Authentication template, or plain text when Meta refuses the template as unusable and the number's
+    24-hour window is open (mall.whatsapp_bridge). True if Meta took it."""
     from .whatsapp import TEMPLATE_UNUSABLE, graph, meta_code
+    from .whatsapp_bridge import window_open
     row = WhatsAppMessage.objects.create(user=user, number=number, template=settings.WHATSAPP_TEMPLATE_CODE, kind=KIND)
     note, template = '', settings.WHATSAPP_TEMPLATE_CODE
     try:
@@ -68,6 +70,8 @@ def send(user, number, code):
             reason = meta_code(detail)
             if reason not in TEMPLATE_UNUSABLE:
                 raise RuntimeError(f'{error.code} {detail}')
+            if not window_open(number):
+                raise RuntimeError(f'Plantilla no disponible ({reason}); fuera de la ventana de 24 horas, no se envió como texto')
             note, template = f'Plantilla no disponible ({reason}); enviado como texto', f'{settings.WHATSAPP_TEMPLATE_CODE} (texto)'[:80]
             result = graph(code_text(number, code))
     except urllib.error.HTTPError as error:
@@ -85,8 +89,9 @@ def send(user, number, code):
     return True
 
 
-def start(user, cursor, number):
-    """A new code to this number (within the limits), which waits as the person's pending number."""
+def start(user, holder, number):
+    """A new code to this number (within the limits), which waits as the holder's pending number (a person's InboxCursor or an account's
+    AccountWhatsApp; the limits count the codes the acting person asked for)."""
     now = timezone.now()
     recent = WhatsAppMessage.objects.filter(user=user, kind=KIND, created_at__gte=now - timedelta(hours=1))
     last = recent.order_by('-created_at').values_list('created_at', flat=True).first()
@@ -98,8 +103,37 @@ def start(user, cursor, number):
     code = f'{secrets.randbelow(10 ** 6):06d}'
     if not send(user, number, code):
         raise CodeNotSent()
-    InboxCursor.objects.filter(pk=cursor.pk).update(whatsapp_pending_number=number, whatsapp_code_hash=code_hash(user.pk, number, code),
-                                                    whatsapp_code_sent_at=now, whatsapp_code_attempts=0)
+    type(holder).objects.filter(pk=holder.pk).update(whatsapp_pending_number=number, whatsapp_code_hash=code_hash(user.pk, number, code),
+                                                     whatsapp_code_sent_at=now, whatsapp_code_attempts=0)
+
+
+def confirm(user, model, pk, code, **verified):
+    """The code typed back: the holder (locked) with its pending number verified and active, or a refusal raised after the transaction so
+    a wrong attempt stays counted. verified adds fields set on success (an account records who verified its number)."""
+    now, refusal = timezone.now(), None
+    with transaction.atomic():
+        holder = model.objects.select_for_update().get(pk=pk)
+        pending = holder.whatsapp_pending_number
+        if not pending or not holder.whatsapp_code_hash:
+            refusal = 'Pide un código primero.'
+        elif now - holder.whatsapp_code_sent_at > CODE_TTL:
+            model.objects.filter(pk=pk).update(whatsapp_code_hash='')
+            refusal = 'El código venció. Pide uno nuevo.'
+        elif not hmac.compare_digest(code_hash(user.pk, pending, code), holder.whatsapp_code_hash):
+            attempts = holder.whatsapp_code_attempts + 1
+            left = ATTEMPTS - attempts
+            if left <= 0:
+                model.objects.filter(pk=pk).update(whatsapp_code_hash='', whatsapp_code_attempts=attempts)
+                refusal = 'Demasiados intentos. Pide un código nuevo.'
+            else:
+                model.objects.filter(pk=pk).update(whatsapp_code_attempts=attempts)
+                refusal = f'El código no es correcto. Te {"queda 1 intento" if left == 1 else f"quedan {left} intentos"}.'
+        else:
+            model.objects.filter(pk=pk).update(whatsapp_number=pending, whatsapp_verified_at=now, whatsapp_opt_in_at=now, **CLEARED, **verified)
+        holder.refresh_from_db()
+    if refusal:
+        raise ValidationError({'code': [refusal]})
+    return holder
 
 
 class CodeSerializer(serializers.Serializer):
@@ -115,28 +149,5 @@ class InboxWhatsAppVerify(APIView):
         from .whatsapp import preferences
         data = CodeSerializer(data=request.data)
         data.is_valid(raise_exception=True)
-        code, now = data.validated_data['code'].strip(), timezone.now()
-        refusal = None  # raised after the transaction, so a wrong attempt stays counted
-        with transaction.atomic():
-            cursor = InboxCursor.objects.select_for_update().get(pk=cursor_for(request.user).pk)
-            pending = cursor.whatsapp_pending_number
-            if not pending or not cursor.whatsapp_code_hash:
-                refusal = 'Pide un código primero.'
-            elif now - cursor.whatsapp_code_sent_at > CODE_TTL:
-                InboxCursor.objects.filter(pk=cursor.pk).update(whatsapp_code_hash='')
-                refusal = 'El código venció. Pide uno nuevo.'
-            elif not hmac.compare_digest(code_hash(request.user.pk, pending, code), cursor.whatsapp_code_hash):
-                attempts = cursor.whatsapp_code_attempts + 1
-                left = ATTEMPTS - attempts
-                if left <= 0:
-                    InboxCursor.objects.filter(pk=cursor.pk).update(whatsapp_code_hash='', whatsapp_code_attempts=attempts)
-                    refusal = 'Demasiados intentos. Pide un código nuevo.'
-                else:
-                    InboxCursor.objects.filter(pk=cursor.pk).update(whatsapp_code_attempts=attempts)
-                    refusal = f'El código no es correcto. Te {"queda 1 intento" if left == 1 else f"quedan {left} intentos"}.'
-            else:
-                InboxCursor.objects.filter(pk=cursor.pk).update(whatsapp_number=pending, whatsapp_verified_at=now, whatsapp_opt_in_at=now, **CLEARED)
-            cursor.refresh_from_db()
-        if refusal:
-            raise ValidationError({'code': [refusal]})
+        cursor = confirm(request.user, InboxCursor, cursor_for(request.user).pk, data.validated_data['code'].strip())
         return Response(preferences(cursor))

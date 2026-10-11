@@ -2516,3 +2516,7 @@ body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-s
 
 /* A message arrived while someone reads earlier ones (deal-detail.tsx DealChat): a way down to it, instead of moving them. */
 .deal-chat-new { align-self:center; display:inline-flex; align-items:center; gap:6px; margin-top:-4px; padding:6px 12px; border-radius:999px; background:#232b26; color:#fff; font-size:12px; font-weight:600; box-shadow:0 6px 16px #19221b2e; }
+
+/* The WhatsApp bridge: a message that came in by WhatsApp says so; an account's own number sits under it in Mi perfil. */
+.deal-chat-whatsapp { font-style:normal; color:#2f7a52; font-weight:600; }
+.profile-accounts .inbox-whatsapp { margin-top:8px; }

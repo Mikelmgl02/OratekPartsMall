@@ -211,13 +211,14 @@ export function EmailSwitches() {
 }
 
 type WhatsAppPreferences = { enabled: boolean; number: string; opted_in: boolean; verified: boolean; active: boolean; pending_number: string;
-  code_sent_at: string | null; code_expires_at: string | null; resend_at: string | null; messages: boolean; updates: boolean };
-const WHATSAPP = '/api/market/inbox/whatsapp';
+  code_sent_at: string | null; code_expires_at: string | null; resend_at: string | null; messages: boolean; updates: boolean; can_manage?: boolean };
 
 // WhatsApp notices (mall.whatsapp): only after the person gives their number and explicit consent (Meta's opt-in rule), and proves the
 // number is theirs with the code sent there by WhatsApp (mall.whatsapp_verification). A new number waits for its code while the old one
-// keeps working. In the bell menu and in Mi perfil.
-export function WhatsAppSwitches() {
+// keeps working. In the bell menu and in Mi perfil; with an account's path, that account's own number ("WhatsApp de la cuenta"), which
+// only its owner or an administrator changes (others see it).
+export function WhatsAppSwitches({ path = '/api/market/inbox/whatsapp', legend = 'Avisos por WhatsApp', account = false }: { path?: string; legend?: string; account?: boolean }) {
+  const WHATSAPP = path;
   const [preferences, setPreferences] = useState<WhatsAppPreferences | null>(null);
   const [editing, setEditing] = useState(false);
   const [number, setNumber] = useState('');
@@ -234,6 +235,11 @@ export function WhatsAppSwitches() {
     return () => clearInterval(timer);
   }, [pending]);
   if (!preferences?.enabled) return null;
+  if (account && !preferences.can_manage) return <fieldset className="inbox-email inbox-whatsapp">
+    <legend>{legend}</legend>
+    <p className="inbox-whatsapp-number">{preferences.active ? <>Avisos de la cuenta en <strong>{preferences.number}</strong></> : 'La cuenta no tiene WhatsApp propio.'}</p>
+    <small>Lo configura el propietario o un administrador de la cuenta.</small>
+  </fieldset>;
   async function save(path: string, changes: Record<string, unknown>) {
     setBusy(true); setError('');
     try {
@@ -252,7 +258,7 @@ export function WhatsAppSwitches() {
   const expired = !!pending && (!preferences.code_expires_at || Date.parse(preferences.code_expires_at) <= now);
   const unverified = preferences.opted_in && !preferences.verified;  // consent given before numbers were verified
   return <fieldset className="inbox-email inbox-whatsapp">
-    <legend>Avisos por WhatsApp</legend>
+    <legend>{legend}</legend>
     {preferences.active && <>
       <p className="inbox-whatsapp-number">Activos en <strong>{preferences.number}</strong><span className="inbox-whatsapp-verified"><BadgeCheck size={13}/>Verificado</span>
         {!pending && !editing && <button type="button" className="button text small" disabled={busy} onClick={() => { setEditing(true); setNumber(''); }}>Cambiar número</button>}
@@ -270,8 +276,8 @@ export function WhatsAppSwitches() {
         <button type="button" className="button text small" disabled={busy} onClick={() => void save(WHATSAPP, { cancel: true })}>{preferences.active ? 'Mantener mi número' : 'Cambiar número'}</button></div>
     </form> : (!preferences.active || editing) && <form className="inbox-whatsapp-form" onSubmit={event => { event.preventDefault(); void save(WHATSAPP, { number, opt_in: true }); }}>
       {unverified && <small>Confirma tu número para seguir recibiendo avisos: te enviaremos un código por WhatsApp.</small>}
-      <label>{editing ? 'Tu número nuevo de WhatsApp' : 'Tu número de WhatsApp'}<input type="tel" inputMode="tel" autoComplete="tel" required value={number} disabled={busy} onChange={event => setNumber(event.target.value)} placeholder="+507 6123 4567"/></label>
-      <label className="inbox-whatsapp-consent"><input type="checkbox" required checked={consent} disabled={busy} onChange={event => setConsent(event.target.checked)}/>Acepto recibir avisos de MotionPartes por WhatsApp. Puedo darme de baja cuando quiera respondiendo BAJA.</label>
+      <label>{account ? (editing ? 'Número nuevo de WhatsApp de la cuenta' : 'Número de WhatsApp de la cuenta') : editing ? 'Tu número nuevo de WhatsApp' : 'Tu número de WhatsApp'}<input type="tel" inputMode="tel" autoComplete="tel" required value={number} disabled={busy} onChange={event => setNumber(event.target.value)} placeholder="+507 6123 4567"/></label>
+      <label className="inbox-whatsapp-consent"><input type="checkbox" required checked={consent} disabled={busy} onChange={event => setConsent(event.target.checked)}/>{account ? 'Acepto que este número reciba los avisos de la cuenta por WhatsApp y responda en sus órdenes. Se puede dar de baja respondiendo BAJA.' : 'Acepto recibir avisos de MotionPartes por WhatsApp. Puedo darme de baja cuando quiera respondiendo BAJA.'}</label>
       <div><button type="submit" className="button primary small" disabled={busy || !consent || !number.trim()}>{busy && <LoaderCircle size={14} className="spin"/>}Enviar código</button>
         {editing && <button type="button" className="button text small" disabled={busy} onClick={() => { setEditing(false); setNumber(preferences.number); setConsent(false); }}>Cancelar</button>}</div>
       <small>Te enviaremos un código de 6 dígitos por WhatsApp para confirmar que el número es tuyo.</small>
