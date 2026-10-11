@@ -1,4 +1,5 @@
 'use client';
+import { fixedColumns } from '@/lib/ag-grid';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { History, LoaderCircle, RefreshCw, RotateCcw, Save, Search, X } from 'lucide-react';
 import { type CustomCellRendererProps } from 'ag-grid-react';
@@ -119,7 +120,7 @@ export default function SupplierPriceGrid({ account, lists, canConfigure, reload
           aria-label={`Historial de precio de ${data.codigo}`} onClick={() => setHistoryRow(data)}><History size={16}/></button> : null },
     ];
   }, [active, editable, canConfigure, cell, edited, fallbackList]);
-  const defaultColumn = useMemo<ColDef<PriceRow>>(() => ({ sortable: false, resizable: true, cellDataType: false, wrapHeaderText: true, autoHeaderHeight: true }), []);
+  const defaultColumn = useMemo<ColDef<PriceRow>>(() => ({ ...fixedColumns, sortable: false, resizable: true, cellDataType: false, wrapHeaderText: true, autoHeaderHeight: true }), []);
   function adopt(rows: PriceRow[]) {
     for (const row of rows) base.current.set(row.supplier_item_id, row);
     // Only rows already loaded change in place; the others arrive fresh when scrolled to.

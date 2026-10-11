@@ -4,7 +4,7 @@ import { RefreshCw } from 'lucide-react';
 import { AgGridReact } from 'ag-grid-react';
 import type { AgGridReactProps } from 'ag-grid-react';
 import type { ColDef, GetRowIdParams, GridApi, GridState, IServerSideDatasource, StateUpdatedEvent } from 'ag-grid-community';
-import { gridLocale, motionGridTheme } from '@/lib/ag-grid';
+import { gridLocale, motionGridTheme, fixedColumns } from '@/lib/ag-grid';
 import { Page, request } from '@/lib/types';
 import { usePageViewport } from './app-shell';
 
@@ -13,17 +13,19 @@ export const GRID_BLOCK = 50;
 const HEADER = 42;
 const MIN_HEIGHT = 360;
 const BOTTOM_GAP = 26; // the panel's bottom padding stays visible under the grid
-const KEPT: (keyof GridState)[] = ['columnOrder', 'columnSizing', 'columnVisibility', 'sort'];
+const KEPT: (keyof GridState)[] = ['columnOrder', 'columnSizing', 'sort'];  // never visibility: every column always shows
 
 function savedState(key: string): GridState | undefined {
   try {
     const value = JSON.parse(localStorage.getItem(key) || 'null');
-    return value && typeof value === 'object' ? value : undefined;
+    if (!value || typeof value !== 'object') return undefined;
+    delete value.columnVisibility;  // a column hidden before columns could no longer be hidden comes back
+    return value;
   } catch { return undefined; }
 }
 
 type Props<T> = {
-  /** Column order, widths, visibility and sort are remembered per grid in this browser. */
+  /** Column order, widths and sort are remembered per grid in this browser. */
   storageKey: string;
   label: string;
   path: string;
@@ -135,7 +137,7 @@ export default function ServerGrid<T>({ storageKey, label, path, params, columns
   }, [viewport, count === 0, error]);
   const available = fill ?? 600;
   const height = count === null ? available : Math.min(available, HEADER + Math.max(count, count === 0 ? 4 : 2) * rowHeight + 2);
-  const defaultColumn = useMemo<ColDef<T>>(() => ({ sortable: false, resizable: true, suppressHeaderMenuButton: false }), []);
+  const defaultColumn = useMemo<ColDef<T>>(() => ({ ...fixedColumns, sortable: false, resizable: true, suppressHeaderMenuButton: false }), []);
   const columnDefs = useMemo(() => columns.map(column => ({ ...column, sortable: !!column.colId && column.colId in ordering })), [columns, ordering]);
   return <div className="admin-grid-shell">
     {error && <div className="notice error" role="alert">{error}<button type="button" onClick={() => { setError(''); grid.current?.api?.refreshServerSide({ purge: true }); }}><RefreshCw size={14}/>Intentar de nuevo</button></div>}
@@ -143,7 +145,7 @@ export default function ServerGrid<T>({ storageKey, label, path, params, columns
       <AgGridReact<T> ref={grid} theme={motionGridTheme} localeText={gridLocale} rowModelType="serverSide" serverSideDatasource={datasource}
         cacheBlockSize={pageSize} maxBlocksInCache={40} blockLoadDebounceMillis={80} getRowId={({ data }: GetRowIdParams<T>) => rowId(data)}
         columnDefs={columnDefs} defaultColDef={defaultColumn} rowHeight={rowHeight} context={context} initialState={initialState} onStateUpdated={remember}
-        cellSelection enableBrowserTooltips ensureDomOrder suppressColumnVirtualisation loadThemeGoogleFonts={false} popupParent={popupParent}
+        cellSelection enableBrowserTooltips ensureDomOrder suppressColumnVirtualisation loadThemeGoogleFonts={false} popupParent={popupParent} suppressDragLeaveHidesColumns
         onGridReady={event => onReady?.(event.api)} {...gridProps}/>
       {count === 0 && <div className="admin-grid-empty">{empty}</div>}
     </div>

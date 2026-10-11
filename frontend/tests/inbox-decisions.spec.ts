@@ -149,4 +149,12 @@ test('a short grid’s column menu opens over the panel instead of being clipped
   expect(await menu.evaluate(element => !element.closest('.quote-lines') && !!element.closest('dialog'))).toBe(true);  // in the dialog, outside the grid
   const [menuBox, gridBox] = [(await menu.boundingBox())!, (await grid.boundingBox())!];
   expect(menuBox.y + menuBox.height).toBeGreaterThan(gridBox.y + gridBox.height);  // taller than the one-row grid, and whole
+  await expect(menu.getByText('Elegir Columnas', { exact: true })).toHaveCount(0);  // columns cannot be hidden
+  await expect(menu.getByText('Restablecer Columnas', { exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');  // closes the menu, not the panel
+  await expect(menu).toHaveCount(0);
+  await expect(grid).toBeVisible();
+  const headers = await grid.getByRole('columnheader').count();
+  await grid.getByRole('columnheader', { name: 'Artículo' }).dragTo(page.locator('body'), { targetPosition: { x: 20, y: 20 } });  // dragged out of the grid
+  await expect(grid.getByRole('columnheader')).toHaveCount(headers);
 });

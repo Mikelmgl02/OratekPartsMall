@@ -8,8 +8,13 @@ export default function Modal({ title, children, onClose, wide = false, drawer =
   const ref = useRef<HTMLDialogElement>(null);
   const label = useId();
   const opened = useRef(0);
+  // Escape closes an open grid menu or popup editor first, never the dialog under it: the grid removes its popup during the keydown, so
+  // whether one was open is noted on the way in (capture), before the dialog's cancel.
+  const popupEscape = useRef(false);
   useEffect(() => { const dialog = ref.current; opened.current = performance.now(); dialog?.showModal(); return () => dialog?.close(); }, []);
-  return <dialog ref={ref} aria-labelledby={label} className={`modal ${wide ? 'wide' : ''} ${drawer ? 'drawer' : ''} ${className}`} {...dragEvents} onCancel={event => { event.preventDefault(); onClose(); }} onClick={event => { if (event.target === ref.current && performance.now() - opened.current > 400) { const rect = ref.current.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) onClose(); } }}>
+  return <dialog ref={ref} aria-labelledby={label} className={`modal ${wide ? 'wide' : ''} ${drawer ? 'drawer' : ''} ${className}`} {...dragEvents}
+    onKeyDownCapture={event => { popupEscape.current = event.key === 'Escape' && !!ref.current?.querySelector('.ag-popup'); }}
+    onCancel={event => { event.preventDefault(); if (popupEscape.current) { popupEscape.current = false; return; } onClose(); }} onClick={event => { if (event.target === ref.current && performance.now() - opened.current > 400) { const rect = ref.current.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) onClose(); } }}>
     <div className="modal-header"><h2 id={label}>{title}</h2><button className="icon-button" aria-label="Cerrar ventana" onClick={onClose}><X size={20}/></button></div>
     {children}
     <UpdateNotice/>

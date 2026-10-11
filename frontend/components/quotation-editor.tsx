@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ClipboardCheck, CloudOff, LoaderCircle, PackageMinus, RefreshCcw, RotateCcw, Send, Sparkles, TriangleAlert, Undo2 } from 'lucide-react';
 import { AgGridReact, type CustomCellEditorProps, type CustomCellRendererProps } from 'ag-grid-react';
 import type { CellClickedEvent, ColDef, GetRowIdParams, GridReadyEvent, ValueSetterParams } from 'ag-grid-community';
-import { gridLocale, motionGridTheme } from '@/lib/ag-grid';
+import { gridLocale, motionGridTheme, fixedColumns } from '@/lib/ag-grid';
 import type { Deal, QuotePayload } from '@/lib/deal-types';
 import type { AssistantProposal, AssistantState, DraftException, DraftPricing, DraftStock, DraftSuggestion, PriceExplanation, PriceSource, PublishException, QuoteDraft,
   QuoteDraftEnvelope, QuoteDraftLineChange, QuoteDraftSave, RepricedLine, RepriceScope } from '@/lib/pricing-types';
@@ -618,7 +618,7 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
       onCellClicked: (event: CellClickedEvent<QuoteRow>) => { if ((alertsRef.current.lines[event.data?.order_line_id || ''] || []).length) setPanelOpen(true); } },
   // eslint-disable-next-line react-hooks/exhaustive-deps
   ], [locked, formatMoney, edited, invalidTooltip, autosave]);
-  const defaultColumn = useMemo<ColDef<QuoteRow>>(() => ({ sortable: true, resizable: true, cellDataType: false, wrapHeaderText: true, autoHeaderHeight: true }), []);
+  const defaultColumn = useMemo<ColDef<QuoteRow>>(() => ({ ...fixedColumns, sortable: true, resizable: true, cellDataType: false, wrapHeaderText: true, autoHeaderHeight: true }), []);
   useEffect(() => { if (locked) grid.current?.api?.stopEditing(true); }, [locked]);
   const pricingSeen = useRef(pricingRevision);
   useEffect(() => {
@@ -736,7 +736,7 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
       <strong>{completed} de {rows.length} {rows.length === 1 ? 'artículo completo' : 'artículos completos'}</strong></div>
     {priceNotice && <div className="notice success quotation-price-notice" role="status">{priceNotice}</div>}
     <div ref={host} className="quotation-grid" aria-label="Artículos de la cotización" style={{ height: Math.min(450, Math.max(170, rows.length * 56 + 60)) }}>
-      <AgGridReact<QuoteRow> ref={grid} theme={motionGridTheme} localeText={gridLocale} rowData={rows} columnDefs={columns} defaultColDef={defaultColumn}
+      <AgGridReact<QuoteRow> ref={grid} theme={motionGridTheme} localeText={gridLocale} suppressDragLeaveHidesColumns rowData={rows} columnDefs={columns} defaultColDef={defaultColumn}
         getRowId={rowId} singleClickEdit stopEditingWhenCellsLoseFocus context={gridContext}
         onGridReady={ready} cellSelection={!locked} suppressClipboardPaste={locked}
         ensureDomOrder suppressColumnVirtualisation enableBrowserTooltips loadThemeGoogleFonts={false}/>

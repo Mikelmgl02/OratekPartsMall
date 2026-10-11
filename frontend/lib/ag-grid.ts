@@ -1,6 +1,6 @@
 'use client';
 
-import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
+import { AllCommunityModule, ModuleRegistry, themeQuartz, type ColDef, type DefaultMenuItem, type GetMainMenuItemsParams } from 'ag-grid-community';
 import { CellSelectionModule, ClipboardModule, ColumnMenuModule, ContextMenuModule, ExcelExportModule, LicenseManager, RichSelectModule, ServerSideRowModelApiModule,
   ServerSideRowModelModule } from 'ag-grid-enterprise';
 import { AG_GRID_LOCALE_ES } from '@ag-grid-community/locale';
@@ -18,3 +18,11 @@ export const motionGridTheme = themeQuartz.withParams({
   spacing: 6, rowHeight: 56, headerHeight: 42, wrapperBorderRadius: 10,
   valueChangeValueHighlightBackgroundColor: '#dcf39e',  // flashCells: the brand lime, fading out
 });
+
+// Every grid always shows all its columns: none can be hidden, neither from the column menu (no "Elegir columnas") nor by dragging it out
+// of the grid (each grid also sets suppressDragLeaveHidesColumns). Sorting, resizing, moving and "Restablecer columnas" stay.
+function withoutChooser(params: GetMainMenuItemsParams): DefaultMenuItem[] {
+  const items = params.defaultItems.filter(item => item !== 'columnChooser');
+  return items.filter((item, index) => item !== 'separator' || (index > 0 && index < items.length - 1 && items[index - 1] !== 'separator'));
+}
+export const fixedColumns: Pick<ColDef, 'lockVisible' | 'mainMenuItems'> = { lockVisible: true, mainMenuItems: withoutChooser };
