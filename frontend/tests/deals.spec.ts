@@ -1,6 +1,7 @@
 import { expect, Page, test } from '@playwright/test';
 import { switchAccount } from './header';
 import { signedOutInbox } from './inbox-route';
+import { fakeServerBasket } from './server-basket';
 import type { Deal, DealMessage, DealStatus } from '../lib/deal-types';
 import { openSupplierNavigation } from './supplier-navigation';
 import { mockQuoteDrafts } from './quote-draft-mock';
@@ -36,6 +37,7 @@ async function fixture(page: Page) {
   let blockAccept = false;
   const unexpected: string[] = [];
   await page.route('**/api/**', route => { if (signedOutInbox(route)) return; unexpected.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`); return route.fulfill({status:404, json:{detail:'Ruta no prevista'}}); });
+  await fakeServerBasket(page);  // the client's cesta (mall/basket.py), empty
   await page.route(/\/api\/market\/accounts\/[^/]+\/apiag$/, route => route.fulfill({ json: { connected: false } }));  // the inventory panel's apiag-cloud card
   await page.route('**/api/session', route => route.fulfill({json:{authenticated:true, user:{id:801, username:'EMPLEADO', is_superuser:false}, accounts:{...empty, count:2, results:accounts}}}));
   await page.route('**/api/market/analytics/events', route => route.fulfill({status:202, json:{recorded:true}}));

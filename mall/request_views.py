@@ -377,6 +377,8 @@ def submit_request(*, client, actor, data):
     submission.result = {'submission_id': str(submission.submission_id), 'created_at': submission.created_at.isoformat(),
                          'requests': receipts}
     submission.save(update_fields=['result'])
+    from .basket import settle
+    settle(actor, client, data['lines'])  # what was sent leaves the person's cesta
     return submission.result
 
 

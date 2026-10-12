@@ -113,7 +113,10 @@ export type SupplierInventoryImportResult = {
   progress: { batch_size: number; total_batches: number; completed_batches: number; total_rows: number; processed_rows: number; next_batch: number | null };
 };
 export type LedgerEntry = { id: number; kind: string; quantity: number; direction: 'credit' | 'debit'; balance_type: 'stock' | 'reservation'; reserved_delta: number; reserved_direction: 'credit' | 'debit' | ''; reported_after: number; reserved_after: number; reference: string; created_at: string };
-export type BasketLine = { key: string; part: Part; offer: Offer; quantity: number };
+// A line of the cesta. Signed in with a client account it lives on the server (mall/basket.py), which also says whether it can still be
+// asked for (available), whether its article changed since it was added (changed) and where it was added (source).
+export type BasketLine = { key: string; part: Part; offer: Offer; quantity: number; available?: boolean; changed?: boolean; source?: 'web' | 'whatsapp' };
+export type ServerBasket = { lines: BasketLine[]; count: number };
 export const roleLabel: Record<string, string> = { supplier_retail: 'Proveedor minorista', supplier_wholesale: 'Proveedor mayorista', client_business: 'Cliente empresarial', client_walkin: 'Cliente particular' };
 const fieldLabel: Record<string, string> = {
   username: 'Usuario', password: 'Contraseña', email: 'Correo electrónico', token: 'Código de invitación',

@@ -5,7 +5,7 @@ from django.conf.urls.static import static
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from rest_framework.authtoken.views import ObtainAuthToken
 from rest_framework.throttling import AnonRateThrottle
-from mall import deal_attachments, email_notifications, inbox, login_hints, management, push, views, whatsapp, whatsapp_accounts, whatsapp_verification
+from mall import basket, deal_attachments, email_notifications, inbox, login_hints, management, push, views, whatsapp, whatsapp_accounts, whatsapp_verification
 from mall.technical_api import (PartTypeList, PartTypeDetail, TemplateDetail, ApplicationList, ApplicationDetail,
                                ItemTechnicalDetail, CatalogTechnicalDetail)
 from mall.matching_views import MatchingOverview, MatchingReview
@@ -138,6 +138,7 @@ urlpatterns = [
     path('api/v1/wishlist/state/', WishlistState.as_view()),
     path('api/v1/wishlist/<uuid:part_id>/', WishlistDetail.as_view()),
     path('api/v1/accounts/<uuid:account_id>/requests/', AccountRequests.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/basket/', basket.BasketView.as_view()),
     path('api/v1/accounts/<uuid:account_id>/sent-requests/', ClientSentRequests.as_view()),
     path('api/v1/accounts/<uuid:account_id>/sent-requests/<uuid:pk>/', ClientSentRequestDetail.as_view()),
     path('api/v1/accounts/<uuid:account_id>/catalog/<uuid:part_id>/request-state/', ClientPartRequestState.as_view()),

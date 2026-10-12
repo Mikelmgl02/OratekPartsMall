@@ -1,5 +1,7 @@
 import { expect, Page, test } from '@playwright/test';
 import { switchAccount } from './header';
+import { fakeServerBasket } from './server-basket';
+import type { Part } from '../lib/types';
 
 const part = {id:'state-part', sku:'58411-1R000', name:'', description:'TAMBOR HYU ACCENT', category:'FRENOS', subcategory:'TAMBORES', codes:[]};
 const accounts = [
@@ -25,6 +27,7 @@ async function setup(page: Page) {
   await page.route('**/api/session', route => route.fulfill({json:{authenticated:true, user:{id:1, username:'CLIENTE', is_superuser:false}, accounts:{count:2, next:null, previous:null, results:accounts}}}));
   await page.route(/\/api\/market\/catalog(?:\?.*)?$/, route => route.fulfill({json:{count:1, next:null, previous:null, results:[part]}}));
   await page.route(`**/api/market/catalog/${part.id}/suppliers`, route => route.fulfill({json:offers}));
+  return fakeServerBasket(page, {parts:[part as Part], offers:{[part.id]: offers}});  // the cesta on the server
 }
 async function openDetail(page: Page) {
   await page.getByRole('button', {name:'Ver 58411-1R000', exact:true}).click();
@@ -38,7 +41,7 @@ function row(page: Page, supplier='PROVEEDOR A') {
 for (const viewport of [{label:'desktop', width:1440, height:1100}, {label:'mobile', width:390, height:844}]) {
   test(`${viewport.label}: added state survives close, reload and quantity changes without mixing supplier items`, async ({page}) => {
     await page.setViewportSize(viewport);
-    await setup(page);
+    const cesta = await setup(page);
     await page.route('**/request-state', route => route.fulfill({json:history}));
     await page.goto('/'); await openDetail(page);
     const summary = page.getByRole('region', {name:'Tus cantidades para este SKU'});
@@ -59,6 +62,7 @@ for (const viewport of [{label:'desktop', width:1440, height:1100}, {label:'mobi
     await openDetail(page);
     await expect(row(page).getByRole('button', {name:'58411-1R000-G agregado, 6 en cesta', exact:true})).toBeVisible();
     await page.getByRole('button', {name:'Cerrar ventana', exact:true}).click();
+    await expect.poll(() => cesta.lines['state-client-a']?.[0]?.quantity).toBe(6);  // saved on the server
     await page.reload(); await openDetail(page);
     await expect(row(page)).toContainText('6 EN CESTA');
     await row(page).getByRole('button', {name:'58411-1R000-G agregado, 6 en cesta', exact:true}).click();

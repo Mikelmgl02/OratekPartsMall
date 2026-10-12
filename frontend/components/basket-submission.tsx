@@ -6,9 +6,10 @@ import { Account, BasketLine, request } from '@/lib/types';
 import type { RequestSubmissionResult } from '@/lib/request-types';
 import { DraftSubmission, finishDraftSubmission, readSubmissions, requestPayloadLines, submissionStorageKey } from '@/lib/basket-submissions';
 
-// ownItems: lines of the active account's own stock, which it can never send (the server refuses them too).
-export default function BasketSubmission({ lines, account, preview, ownItems = 0, onPending, onSent }: {
-  lines: BasketLine[]; account?: Account; preview: boolean; ownItems?: number; onPending: (pending: boolean) => void;
+// ownItems: lines of the active account's own stock, which it can never send (the server refuses them too). staleItems: lines whose
+// article changed since it was added or can no longer be asked for (the server would refuse the solicitud).
+export default function BasketSubmission({ lines, account, preview, ownItems = 0, staleItems = 0, onPending, onSent }: {
+  lines: BasketLine[]; account?: Account; preview: boolean; ownItems?: number; staleItems?: number; onPending: (pending: boolean) => void;
   onSent: (receipt: RequestSubmissionResult, remaining: BasketLine[]) => void;
 }) {
   const [submissions, setSubmissions] = useState<DraftSubmission[]>([]);
@@ -75,9 +76,9 @@ export default function BasketSubmission({ lines, account, preview, ownItems = 0
     {error && <div className="notice error" role="alert">{error}</div>}
     {receipt && <div className="notice success" role="status"><div><strong>Solicitud enviada</strong><p>Consulta sus artículos y estado en Enviadas.</p>{receipt.requests.map(item => <p key={item.id}>{item.supplier.name} · {item.reference}{item.appended ? ' · Agregada a orden pendiente' : ''}</p>)}</div></div>}
     {storageNote && <p className="basket-page-draft-note" role="status">{storageNote}</p>}
-    <button type="button" className="button primary full" disabled={!ready || busy || !canSend || !hasSelectedItems || ownItems > 0 || !!receipt} onClick={submit}>
+    <button type="button" className="button primary full" disabled={!ready || busy || !canSend || !hasSelectedItems || ownItems > 0 || staleItems > 0 || !!receipt} onClick={submit}>
       {busy ? <><LoaderCircle size={16} className="spin"/>Enviando solicitud…</> : receipt ? <><Check size={16}/>Solicitud enviada</> : <>{preview ? 'Enviar solicitud de ejemplo' : 'Enviar solicitud'}<ArrowRight size={16}/></>}
     </button>
-    <p className="basket-page-draft-note">{preview ? 'Inicia sesión con una cuenta de cliente para enviar solicitudes reales.' : !canSend ? 'Selecciona una cuenta con rol de cliente para enviar solicitudes.' : !hasSelectedItems ? 'Vuelve al catálogo y elige el artículo de cada proveedor para completar esta cesta.' : ownItems > 0 ? 'Quita de la cesta los artículos de tu propia cuenta para enviar la solicitud.' : receipt ? 'La solicitud ya está guardada. Abre Enviadas para consultar su estado.' : 'Al enviar, los artículos pasan de Borrador a Enviadas. Cada proveedor recibe una orden. Si tiene una orden tuya pendiente de revisión, agregaremos los artículos a esa orden. El proveedor preparará una cotización privada.'}</p>
+    <p className="basket-page-draft-note">{preview ? 'Inicia sesión con una cuenta de cliente para enviar solicitudes reales.' : !canSend ? 'Selecciona una cuenta con rol de cliente para enviar solicitudes.' : !hasSelectedItems ? 'Vuelve al catálogo y elige el artículo de cada proveedor para completar esta cesta.' : ownItems > 0 ? 'Quita de la cesta los artículos de tu propia cuenta para enviar la solicitud.' : staleItems > 0 ? 'Quita o vuelve a elegir los artículos marcados para enviar la solicitud.' : receipt ? 'La solicitud ya está guardada. Abre Enviadas para consultar su estado.' : 'Al enviar, los artículos pasan de Borrador a Enviadas. Cada proveedor recibe una orden. Si tiene una orden tuya pendiente de revisión, agregaremos los artículos a esa orden. El proveedor preparará una cotización privada.'}</p>
   </>;
 }

@@ -27,7 +27,7 @@ import type { RequestSubmissionResult } from '@/lib/request-types';
 import SupplierWorkspace from './supplier-workspace';
 import Modal from './modal';
 import { AppToolbar, usePageViewport } from './app-shell';
-import { Account, BasketLine, CatalogFacet, CatalogFilters, CatalogPage, Offer, Page, Part, SessionUser, request } from '@/lib/types';
+import { Account, ApiError, BasketLine, CatalogFacet, CatalogFilters, CatalogPage, Offer, Page, Part, ServerBasket, SessionUser, request } from '@/lib/types';
 import { previewParts, previewOffers } from '@/lib/preview';
 
 const categories = [
@@ -94,9 +94,16 @@ export default function Catálogo() {
   const canSupply = account?.capabilities.includes('supplier') ?? false;
   const canQuote = preview || (account?.capabilities.includes('client') ?? false);
   const basketKey = `partsmall:basket:${preview ? 'preview' : accountId || 'unassigned'}`;
+  // Signed in with a client account the cesta lives on the server (mall/basket.py): the same on every device and for WhatsApp. The
+  // example cesta of a signed-out visitor stays in this browser.
+  const serverBasket = !preview && !!account?.capabilities.includes('client');
+  const basketPath = `/api/market/accounts/${accountId}/basket`;
   const currentBasket = loadedBasketKey === basketKey ? lines : [];
   const activeBasketKey = useRef(basketKey);
   activeBasketKey.current = basketKey;
+  // Changes go to the server one after another; only the answer to the latest one replaces the lines shown.
+  const basketQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const basketChange = useRef(0);
 
   const [authUsername, setAuthUsername] = useState('');
   function openAuth(mode: 'login' | 'signup' = 'login', username = '') { setAuthMode(mode); setAuthUsername(username); setAuthOpen(true); }
@@ -164,9 +171,10 @@ export default function Catálogo() {
     return () => window.removeEventListener('popstate', restorePage);
   }, []);
   useEffect(() => {
+    let draft: BasketLine[] = [];
     try {
       const saved = JSON.parse(localStorage.getItem(basketKey) || '[]');
-      let draft: BasketLine[] = Array.isArray(saved) ? saved.filter(line => line?.key && line?.part?.id && line?.offer?.supplier_id && Number.isInteger(line.quantity) && line.quantity > 0).map(line => ({...line, part: preview ? previewParts.find(part => part.id === line.part.id) || line.part : line.part, offer: preview ? previewOffers.find(offer => offer.supplier_id === line.offer.supplier_id) || line.offer : line.offer, quantity: Math.min(9999, line.quantity)})) : [];
+      draft = Array.isArray(saved) ? saved.filter(line => line?.key && line?.part?.id && line?.offer?.supplier_id && Number.isInteger(line.quantity) && line.quantity > 0).map(line => ({...line, part: preview ? previewParts.find(part => part.id === line.part.id) || line.part : line.part, offer: preview ? previewOffers.find(offer => offer.supplier_id === line.offer.supplier_id) || line.offer : line.offer, quantity: Math.min(9999, line.quantity)})) : [];
       if (!preview && account?.capabilities.includes('client')) {
         try {
           const recovered = recoverSentDraft(account.id, draft); draft = recovered.lines;
@@ -176,11 +184,58 @@ export default function Catálogo() {
           }
         } catch { setNotice('No se pudo completar la limpieza del borrador. Tus solicitudes enviadas siguen guardadas en tu cuenta.'); }
       }
-      setLines(draft);
     }
-    catch { setLines([]); }
-    setLoadedBasketKey(basketKey);
-  }, [basketKey]);
+    catch { draft = []; }
+    if (!serverBasket) { setLines(draft); setLoadedBasketKey(basketKey); return; }
+    let cancelled = false;
+    (async () => {
+      const moved = await moveBrowserCesta(draft);
+      if (cancelled) return;
+      setLines(moved?.lines ?? []); setLoadedBasketKey(basketKey);
+      if (moved === null) setNotice('No se pudo cargar tu cesta. Revisa tu conexión: la cargaremos de nuevo al volver a esta página.');
+      else if (moved.dropped) setNotice(moved.dropped === 1 ? 'Un artículo de la cesta de este navegador ya no se puede solicitar y se quitó.'
+        : `${moved.dropped} artículos de la cesta de este navegador ya no se pueden solicitar y se quitaron.`);
+    })();
+    return () => { cancelled = true; };
+  }, [basketKey, serverBasket]);
+  // A cesta this browser kept before it moved to the server goes in once (the larger quantity of each article wins) and leaves the
+  // browser; articles no longer requestable (or the account's own) stay out and are counted. The server's cesta, or null when it could
+  // not be reached.
+  async function moveBrowserCesta(draft: BasketLine[]) {
+    const movable = draft.filter(line => line.offer.selected_item);
+    const change = (line: BasketLine) => ({ supplier_item_id: line.offer.selected_item!.id, quantity: line.quantity, mode: 'max', expected_part_id: line.part.id });
+    let dropped = draft.length - movable.length;
+    try {
+      let data: ServerBasket | null = null;
+      if (movable.length) {
+        try { data = await request<ServerBasket>(basketPath, { method: 'POST', body: JSON.stringify({ changes: movable.map(change) }) }); }
+        catch (caught) {
+          if (!(caught instanceof ApiError) || ![400, 409].includes(caught.status)) throw caught;
+          for (const line of movable) {
+            try { await request(basketPath, { method: 'POST', body: JSON.stringify({ changes: [change(line)] }) }); }
+            catch (refused) { if (!(refused instanceof ApiError) || ![400, 409].includes(refused.status)) throw refused; dropped += 1; }
+          }
+        }
+      }
+      data ??= await request<ServerBasket>(basketPath);
+      try { if (draft.length) localStorage.removeItem(basketKey); } catch { /* it moves in again harmlessly: the larger quantity wins */ }
+      return { lines: data.lines, dropped };
+    } catch { return null; }
+  }
+  async function reloadBasket() {
+    const change = basketChange.current;
+    try {
+      const data = await request<ServerBasket>(basketPath);
+      if (change === basketChange.current && activeBasketKey.current === basketKey) { setLines(data.lines); setLoadedBasketKey(basketKey); }
+    } catch { /* the next focus tries again */ }
+  }
+  // Another device or WhatsApp may have changed it: read it again when the page comes back to the front.
+  useEffect(() => {
+    if (!serverBasket) return;
+    const refresh = () => { if (document.visibilityState === 'visible') void reloadBasket(); };
+    window.addEventListener('focus', refresh); document.addEventListener('visibilitychange', refresh);
+    return () => { window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refresh); };
+  }, [serverBasket, basketKey]);
   useEffect(() => { if (notice) { const timer = setTimeout(() => setNotice(''), 4500); return () => clearTimeout(timer); } }, [notice]);
   useEffect(() => {
     if (!authenticated || !accountId) {setCatalogSnapshot(null); setBusy(false); return;}
@@ -224,9 +279,25 @@ export default function Catálogo() {
     // Keep pinned controls in place and show the first new result before the browser paints a shorter grid.
     if (scroller.scrollTop > naturalTop + 1) scroller.scrollTo({ top: naturalTop, behavior: 'instant' });
   }, [catalogSnapshot, preview, completedSearch, filters, viewport]);
-  function updateBasket(next: BasketLine[]) {
+  function updateBasket(next: BasketLine[], added?: { line: BasketLine; units: number }) {
+    if (serverBasket) { saveBasket(currentBasket, next, added); return; }
     setLines(next);
     try { localStorage.setItem(basketKey, JSON.stringify(next)); } catch { setNotice('Tu navegador no pudo guardar el borrador. Mantén esta página abierta.'); }
+  }
+  // The difference between two cestas as server changes: units added from the catalog, quantities set or articles taken out on the
+  // cesta's page. Shown at once; the server's answer to the latest change replaces it, and a refusal brings back the server's cesta.
+  function saveBasket(before: BasketLine[], next: BasketLine[], added?: { line: BasketLine; units: number }) {
+    const id = (line: BasketLine) => line.offer.selected_item?.id;
+    const changes = added
+      ? [{ supplier_item_id: id(added.line), quantity: added.units, mode: 'add', expected_part_id: added.line.part.id }]
+      : [...before.filter(line => !next.some(other => id(other) === id(line))).map(line => ({ supplier_item_id: id(line), quantity: 0, mode: 'set' })),
+         ...next.filter(line => before.find(other => id(other) === id(line))?.quantity !== line.quantity).map(line => ({ supplier_item_id: id(line), quantity: line.quantity, mode: 'set', expected_part_id: line.part.id }))];
+    if (!changes.length || changes.some(change => !change.supplier_item_id)) return;
+    setLines(next);
+    const change = ++basketChange.current, key = basketKey, path = basketPath;
+    basketQueue.current = basketQueue.current.then(() => request<ServerBasket>(path, { method: 'POST', body: JSON.stringify({ changes }) })
+      .then(data => { if (change === basketChange.current && activeBasketKey.current === key) setLines(data.lines); })
+      .catch(caught => { setNotice(caught instanceof Error ? caught.message : 'No se pudo guardar tu cesta.'); if (activeBasketKey.current === key) void reloadBasket(); }));
   }
   function addToBasket(part: Part, offer: Offer, quantity: number) {
     if (loadedBasketKey !== basketKey || !Number.isFinite(quantity)) return;
@@ -235,7 +306,9 @@ export default function Catálogo() {
     const key = `${part.id}:${offer.supplier_id}${offer.selected_item ? `:${offer.selected_item.id}` : ''}`;
     const existing = currentBasket.find(line => line.offer.supplier_id === offer.supplier_id &&
       (offer.selected_item ? line.offer.selected_item?.id === offer.selected_item.id || (!line.offer.selected_item && line.part.id === part.id) : line.key === key));
-    updateBasket(existing ? currentBasket.map(line => line.key === existing.key ? {key, part, offer, quantity: Math.min(9999, line.quantity+units)} : line) : [...currentBasket, {key, part, offer, quantity: units}]);
+    if (serverBasket && !offer.selected_item) { setNotice('Elige el artículo del proveedor para agregarlo a tu cesta.'); return; }
+    const line = existing ? {...existing, key, part, offer, quantity: Math.min(9999, existing.quantity+units)} : {key, part, offer, quantity: units};
+    updateBasket(existing ? currentBasket.map(item => item.key === existing.key ? line : item) : [...currentBasket, line], { line, units });
     const added = existing ? Math.min(units, 9999 - existing.quantity) : units;
     if (!preview && offer.selected_item && added > 0) trackUsage(user, accountId, { kind: 'basket_add', part_id: part.id, supplier_item_id: offer.selected_item.id, quantity: added });
     setNotice(`${offer.selected_item?.codigo || part.sku} se agregó a tu cesta.`);
@@ -270,7 +343,8 @@ export default function Catálogo() {
   function setBasketPage(open: boolean) { setClientPage(open ? 'cesta' : null); }
   function requestSent(receipt: RequestSubmissionResult, remaining: BasketLine[]) {
     if (activeBasketKey.current !== basketKey) return;
-    setLines(remaining); setSentReceipt({ accountId, receipt }); setClientPage('solicitudes', true);
+    if (serverBasket) { basketChange.current += 1; void reloadBasket(); } else setLines(remaining);  // the server took the sent units out
+    setSentReceipt({ accountId, receipt }); setClientPage('solicitudes', true);
   }
   function explore() { setBasketPage(false); setView('catalog'); setTimeout(() => { document.getElementById('catalog')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); searchRef.current?.focus({ preventScroll: true }); }, 20); }
   function selectAccount(id: string) {
@@ -324,7 +398,7 @@ export default function Catálogo() {
       </div></nav>
     </header>
     </AppToolbar>
-    {purchasesOpen ? <PurchaseHistory key={accountId} account={account} authenticated={authenticated} sessionReady={sessionReady} onCatalog={explore} onRequests={() => setClientPage('solicitudes')} onSignIn={() => openAuth()}/> : wishlistOpen ? <Wishlist key={user?.id || 'guest'} userId={user?.id} sessionReady={sessionReady} configured={accounts.length > 0} revision={wishlist.revision} pending={wishlist.pending} stateError={wishlist.error} onRefresh={() => { wishlist.refresh().catch(() => {}); }} onToggle={toggleFavorite} onOpen={openPart} onCatalog={explore} onSignIn={() => openAuth()}/> : sentOpen ? !sessionReady || loadedBasketKey !== basketKey ? <main className="section-container"><div className="loading" role="status"><LoaderCircle className="spin"/>Cargando tus solicitudes…</div></main> : <ClientRequests key={accountId} account={account} draftCount={currentBasket.length} onDraft={() => setBasketPage(true)} onCatalog={explore} receipt={sentReceipt?.accountId === accountId ? sentReceipt.receipt : undefined}/> : basketOpen ? !sessionReady || loadedBasketKey !== basketKey ? <main className="section-container"><div className="loading" role="status"><LoaderCircle className="spin"/>Cargando tu cesta…</div></main> : <Basket key={basketKey} lines={currentBasket} onChange={updateBasket} onClose={explore} preview={preview} account={account} onSent={requestSent} onSentView={() => setClientPage('solicitudes')}/> : view === 'inventory' && canSupply && account ? <SupplierWorkspace key={account.id} account={account}/> : <main>
+    {purchasesOpen ? <PurchaseHistory key={accountId} account={account} authenticated={authenticated} sessionReady={sessionReady} onCatalog={explore} onRequests={() => setClientPage('solicitudes')} onSignIn={() => openAuth()}/> : wishlistOpen ? <Wishlist key={user?.id || 'guest'} userId={user?.id} sessionReady={sessionReady} configured={accounts.length > 0} revision={wishlist.revision} pending={wishlist.pending} stateError={wishlist.error} onRefresh={() => { wishlist.refresh().catch(() => {}); }} onToggle={toggleFavorite} onOpen={openPart} onCatalog={explore} onSignIn={() => openAuth()}/> : sentOpen ? !sessionReady || loadedBasketKey !== basketKey ? <main className="section-container"><div className="loading" role="status"><LoaderCircle className="spin"/>Cargando tus solicitudes…</div></main> : <ClientRequests key={accountId} account={account} draftCount={currentBasket.length} onDraft={() => setBasketPage(true)} onCatalog={explore} receipt={sentReceipt?.accountId === accountId ? sentReceipt.receipt : undefined}/> : basketOpen ? !sessionReady || loadedBasketKey !== basketKey ? <main className="section-container"><div className="loading" role="status"><LoaderCircle className="spin"/>Cargando tu cesta…</div></main> : <Basket key={basketKey} lines={currentBasket} onChange={updateBasket} onClose={explore} preview={preview} account={account} synced={serverBasket} onSent={requestSent} onSentView={() => setClientPage('solicitudes')}/> : view === 'inventory' && canSupply && account ? <SupplierWorkspace key={account.id} account={account}/> : <main>
       <section className="store-hero section-container">
         <div className="store-hero-banner">
           <div className="store-hero-copy"><span className="hero-kicker"><span className="live-dot"/>CONECTAMOS REPUESTOS Y PROVEEDORES</span><h1>El repuesto indicado.<br/>El proveedor <span>ideal.</span></h1><p>Encuentra los repuestos que necesitas. Conecta con proveedores que los tienen y recibe una cotización para ti.</p><div className="store-hero-actions"><button className="button dark" onClick={explore}>Explorar el catálogo<ArrowDown size={17}/></button><div className="hero-proof"><span><ShieldCheck size={16}/>Un catálogo compartido</span><span><LockKeyhole size={15}/>Cotizaciones privadas</span></div></div></div>

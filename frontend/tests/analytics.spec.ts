@@ -1,4 +1,6 @@
 import { expect, Page, test } from '@playwright/test';
+import { fakeServerBasket } from './server-basket';
+import type { Offer, Part } from '../lib/types';
 
 const accountId = '11111111-1111-4111-8111-111111111111';
 const part = { id: '22222222-2222-4222-8222-222222222222', sku: '58411-1R000', name: '', description: 'TAMBOR HYU ACCENT', codes: [] };
@@ -6,21 +8,23 @@ const itemId = '33333333-3333-4333-8333-333333333333';
 type Event = { kind: string; event_id: string; visit_id: string; account_id: string; term?: string; quantity?: number; part_id?: string; supplier_item_id?: string };
 const catalog = { count: 1, next: null, previous: null, results: [part] };
 
+const offers: Offer[] = [{ supplier_id: '44444444-4444-4444-8444-444444444444', supplier_name: 'PROVEEDOR QA', in_stock: true,
+  items: [{ id: itemId, codigo: '58411-1R000-G', brand: '', description: 'TAMBOR' }] }];
+
 async function mockClient(page: Page, superuser = false) {
   await page.route('**/api/session', route => route.fulfill({ json: { authenticated: true,
     user: { id: 101, username: 'CLIENTE', is_superuser: superuser },
     accounts: { count: 1, next: null, previous: null, results: [{ id: accountId, name: 'CLIENTE QA', roles: ['client_business'], capabilities: ['client'] }] } } }));
-  await page.route(`**/api/market/catalog/${part.id}/suppliers`, route => route.fulfill({ json: [{
-    supplier_id: '44444444-4444-4444-8444-444444444444', supplier_name: 'PROVEEDOR QA', in_stock: true,
-    items: [{ id: itemId, codigo: '58411-1R000-G', brand: '', description: 'TAMBOR' }],
-  }] }));
+  await page.route(`**/api/market/catalog/${part.id}/suppliers`, route => route.fulfill({ json: offers }));
+  const cesta = await fakeServerBasket(page, { parts: [part as Part], offers: { [part.id]: offers } });
   await page.route('**/request-state', route => route.fulfill({ json: { part_id: part.id,
     totals: { sent_quantity: 0, pending_quantity: 0, reviewed_quantity: 0 }, items: [] } }));
+  return cesta;
 }
 
 test('real browsing events share a visit, retry safely and do not interrupt basket operations', async ({ page }) => {
   const events: Event[] = [];
-  await mockClient(page);
+  const cesta = await mockClient(page);
   await page.route(/\/api\/market\/catalog(?:\?.*)?$/, route => route.fulfill({ json: catalog }));
   await page.route('**/api/market/analytics/events', route => {
     const event = route.request().postDataJSON() as Event; events.push(event);
@@ -44,6 +48,7 @@ test('real browsing events share a visit, retry safely and do not interrupt bask
   expect(new Set(events.map(event => event.visit_id)).size).toBe(1);
   expect(events.some(event => 'result_count' in event || 'user_id' in event)).toBe(false);
   await page.getByRole('button', { name: 'Cerrar ventana', exact: true }).click();
+  await expect.poll(() => cesta.lines[accountId]?.[0]?.quantity).toBe(3);  // the cesta saved on the server, whatever analytics did
   await page.reload();
   await expect.poll(() => events.filter(event => event.kind === 'visit').length).toBe(2);
   expect(new Set(events.map(event => event.visit_id)).size).toBe(1);

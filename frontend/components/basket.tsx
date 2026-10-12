@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, Boxes, LockKeyhole, Minus, Plus, ShoppingBag, Sparkles, Store, Trash2, Truck } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Boxes, LockKeyhole, MessageCircle, Minus, Plus, ShoppingBag, Sparkles, Store, Trash2, TriangleAlert, Truck } from 'lucide-react';
 import { CatalogPhoto } from './part-image';
 import BasketSubmission from './basket-submission';
 import ClientRequestNavigation from './client-request-navigation';
@@ -29,7 +29,8 @@ function QuantityControl({ name, quantity, onChange, disabled }: { name: string;
   </div></div>;
 }
 
-export default function Basket({ lines, onChange, onClose, preview, account, onSent, onSentView }: { lines: BasketLine[]; onChange: (lines: BasketLine[]) => void; onClose: () => void; preview: boolean; account?: Account; onSent: (receipt: RequestSubmissionResult, remaining: BasketLine[]) => void; onSentView: () => void }) {
+// synced: the cesta lives on the server (a client account signed in), the same on every device; otherwise in this browser.
+export default function Basket({ lines, onChange, onClose, preview, account, synced = false, onSent, onSentView }: { lines: BasketLine[]; onChange: (lines: BasketLine[]) => void; onClose: () => void; preview: boolean; account?: Account; synced?: boolean; onSent: (receipt: RequestSubmissionResult, remaining: BasketLine[]) => void; onSentView: () => void }) {
   const heading = useRef<HTMLHeadingElement>(null);
   const [sending, setSending] = useState(false);
   useEffect(() => { heading.current?.focus({ preventScroll: true }); }, []);
@@ -39,6 +40,8 @@ export default function Basket({ lines, onChange, onClose, preview, account, onS
   // Items of the active account's own stock (added before it could also buy, or from another device): it never orders from itself.
   const ownSupplier = !preview && account ? account.id : null;
   const ownLines = ownSupplier ? lines.filter(line => line.offer.supplier_id === ownSupplier) : [];
+  // Lines the server says can no longer go as they are: the article changed since it was added, or it cannot be asked for anymore.
+  const staleLines = lines.filter(line => line.offer.supplier_id !== ownSupplier && (line.available === false || line.changed));
   function setQuantity(key: string, quantity: number) { onChange(lines.map(line => line.key === key ? { ...line, quantity } : line)); }
 
   return <main className="basket-page" aria-label="Cesta de solicitudes"><div className="section-container basket-page-container">
@@ -59,7 +62,9 @@ export default function Basket({ lines, onChange, onClose, preview, account, onS
             const firstCode = visibleReferences({ codes: line.part.codes ?? [], equivalents: line.part.equivalents })[0];
             return <article className="basket-page-item" data-line-key={line.key} key={line.key} aria-label={`Artículo ${name} de ${line.offer.supplier_name}`}>
               <div className="basket-page-art"><CatalogPhoto image={line.part.images?.[0]} alt={line.part.name || description || line.part.sku} thumbnail/></div>
-              <div className="basket-page-item-info"><span className="basket-page-sku">SKU INTERNO {line.part.sku || line.part.name}</span><h3>{name}</h3>{selected ? <span className="basket-page-code">{selected.codigo} · {selected.brand || 'SIN MARCA INDICADA'}</span> : <span className="basket-page-code">{firstCode ? `${firstCode.code} · ${firstCode.brand || 'SIN MARCA INDICADA'}` : line.part.sku}</span>}{selected && line.part.name && line.part.name !== name && <p className="basket-page-part-name">{line.part.name}</p>}{description && <p className="basket-page-description">{description}</p>}</div>
+              <div className="basket-page-item-info">{line.source === 'whatsapp' && <span className="basket-page-source"><MessageCircle size={12}/>Agregado por WhatsApp</span>}<span className="basket-page-sku">SKU INTERNO {line.part.sku || line.part.name}</span><h3>{name}</h3>{selected ? <span className="basket-page-code">{selected.codigo} · {selected.brand || 'SIN MARCA INDICADA'}</span> : <span className="basket-page-code">{firstCode ? `${firstCode.code} · ${firstCode.brand || 'SIN MARCA INDICADA'}` : line.part.sku}</span>}{selected && line.part.name && line.part.name !== name && <p className="basket-page-part-name">{line.part.name}</p>}{description && <p className="basket-page-description">{description}</p>}
+                {line.available === false ? <p className="basket-page-stale" role="note"><TriangleAlert size={14}/>Este artículo ya no se puede solicitar. Quítalo de la cesta.</p>
+                  : line.changed ? <p className="basket-page-stale" role="note"><TriangleAlert size={14}/>Cambió desde que lo agregaste. Quítalo y vuelve a elegirlo en el catálogo.</p> : null}</div>
               <div className="basket-page-item-service"><div><LockKeyhole size={16}/><span><strong>Cotización privada</strong><small>El precio lo indica tu proveedor.</small></span></div><div><Truck size={17}/><span><strong>Entrega del proveedor</strong><small>Coordina la entrega o el retiro al reservar.</small></span></div></div>
               <div className="basket-page-item-actions"><QuantityControl name={name} quantity={line.quantity} disabled={sending} onChange={quantity => setQuantity(line.key, quantity)}/><button type="button" className="basket-page-remove" disabled={sending} aria-label={`Eliminar ${name}`} onClick={() => onChange(lines.filter(item => item.key !== line.key))}><Trash2 size={15}/>Eliminar</button></div>
             </article>;
@@ -68,7 +73,7 @@ export default function Basket({ lines, onChange, onClose, preview, account, onS
         </section>)}
         <section className="basket-page-guide" aria-label="Cómo se prepara la solicitud"><span className="basket-page-guide-icon"><Boxes size={23}/></span><div><h2>Una cesta, varios proveedores.</h2><p>Prepara tu solicitud con los códigos que usa cada proveedor. Recibirás una cotización privada por proveedor y podrás coordinar la entrega directamente con él.</p></div></section>
       </div>
-      <aside className="basket-page-summary" aria-label="Resumen de solicitud"><h2>Resumen de tu solicitud</h2><dl><div><dt>Proveedores</dt><dd>{groups.size}</dd></div><div><dt>Artículos</dt><dd>{articleCount}</dd></div><div className="basket-page-summary-total"><dt>Unidades solicitadas</dt><dd>{unitCount.toLocaleString('es-PA')}</dd></div></dl><div className="basket-page-private"><LockKeyhole size={18}/><div><strong>Precios en cotizaciones privadas</strong><p>Cada proveedor comparte sus precios por separado, según los artículos de tu solicitud.</p></div></div>{lines.length ? <><BasketSubmission lines={lines} account={account} preview={preview} ownItems={ownLines.length} onPending={setSending} onSent={onSent}/><button type="button" className="button soft full" onClick={onClose}>Seguir buscando repuestos<ArrowRight size={16}/></button></> : <><button type="button" className="button primary full" onClick={onClose}>Seguir buscando repuestos<ArrowRight size={16}/></button><p className="basket-page-draft-note">Agrega un repuesto y elige un proveedor para empezar tu solicitud.</p></>}<p className="basket-page-storage-note">Tu borrador se guarda en este navegador.</p></aside>
+      <aside className="basket-page-summary" aria-label="Resumen de solicitud"><h2>Resumen de tu solicitud</h2><dl><div><dt>Proveedores</dt><dd>{groups.size}</dd></div><div><dt>Artículos</dt><dd>{articleCount}</dd></div><div className="basket-page-summary-total"><dt>Unidades solicitadas</dt><dd>{unitCount.toLocaleString('es-PA')}</dd></div></dl><div className="basket-page-private"><LockKeyhole size={18}/><div><strong>Precios en cotizaciones privadas</strong><p>Cada proveedor comparte sus precios por separado, según los artículos de tu solicitud.</p></div></div>{lines.length ? <><BasketSubmission lines={lines} account={account} preview={preview} ownItems={ownLines.length} staleItems={staleLines.length} onPending={setSending} onSent={onSent}/><button type="button" className="button soft full" onClick={onClose}>Seguir buscando repuestos<ArrowRight size={16}/></button></> : <><button type="button" className="button primary full" onClick={onClose}>Seguir buscando repuestos<ArrowRight size={16}/></button><p className="basket-page-draft-note">Agrega un repuesto y elige un proveedor para empezar tu solicitud.</p></>}<p className="basket-page-storage-note">{synced ? 'Tu cesta se guarda en tu cuenta: la ves igual en todos tus dispositivos.' : 'Tu borrador se guarda en este navegador.'}</p></aside>
     </div>
   </div></main>;
 }

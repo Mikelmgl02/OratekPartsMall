@@ -1,5 +1,6 @@
 import { expect, Page, test } from '@playwright/test';
 import { signedOutInbox } from './inbox-route';
+import { fakeServerBasket } from './server-basket';
 import type { Deal, DealShortfall } from '../lib/deal-types';
 
 const clientId = '11111111-1111-4111-8111-111111111111';
@@ -37,6 +38,7 @@ async function fixture(page: Page) {
   const actions: Record<string, unknown>[] = [], listed: string[] = [], unexpected: string[] = [];
   const save = (changes: Partial<Deal>) => { order = { ...order, ...changes, version: order.version + 1, agreement: agreement() } as Deal; return order; };
   await page.route('**/api/**', route => { if (signedOutInbox(route)) return; unexpected.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`); return route.fulfill({ status: 404, json: { detail: 'Ruta no prevista' } }); });
+  await fakeServerBasket(page);  // the client's cesta (mall/basket.py), empty
   await page.route('**/api/session', route => route.fulfill({ json: { authenticated: true, user: { id: 801, username: 'EMPLEADO', is_superuser: false }, accounts: { ...empty, count: 2, results: accounts } } }));
   await page.route('**/api/market/analytics/events', route => route.fulfill({ status: 202, json: { recorded: true } }));
   await page.route('**/api/market/wishlist/state', route => route.fulfill({ json: { part_ids: [], count: 0 } }));
@@ -220,6 +222,7 @@ test('superusers find a deal in Acuerdos and cancel a dispute as MotionPartes', 
   const cancels: unknown[] = [], unexpected: string[] = [];
   const lists: string[] = [];
   await page.route('**/api/**', route => { if (signedOutInbox(route)) return; unexpected.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`); return route.fulfill({ status: 404, json: { detail: 'Ruta no prevista' } }); });
+  await fakeServerBasket(page);  // the client's cesta (mall/basket.py), empty
   await page.route('**/api/market/analytics/events', route => route.fulfill({ status: 202, json: { recorded: true } }));
   await page.route(/\/api\/management\/roles(?:\?.*)?$/, route => route.fulfill({ json: [] }));
   await page.route(/\/api\/management\/deals(?:\?.*)?$/, route => { lists.push(new URL(route.request().url()).search); return route.fulfill({ json: { ...empty, count: 1, results: [detail] } }); });

@@ -32,10 +32,12 @@ export function finishDraftSubmission(accountId: string, submission: DraftSubmis
   // Record the confirmed receipt before changing the draft, so interrupted cleanup is recoverable.
   localStorage.setItem(key, JSON.stringify(history));
   const draftKey = `partsmall:basket:${accountId}`;
-  const draft: BasketLine[] = JSON.parse(localStorage.getItem(draftKey) || '[]');
+  const kept = localStorage.getItem(draftKey);
+  const draft: BasketLine[] = JSON.parse(kept || '[]');
   if (!Array.isArray(draft)) throw new Error('invalid draft');
   const lines = remainingDraft(draft, submission.fingerprint);
-  localStorage.setItem(draftKey, JSON.stringify(lines));
+  // A client account's cesta lives on the server, which takes the sent units out itself; only a cesta this browser still keeps changes.
+  if (kept !== null) localStorage.setItem(draftKey, JSON.stringify(lines));
   completed.draftCleared = true;
   // If this final marker cannot be saved, the next load repeats only the safe draft cleanup.
   try { localStorage.setItem(key, JSON.stringify(history)); } catch { /* Receipt is already persisted. */ }

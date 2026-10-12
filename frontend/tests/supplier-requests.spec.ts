@@ -5,6 +5,7 @@ import type { Account, BasketLine, Part } from '../lib/types';
 import type { SupplierRequestDetail } from '../lib/request-types';
 import { openSupplierNavigation } from './supplier-navigation';
 import { virtualDraft } from './quote-draft-mock';
+import { fakeServerBasket } from './server-basket';
 
 const supplierAccount = '11111111-1111-4111-8111-111111111111';
 const otherSupplierAccount = '22222222-2222-4222-8222-222222222222';
@@ -342,6 +343,7 @@ function clientDraft(): BasketLine[] {
 test('client submission survives a lost response, clears the confirmed draft and permits a new identical request', async ({ page }) => {
   const unexpected = await mockSession(page, [{ id: clientAccount, name: 'TALLER CLIENTE', roles: ['client_business'], capabilities: ['client'] }]);
   const draft = clientDraft();
+  const cesta = await fakeServerBasket(page, { known: draft });  // this browser's cesta moves to the server
   await page.route(new RegExp(`/api/market/accounts/${clientAccount}/sent-requests(?:\\?.*)?$`), route => route.fulfill({ json: { ...emptyPage, count: 2, results: [
     { ...summary(), supplier: { id: supplierAccount, name: supplierAccounts[0].name }, reference: 'SOL-CLIENTE-001', line_count: 2, unit_count: 3 },
     { ...summary(otherRequestId), supplier: { id: otherSupplierAccount, name: supplierAccounts[1].name }, reference: 'SOL-CLIENTE-002', line_count: 1, unit_count: 4 },
@@ -360,6 +362,7 @@ test('client submission survives a lost response, clears the confirmed draft and
     expect(route.request().method()).toBe('POST');
     const body = route.request().postDataJSON(); submissions.push(body);
     if (submissions.length === 1) { started(); await held; await route.abort('failed'); return; }
+    cesta.settle(clientAccount, body.lines);  // saved: the server takes the sent units out of the cesta
     await route.fulfill({ json: { submission_id: body.submission_id, created_at: '2026-10-02T12:00:00Z', requests: [
       { id: requestId, reference: 'SOL-CLIENTE-001', supplier: { id: supplierAccount, name: supplierAccounts[0].name }, line_count: 2, unit_count: submissions.length === 2 ? 3 : 4 },
       { id: otherRequestId, reference: 'SOL-CLIENTE-002', supplier: { id: otherSupplierAccount, name: supplierAccounts[1].name }, line_count: 1, unit_count: 4 },
@@ -388,7 +391,8 @@ test('client submission survives a lost response, clears the confirmed draft and
     expect(submissions[1]).toEqual(submissions[0]);
     expect(submissions[0].lines).toEqual(draft.map(line => ({ supplier_item_id: line.offer.selected_item!.id, quantity: line.quantity,
       expected_part_id: partId, expected_codigo: line.offer.selected_item!.codigo, expected_brand: 'MARCA DE PRUEBA' })));
-    expect(await page.evaluate(accountId => JSON.parse(localStorage.getItem(`partsmall:basket:${accountId}`)!), clientAccount)).toEqual([]);
+    expect(cesta.lines[clientAccount]).toEqual([]);
+    expect(await page.evaluate(accountId => localStorage.getItem(`partsmall:basket:${accountId}`), clientAccount)).toBeNull();
     await page.reload();
     await expect(sent.getByRole('article')).toHaveCount(2);
     expect(submissions).toHaveLength(2);
@@ -402,7 +406,7 @@ test('client submission survives a lost response, clears the confirmed draft and
     expect(submissions).toHaveLength(3);
     expect(submissions[2].submission_id).not.toBe(submissions[0].submission_id);
     expect(submissions[2].lines).toEqual(submissions[0].lines);
-    expect(await page.evaluate(accountId => JSON.parse(localStorage.getItem(`partsmall:basket:${accountId}`)!), clientAccount)).toEqual([]);
+    expect(cesta.lines[clientAccount]).toEqual([]);
     expect(unexpected).toEqual([]);
   } finally { release(); }
 });
@@ -434,15 +438,16 @@ test('reselecting a remapped supplier item recovers a stale submission with fres
   const original = clientDraft().slice(0, 1);
   const freshPart: Part = { id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', sku: 'SKU-ACTUALIZADO', name: 'DISCO ACTUALIZADO', description: 'REPUESTO REMAPEADO', codes: [{ code: 'CODIGO-ACTUALIZADO', brand: '' }] };
   await page.addInitScript(({ accountId, lines }) => localStorage.setItem(`partsmall:basket:${accountId}`, JSON.stringify(lines)), { accountId: clientAccount, lines: original });
+  const freshOffers = [{ supplier_id: supplierAccount, supplier_name: supplierAccounts[0].name, in_stock: true,
+    items: [{ id: itemA, codigo: 'CODIGO-ACTUALIZADO', brand: 'MARCA ACTUALIZADA', description: freshPart.description }] }];
+  const cesta = await fakeServerBasket(page, { known: original, parts: [freshPart], offers: { [freshPart.id]: freshOffers } });
   await page.route(/\/api\/market\/catalog(?:\?.*)?$/, route => route.fulfill({ json: { ...emptyPage, count: 1, results: [freshPart] } }));
-  await page.route(`/api/market/catalog/${freshPart.id}/suppliers`, route => route.fulfill({ json: [{
-    supplier_id: supplierAccount, supplier_name: supplierAccounts[0].name, in_stock: true,
-    items: [{ id: itemA, codigo: 'CODIGO-ACTUALIZADO', brand: 'MARCA ACTUALIZADA', description: freshPart.description }],
-  }] }));
+  await page.route(`/api/market/catalog/${freshPart.id}/suppliers`, route => route.fulfill({ json: freshOffers }));
   const submitted: { submission_id: string; lines: { supplier_item_id: string; quantity: number; expected_part_id: string; expected_codigo: string; expected_brand: string }[] }[] = [];
   await page.route(`/api/market/accounts/${clientAccount}/requests`, route => {
     const payload = route.request().postDataJSON(); submitted.push(payload);
     if (submitted.length === 1) return route.fulfill({ status: 409, json: { detail: 'El SKU, código o marca del artículo cambió. Selecciónalo otra vez en el catálogo.' } });
+    cesta.settle(clientAccount, payload.lines);
     return route.fulfill({ json: { submission_id: payload.submission_id, created_at: '2026-10-02T12:00:00Z', requests: [
       { id: requestId, reference: 'SOL-RECUPERADA-001', supplier: { id: supplierAccount, name: supplierAccounts[0].name }, line_count: 1, unit_count: 3 },
     ] } });
@@ -468,6 +473,7 @@ test('reselecting a remapped supplier item recovers a stale submission with fres
   expect(submitted[1].lines).toEqual([{ supplier_item_id: itemA, quantity: 3, expected_part_id: freshPart.id, expected_codigo: 'CODIGO-ACTUALIZADO', expected_brand: 'MARCA ACTUALIZADA' }]);
   const saved = await page.evaluate(accountId => JSON.parse(localStorage.getItem(`partsmall:basket:${accountId}`) || '[]') as BasketLine[], clientAccount);
   expect(saved).toHaveLength(0);
+  expect(cesta.lines[clientAccount]).toEqual([]);  // the line was brought up to date, then sent
   expect(unexpected).toEqual([]);
 });
 
@@ -488,9 +494,10 @@ test('the supplier list marks orders with a saved draft or a pending approval re
   expect(unexpected).toEqual([]);
 });
 
-test('an account that both buys and sells never orders from itself: its own items must leave the basket, and its offers are marked', async ({ page }) => {
+test('an account that both buys and sells never orders from itself: its own items never enter the cesta, and its offers are marked', async ({ page }) => {
   const both: Account = { id: supplierAccount, name: 'REPUESTOS CENTRAL', roles: ['supplier_retail', 'client_business'], capabilities: ['supplier', 'client'] };
   const unexpected = await mockSession(page, [both]);
+  const cesta = await fakeServerBasket(page, { known: clientDraft() });  // a cesta this browser kept from before, with two of its own items
   await page.addInitScript(({ accountId, lines }) => localStorage.setItem(`partsmall:basket:${accountId}`, JSON.stringify(lines)), { accountId: supplierAccount, lines: clientDraft() });
   await page.route(`/api/market/catalog/${partId}/suppliers`, route => route.fulfill({ json: [
     { supplier_id: supplierAccount, supplier_name: 'REPUESTOS CENTRAL', in_stock: true, items: [{ id: itemA, codigo: 'PROPIO-1', brand: 'KSM', description: 'DISCO PROPIO' }] },
@@ -498,12 +505,10 @@ test('an account that both buys and sells never orders from itself: its own item
   ] }));
   await page.goto('/?vista=cesta');
   const basket = page.getByRole('main', { name: 'Cesta de solicitudes', exact: true });
-  const own = basket.getByRole('region', { name: 'Solicitud para REPUESTOS CENTRAL', exact: true });
-  await expect(own.getByRole('alert')).toContainText('Estos artículos son de tu propia cuenta. No puedes pedirte una cotización a ti mismo');
-  await expect(basket.getByRole('button', { name: 'Enviar solicitud', exact: true })).toBeDisabled();
-  await expect(basket).toContainText('Quita de la cesta los artículos de tu propia cuenta para enviar la solicitud.');
-  await own.getByRole('button', { name: 'Quitar estos artículos', exact: true }).click();
-  await expect(basket.getByRole('article')).toHaveCount(1);  // DISTRIBUIDORA MOTOR's item stays
+  await expect(basket.getByRole('article')).toHaveCount(1);  // DISTRIBUIDORA MOTOR's item moved in; the server refused its own two
+  await expect(page.getByRole('status').filter({ hasText: 'de la cesta de este navegador' })).toHaveText(/2 artículos de la cesta de este navegador ya no se pueden solicitar y se quitaron\./);
+  await expect(basket.getByRole('region', { name: 'Solicitud para REPUESTOS CENTRAL', exact: true })).toHaveCount(0);
+  expect(cesta.lines[supplierAccount].map(line => line.offer.selected_item!.id)).toEqual([itemC]);
   await expect(basket.getByRole('button', { name: 'Enviar solicitud', exact: true })).toBeEnabled();
   await basket.getByRole('button', { name: 'Volver al catálogo', exact: true }).click();
   await page.getByRole('button', { name: 'Ver DISCO DE FRENO', exact: true }).click();
