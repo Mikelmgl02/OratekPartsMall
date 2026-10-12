@@ -58,13 +58,15 @@ class SupplierBatchRequest(serializers.Serializer):
 
 SYNCED = ('Esta cuenta se sincroniza con apiag-cloud: sus existencias llegan de su sincronización, así que la carga Excel no está '
           'disponible.')
+SYNCED_MANUAL = ('Esta cuenta se sincroniza con apiag-cloud: sus existencias llegan de su sincronización, así que no se actualizan a mano.')
 
 
-def refuse_synced(supplier):
-    """An account synced with apiag-cloud loads its stock from there only: two sources would fight over the same counts."""
+def refuse_synced(supplier, message=SYNCED):
+    """An account synced with apiag-cloud loads its stock from there only (no Excel import, no manual update): two sources would
+    fight over the same counts."""
     from .apiag_models import ApiagConnection
     if ApiagConnection.objects.filter(account=supplier).exists():
-        raise ValidationError({'detail': SYNCED})
+        raise ValidationError({'detail': message})
 
 
 class StaleSupplierPreview(APIException):

@@ -48,7 +48,7 @@ async function openPanel(page: Page, apiag: (method: string) => ApiagSyncStatus 
   await expectSignedIn(page);
   if (page.viewportSize()!.width < 760) await page.getByRole('button', { name: 'Abrir tu panel', exact: true }).click();
   else await page.getByRole('button', { name: 'Para proveedores', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Actualizar existencias', exact: true })).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Existencias', exact: true })).toBeVisible();
   return calls;
 }
 
@@ -60,7 +60,8 @@ test('a connected supplier sees the last pull and asks for one now, and the inve
   });
   const card = page.getByRole('region', { name: 'Conexión con apiag-cloud' });
   await expect(card.getByText('Sincronizada', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Importar Excel', exact: true })).toHaveCount(0);  // its stock loads from apiag-cloud
+  await expect(page.getByRole('button', { name: 'Importar Excel', exact: true })).toHaveCount(0);  // its stock loads from apiag-cloud only
+  await expect(page.getByRole('button', { name: 'Actualizar existencias', exact: true })).toHaveCount(0);
   await expect(card.getByText(/^mm\.oratek\.info · Última sincronización: /)).toBeVisible();
   await expect(card.getByText('Sincronización completa: 79 nuevos · 0 actualizados · 0 retirados.')).toBeVisible();
   await expect(card.getByText('Sucursales publicadas: BODEGA PRINCIPAL, RICARDO J ALFARO.')).toBeVisible();
@@ -115,6 +116,7 @@ test('without a connection the panel keeps its static note and shows no card', a
   await expect(page.getByRole('region', { name: 'Conexión con apiag-cloud' })).toHaveCount(0);
   await expect(page.getByText('Importa tus saldos desde Excel o actualiza registros de carga manual.', { exact: false })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Importar Excel', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Actualizar existencias', exact: true })).toBeVisible();
 });
 
 test('the card fits a phone', async ({ page }) => {

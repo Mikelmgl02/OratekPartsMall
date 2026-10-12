@@ -142,7 +142,7 @@ class ExcelLedgerTests(APITestCase):
         self.commit(unchanged.data['job_id'])
         self.assertEqual(InventoryRun.objects.count(), 1)  # a load that changes nothing leaves no run
 
-    def test_an_account_synced_with_apiag_cloud_cannot_import_excel(self):
+    def test_an_account_synced_with_apiag_cloud_cannot_import_excel_nor_update_by_hand(self):
         staged = self.preview([['STABLE-5', '58411-1R000-G', 'KSM', 'TAMBOR', 9]])
         ApiagConnection.objects.create(account=self.account, server_url='https://mm.oratek.info', token_ciphertext=encrypt('apiagTok3n-For-MotionPartes-0001'),
                                        token_hint='0001')
@@ -150,6 +150,10 @@ class ExcelLedgerTests(APITestCase):
                          self.client.get(f'{self.base_url()}template/')):
             self.assertEqual(response.status_code, 400)
             self.assertIn('se sincroniza con apiag-cloud', str(response.data))
+        manual = self.client.post(f'/api/v1/accounts/{self.account.pk}/inventory/ingest/', {
+            'update_id': 'manual-9', 'supplier_invent_id': 'STABLE-5', 'codigo': '58411-1R000-G', 'brand': 'KSM', 'source': 'upload', 'quantity': 1}, format='json')
+        self.assertEqual(manual.status_code, 400)  # nor a manual update: its stock comes only from the pull
+        self.assertIn('no se actualizan a mano', str(manual.data))
         self.assertEqual(SupplierItem.objects.get(supplier=self.account, supplier_invent_id='STABLE-5').reported_quantity, 5)
         listing = self.client.get('/api/v1/accounts/').json()
         accounts = {row['id']: row for row in (listing['results'] if isinstance(listing, dict) else listing)}

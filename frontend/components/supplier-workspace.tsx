@@ -56,7 +56,7 @@ export default function SupplierWorkspace({ account }: { account: Account }) {
   const [ledgerItem, setLedgerItem] = useState<StockItem | null>(null);
   const [apiagConnected, setApiagConnected] = useState(false);
   const [inventoryTab, setInventoryTab] = useState<InventoryTab>(initialInventoryTab);
-  const synced = !!account.apiag_connected || apiagConnected;  // its stock loads from apiag-cloud: no Excel import
+  const synced = !!account.apiag_connected || apiagConnected;  // its stock loads from apiag-cloud only: no Excel import, no manual update
   const orderHref = useCallback((order: { id: string }) => `/proveedor/${account.id}/ordenes/${order.id}`, [account.id]);
   const apiagSynced = useCallback(() => setRevision(value => value + 1), []);
   useEffect(() => { setSection(initialSection()); setSidebarOpen(false); setEditing(false); setImporting(false); setLedgerItem(null); setNotice(''); setSearch(''); setMatchFilter(''); setInventoryTab(initialInventoryTab()); }, [account.id]);
@@ -100,7 +100,7 @@ export default function SupplierWorkspace({ account }: { account: Account }) {
       <div className="supplier-workspace-tabs" role="tablist" aria-label="Secciones del proveedor" aria-orientation="vertical">{sections.map(({ key, label, detail, Icon }) => <button type="button" key={key} role="tab" aria-label={label} id={`${tabId}-${key}-tab`} aria-selected={section === key} aria-controls={`${tabId}-${key}-panel`} tabIndex={section === key ? 0 : -1} title={collapsed ? label : undefined} onClick={() => { selectSection(key); closeSidebar(); }} onKeyDown={tabKey}><Icon size={18}/><span><strong>{label}</strong><small>{detail}</small></span>{section === key && <ChevronRight size={15}/>}</button>)}</div>
     </aside>
     <div className="supplier-workspace-content">
-    <div className="section-heading"><div><h1>{headings[section][0]}</h1><p>{headings[section][1](account.name)}</p></div>{section === 'inventory' && <div className="supplier-workspace-actions">{!synced && <button className="button soft" onClick={() => setImporting(true)}><FileSpreadsheet size={18}/>Importar Excel</button>}<button className="button primary" onClick={() => setEditing(true)}><PackagePlus size={18}/>Actualizar existencias</button></div>}</div>
+    <div className="section-heading"><div><h1>{headings[section][0]}</h1><p>{headings[section][1](account.name)}</p></div>{section === 'inventory' && !synced && <div className="supplier-workspace-actions"><button className="button soft" onClick={() => setImporting(true)}><FileSpreadsheet size={18}/>Importar Excel</button><button className="button primary" onClick={() => setEditing(true)}><PackagePlus size={18}/>Actualizar existencias</button></div>}</div>
     <div role="tabpanel" id={`${tabId}-inventory-panel`} aria-labelledby={`${tabId}-inventory-tab`} hidden={section !== 'inventory'}>{section === 'inventory' && <>
     {notice && <div className="notice success" role="status">{notice}</div>}
     <SupplierApiagCard accountId={account.id} revision={revision} onConnected={setApiagConnected} onSynced={apiagSynced}/>
@@ -120,11 +120,12 @@ export default function SupplierWorkspace({ account }: { account: Account }) {
       <ServerGrid<StockItem> storageKey="supplier-inventory" label="Registros de existencias" path={`/api/market/accounts/${account.id}/inventory`} params={inventoryParams} columns={inventoryColumns}
         rowId={item => String(item.id)} ordering={inventoryOrdering} revision={revision} rowHeight={58} context={ledgerContext} onCount={setCount}
         empty={query || matchFilter ? <div className="empty-state"><Search size={30}/><h3>No hay registros con estos filtros.</h3><p>Prueba con otro código o quita el filtro de coincidencia.</p></div>
+          : synced ? <div className="empty-state"><Boxes size={34}/><h3>Todavía no llegan artículos de apiag-cloud.</h3><p>Tus existencias se cargan desde tu sincronización con apiag-cloud: publica artículos ahí y aparecerán aquí.</p></div>
           : <div className="empty-state"><Boxes size={34}/><h3>Todo listo para tu primer artículo.</h3><p>Agrega un registro de existencias para vincular tus repuestos con el catálogo de MotionPartes.</p><button className="button primary" onClick={() => setEditing(true)}>Agregar registro de existencias<ArrowUpRight size={16}/></button></div>}/>
     </div>
     {!synced && <div className="integration-note"><span className="apiag-mark">A</span><div><h3>Conexión con apiag-cloud</h3><p>Importa tus saldos desde Excel o actualiza registros de carga manual. El inventario de apiag-cloud se actualiza mediante su integración.</p></div></div>}
     </>}</div>
-    {editing && <StockForm account={account} onClose={() => setEditing(false)} onSaved={() => {setEditing(false); setRevision(revision+1);}}/>}
+    {editing && !synced && <StockForm account={account} onClose={() => setEditing(false)} onSaved={() => {setEditing(false); setRevision(revision+1);}}/>}
     {importing && <SupplierInventoryImport key={account.id} account={account} onClose={() => { setImporting(false); setRevision(value => value + 1); }} onSaved={result => { setRevision(value => value + 1); setNotice(`Importación completada: ${result.applied_summary.created_items} artículos nuevos y ${result.applied_summary.updated_items} actualizados.${result.summary.rejected_rows ? ` ${result.summary.rejected_rows} filas pendientes; abre Importar Excel para descargar el archivo de correcciones.` : ''}`); }}/>} 
     {ledgerItem && <Ledger account={account} item={ledgerItem} onClose={() => setLedgerItem(null)}/>}
     </>}</div><div role="tabpanel" id={`${tabId}-pricing-panel`} aria-labelledby={`${tabId}-pricing-tab`} hidden={section !== 'pricing'}>{section === 'pricing' && <SupplierPricing key={account.id} account={account}/>}</div><div role="tabpanel" id={`${tabId}-requests-panel`} aria-labelledby={`${tabId}-requests-tab`} hidden={section !== 'requests'}>{section === 'requests' && <SupplierRequests key={account.id} account={account}/>}</div>

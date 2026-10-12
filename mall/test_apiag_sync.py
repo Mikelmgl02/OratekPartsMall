@@ -322,5 +322,5 @@ class ApiagSyncTests(APITestCase):
         response = self.client.post(f'/api/v1/accounts/{self.supplier.pk}/inventory/ingest/', {
             'update_id': 'manual-1', 'supplier_invent_id': '99', 'codigo': 'X-1', 'brand': 'X', 'source': 'apiag', 'quantity': 5}, format='json')
         self.assertEqual(response.status_code, 400)
-        self.assertIn('source', response.json())
+        self.assertIn('no se actualizan a mano', response.json()['detail'])  # a synced account takes no manual update at all
         self.assertFalse(SupplierItem.objects.filter(supplier=self.supplier, supplier_invent_id='99').exists())

@@ -170,6 +170,8 @@ class InventoryIngest(APIView):
     @extend_schema(request=InventorySerializer, responses=SupplierItemSerializer)
     def post(self, request, account_id):
         supplier = account_for(request.user, account_id, 'supplier')
+        from .supplier_import import SYNCED_MANUAL, refuse_synced
+        refuse_synced(supplier, SYNCED_MANUAL)  # a synced account's stock comes only from its pull
         serializer = InventorySerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         if serializer.validated_data['source'] == 'apiag':  # only the pull (mall.apiag_sync) writes them, with their sucursales

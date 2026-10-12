@@ -45,7 +45,7 @@ test('the supplier reads its ledger: what confirmed quotations moved, what each 
   await browser.goto(`/?vista=proveedor&seccion=inventario&cuenta=${supplierId}&pestana=movimientos`);
   await expect(browser.getByRole('tab', { name: 'Libro de movimientos' })).toHaveAttribute('aria-selected', 'true');
   await expect(browser.getByRole('button', { name: 'Importar Excel' })).toHaveCount(0);   // synced with apiag-cloud
-  await expect(browser.getByRole('button', { name: 'Actualizar existencias' })).toBeVisible();
+  await expect(browser.getByRole('button', { name: 'Actualizar existencias' })).toHaveCount(0);   // nor a manual update
   const order = browser.getByRole('link', { name: 'ORD-20261012-AAAA1111 · TALLER CENTRAL' });
   await expect(order).toHaveAttribute('href', `/proveedor/${supplierId}/ordenes/${orderId}`);
   await expect(browser.getByText('Cotización v2 · Acuerdo confirmado')).toBeVisible();
