@@ -74,7 +74,7 @@ class WhatsAppAssistantTests(ChatStorage, APITestCase):
         [parts] = meta.sent()
         self.assertEqual((parts['type'], parts['interactive']['type']), ('interactive', 'list'))
         self.assertEqual(self.rows(parts), [f'part:{self.part.pk}'])
-        self.assertIn('Encontré esto para «necesito un tambor»', parts['interactive']['body']['text'])
+        self.assertIn('Encontré esto para «tambor original»', parts['interactive']['body']['text'])  # what was searched
         self.assertIn('2 proveedores con existencia', parts['interactive']['body']['text'])
         sent_to_gemini = self.generate.call_args.args[0]
         self.assertIn('Mensaje del cliente: necesito un tambor', json.dumps(sent_to_gemini, ensure_ascii=False))
@@ -85,9 +85,11 @@ class WhatsAppAssistantTests(ChatStorage, APITestCase):
         self.assertEqual(self.rows(suppliers), [f'offer:{self.item_a.pk}', f'offer:{self.item_a2.pk}', f'offer:{self.item_b.pk}'])
         self.assertNotIn('$', suppliers['interactive']['body']['text'])  # no prices, no stock figures
         self.taps(f'offer:{self.item_b.pk}')
-        [quantity] = meta.sent()
-        self.assertEqual([button['reply']['id'] for button in quantity['interactive']['action']['buttons']], ['qty:1', 'qty:2', 'qty:4'])
-        self.taps('qty:2', kind='button_reply')
+        [quantity] = meta.sent()  # a selector of 1 to 10 units (any other is typed)
+        self.assertEqual(self.rows(quantity), [f'qty:{units}' for units in range(1, 11)])
+        self.assertEqual([row['title'] for row in quantity['interactive']['action']['sections'][0]['rows']][:2], ['1 unidad', '2 unidades'])
+        self.assertNotIn('description', quantity['interactive']['action']['sections'][0]['rows'][0])
+        self.taps('qty:2')
         [added] = meta.sent()
         body = added['interactive']['body']['text']
         self.assertTrue(body.startswith('✅ Agregué 2 × 58411-1R000-G de PROVEEDOR B a tu cesta. Tienes 1 artículo.'))

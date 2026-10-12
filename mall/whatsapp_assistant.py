@@ -37,7 +37,7 @@ PER_HOUR = 40  # messages a number may send the assistant in an hour
 LIST_ROWS = 10  # WhatsApp lists take 10 rows
 SEARCH_LIMIT = 60
 HISTORY = 8
-QUANTITY_BUTTONS = (1, 2, 4)
+QUANTITIES = range(1, 11)  # the quantity selector's rows; any other is typed
 
 PROMPT = """Eres el asistente de compras de MotionPartes por WhatsApp, un mercado de repuestos de autos en Panamá. Ayudas a un cliente
 a encontrar repuestos y a agregarlos a su cesta de solicitudes de cotización. No conoces precios, existencias ni plazos: el sistema busca
@@ -93,7 +93,7 @@ def buttons(body, choices):
 
 def choice_list(body, button, rows):
     return {'type': 'interactive', 'interactive': {'type': 'list', 'body': {'text': body[:1024]}, 'action': {'button': button[:20], 'sections': [
-        {'title': 'Opciones', 'rows': [{'id': identifier[:200], 'title': title[:24], 'description': description[:72]}
+        {'title': 'Opciones', 'rows': [{'id': identifier[:200], 'title': title[:24], **({'description': description[:72]} if description else {})}
                                        for identifier, title, description in rows[:LIST_ROWS]]}]}}}
 
 
@@ -349,7 +349,7 @@ def stocked(count):
 def search(turn, queries, codes, words):
     session = turn.session
     parts, availability = find(queries, codes)
-    asked = (words or ', '.join(codes) or 'la foto')[:60]
+    asked = (', '.join(codes) or (queries[0].lower() if queries else '') or words or 'la foto')[:60]  # what was searched, not the whole sentence
     if not parts:
         session.step, session.options = 'idle', []
         turn.say(text(f'No encontré repuestos para «{asked}». Prueba con el tipo de repuesto y el modelo (por ejemplo «disco freno Hilux»), '
@@ -409,8 +409,9 @@ def pick(turn, item_id):
         add(turn, quantity)
         return
     session.step, session.options = 'quantity', []
-    body = f'¿Cuántas unidades de {item.codigo} ({item.brand or "sin marca"}) de {item.supplier.name} agrego a tu cesta? Toca una opción o escribe la cantidad.'
-    turn.say(buttons(body, [(f'qty:{units}', str(units)) for units in QUANTITY_BUTTONS]), body)
+    body = (f'¿Cuántas unidades de {item.codigo} ({item.brand or "sin marca"}) de {item.supplier.name} agrego a tu cesta? '
+            f'Elige en la lista o escribe la cantidad (hasta 9.999).')
+    turn.say(choice_list(body, 'Elegir cantidad', [(f'qty:{units}', f'{units} {"unidad" if units == 1 else "unidades"}', '') for units in QUANTITIES]), body)
 
 
 def cart_link(turn):
