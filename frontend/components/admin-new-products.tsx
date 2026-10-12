@@ -154,8 +154,9 @@ function ProposalDetail({ id, onClose, onSaved, onDone }: { id: string; onClose:
   const [mode, setMode] = useState<'' | 'link' | 'reject'>(''); const [part, setPart] = useState('');
   const [reason, setReason] = useState('duplicate'); const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false); const [error, setError] = useState('');
+  const [owners, setOwners] = useState<{ id: string; sku: string; active: boolean }[]>([]);   // the catalog SKUs an approval was refused for
   const load = useCallback((data: Proposal) => {
-    setProposal(data); setPartType(data.part_type);
+    setProposal(data); setPartType(data.part_type); setOwners([]);   // fresh data: the server's catalog_match says it from now on
     setForm({ sku: data.sku, description: data.description, oem_code: data.oem?.code ?? '', oem_brand: data.oem?.brand ?? '', references: referenceLines(data) });
   }, []);
   useEffect(() => { let cancelled = false; request<Proposal>(`${base}/${id}`).then(data => { if (!cancelled) load(data); }).catch(error => { if (!cancelled) setError(errorText(error)); }); return () => { cancelled = true; }; }, [id, load]);
@@ -167,6 +168,7 @@ function ProposalDetail({ id, onClose, onSaved, onDone }: { id: string; onClose:
     try { return await run(); }
     catch (error) {
       if (error instanceof ApiError && error.status === 409 && (error.body as { proposal?: Proposal })?.proposal) { load((error.body as { proposal: Proposal }).proposal); onSaved(); }
+      if (error instanceof ApiError && Array.isArray((error.body as { owners?: unknown })?.owners)) setOwners((error.body as { owners: { id: string; sku: string; active: boolean }[] }).owners);
       setError(errorText(error)); return null;
     } finally { setBusy(false); }
   }
@@ -195,6 +197,11 @@ function ProposalDetail({ id, onClose, onSaved, onDone }: { id: string; onClose:
     {!proposal && !error && <div className="loading"><LoaderCircle className="spin"/>Cargando…</div>}
     {error && <div className="notice error" role="alert">{error}</div>}
     {proposal && <div className="stack-form new-product-detail">
+      {pending && !proposal.earlier && (proposal.catalog_match?.length || owners.length) ? <div className="notice new-product-earlier" role="note">
+        Este código ya está en el catálogo: los artículos son variantes de ese SKU, vincúlalos ahí.
+        {(proposal.catalog_match?.length ? proposal.catalog_match : owners).map(match => match.active
+          ? <button key={match.id} type="button" className="button primary small" disabled={busy} onClick={() => decide('link', match.id)}>Vincular a {match.sku}</button>
+          : <span key={match.id}>{match.sku} está retirado: reactívalo para vincular ahí sus artículos.</span>)}</div> : null}
       {pending && proposal.earlier && <div className="notice new-product-earlier" role="note">Este producto ya se vinculó antes al SKU <strong>{proposal.earlier.sku}</strong>: lo más probable es que estos artículos vayan ahí.
         <button type="button" className="button primary small" disabled={busy} onClick={() => decide('link', proposal.earlier!.id)}>Vincular a {proposal.earlier.sku}</button></div>}
       <p className="modal-description">{pending ? 'Revisa y completa lo que falte. Al aprobar se crea el SKU con las reglas de «Crear SKU» y se vinculan sus artículos.' : `${proposal.status_label}${proposal.decided_by ? ` por ${proposal.decided_by}` : ''}${proposal.part ? ` · SKU ${proposal.part.sku}` : ''}${proposal.reject_reason_label ? ` · ${proposal.reject_reason_label}` : ''}${proposal.reject_note ? `: ${proposal.reject_note}` : ''}.`}</p>

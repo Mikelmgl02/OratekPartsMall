@@ -247,6 +247,34 @@ class ApplyRevertSyncTests(Catalog, TestCase):
         self.assertEqual(PartCode.objects.get(code='54830-2H000').ref_type, 'unknown')
         self.assertFalse(OEMReference.objects.exists())
 
+    def test_a_disputed_number_is_never_applied_again(self):
+        from .catalog_identity import unmark_disputed
+        from . import oem_auto
+        self.canary(FLAG)
+        ref = OEMReference.objects.get(manufacturer='TOYOTA', code='4865430030')
+        ref.status, ref.dispute_note = 'disputed', 'Es de otro modelo'
+        ref.save()
+        self.assertEqual(unmark_disputed(ref), ['48654-30030'])
+        preview = oa.apply_auto(tier=FLAG, read_only=True)
+        self.assertEqual(preview['excluded'].get('disputed'), 1)
+        outcome = oa.apply_auto(tier=FLAG)
+        self.assertEqual(outcome['summary']['excluded'].get('disputed'), 1)
+        self.assertFalse(Part.objects.get(sku='48654-30030').is_OEM)  # the person's 'no' is not overridden by a bulk apply
+        from .oem_finder_models import OEMAutoCandidate
+        self.assertEqual(OEMAutoCandidate.objects.filter(part__sku='48654-30030').values_list('status', 'reason').first(), ('excluded', 'disputed'))
+
+    def test_undoing_a_flag_keeps_oem_when_the_code_is_a_declared_number(self):
+        run = self.canary(FLAG)['run']
+        ref = OEMReference.objects.get(manufacturer='TOYOTA', code='4865430030')
+        OEMReferenceSource.objects.create(reference=ref, kind='aftermarket_catalog', citation='ASVA · pág. 2')
+        refresh_status(ref, changed=True)
+        oa.revert_run(run.pk)
+        part = Part.objects.get(sku='48654-30030')
+        self.assertTrue(part.is_OEM)  # its code is a declared number of the OEM list
+        self.assertEqual(part.identity_changes.latest('pk').reference['kept_oem'], ['TOYOTA 4865430030'])
+        self.assertTrue(OEMReference.objects.filter(pk=ref.pk).exists())
+        self.assertFalse(Part.objects.get(sku='48654-0K010').is_OEM)  # only inferred: the undo takes the flag off
+
 
 class MissingTablesTests(Fresh, TestCase):
     def test_partcode_writes_and_the_api_work_before_the_migration(self):

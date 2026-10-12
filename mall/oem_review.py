@@ -484,6 +484,9 @@ def apply_case(run, case_id, fingerprint, actor, *, code=None, batch=1, bulk=Fal
         if drift:
             raise oa.Skip('suffix_changed', ', '.join(drift))
         claimed(part, case, chosen)
+        from .catalog_identity import disputed_codes
+        if disputed_codes([chosen['code']]):  # a person put the number in dispute in Biblioteca OEM
+            raise oa.Skip('disputed', chosen['code'])
         flag = chosen['code'] == part.sku
         tier = 'AUTO_FLAG_CURRENT' if flag else 'STRONG_PENDING_OWNER_TAGS' if case.tier == 'STRONG_PENDING_OWNER_TAGS' else 'AUTO_RENAME_BASE'
         source = f'algo:oem-finder:{oa.SOURCE_VERSION}:review-{case.tier.lower().replace("_", "-")}:{run.pk}'
@@ -600,7 +603,8 @@ def selection(f):
     base = cases({**f, 'status': 'review'})
     excluded = Counter({'tier': base.exclude(tier__in=BULK_TIERS).count()})
     qs = base.filter(tier__in=BULK_TIERS).exclude(candidate='').order_by('-in_stock', 'tier_rank', 'id')
-    total, reverted, rows, seen = qs.count(), reverted_pairs(), [], 0
+    from .catalog_identity import disputed_codes
+    total, reverted, rows, seen, disputed = qs.count(), reverted_pairs(), [], 0, disputed_codes()
     for start in range(0, total, 500):
         chunk = list(qs.only('id', 'part_id', 'status', 'fingerprint', 'snapshot', 'evidence', 'candidate', 'tier', 'brand', 'in_stock',
                              'suffix_table_version')[start:start + 500])  # evidence: the suffix chain the stale check re-reads
@@ -611,6 +615,8 @@ def selection(f):
                 excluded['stale'] += 1
             elif (str(c.part_id), c.candidate) in reverted:
                 excluded['previously_reverted'] += 1
+            elif normalized_reference(c.candidate) in disputed:
+                excluded['disputed'] += 1
             else:
                 rows.append((c, live[str(c.part_id)]['part']))
                 if len(rows) >= BULK_LIMIT:

@@ -21,7 +21,7 @@ from mall.catalog_assistant import CatalogAssistantList, CatalogAssistantDetail
 from mall.catalog_import_issues import CatalogImportIssueList, CatalogImportIssueDetail
 from mall.catalog_grouping import CatalogGroupingMerge
 from mall.catalog_split import CatalogMergedList, CatalogSplitView
-from mall.catalog_oem_mark import CatalogMarkOEM, CatalogUnmarkOEM
+from mall.catalog_oem_mark import CatalogCreateOEM, CatalogMarkOEM, CatalogUnmarkOEM
 from mall.oem_lookup import CatalogOEMLookup
 from mall.catalog_suffix_views import CompanySuffixes, SuffixDetail, SuffixList
 from mall.oem_finder_views import OEMApplyHaltView, OEMRunDetail, OEMRunList, OEMRunRevert, OEMRunSpotCheck
@@ -76,6 +76,7 @@ urlpatterns = [
     path('api/v1/management/catalog/grouping/merge/', CatalogGroupingMerge.as_view()),
     path('api/v1/management/catalog/merged/', CatalogMergedList.as_view()),
     path('api/v1/management/catalog/mark-oem/', CatalogMarkOEM.as_view()),
+    path('api/v1/management/catalog/create-oem/', CatalogCreateOEM.as_view()),
     path('api/v1/management/catalog/unmark-oem/', CatalogUnmarkOEM.as_view()),
     path('api/v1/management/catalog/<uuid:pk>/split/', CatalogSplitView.as_view()),
     path('api/v1/management/catalog/import/', CatalogImport.as_view()),

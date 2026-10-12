@@ -10,7 +10,7 @@ export type CatalogGridActions = {
   onEditPart: (part: ManagedPart) => void; onTechnical: (part: ManagedPart) => void; onImages: (part: ManagedPart) => void;
   onEditAlternate: (alternate: ManagedAlternate) => void; onRemoveAlternate: (alternate: ManagedAlternate) => void; onEditMatch: (item: ManagedStockItem) => void;
   onCodesChanged: (partId: string) => void; onSplit: (part: ManagedPart) => void; onMerge: (parts: ManagedPart[]) => void;
-  onMarkOEM: (parts: ManagedPart[], mode: 'mark' | 'unmark') => void;
+  onMarkOEM: (parts: ManagedPart[], mode: 'mark' | 'create' | 'unmark') => void;
 };
 // Codes pasted into the Alternos cell (comma, semicolon or line separated) wait here until the grid saves them one by one.
 export const pastedCodes = new WeakMap<ManagedPart, string[]>();
@@ -80,7 +80,7 @@ export function selectedParts(api: GridApi<ManagedPart>): ManagedPart[] {
   return [...rows.values()];
 }
 // Right click on a SKU: group it with others (the selected rows, when the click falls inside a selection of several) or split the
-// SKUs grouped into it, mark it (or them) as OEM or take the mark off; the grid's own items (copy, paste, export) follow.
+// SKUs grouped into it, mark it (or them) as OEM, add its code to the OEM list or take the mark off; the grid's own items follow.
 const menuIcon = (name: string) => `<span class="ag-icon ag-icon-${name}" unselectable="on" role="presentation"></span>`;
 export function catalogContextMenu(params: GetContextMenuItemsParams<ManagedPart, CatalogGridActions>): (DefaultMenuItem | MenuItemDef<ManagedPart, CatalogGridActions>)[] {
   const part = params.node?.data, defaults = params.defaultItems ?? [];
@@ -96,7 +96,9 @@ export function catalogContextMenu(params: GetContextMenuItemsParams<ManagedPart
       tooltip: merged ? undefined : 'Este SKU no tiene SKU agrupados.', action: () => params.context.onSplit(part) },
     'separator',
     { name: plain.length > 1 ? `Marcar ${plain.length} SKU como OEM…` : 'Marcar como OEM…', icon: menuIcon('tick'), disabled: !plain.length,
-      tooltip: plain.length ? undefined : 'Ya es MAIN OEM.', action: () => params.context.onMarkOEM(plain, 'mark') },
+      tooltip: plain.length ? 'Vincula el SKU al ítem de la lista OEM con su código.' : 'Ya es OEM.', action: () => params.context.onMarkOEM(plain, 'mark') },
+    { name: plain.length > 1 ? `Crear OEM desde ${plain.length} SKU…` : 'Crear OEM desde SKU…', icon: menuIcon('plus'), disabled: !plain.length,
+      tooltip: plain.length ? 'Agrega su código a la lista OEM.' : 'Ya es OEM.', action: () => params.context.onMarkOEM(plain, 'create') },
     ...(oems.length ? [{ name: oems.length > 1 ? `Quitar marca OEM a ${oems.length} SKU…` : 'Quitar marca OEM…', icon: menuIcon('cross'),
       action: () => params.context.onMarkOEM(oems, 'unmark') }] : []),
     ...(defaults.length ? ['separator' as const, ...defaults] : []),

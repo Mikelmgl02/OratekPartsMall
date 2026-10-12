@@ -322,6 +322,11 @@ class ManagedPartSerializer(serializers.ModelSerializer):
                 # The flag describes this exact main code, not every alternate.
                 if validated_data.get('sku', old_sku) != old_sku:
                     validated_data.setdefault('is_OEM', False)
+                elif old_is_oem and validated_data.get('is_OEM') is False:
+                    from .catalog_oem_mark import listed_refusal
+                    problem = listed_refusal(instance)  # its code is in the OEM list: dispute the number instead
+                    if problem:
+                        raise serializers.ValidationError({'is_OEM': problem})
                 instance = super().update(instance, validated_data)
                 if codes is not None:
                     self.save_codes(instance, codes)
@@ -332,6 +337,11 @@ class ManagedPartSerializer(serializers.ModelSerializer):
                 if main or 'is_OEM' not in validated_data or codes is not None:
                     instance = prefer_oem(instance, actor=getattr(self.context.get('request'), 'user', None), selected=main,
                                           confirm_current=codes is not None and 'is_OEM' not in validated_data)
+                if instance.is_OEM and not old_is_oem:  # a SKU is OEM when its code is in the OEM list (an OEM alterno saved here files it)
+                    from .catalog_oem_mark import unlisted_refusal
+                    problem = unlisted_refusal(instance)
+                    if problem:
+                        raise serializers.ValidationError({'is_OEM': problem})
                 instance.stock_record_count = instance.supplier_items.count()
                 return instance
         except IntegrityError:

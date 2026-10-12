@@ -57,10 +57,12 @@ export const dismissReasons: Record<OEMDismissReason, string> = {
 export const excludedLabels: Record<string, string> = {
   tier: 'en niveles que no se aprueban en lote (varios OEM, conflicto, variante, sufijo desconocido, débil o IA)', stale: 'cambiaron desde el análisis (el SKU o un sufijo de su cadena)',
   previously_reverted: 'se revirtieron antes con el mismo OEM', over_limit: 'quedan para otra ejecución (máximo por ejecución)',
+  disputed: 'tienen el número en disputa en la Biblioteca OEM',
 };
 export const reviewSkipLabels: Record<string, string> = {
   case_changed: 'EL CASO CAMBIÓ', snapshot_changed: 'EL SKU CAMBIÓ', suffix_changed: 'UN SUFIJO SE RECLASIFICÓ', new_claimant: 'OTRO SKU RECLAMA EL NÚMERO', retired: 'RETIRADO O AGRUPADO',
   missing: 'YA NO EXISTE',
+  disputed: 'NÚMERO EN DISPUTA',
 };
 const conflictKinds: Record<string, string> = {
   shared_base_family: 'FAMILIA COMPARTIDA', base_is_existing_active_part: 'EL OEM YA ES OTRO SKU ACTIVO', base_is_retired_part_sku: 'EL OEM ES UN SKU RETIRADO',

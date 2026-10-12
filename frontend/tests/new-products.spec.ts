@@ -96,7 +96,8 @@ test('Productos nuevos lists the proposed SKUs and approves, edits, rejects and 
   await expect(page.getByRole('status').filter({ hasText: 'SKU 90467-10188 creado y vinculado.' })).toBeVisible();
 
   // Rejecting, and approving several at once. A product linked before offers its SKU; typed alternos keep their type when saved.
-  rows = [...rows, proposal('33333333-3333-4333-8333-333333333333', 'A-1', 'ACME', null), proposal('44444444-4444-4444-8444-444444444444', 'B-1', 'ACME', null),
+  rows = [...rows, proposal('33333333-3333-4333-8333-333333333333', 'A-1', 'ACME', null, { catalog_match: [{ id: 'part-9', sku: 'A1-ACME', code: 'A-1', active: true }] }),
+    proposal('44444444-4444-4444-8444-444444444444', 'B-1', 'ACME', null),
     proposal('55555555-5555-4555-8555-555555555555', 'GWT-41A', 'GMB', null, { earlier: { id: 'part-1', sku: '16100-39315' },
       references: [{ brand: 'TOYOTA', code: '16100-39315', ref_type: 'oem' }] })];
   await page.getByRole('button', { name: /^Por revisar/ }).click();
@@ -115,6 +116,8 @@ test('Productos nuevos lists the proposed SKUs and approves, edits, rejects and 
   await expect.poll(() => posts.at(-1)).toEqual({ path: '55555555-5555-4555-8555-555555555555', body: { action: 'link', expected_version: 2, part: 'part-1' } });
   await expect(gmb).toBeHidden();
   await page.getByRole('button', { name: 'Ver detalle de A-1' }).click();
+  await expect(page.getByRole('dialog').getByRole('note')).toContainText('Este código ya está en el catálogo');   // its items belong to that SKU
+  await expect(page.getByRole('dialog').getByRole('button', { name: 'Vincular a A1-ACME' })).toBeVisible();
   await page.getByRole('dialog').getByRole('button', { name: 'Rechazar', exact: true }).click();
   await page.getByRole('dialog').getByLabel('Motivo').selectOption('not_a_part');
   await page.getByRole('dialog').getByLabel('Nota (opcional)').fill('Es un servicio');

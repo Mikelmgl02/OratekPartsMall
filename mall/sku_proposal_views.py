@@ -39,6 +39,8 @@ def proposal_json(proposal, *, all_items=False):
         'item_count': len(rows), 'supplier_count': len({row.item.supplier_id for row in rows}),
         'stock': sum(row.item.available_quantity for row in rows),
         'items': [item_json(row) for row in (rows if all_items else rows[:PREVIEW_ITEMS])],
+        # The detail only: the catalog SKUs its code or OEM number already belongs to, to link the items there.
+        **({'catalog_match': sku_proposals.catalog_match(proposal) if proposal.status == 'pending' else []} if all_items else {}),
         'part': {'id': str(proposal.part_id), 'sku': proposal.part.sku} if proposal.part_id else None,
         'decided_by': proposal.decided_by.username if proposal.decided_by else None, 'decided_at': proposal.decided_at,
         'reject_reason': proposal.reject_reason, 'reject_reason_label': proposal.get_reject_reason_display() if proposal.reject_reason else '',
@@ -160,6 +162,8 @@ class ProposalDetail(APIView):
             run()
         except sku_proposals.ProposalConflict as conflict:
             return Response({'detail': conflict.detail, 'proposal': self.current(pk)}, status=conflict.status_code)
+        except sku_proposals.DuplicateProposal as refused:
+            return Response({'detail': refused.detail, 'owners': refused.owners}, status=400)
         return Response(self.current(pk))
 
 
@@ -179,6 +183,8 @@ class ProposalBulk(APIView):
                 continue
             try:
                 proposal = sku_proposals.approve(row['id'], request.user, row['version'])
+            except sku_proposals.DuplicateProposal as refused:
+                results.append({'id': str(row['id']), 'ok': False, 'message': refused.detail})
             except (APIException, ValidationError) as error:
                 detail = error.detail
                 message = detail if isinstance(detail, str) else ' '.join(str(value) for values in (detail.values() if isinstance(detail, dict) else [detail])

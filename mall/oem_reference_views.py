@@ -17,6 +17,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import oem_reference as orf
+from .catalog_identity import mark_exact_matches, unmark_disputed
 from .catalog_suffix_models import values
 from .management import IsSuperuser, UppercaseCharField
 from .models import Part
@@ -291,7 +292,13 @@ def plan(ref, data, user):
         note = (data.get('note') or '').strip()
         if not note:
             raise ValidationError({'note': 'Explica por qué el número está en disputa.'})
-        return None if ref.status == 'disputed' and ref.dispute_note == note else lambda: save(ref, user, status='disputed', dispute_note=note)
+        if ref.status == 'disputed' and ref.dispute_note == note:
+            return None
+
+        def dispute():
+            save(ref, user, status='disputed', dispute_note=note)
+            unmark_disputed(ref, user)  # a number in dispute no longer makes its SKUs OEM
+        return dispute
     if action == 'clear_dispute':
         if ref.status != 'disputed':
             return None
@@ -299,6 +306,7 @@ def plan(ref, data, user):
         def clear():
             ref.status, ref.dispute_note = 'inferred', ''  # refresh_status re-derives it from the sources
             orf.refresh_status(ref, user, changed=True)
+            mark_exact_matches(user, codes=[ref.code])
         return clear
     if action == 'clear_superseded_by':
         return (lambda: save(ref, user, superseded_by=None)) if ref.superseded_by_id else None
@@ -402,6 +410,7 @@ class OEMReferenceList(APIView):
         ref, created = orf.upsert_reference(data['manufacturer'], data['code'], printed=[data['code']], source_kind=source['kind'],
                                             citation=source['citation'], detail={'verified': source['verified']} if source['kind'] == 'manual' else {},
                                             actor=request.user, defaults={key: data[key] for key in orf.FILLABLE if data.get(key)})
+        mark_exact_matches(request.user, codes=[ref.code])  # the SKUs with that code are OEM now
         return Response(detail(ref.pk), status=201 if created else 200)
 
 
@@ -426,6 +435,11 @@ class OEMReferenceItem(APIView):
         with transaction.atomic():
             if data['action'] == 'set_superseded_by':
                 lock_chains()
+            if data['action'] in ('dispute', 'clear_dispute'):  # it marks or unmarks the SKUs with its code: Parts before the item, like
+                code = OEMReference.objects.filter(pk=pk).values_list('code', flat=True).first()  # every writer (Editar SKU, the alterno signals)
+                if code:
+                    list(Part.objects.select_for_update().filter(merged_into__isnull=True).annotate(compact=orf.compact_sql('sku'))
+                         .filter(compact=code).order_by('pk').values_list('pk', flat=True))
             ref = OEMReference.objects.select_for_update().filter(pk=pk).first()
             if ref is None:
                 raise NotFound('Ese número no está en la biblioteca OEM.')

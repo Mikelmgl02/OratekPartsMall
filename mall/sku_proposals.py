@@ -62,6 +62,15 @@ class ProposalConflict(APIException):
     default_detail = 'La propuesta cambió mientras la revisabas: vuelve a abrirla.'
 
 
+class DuplicateProposal(Exception):
+    """Approving would create a second SKU for a code the catalog already has: why, and the SKUs (id, sku, active) its items belong
+    to. The views answer 400 with both, so the drawer can offer Vincular."""
+
+    def __init__(self, detail, owners):
+        super().__init__(detail)
+        self.detail, self.owners = detail, owners
+
+
 def clean(value):
     """Upper case, single spaces."""
     return ' '.join((value or '').upper().split())
@@ -351,26 +360,48 @@ def lock_accounts(rows):
 
 def catalog_owners(code, brands=()):
     """Catalog SKUs this code already is once normalized (MR-968365 = MR968365): their own SKU, retired and merged ones included, or an
-    alterno of theirs under one of these brands or with none. A merged SKU answers with the one it was merged into."""
+    alterno of theirs under one of these brands or with none. A merged SKU answers with the one it was merged into.
+    [(id, sku, active)]: a retired one still blocks a second SKU, but items can only be linked to an active one."""
     key = normalized_reference(code)
     if not key:
         return []
     rx, brands = reference_pattern(key), {clean(brand) for brand in brands if brand}
-    owners = {merged or sku for sku, merged in Part.objects.filter(sku__iregex=rx).values_list('sku', 'merged_into__sku')
+    owners = {(merged_id or pk, merged or sku, merged_active if merged_id else active) for pk, sku, active, merged_id, merged, merged_active in
+              Part.objects.filter(sku__iregex=rx).values_list('pk', 'sku', 'active', 'merged_into_id', 'merged_into__sku', 'merged_into__active')
               if normalized_reference(sku) == key}
-    owners |= {merged or sku for found, brand, sku, merged in PartCode.objects.filter(code__iregex=rx)
-               .values_list('code', 'brand', 'part__sku', 'part__merged_into__sku')
+    owners |= {(merged_id or pk, merged or sku, merged_active if merged_id else active)
+               for found, brand, pk, sku, active, merged_id, merged, merged_active in PartCode.objects.filter(code__iregex=rx)
+               .values_list('code', 'brand', 'part_id', 'part__sku', 'part__active', 'part__merged_into_id', 'part__merged_into__sku', 'part__merged_into__active')
                if normalized_reference(found) == key and (not brand or not brands or clean(brand) in brands)}
-    return sorted(owners)
+    return sorted(owners, key=lambda owner: owner[1])
+
+
+def owner_label(owner):
+    return f'{owner[1]}{"" if owner[2] else " (retirado)"}'
+
+
+def duplicate_checks(proposal):
+    """(code, brands) approving must find nowhere in the catalog: the SKU itself and, when it is another number, the OEM number."""
+    sku_key = normalized_reference(proposal.sku)
+    checks = [(proposal.sku, {proposal.brand, proposal.oem_brand, vehicle_makes().get(proposal.brand, '')})]
+    if proposal.oem_code and normalized_reference(proposal.oem_code) != sku_key:
+        checks.append((proposal.oem_code, {proposal.oem_brand}))
+    return checks
+
+
+def catalog_match(proposal):
+    """The catalog SKUs the proposal's code or OEM number already belongs to: its items are variants of that SKU (Vincular)."""
+    seen = {}
+    for code, brands in duplicate_checks(proposal):
+        for pk, sku, active in catalog_owners(code, brands):
+            seen.setdefault(pk, {'id': str(pk), 'sku': sku, 'code': code, 'active': active})
+    return list(seen.values())
 
 
 def refuse_duplicates(proposal):
     """Approving never creates a second SKU for a code the catalog already has under another spelling, or for an OEM number another
-    SKU carries: the administrator links the items to that SKU instead."""
-    sku_key, makes = normalized_reference(proposal.sku), vehicle_makes()
-    checks = [(proposal.sku, {proposal.brand, proposal.oem_brand, makes.get(proposal.brand, '')})]
-    if proposal.oem_code and normalized_reference(proposal.oem_code) != sku_key:
-        checks.append((proposal.oem_code, {proposal.oem_brand}))
+    SKU carries: the proposal's items are variants of that SKU, and the administrator links them there. The refusal names it."""
+    checks = duplicate_checks(proposal)
     if connection.vendor == 'postgresql':  # two approvals of the same code at once: the second sees the first's SKU
         with connection.cursor() as cursor:
             for key in sorted({normalized_reference(code) for code, _ in checks} - {''}):
@@ -378,7 +409,10 @@ def refuse_duplicates(proposal):
     for code, brands in checks:
         owners = catalog_owners(code, brands)
         if owners:
-            raise ValidationError({'detail': f'{code} ya está en el catálogo como SKU {", ".join(owners[:3])}: usa «Vincular a SKU existente».'})
+            usable = any(active for _, _, active in owners)
+            raise DuplicateProposal(f'{code} ya está en el catálogo como SKU {", ".join(owner_label(owner) for owner in owners[:3])}: '
+                                    + ('usa «Vincular a SKU existente».' if usable else 'reactívalo para vincular ahí sus artículos.'),
+                                    [{'id': str(pk), 'sku': sku, 'active': active} for pk, sku, active in owners[:3]])
 
 
 def link(proposal, rows, part, user, action):

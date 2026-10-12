@@ -20,6 +20,7 @@ from rest_framework.exceptions import ValidationError
 
 from . import oem_apply as oa
 from . import oem_finder as of
+from .catalog_families import normalized_reference
 
 TIERS = of.AUTO_TIERS  # finder tiers, one tab each: AUTO_FLAG_CURRENT and AUTO_RENAME_BASE (both rename apply tiers)
 STATUSES = ('pending', 'applied', 'sent_to_review', 'excluded', 'stale')
@@ -30,7 +31,8 @@ ORDERINGS = ('stock', 'sku')
 FILTER_KEYS = ('status', 'tier', 'apply_tier', 'chain', 'make', 'system', 'in_stock', 'search', 'ordering')
 PAGE_SIZE, SEND_LIMIT = 25, 100
 REASONS = {'previously_reverted': 'se revirtió antes con el mismo OEM', 'open_conflict': 'tiene un conflicto de aplicación abierto',
-           'dismissed': 'se descartó en la revisión OEM con el mismo OEM', 'left_auto': 'ya no es automático en el último análisis'}
+           'dismissed': 'se descartó en la revisión OEM con el mismo OEM', 'left_auto': 'ya no es automático en el último análisis',
+           'disputed': 'el número está en disputa en la Biblioteca OEM'}
 SEND_SKIPS = {'not_found': 'no está en los pendientes', 'applied': 'ya se aplicó', 'excluded': 'está excluido hasta una decisión humana',
               'stale': 'ya no es automático', 'case_applied': 'su caso de revisión ya se aprobó'}
 FIELDS = ['run', 'tier', 'apply_tier', 'sku', 'candidate', 'written_form', 'brand', 'makes', 'system', 'grade', 'chain', 'chain_tokens', 'owner_tags',
@@ -76,7 +78,9 @@ def refresh(run, finder, results):
         return {'status': 'not_migrated'}
     from .oem_finder_models import OEMAutoCandidate
     table, version, now = finder.table, of.table_version(finder.table), timezone.now()
+    from .catalog_identity import disputed_codes
     reverted, conflicts, _, dismissed = oa.exclusions()
+    disputed = disputed_codes()
     applied, wanted = applied_parts(), {}
     for pid, r in results.items():
         tier = oa.apply_tier(table, r)
@@ -94,6 +98,8 @@ def refresh(run, finder, results):
             row.update(status='applied', reason='')
         elif pid in conflicts:
             row.update(status='excluded', reason='open_conflict')
+        elif normalized_reference(row['candidate']) in disputed:  # until the dispute is cleared
+            row.update(status='excluded', reason='disputed')
         elif (pid, row['candidate']) in reverted:  # O3 never re-applies a reverted OEM: it does not come back as pending either
             row.update(status='excluded', reason='previously_reverted')
         elif (pid, row['candidate']) in dismissed:  # nor one a person dismissed in the review queue (new rules or evidence made it AUTO)

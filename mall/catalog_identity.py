@@ -2,6 +2,8 @@
 
 An OEM reference and its provenance must already be in the reviewed library.
 Manufacturer suffix rules identify a company, not interchangeability or an OEM.
+mark_exact_matches marks OEM (never renames) the SKUs whose compact code is a declared or verified number of the OEM list, 8 or more
+characters with a digit: a SKU is OEM when its code is the OEM number.
 """
 from django.conf import settings
 from django.db import transaction
@@ -175,3 +177,104 @@ def reconcile_identities(actor=None):
             updated = prefer_oem(part, actor=actor)
             promoted += int(before != updated.sku)
     return promoted
+
+
+# --- a SKU whose code is in the OEM list is OEM -------------------------------------------------------------------------------------
+
+EXACT_MIN = 8  # a shorter number can coincide with an unrelated code: those SKUs are marked by a person (Marcar como OEM)
+EXACT_SOURCE = 'Su código está en la lista OEM'
+COUNTING = ('declared', 'verified')  # an item only the OEM finder inferred, or one in dispute, marks nothing on its own
+
+
+def counts(code):
+    """A compact number long and specific enough to mark a SKU on its own."""
+    return len(code) >= EXACT_MIN and any(char.isdigit() for char in code)
+
+
+def exact_listed(sku):
+    """The declared or verified items of the OEM list whose number is this SKU code, when the code counts for marking."""
+    from .oem_reference_models import OEMReference
+    code = normalized_reference(sku)
+    return list(OEMReference.objects.filter(code=code, status__in=COUNTING).order_by('manufacturer')) if counts(code) else []
+
+
+def disputed_codes(codes=None):
+    """Numbers the OEM list has only in dispute (every manufacturer that files them disputes them): they make no SKU OEM and the OEM
+    finder never applies them."""
+    from .oem_reference_models import OEMReference
+    bad = OEMReference.objects.filter(status='disputed')
+    if codes is not None:
+        bad = bad.filter(code__in=[normalized_reference(code) for code in codes])
+    bad = set(bad.values_list('code', flat=True))
+    return bad - set(OEMReference.objects.filter(code__in=bad).exclude(status='disputed').values_list('code', flat=True)) if bad else set()
+
+
+def exact_items(part_ids=None, codes=None):
+    """{part id: [OEMReference]} for active SKUs not yet OEM whose compact code is a declared or verified number of the OEM list."""
+    from .oem_reference import compact_sql
+    from .oem_reference_models import OEMReference
+    refs = OEMReference.objects.filter(status__in=COUNTING)
+    if codes is not None:
+        refs = refs.filter(code__in=[normalized_reference(code) for code in codes])
+    parts = (Part.objects.filter(active=True, merged_into__isnull=True, is_OEM=False).annotate(compact=compact_sql('sku'))
+             .filter(compact__in=refs.values('code')))
+    if part_ids is not None:
+        parts = parts.filter(pk__in=list(part_ids))
+    found = {}
+    by_code = {}
+    for pk, number in parts.values_list('pk', 'compact'):
+        if counts(number):
+            by_code.setdefault(number, []).append(pk)
+    for ref in refs.filter(code__in=list(by_code)).order_by('manufacturer'):
+        for pk in by_code[ref.code]:
+            found.setdefault(pk, []).append(ref)
+    return found
+
+
+def mark_exact_matches(actor=None, *, part_ids=None, codes=None, apply=True):
+    """Mark OEM every SKU whose code is a declared or verified number of the OEM list (MR-453383 = MITSUBISHI MR453383): the SKU uses
+    the OEM number, so it is that OEM item's variant. Each mark leaves a CatalogIdentityChange naming the item. Returns
+    [(part id, sku, [(manufacturer, number)])]."""
+    from .oem_finder import OEMFinder
+    from .oem_links import same_make
+    from .oem_reference_models import OEMReference
+    marked = []
+    for pk, refs in exact_items(part_ids, codes).items():
+        with transaction.atomic():
+            part = Part.objects.select_for_update().filter(pk=pk, active=True, merged_into__isnull=True, is_OEM=False).first()
+            if part is None or normalized_reference(part.sku) != refs[0].code:
+                continue
+            # Part, then the item (the order of every writer): a dispute committed since the snapshot marks nothing.
+            refs = list(OEMReference.objects.select_for_update().filter(pk__in=[ref.pk for ref in refs], status__in=COUNTING).order_by('manufacturer'))
+            if not refs:
+                continue
+            makes = OEMFinder.explicit_makes(part.description or '')
+            ref = (next((ref for ref in refs if ref.manufacturer in makes), None)
+                   or next((ref for ref in refs if any(same_make(ref.manufacturer, make) for make in makes)), refs[0]))
+            marked.append((part.pk, part.sku, [(item.manufacturer, item.code) for item in refs]))
+            if not apply:
+                continue
+            part.is_OEM = True
+            part.save(update_fields=['is_OEM'])
+            CatalogIdentityChange.objects.create(part=part, previous_sku=part.sku, sku=part.sku, actor=actor, reference={
+                'code': ref.code, 'brand': ref.manufacturer, 'ref_type': 'oem', 'reference_source': EXACT_SOURCE, 'action': 'exact_match'})
+    return marked
+
+
+def unmark_disputed(ref, actor=None):
+    """A number put in dispute stops making its exact SKUs OEM, unless another item of the list not in dispute still has their code.
+    The caller holds the transaction. Returns the SKUs unmarked."""
+    from .oem_reference import compact_sql
+    from .oem_reference_models import OEMReference
+    if OEMReference.objects.filter(code=ref.code).exclude(status='disputed').exclude(pk=ref.pk).exists():
+        return []
+    unmarked = []
+    for part in (Part.objects.select_for_update().filter(is_OEM=True, merged_into__isnull=True).annotate(compact=compact_sql('sku'))
+                 .filter(compact=ref.code)):
+        part.is_OEM = False
+        part.save(update_fields=['is_OEM'])
+        CatalogIdentityChange.objects.create(part=part, previous_sku=part.sku, sku=part.sku, actor=actor, reference={
+            'code': ref.code, 'brand': ref.manufacturer, 'ref_type': 'oem', 'reference_source': f'{ref.manufacturer} {ref.code} en disputa',
+            'action': 'disputed'})
+        unmarked.append(part.sku)
+    return unmarked

@@ -38,7 +38,7 @@ SKIP_LABELS = {
     'previously_reverted': 'se revirtió antes con el mismo OEM', 'open_conflict': 'tiene un conflicto de aplicación abierto',
     'sku_changed': 'el SKU cambió después de aplicarse', 'old_sku_taken': 'el SKU anterior ya identifica a otro SKU',
     'codes_changed': 'se editaron los códigos que creó la aplicación', 'sent_to_review': 'se envió a la revisión OEM',
-    'dismissed': 'se descartó en la revisión OEM con el mismo OEM',
+    'dismissed': 'se descartó en la revisión OEM con el mismo OEM', 'disputed': 'el número está en disputa en la Biblioteca OEM',
 }
 
 
@@ -148,14 +148,18 @@ def exclusions():
 
 
 def handled(rows, results):
-    """Rows a human must look at first: sent to review, an open apply-conflict case, or the same OEM reverted before or dismissed in the
-    review queue (never applied silently). Before migration 0036 (read-only preview) none can exist."""
+    """Rows a human must look at first: sent to review, an open apply-conflict case, the same OEM reverted before or dismissed in the
+    review queue, or a number in dispute in Biblioteca OEM (never applied silently). Before migration 0036 (read-only preview) none can exist."""
     if not apply_tables_ready():
         return rows, {}
+    from .catalog_identity import disputed_codes
     reverted, conflicts, sent, dismissed = exclusions()
+    disputed = disputed_codes()
     keep, out = [], Counter()
     for pid, tier in rows:
-        if pid in sent:
+        if normalized_reference(results[pid]['proposed_main']) in disputed:  # a person said the number is wrong: never applied
+            out['disputed'] += 1
+        elif pid in sent:
             out['sent_to_review'] += 1
         elif pid in conflicts:
             out['open_conflict'] += 1
@@ -260,6 +264,9 @@ def apply_row(run, finder, known, pid, r, tier, batch, actor):
             raise Skip('new_claimant', who)
         if tier == FLAG and code != part.sku:
             raise Skip('canonical_differs', code)
+        from .catalog_identity import disputed_codes
+        if disputed_codes([code]):  # disputed since the analysis
+            raise Skip('disputed', code)
         ensure_code(part, code, brand, 'oem', source)
         written = r.get('written_form') or ''
         if written and written != code:  # the catalog's spelling stays searchable; unverified, so it is never promoted on its own
@@ -554,7 +561,10 @@ def revert_link(link_id, actor):
                 setattr(code, k, before[k])
             code.save(update_fields=list(CODE_KEYS[1:]))
         fields = ['is_OEM']
-        part.is_OEM = bool(undo.get('is_OEM'))
+        # A code that is a declared or verified number of the OEM list stays OEM: that is what OEM means, whoever flagged it first.
+        from .catalog_identity import exact_listed
+        kept = [] if rename else exact_listed(part.sku)
+        part.is_OEM = bool(undo.get('is_OEM')) or bool(kept)
         if rename:
             part.sku = change.previous_sku
             fields.append('sku')
@@ -563,7 +573,8 @@ def revert_link(link_id, actor):
                 fields.append('name')
         part.save(update_fields=fields)
         reverse = CatalogIdentityChange.objects.create(part=part, previous_sku=change.sku, sku=part.sku, actor=actor, reference={
-            'action': 'revert', 'reverts': change.pk, 'run': link.run_id, 'code': link.code, 'brand': link.brand, 'method': link.method})
+            'action': 'revert', 'reverts': change.pk, 'run': link.run_id, 'code': link.code, 'brand': link.brand, 'method': link.method,
+            **({'kept_oem': [f'{ref.manufacturer} {ref.code}' for ref in kept]} if kept else {})})
         link.reverted_at, link.reverted_by, link.revert_change = timezone.now(), actor, reverse
         link.save(update_fields=['reverted_at', 'reverted_by', 'revert_change'])
         if (link.evidence or {}).get('review'):  # an approval from the review queue: its case goes back to the queue

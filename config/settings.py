@@ -200,6 +200,8 @@ GEMINI_GROUNDING_USD_PER_CALL = env_usd('GEMINI_GROUNDING_USD_PER_CALL', '0.035'
 QUOTES_REQUIRE_DRAFT = os.getenv('QUOTES_REQUIRE_DRAFT', '1').lower() in ('true', '1', 'yes')
 # OEM finder dry run as a matching worker stage after catalog grouping (off by default; python -m mall.oem_finder runs it by hand).
 OEM_FINDER_AUTO_STAGE = os.getenv('OEM_FINDER_AUTO_STAGE', '0').lower() in ('true', '1', 'yes')
+# Every matching pass marks OEM the SKUs whose code is a declared or verified number of the OEM list (mall.catalog_identity).
+OEM_EXACT_MARK = os.getenv('OEM_EXACT_MARK', '1').lower() in ('true', '1', 'yes')
 CATALOG_LOW_STOCK_THRESHOLD = max(1, int(os.getenv('CATALOG_LOW_STOCK_THRESHOLD', '5')))
 CATALOG_HIGH_STOCK_THRESHOLD = int(os.getenv('CATALOG_HIGH_STOCK_THRESHOLD', '20'))
 if CATALOG_HIGH_STOCK_THRESHOLD <= CATALOG_LOW_STOCK_THRESHOLD:

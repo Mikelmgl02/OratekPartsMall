@@ -179,7 +179,9 @@ def split_plan(target):
     if target.created_by_merge:
         warnings.append(f'{target.sku} es un SKU padre que se creó al agrupar: si separas todos sus SKU y no le queda nada, quedará inactivo.')
     if own:
-        renamed = CatalogIdentityChange.objects.filter(part=target, created_at__gte=own[0].created_at).order_by('-created_at').first()
+        # A real rename only: marks and unmarks (exact_match, disputed, confirm_current) keep the code.
+        renamed = (CatalogIdentityChange.objects.filter(part=target, created_at__gte=own[0].created_at).exclude(previous_sku=F('sku'))
+                   .order_by('-created_at').first())
         if renamed:
             warnings.append(f'Después de agrupar, el SKU cambió de {renamed.previous_sku} a {renamed.sku}. Si ese código es de un SKU que separas, '
                             'corrígelo en Editar antes de separarlo.')

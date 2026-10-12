@@ -13,6 +13,7 @@ import json
 import re
 import unicodedata
 from collections import Counter, defaultdict
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -394,10 +395,11 @@ def apply_family(case, *, actor, automatic=False, selected_target=None):
 
 
 def reconcile_catalog(actor, *, stats=None):
-    from .catalog_identity import reconcile_identities
+    from .catalog_identity import mark_exact_matches, reconcile_identities
     promoted = reconcile_identities(actor)
+    marked = len(mark_exact_matches(actor)) if settings.OEM_EXACT_MARK else 0  # a SKU whose code is in the OEM list is OEM
     if stats is not None:
-        stats['promoted_oems'] = promoted
+        stats['promoted_oems'], stats['marked_exact_oems'] = promoted, marked
     count = reconcile_catalog_references(actor)
     from .catalog_split import pair, separated_pairs
     apart = separated_pairs()  # SKUs a split separated (Separar SKU): never merged again here

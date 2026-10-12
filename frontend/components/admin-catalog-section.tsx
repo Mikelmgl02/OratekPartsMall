@@ -58,7 +58,7 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
   // Separar SKU: null opens its list, a SKU opens that SKU's split.
   const [splitTarget, setSplitTarget] = useState<{ id: string; sku: string } | null | undefined>();
   const [mergeParts, setMergeParts] = useState<ManagedPart[] | null>(null);  // Agrupar con…, from the grid's right click
-  const [oemMark, setOemMark] = useState<{ mode: OEMMarkMode; parts: ManagedPart[] } | null>(null);  // Marcar como OEM / Quitar marca OEM
+  const [oemMark, setOemMark] = useState<{ mode: OEMMarkMode; parts: ManagedPart[] } | null>(null);  // Marcar como OEM / Crear OEM desde SKU / Quitar marca OEM
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [pendingIssueCount, setPendingIssueCount] = useState<number | null>(null);
   const [notice, setNotice] = useState(''); const [revision, setRevision] = useState(0);
@@ -127,6 +127,7 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
     {issuesOpen && <ImportIssues onClose={() => { setIssuesOpen(false); setRevision(value => value + 1); }} onSaved={() => saved('Fila corregida y guardada en el inventario interno.')}/>}
     {splitTarget !== undefined && <CatalogSplit part={splitTarget} onClose={() => setSplitTarget(undefined)} onChanged={saved}/>}
     {oemMark && <CatalogMarkOEM key={`${oemMark.mode}:${oemMark.parts.map(part => part.id).join()}`} mode={oemMark.mode} parts={oemMark.parts} onClose={() => setOemMark(null)}
+      onSwitch={(parts, mode) => setOemMark({ parts, mode })}
       onSaved={text => { setOemMark(null); saved(text); }}/>}
     {mergeParts && <CatalogMergeWith key={mergeParts.map(part => part.id).join()} parts={mergeParts} onClose={() => setMergeParts(null)} onSaved={text => { setMergeParts(null); saved(text); }}/>}
     {groupingOpen && <CatalogGrouping initialFamily={groupingFamily} onClose={() => { setGroupingOpen(false); setGroupingFamily(null); }} onSaved={(targetSku, count) => saved(`${count} ${count === 1 ? 'SKU agrupado' : 'SKU agrupados'} bajo ${targetSku}.`)}/>}

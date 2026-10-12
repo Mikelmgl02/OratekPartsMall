@@ -5,7 +5,8 @@ The PartCode signal handlers mirror every OEM alterno (ref_type='oem' with a bra
 OEM approval, catalog editor, AI lookup approval): an 'algo:' reference_source is the OEM finder (inferred), an http(s) one an AI
 lookup approved into the catalog (verified) and any other, blank included, a catalog approval (declared). Each automatic source lists
 the alternos that back it (detail.part_codes); deleting or retyping one (an undo, an edit) removes exactly that, the source when no
-alterno backs it any more and the reference when it has no sources left. The handlers run in a savepoint and never break the PartCode
+alterno backs it any more and the reference when it has no sources left and nothing keeps it (curated: a dispute or notes, another
+SKU's alterno or a supplier catalog link; a name link does not, it only exists because the number does). The handlers run in a savepoint and never break the PartCode
 write; before migration 0039 they skip quietly. Nothing here renames a SKU, writes a PartCode or calls an AI provider.
 """
 import logging
@@ -190,10 +191,12 @@ def upsert_reference(manufacturer, code, *, printed=None, source_kind, citation=
     return ref, False
 
 
-def curated(ref):
-    """Someone disputed, annotated or chained it: worth keeping even after its last automatic source is withdrawn."""
+def curated(ref, leaving=None):
+    """Worth keeping even after its last automatic source is withdrawn: someone disputed, annotated or chained it, or a SKU is still
+    tied to it by evidence of its own (another SKU's alterno, or a supplier catalog's link), so withdrawing one alterno never takes
+    the number from the others. A name link (sku_name) does not count: it only exists because the number is in the list."""
     return (ref.status == 'disputed' or bool(ref.notes.strip() or ref.applications.strip()) or bool(ref.superseded_by_id)
-            or ref.supersedes.exists())
+            or ref.supersedes.exists() or ref.part_links.exclude(source='sku_name').exists() or ref.alternos.exclude(pk=leaving).exists())
 
 
 def remove_partcode_source(partcode, number=None, keep=None):
@@ -220,7 +223,7 @@ def remove_partcode_source(partcode, number=None, keep=None):
     for ref in touched.values():
         if keep and (ref.manufacturer, ref.code) == keep[:2]:
             continue  # the caller adds the new source next and re-derives the status then
-        if not ref.sources.exists() and not curated(ref):
+        if not ref.sources.exists() and not curated(ref, leaving=partcode.pk):
             ref.delete()
         else:
             refresh_status(ref, changed=True)

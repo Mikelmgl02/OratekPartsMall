@@ -185,8 +185,7 @@ class SkuProposalTests(APITestCase):
         rows = [{'id': str(proposal.pk), 'version': proposal.version} for proposal in SkuProposal.objects.order_by('sku')]
         result = self.client.post('/api/v1/management/catalog/proposals/bulk/', {'action': 'approve', 'proposals': rows}, format='json').json()
         self.assertEqual([entry['ok'] for entry in result['results']], [True, False])
-        self.assertIn('ya está en el catálogo como SKU 04465-02220', result['results'][1]['message'])
-        self.assertIn('Vincular a SKU existente', result['results'][1]['message'])
+        self.assertEqual(result['results'][1]['message'], '0446502220 ya está en el catálogo como SKU 04465-02220: usa «Vincular a SKU existente».')
         self.assertEqual(Part.objects.filter(sku__in=['04465-02220', '0446502220']).count(), 1)
         # An OEM number another SKU carries as an alterno: the aftermarket item belongs there.
         reference = OEMReference.objects.create(manufacturer='TOYOTA', code='1610039315', printed_forms=['16100-39315'])
@@ -199,6 +198,13 @@ class SkuProposalTests(APITestCase):
         response = self.client.post(f'/api/v1/management/catalog/proposals/{proposal.pk}/', {'action': 'approve', 'expected_version': proposal.version}, format='json')
         self.assertEqual(response.status_code, 400)
         self.assertIn('BOMBA-1', response.json()['detail'])
+        self.assertEqual(response.json()['owners'], [{'id': str(holder.pk), 'sku': 'BOMBA-1', 'active': True}])   # the SKU its items belong to
+        detail = self.client.get(f'/api/v1/management/catalog/proposals/{proposal.pk}/').json()
+        self.assertEqual(detail['catalog_match'], [{'id': str(holder.pk), 'sku': 'BOMBA-1', 'code': '16100-39315', 'active': True}])
+        holder.active = False
+        holder.save(update_fields=['active'])
+        retired = self.client.post(f'/api/v1/management/catalog/proposals/{proposal.pk}/', {'action': 'approve', 'expected_version': proposal.version}, format='json')
+        self.assertEqual(retired.json()['detail'], '16100-39315 ya está en el catálogo como SKU BOMBA-1 (retirado): reactívalo para vincular ahí sus artículos.')
 
     def test_an_item_that_gains_candidate_skus_leaves_its_proposal(self):
         first = self.item(self.dealer, '10', '12345678', 'DENSO', 'BUJIA')

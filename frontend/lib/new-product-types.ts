@@ -8,7 +8,8 @@ export type Proposal = { id: string; status: ProposalStatus; status_label: strin
   references: { brand: string; code: string; ref_type?: string }[]; field_sources: Partial<Record<'sku' | 'description' | 'oem' | 'references' | 'part_type', FieldSource>>;
   item_count: number; supplier_count: number; stock: number; items: ProposalItem[]; part: { id: string; sku: string } | null;
   decided_by: string | null; decided_at: string | null; reject_reason: string; reject_reason_label: string; reject_note: string; created_at: string; updated_at: string;
-  earlier: { id: string; sku: string } | null };   // the same product approved or linked before: its items go to that SKU
+  earlier: { id: string; sku: string } | null;   // the same product approved or linked before: its items go to that SKU
+  catalog_match?: { id: string; sku: string; code: string; active: boolean }[] };   // the detail only: catalog SKUs its code or OEM number already belongs to
 export type ProposalSummary = Record<ProposalStatus, number>;
 export type BulkResult = { approved: number; results: { id: string; ok: boolean; sku?: string; message?: string }[] };
 
