@@ -1,11 +1,11 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, Boxes, LockKeyhole, MessageCircle, Minus, Plus, ShoppingBag, Sparkles, Store, Trash2, TriangleAlert, Truck } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Boxes, History, LockKeyhole, MessageCircle, Minus, Plus, ShoppingBag, Sparkles, Store, Trash2, TriangleAlert, Truck } from 'lucide-react';
 import { CatalogPhoto } from './part-image';
 import BasketSubmission from './basket-submission';
 import ClientRequestNavigation from './client-request-navigation';
-import { Account, BasketLine } from '@/lib/types';
+import { Account, BasketEvent, BasketLine, request } from '@/lib/types';
 import type { RequestSubmissionResult } from '@/lib/request-types';
 import { visibleReferences } from '@/lib/reference-label';
 
@@ -27,6 +27,52 @@ function QuantityControl({ name, quantity, onChange, disabled }: { name: string;
     }} onBlur={finish} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }}/>
     <button type="button" aria-label={`Aumentar cantidad de ${name}`} disabled={disabled || quantity >= 9999} onClick={() => onChange(quantity + 1)}><Plus size={15}/></button>
   </div></div>;
+}
+
+// What each entry of the cesta's ledger says, in the person's words.
+function eventText(entry: BasketEvent) {
+  const article = `${entry.codigo} · ${entry.supplier_name || 'proveedor'}`;
+  switch (entry.kind) {
+    case 'added': return `Agregaste ${entry.quantity_after} × ${article}`;
+    case 'changed': return `Cambiaste ${article} de ${entry.quantity_before} a ${entry.quantity_after}`;
+    case 'removed': return `Quitaste ${entry.quantity_before} × ${article}`;
+    case 'moved_in': return `Trajiste ${entry.quantity_after} × ${article} de la cesta de este navegador`;
+    case 'sent': return `Enviaste ${entry.quantity_before - entry.quantity_after} × ${article}${entry.reference ? ` en ${entry.reference}` : ''}`;
+  }
+}
+function eventTime(value: string) {
+  const at = new Date(value), today = new Date();
+  const time = at.toLocaleTimeString('es-PA', { hour: '2-digit', minute: '2-digit' });
+  return at.toDateString() === today.toDateString() ? time : `${at.toLocaleDateString('es-PA', { day: 'numeric', month: 'short' })} · ${time}`;
+}
+
+// Actividad: the cesta's ledger, newest first; read again after each change (version), older entries on demand.
+function BasketActivity({ accountId, version }: { accountId: string; version: string }) {
+  const [entries, setEntries] = useState<BasketEvent[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [shown, setShown] = useState(5);
+  const [failed, setFailed] = useState(false);
+  const path = `/api/market/accounts/${accountId}/basket/activity`;
+  useEffect(() => {
+    let current = true;
+    const timer = setTimeout(() => {
+      request<{ results: BasketEvent[]; has_more: boolean }>(path)
+        .then(data => { if (current) { setEntries(data.results); setHasMore(data.has_more); setFailed(false); } })
+        .catch(() => { if (current) setFailed(true); });
+    }, 400);
+    return () => { current = false; clearTimeout(timer); };
+  }, [path, version]);
+  async function more() {
+    if (shown < entries.length) { setShown(count => count + 10); return; }
+    const data = await request<{ results: BasketEvent[]; has_more: boolean }>(`${path}?before=${entries.at(-1)!.id}`);
+    setEntries(rows => [...rows, ...data.results]); setHasMore(data.has_more); setShown(count => count + 10);
+  }
+  if (!entries.length && !failed) return null;
+  return <section className="basket-page-activity" aria-label="Actividad de tu cesta"><h2><History size={17}/>Actividad de tu cesta</h2>
+    {failed && !entries.length ? <p className="basket-page-draft-note">No se pudo cargar la actividad de tu cesta.</p> : <ol>{entries.slice(0, shown).map(entry =>
+      <li key={entry.id} className={entry.kind}><time dateTime={entry.created_at}>{eventTime(entry.created_at)}</time><span>{eventText(entry)}</span>{entry.source === 'whatsapp' && <em><MessageCircle size={11}/>WhatsApp</em>}</li>)}</ol>}
+    {(shown < entries.length || hasMore) && <button type="button" className="button soft small" onClick={() => void more().catch(() => setFailed(true))}>Ver más actividad</button>}
+  </section>;
 }
 
 // synced: the cesta lives on the server (a client account signed in), the same on every device; otherwise in this browser.
@@ -71,6 +117,7 @@ export default function Basket({ lines, onChange, onClose, preview, account, syn
           })}
           <div className="basket-page-supplier-note"><LockKeyhole size={14}/><span>Los artículos de esta sección se cotizan únicamente con este proveedor.</span></div>
         </section>)}
+        {synced && account && <BasketActivity accountId={account.id} version={lines.map(line => `${line.key}:${line.quantity}`).join('|')}/>}
         <section className="basket-page-guide" aria-label="Cómo se prepara la solicitud"><span className="basket-page-guide-icon"><Boxes size={23}/></span><div><h2>Una cesta, varios proveedores.</h2><p>Prepara tu solicitud con los códigos que usa cada proveedor. Recibirás una cotización privada por proveedor y podrás coordinar la entrega directamente con él.</p></div></section>
       </div>
       <aside className="basket-page-summary" aria-label="Resumen de solicitud"><h2>Resumen de tu solicitud</h2><dl><div><dt>Proveedores</dt><dd>{groups.size}</dd></div><div><dt>Artículos</dt><dd>{articleCount}</dd></div><div className="basket-page-summary-total"><dt>Unidades solicitadas</dt><dd>{unitCount.toLocaleString('es-PA')}</dd></div></dl><div className="basket-page-private"><LockKeyhole size={18}/><div><strong>Precios en cotizaciones privadas</strong><p>Cada proveedor comparte sus precios por separado, según los artículos de tu solicitud.</p></div></div>{lines.length ? <><BasketSubmission lines={lines} account={account} preview={preview} ownItems={ownLines.length} staleItems={staleLines.length} onPending={setSending} onSent={onSent}/><button type="button" className="button soft full" onClick={onClose}>Seguir buscando repuestos<ArrowRight size={16}/></button></> : <><button type="button" className="button primary full" onClick={onClose}>Seguir buscando repuestos<ArrowRight size={16}/></button><p className="basket-page-draft-note">Agrega un repuesto y elige un proveedor para empezar tu solicitud.</p></>}<p className="basket-page-storage-note">{synced ? 'Tu cesta se guarda en tu cuenta: la ves igual en todos tus dispositivos.' : 'Tu borrador se guarda en este navegador.'}</p></aside>

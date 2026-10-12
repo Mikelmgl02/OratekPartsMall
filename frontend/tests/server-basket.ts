@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import type { BasketLine, Offer, Part } from '../lib/types';
+import type { BasketEvent, BasketLine, Offer, Part } from '../lib/types';
 
 // The server's cesta (mall/basket.py) for mocked specs: lines per client account, answered as the API does. An article goes in only when
 // the spec knows it (a part's offers, or a line the spec seeded: a cesta an old browser kept, which moves in once) and is not the
@@ -8,6 +8,7 @@ export type BasketChange = { supplier_item_id: string; quantity: number; mode?: 
 export type FakeBasket = {
   lines: Record<string, BasketLine[]>;
   changes: { account: string; changes: BasketChange[] }[];
+  events: Record<string, BasketEvent[]>;  // the ledger, newest first, as the server keeps it
   // A solicitud the spec's own mock accepted: its units leave the cesta, as the server does in the same transaction.
   settle: (account: string, sent: { supplier_item_id: string; quantity: number }[]) => void;
 };
@@ -28,15 +29,27 @@ export async function fakeServerBasket(page: Page, { parts = [], offers = {}, kn
   const state: FakeBasket = {
     lines: Object.fromEntries(Object.entries(server).map(([account, lines]) => [account, lines.map(line => ({ ...line }))])),
     changes: [],
+    events: {},
     settle(account, sent) {
       const lines = state.lines[account] ??= [];
       for (const item of sent) {
         const index = lines.findIndex(line => line.offer.selected_item?.id === item.supplier_item_id);
         if (index < 0) continue;
+        record(account, lines[index], 'sent', lines[index].quantity, Math.max(0, lines[index].quantity - item.quantity));
         if (lines[index].quantity <= item.quantity) lines.splice(index, 1); else lines[index] = { ...lines[index], quantity: lines[index].quantity - item.quantity };
       }
     },
   };
+  let nextEvent = 1;
+  function record(account: string, line: BasketLine, kind: BasketEvent['kind'], before: number, after: number) {
+    const item = line.offer.selected_item!;
+    (state.events[account] ??= []).unshift({ id: nextEvent++, kind, sku: line.part.sku, codigo: item.codigo, brand: item.brand, supplier_name: line.offer.supplier_name,
+      quantity_before: before, quantity_after: after, source: 'web', reference: '', created_at: new Date().toISOString() });
+  }
+  await page.route(/\/api\/market\/accounts\/([^/?]+)\/basket\/activity(?:\?.*)?$/, route => {
+    const account = new URL(route.request().url()).pathname.split('/').at(-3)!;
+    return route.fulfill({ json: { results: state.events[account] || [], has_more: false } });
+  });
   await page.route(/\/api\/market\/accounts\/([^/?]+)\/basket$/, route => {
     const account = new URL(route.request().url()).pathname.split('/').at(-2)!;
     const lines = state.lines[account] ??= [];
@@ -51,7 +64,9 @@ export async function fakeServerBasket(page: Page, { parts = [], offers = {}, kn
         if (fresh && fresh.part.id === change.expected_part_id) next[index] = { ...fresh, quantity: next[index].quantity };
         const current = next[index].quantity;
         const total = change.mode === 'set' ? change.quantity : change.mode === 'max' ? Math.max(current, change.quantity) : current + change.quantity;
-        if (total <= 0) next.splice(index, 1); else next[index] = { ...next[index], quantity: Math.min(9999, total) };
+        const after = Math.max(0, Math.min(9999, total));
+        if (after !== current) record(account, next[index], after ? 'changed' : 'removed', current, after);
+        if (total <= 0) next.splice(index, 1); else next[index] = { ...next[index], quantity: after };
         continue;
       }
       if (change.quantity <= 0) continue;
@@ -59,6 +74,7 @@ export async function fakeServerBasket(page: Page, { parts = [], offers = {}, kn
       if (!found) return route.fulfill({ status: 400, json: { changes: ['Un artículo ya no está disponible para solicitar una cotización.'] } });  // all or none
       if (found.offer.supplier_id === account) return route.fulfill({ status: 400, json: { changes: [`${found.offer.selected_item!.codigo} es de tu propia cuenta: no puedes pedirte una cotización a ti mismo.`] } });
       next.push({ ...found, quantity: Math.min(9999, change.quantity) });
+      record(account, next.at(-1)!, change.mode === 'max' ? 'moved_in' : 'added', 0, Math.min(9999, change.quantity));
     }
     state.lines[account] = next;
     return route.fulfill({ json: { lines: next, count: next.length } });

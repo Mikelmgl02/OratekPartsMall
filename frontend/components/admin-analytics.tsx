@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Activity, BarChart3, Clock3, Eye, FileText, Handshake, LoaderCircle, RefreshCw, Search, Send, Sparkles, TriangleAlert, Users } from 'lucide-react';
+import { Activity, BarChart3, Clock3, Eye, FileText, Handshake, LoaderCircle, RefreshCw, Search, Send, ShoppingBag, Sparkles, TriangleAlert, Users } from 'lucide-react';
 import StockStatus from './stock-status';
 import { request, type CatalogAvailability } from '@/lib/types';
 
@@ -24,6 +24,8 @@ type Data = { period: { days: number; from: string; to: string }; usage_started_
   quotations: { first_quotes: number; average_quote_seconds: number | null; quoted_orders: number; handshaked_orders: number; average_revisions: number | null;
     blocked_accepts: number; blocked_orders: number; accepted_with_shortfall: number };
   // This month's AI spend in micro-USD, by feature, against the platform budget.
+  baskets?: { added: number; added_whatsapp: number; added_units: number; changed: number; removed: number; sent: number; sent_units: number;
+    open_cestas: number; idle_cestas: number; open_lines: number };
   ai: { month: string; spend_micro_usd: number; budget_micro_usd: number; assistant_budget_micro_usd: number;
     features: { feature: string; label: string; calls: number; cached_calls: number; failed_calls: number; cost_micro_usd: number }[] } };
 const number = (value: number) => value.toLocaleString('es-PA');
@@ -69,6 +71,7 @@ export default function AdminAnalytics() {
         ].map(({ title, value, note, Icon }) => <article className="analytics-kpi" key={title}><span><Icon size={16}/>{title}</span><strong>{value}</strong><small>{note}</small></article>)}
       </div>
       <QuotationsAndAi quotations={data.quotations} ai={data.ai}/>
+      {data.baskets && <Baskets baskets={data.baskets}/>}
       <section className="analytics-panel"><div className="analytics-panel-heading"><div><h3>Actividad diaria</h3><p>Compara visitas, búsquedas y solicitudes para detectar cambios en la demanda.</p></div><label className="sr-only" htmlFor="analytics-metric">Actividad del gráfico</label><select id="analytics-metric" value={metric} onChange={event => setMetric(event.target.value as typeof metric)}><option value="visits">Visitas</option><option value="searches">Búsquedas</option><option value="views">Vistas de repuestos</option><option value="submissions">Solicitudes enviadas</option></select></div>
         <div className="analytics-chart" role="img" aria-label={`Actividad diaria: ${number(data.daily.reduce((total, day) => total + day[metric], 0))} ${ {visits:'visitas', searches:'búsquedas', views:'vistas', submissions:'solicitudes'}[metric] } en el período`}>
           {data.daily.map(day => <div key={day.date} title={`${date(`${day.date}T12:00:00-05:00`)}: ${number(day[metric])}`}><span style={{ height: `${day[metric] / max * 100}%` }} className={day[metric] ? '' : 'zero'}/></div>)}
@@ -94,6 +97,20 @@ export default function AdminAnalytics() {
 }
 
 function Empty({ children }: { children: React.ReactNode }) { return <p className="analytics-empty">{children}</p>; }
+
+// The cestas, from their ledger: the site and WhatsApp alike.
+function Baskets({ baskets: b }: { baskets: NonNullable<Data['baskets']> }) {
+  return <section className="analytics-panel" aria-label="Cestas"><div className="analytics-panel-heading"><div><h3>Cestas</h3>
+    <p>Lo que los clientes agregan, cambian, quitan y envían, desde el sitio y por WhatsApp. Solo cantidades: nunca precios.</p></div></div>
+    <div className="analytics-kpis">
+      {[{ title: 'Artículos agregados', value: number(b.added), note: `${number(b.added_whatsapp)} por WhatsApp · ${number(b.added_units)} unidades`, Icon: ShoppingBag },
+        { title: 'Cambios y quitados', value: number(b.changed + b.removed), note: `${number(b.changed)} ${b.changed === 1 ? 'cantidad cambiada' : 'cantidades cambiadas'} · ${number(b.removed)} ${b.removed === 1 ? 'quitado' : 'quitados'}`, Icon: RefreshCw },
+        { title: 'Enviados en solicitudes', value: number(b.sent), note: `${number(b.sent_units)} unidades salieron de las cestas`, Icon: Send },
+        { title: 'Cestas abiertas', value: number(b.open_cestas), note: `${number(b.idle_cestas)} sin cambios hace 7 días o más · ${number(b.open_lines)} artículos esperando`, Icon: Clock3 },
+      ].map(({ title, value, note, Icon }) => <article className="analytics-kpi" key={title}><span><Icon size={16}/>{title}</span><strong>{value}</strong><small>{note}</small></article>)}
+    </div>
+  </section>;
+}
 
 function QuotationsAndAi({ quotations: q, ai }: Pick<Data, 'quotations' | 'ai'>) {
   const share = ai.budget_micro_usd ? Math.round(ai.spend_micro_usd / ai.budget_micro_usd * 100) : 0;

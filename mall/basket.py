@@ -9,13 +9,13 @@ SKU of an active supplier, never the account's own), up to MAX_LINES. Each line 
 """
 from django.db import IntegrityError, transaction
 from drf_spectacular.types import OpenApiTypes
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .basket_models import BasketItem
+from .basket_models import BasketEvent, BasketItem
 from .models import Account, SupplierItem
 from .request_views import RequestConflict
 from .views import account_for
@@ -67,13 +67,22 @@ def basket_data(request, user, account):
     return {'lines': lines, 'count': len(lines)}
 
 
+def event(user, account, item, part, codigo, brand, kind, before, after, source, reference=''):
+    """One entry of the cesta's ledger, with the article as it is at that moment."""
+    return BasketEvent(user=user, account=account, supplier_item=item, part=part, sku=part.sku if part else '', codigo=codigo, brand=brand,
+                       supplier_name=item.supplier.name if item else '', kind=kind, quantity_before=before, quantity_after=after, source=source,
+                       reference=reference)
+
+
 def apply_changes(user, account, changes, source='web'):
-    """The changes to the person's cesta, all or none. A new article must be requestable, not the account's own, and still under the SKU
-    the person chose it (expected_part_id)."""
+    """The changes to the person's cesta, all or none, each in its ledger (BasketEvent; a browser's old cesta moving in, mode max, as
+    moved_in). A new article must be requestable, not the account's own, and still under the SKU the person chose it (expected_part_id)."""
     ids = [change['supplier_item_id'] for change in changes]
+    events = []
     with transaction.atomic():
         Account.objects.select_for_update().filter(pk=account.pk).first()  # one change (or one solicitud being sent) at a time
-        rows = {row.supplier_item_id: row for row in BasketItem.objects.select_for_update().filter(user=user, account=account, supplier_item_id__in=ids)}
+        rows = {row.supplier_item_id: row for row in BasketItem.objects.select_for_update(of=('self',)).select_related('part').filter(
+            user=user, account=account, supplier_item_id__in=ids)}
         items = {item.pk: item for item in SupplierItem.objects.filter(pk__in=ids).select_related('supplier', 'part').prefetch_related('supplier__roles')}
         count = BasketItem.objects.filter(user=user, account=account).count()
         for change in changes:
@@ -85,14 +94,17 @@ def apply_changes(user, account, changes, source='web'):
                     if change['expected_part_id'] != item.part_id:
                         raise RequestConflict(f'El SKU del artículo {item.codigo} cambió. Selecciónalo otra vez en el catálogo.')
                     if requestable(item) and item.supplier_id != account.pk:
-                        row.part_id, row.codigo, row.brand = item.part_id, item.codigo, item.brand
+                        row.part_id, row.part, row.codigo, row.brand = item.part_id, item.part, item.codigo, item.brand
                 total = row.quantity + quantity if mode == 'add' else max(row.quantity, quantity) if mode == 'max' else quantity
+                before, after = row.quantity, max(0, min(total, MAX_QUANTITY))
+                if after != before:
+                    events.append(event(user, account, item, row.part, row.codigo, row.brand, 'removed' if not after else 'changed', before, after, source))
                 if total <= 0:
                     row.delete()
                     rows.pop(identifier)
                     count -= 1
                 else:
-                    row.quantity = min(total, MAX_QUANTITY)
+                    row.quantity = after
                     row.save(update_fields=['quantity', 'part', 'codigo', 'brand', 'updated_at'])
                 continue
             if quantity <= 0:
@@ -108,22 +120,31 @@ def apply_changes(user, account, changes, source='web'):
                 raise ValidationError({'changes': [f'Tu cesta admite hasta {MAX_LINES} artículos. Envía una solicitud antes de agregar más.']})
             rows[identifier] = BasketItem.objects.create(user=user, account=account, supplier_item=item, part_id=item.part_id, codigo=item.codigo,
                                                          brand=item.brand, quantity=min(quantity, MAX_QUANTITY), source=source)
+            events.append(event(user, account, item, item.part, item.codigo, item.brand, 'moved_in' if mode == 'max' else 'added', 0,
+                                min(quantity, MAX_QUANTITY), source))
             count += 1
+        BasketEvent.objects.bulk_create(events)
 
 
-def settle(user, account, lines):
-    """A solicitud sent: its units leave the person's cesta (inside its transaction); units added since stay."""
-    rows = {row.supplier_item_id: row for row in BasketItem.objects.select_for_update().filter(
+def settle(user, account, lines, references=None):
+    """A solicitud sent: its units leave the person's cesta (inside its transaction), in the ledger with the order each went in; units
+    added since stay."""
+    rows = {row.supplier_item_id: row for row in BasketItem.objects.select_for_update(of=('self',)).select_related('part', 'supplier_item__supplier').filter(
         user=user, account=account, supplier_item_id__in=[line['supplier_item_id'] for line in lines])}
+    events = []
     for line in lines:
         row = rows.get(line['supplier_item_id'])
         if row is None:
             continue
-        if row.quantity <= line['quantity']:
+        after = max(0, row.quantity - line['quantity'])
+        events.append(event(user, account, row.supplier_item, row.part, row.codigo, row.brand, 'sent', row.quantity, after, 'web',
+                            (references or {}).get(row.supplier_item_id, '')))
+        if not after:
             row.delete()
         else:
-            row.quantity -= line['quantity']
+            row.quantity = after
             row.save(update_fields=['quantity', 'updated_at'])
+    BasketEvent.objects.bulk_create(events)
 
 
 class BasketView(APIView):
@@ -144,3 +165,28 @@ class BasketView(APIView):
         except IntegrityError:  # the same article added at the same moment elsewhere
             raise RequestConflict('Tu cesta cambió en otro lugar. Inténtalo de nuevo.')
         return Response(basket_data(request, request.user, account))
+
+
+ACTIVITY_PAGE = 30
+
+
+def event_data(entry):
+    return {'id': entry.pk, 'kind': entry.kind, 'sku': entry.sku, 'codigo': entry.codigo, 'brand': entry.brand, 'supplier_name': entry.supplier_name,
+            'quantity_before': entry.quantity_before, 'quantity_after': entry.quantity_after, 'source': entry.source, 'reference': entry.reference,
+            'created_at': entry.created_at.isoformat()}
+
+
+class BasketActivity(APIView):
+    @extend_schema(parameters=[OpenApiParameter('before', OpenApiTypes.INT)], responses=OpenApiTypes.OBJECT,
+                   description='El historial de tu cesta para esta cuenta, lo más reciente primero, 30 a la vez (before: el id del último que ya '
+                   'tienes): qué agregaste, cambiaste, quitaste, trajiste del navegador o enviaste en una solicitud, desde el sitio o WhatsApp.')
+    def get(self, request, account_id):
+        account = account_for(request.user, account_id, 'client')
+        rows = BasketEvent.objects.filter(user=request.user, account=account)
+        before = request.query_params.get('before')
+        if before:
+            if not before.isdigit():
+                raise ValidationError({'before': ['Usa el id de un movimiento.']})
+            rows = rows.filter(id__lt=int(before))
+        page = list(rows.order_by('-id')[:ACTIVITY_PAGE + 1])
+        return Response({'results': [event_data(entry) for entry in page[:ACTIVITY_PAGE]], 'has_more': len(page) > ACTIVITY_PAGE})

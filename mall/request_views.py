@@ -330,7 +330,7 @@ def submit_request(*, client, actor, data):
         groups.setdefault(supplier.pk, []).append((item, part, quantities[identifier]))
     submission = ClientRequestSubmission.objects.create(client=client, actor=actor, submission_id=data['submission_id'],
                                                         payload_hash=fingerprint, notes=data['notes'])
-    receipts = []
+    receipts, sent_to = [], {}  # sent_to: the order each article went in, for the cesta's ledger
     for supplier_id in sorted(groups):
         selections = groups[supplier_id]
         supplier = suppliers[supplier_id]
@@ -365,6 +365,7 @@ def submit_request(*, client, actor, data):
                     supplier_invent_id=item.supplier_invent_id, sku=part.sku, name=part.name,
                     codigo=item.codigo, brand=item.brand, description=item.description or part.description, quantity=quantity)
             captured.append({'supplier_item_id': str(item.pk), 'codigo': item.codigo, 'sku': part.sku, 'quantity': quantity})
+            sent_to[item.pk] = row.reference
         RequestContribution.objects.create(submission=submission, order=row, lines=captured, appended=appended)
         DealEvent.objects.create(order=row, actor=actor, account=client,
             kind='order_appended' if appended else 'order_sent',
@@ -378,7 +379,7 @@ def submit_request(*, client, actor, data):
                          'requests': receipts}
     submission.save(update_fields=['result'])
     from .basket import settle
-    settle(actor, client, data['lines'])  # what was sent leaves the person's cesta
+    settle(actor, client, data['lines'], sent_to)  # what was sent leaves the person's cesta
     return submission.result
 
 

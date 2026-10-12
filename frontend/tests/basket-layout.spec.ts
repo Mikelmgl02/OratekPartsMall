@@ -255,6 +255,8 @@ test('signed in, the cesta lives on the server: what WhatsApp or another device 
   const fromWhatsApp = { ...line(sharedPart, supplierA, 'server-item-a', 'POR-WHATSAPP', 2), source: 'whatsapp' as const, available: true, changed: false };
   const writes = await mockClient(page, [sharedPart]);
   const cesta = await fakeServerBasket(page, { server: { [accounts[0].id]: [fromWhatsApp] } });
+  cesta.events[accounts[0].id] = [{ id: 900, kind: 'added', sku: sharedPart.sku, codigo: 'POR-WHATSAPP', brand: 'MARCA DE PRUEBA', supplier_name: supplierA.supplier_name,
+    quantity_before: 0, quantity_after: 2, source: 'whatsapp', reference: '', created_at: new Date().toISOString() }];
   await page.goto('/?vista=cesta');
   const whatsapp = item(page, 'POR-WHATSAPP', supplierA.supplier_name);
   await expect(whatsapp).toContainText('Agregado por WhatsApp');
@@ -270,5 +272,7 @@ test('signed in, the cesta lives on the server: what WhatsApp or another device 
   await expect(basket(page).getByRole('button', { name: 'Enviar solicitud', exact: true })).toBeEnabled();
   await expect.poll(() => cesta.lines[accounts[0].id].map(line => line.offer.selected_item!.id)).toEqual(['server-item-a']);
   expect(cesta.changes.at(-1)).toEqual({ account: accounts[0].id, changes: [{ supplier_item_id: 'server-item-b', quantity: 0, mode: 'set' }] });
+  const activity = basket(page).getByRole('region', { name: 'Actividad de tu cesta', exact: true });  // the cesta's ledger, newest first
+  await expect(activity.getByRole('listitem')).toHaveText([/Quitaste 1 × CAMBIADO · DISTRIBUIDORA MOTOR/, /Agregaste 2 × POR-WHATSAPP · REPUESTOS CENTRALWhatsApp/]);
   expect(writes).toEqual([]);
 });

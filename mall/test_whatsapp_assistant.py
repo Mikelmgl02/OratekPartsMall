@@ -8,7 +8,7 @@ from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from .assistant_models import WhatsAppAssistantSession
-from .basket_models import BasketItem
+from .basket_models import BasketEvent, BasketItem
 from .inbox_models import WhatsAppContact, WhatsAppMessage
 from .models import Account, Membership, Role
 from .quote_assistant_models import AIUsageRecord
@@ -122,8 +122,18 @@ class WhatsAppAssistantTests(ChatStorage, APITestCase):
         self.decisions.append({'accion': 'cambiar', 'opcion': 2, 'cantidad': 8})
         self.writes('el 2 a 8')
         [changed] = meta.sent()
-        self.assertIn('Listo: ahora pides 8 × 58411-1R000-G · PROVEEDOR A.', changed['text']['body'])
+        self.assertIn('Listo: ahora pides 8 × 58411-1R000-G · PROVEEDOR A.', changed['interactive']['body']['text'])
         self.assertEqual(BasketItem.objects.get(supplier_item=self.item_a).quantity, 8)
+        undo = changed['interactive']['action']['buttons'][0]['reply']
+        self.assertEqual((undo['title'], undo['id']), ('Deshacer', f'undo:{BasketEvent.objects.latest("id").pk}'))
+        self.taps(undo['id'], kind='button_reply')  # Deshacer: back to 4
+        self.assertEqual(BasketItem.objects.get(supplier_item=self.item_a).quantity, 4)
+        self.assertIn('Listo, volví a dejar 4 × 58411-1R000-G · PROVEEDOR A en tu cesta.', meta.sent()[0]['text']['body'])
+        self.taps(undo['id'], kind='button_reply')  # once is enough: the cesta changed since
+        self.assertIn('Ya no se puede deshacer', meta.sent()[0]['text']['body'])
+        self.decisions.append({'accion': 'cambiar', 'opcion': 2, 'cantidad': 8})
+        self.writes('el 2 a 8')
+        meta.sent()
         self.decisions.append({'accion': 'quitar', 'opcion': 1})
         self.writes('quita el 1')
         [confirm] = meta.sent()  # taking a line out asks first
@@ -135,12 +145,19 @@ class WhatsAppAssistantTests(ChatStorage, APITestCase):
         meta.sent()
         self.taps(f'remove:{self.item_b.pk}', kind='button_reply')
         [removed] = meta.sent()
-        self.assertIn('Listo, quité 3 × 58411-1R000-G · PROVEEDOR B. Te queda 1 artículo en la cesta.', removed['text']['body'])
+        self.assertIn('Listo, quité 3 × 58411-1R000-G · PROVEEDOR B. Te queda 1 artículo en la cesta.', removed['interactive']['body']['text'])
         self.assertEqual(list(BasketItem.objects.values_list('supplier_item', flat=True)), [self.item_a.pk])
+        self.taps(removed['interactive']['action']['buttons'][0]['reply']['id'], kind='button_reply')  # Deshacer: it comes back
+        self.assertEqual(BasketItem.objects.get(supplier_item=self.item_b).quantity, 3)
+        meta.sent()
+        self.taps(f'remove:{self.item_b.pk}', kind='button_reply')
+        meta.sent()
+        self.assertEqual(list(BasketEvent.objects.filter(source='whatsapp').values_list('kind', flat=True).order_by('id')),
+                         ['added', 'added', 'changed', 'changed', 'changed', 'removed', 'added', 'removed'])
         self.decisions.append({'accion': 'cambiar', 'opcion': 0, 'cantidad': 6})  # one line left: no number needed
         self.writes('mejor 6')
         self.assertEqual(BasketItem.objects.get().quantity, 6)
-        self.assertEqual((self.decisions, self.generate.call_count), ([], 7))  # every one read once; quantities and taps need no AI
+        self.assertEqual((self.decisions, self.generate.call_count), ([], 8))  # every one read once; quantities and taps need no AI
 
     def test_the_accounts_own_articles_are_never_offered_and_a_client_with_several_accounts_chooses_first(self, urlopen):
         meta = urlopen.side_effect = FakeMeta()

@@ -2,8 +2,9 @@ import uuid
 
 from rest_framework.test import APITestCase
 
-from .basket_models import BasketItem
+from .basket_models import BasketEvent, BasketItem
 from .models import Membership, Role, User
+from .request_models import SupplierRequestLine
 from . import test_requests as request_tests
 
 
@@ -105,3 +106,50 @@ class BasketTests(APITestCase):
         self.assertEqual(self.quantities(self.client.get(self.basket())), {('PROVEEDOR A', '58411-1R000-KSM'): 2, ('PROVEEDOR B', '58411-1R000-G'): 2})
         self.assertEqual(self.submit(sent).status_code, 200)  # the same send retried: nothing more leaves
         self.assertEqual(self.client.get(self.basket()).data['count'], 2)
+
+    def test_every_change_is_in_the_ledger_and_only_its_owner_reads_it(self):
+        self.change((self.item_a, 2, 'add'))
+        self.change((self.item_a, 3, 'add'), (self.item_b, 4, 'max'))  # 2 → 5, and a browser's cesta moving in
+        self.change((self.item_a, 5, 'set'))  # the same quantity: nothing to record
+        self.change((self.item_a2, 1, 'add'))
+        self.change((self.item_a2, 0, 'set'))
+        sent = self.payload([(self.item_a, 5), (self.item_b, 1)], expected=True)
+        self.assertEqual(self.submit(sent).status_code, 200)
+        reference = {line.supplier_item_id: line.request.reference for line in SupplierRequestLine.objects.select_related('request')}
+        activity = self.client.get(f'{self.basket()}activity/').data
+        self.assertFalse(activity['has_more'])
+        rows = [(entry['kind'], entry['codigo'], entry['supplier_name'], entry['quantity_before'], entry['quantity_after'], entry['reference'])
+                for entry in activity['results']]
+        self.assertEqual(set(rows[:2]), {('sent', '58411-1R000-G', 'PROVEEDOR B', 4, 3, reference[self.item_b.pk]),  # one send, in any order
+                                         ('sent', '58411-1R000-G', 'PROVEEDOR A', 5, 0, reference[self.item_a.pk])})
+        self.assertEqual(rows[2:], [
+            ('removed', '58411-1R000-KSM', 'PROVEEDOR A', 1, 0, ''),
+            ('added', '58411-1R000-KSM', 'PROVEEDOR A', 0, 1, ''),
+            ('moved_in', '58411-1R000-G', 'PROVEEDOR B', 0, 4, ''),
+            ('changed', '58411-1R000-G', 'PROVEEDOR A', 2, 5, ''),
+            ('added', '58411-1R000-G', 'PROVEEDOR A', 0, 2, '')])
+        self.assertEqual({entry['sku'] for entry in activity['results']}, {'58411-1R000'})
+        self.assertEqual(set(activity['results'][0]), {'id', 'kind', 'sku', 'codigo', 'brand', 'supplier_name', 'quantity_before', 'quantity_after',
+                                                       'source', 'reference', 'created_at'})
+        older = self.client.get(f'{self.basket()}activity/', {'before': activity['results'][4]['id']}).data['results']
+        self.assertEqual([entry['kind'] for entry in older], ['changed', 'added'])
+        self.assertEqual(self.client.get(f'{self.basket()}activity/', {'before': 'x'}).status_code, 400)
+        colleague = User.objects.create_user('request-colleague', 'colleague@example.invalid', 'Request938!')
+        Membership.objects.create(user=colleague, account=self.client_account)
+        self.client.force_authenticate(colleague)
+        self.assertEqual(self.client.get(f'{self.basket()}activity/').data['results'], [])  # a colleague reads their own only
+        self.client.force_authenticate(self.seller_a)
+        self.assertEqual(self.client.get(f'{self.basket()}activity/').status_code, 404)
+        self.assertEqual(BasketEvent.objects.count(), 7)
+
+    def test_the_admin_stats_count_cestas_from_the_ledger_whatsapp_included(self):
+        from .basket import apply_changes
+        self.change((self.item_a, 2, 'add'))
+        apply_changes(self.buyer, self.client_account, [{'supplier_item_id': self.item_b.pk, 'quantity': 3, 'mode': 'add'}], source='whatsapp')
+        self.change((self.item_a, 4, 'set'))
+        self.change((self.item_b, 0, 'set'))
+        self.assertEqual(self.submit(self.payload([(self.item_a, 1)], expected=True)).status_code, 200)
+        self.client.force_authenticate(self.root)
+        baskets = self.client.get('/api/v1/management/analytics/', {'days': 7}).data['baskets']
+        self.assertEqual(baskets, {'added': 2, 'added_whatsapp': 1, 'added_units': 5, 'changed': 1, 'removed': 1, 'sent': 1, 'sent_units': 1,
+                                   'open_cestas': 1, 'idle_cestas': 0, 'open_lines': 1})

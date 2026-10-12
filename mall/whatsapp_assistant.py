@@ -310,6 +310,8 @@ def tap(turn, identifier):
         add(turn, int(value))
     elif kind == 'remove':  # confirmed with its button
         remove_item(turn, value)
+    elif kind == 'undo' and value.isdigit():
+        undo(turn, int(value))
     elif identifier == 'menu:keep':
         turn.session.step = 'idle'
         turn.say(text('Listo, no quité nada. ¿Qué más necesitas?'))
@@ -531,9 +533,10 @@ def change(turn, number, quantity):
     if row is None:
         return
     quantity = min(quantity, 9999)
-    apply_changes(turn.user, turn.account, [{'supplier_item_id': row.supplier_item_id, 'quantity': quantity, 'mode': 'set'}])
+    apply_changes(turn.user, turn.account, [{'supplier_item_id': row.supplier_item_id, 'quantity': quantity, 'mode': 'set'}], source='whatsapp')
     turn.session.step, turn.session.options = 'idle', []
-    turn.say(text(f'Listo: ahora pides {quantity} × {row.codigo} · {row.supplier_item.supplier.name}. Revisa tu cesta en MotionPartes:\n{cart_link(turn)}'))
+    body = f'Listo: ahora pides {quantity} × {row.codigo} · {row.supplier_item.supplier.name}. Revisa tu cesta en MotionPartes:\n{cart_link(turn)}'
+    turn.say(buttons(body, [(f'undo:{last_change(turn, row.supplier_item_id)}', 'Deshacer'), ('menu:cesta', 'Ver mi cesta')]), body)
 
 
 def remove_item(turn, item_id):
@@ -545,9 +548,36 @@ def remove_item(turn, item_id):
     if row is None:
         turn.say(text('Ese artículo ya no está en tu cesta.'))
         return
-    apply_changes(turn.user, turn.account, [{'supplier_item_id': row.supplier_item_id, 'quantity': 0, 'mode': 'set'}])
+    apply_changes(turn.user, turn.account, [{'supplier_item_id': row.supplier_item_id, 'quantity': 0, 'mode': 'set'}], source='whatsapp')
     count = BasketItem.objects.filter(user=turn.user, account=turn.account).count()
-    turn.say(text(f'Listo, quité {line_label(row)}. Te {"queda" if count == 1 else "quedan"} {count} {"artículo" if count == 1 else "artículos"} en la cesta.'))
+    body = f'Listo, quité {line_label(row)}. Te {"queda" if count == 1 else "quedan"} {count} {"artículo" if count == 1 else "artículos"} en la cesta.'
+    turn.say(buttons(body, [(f'undo:{last_change(turn, row.supplier_item_id)}', 'Deshacer'), ('menu:buscar', 'Buscar otro')]), body)
+
+
+def last_change(turn, item_id):
+    from .basket_models import BasketEvent
+    return BasketEvent.objects.filter(user=turn.user, account=turn.account, supplier_item_id=item_id).order_by('-id').values_list('id', flat=True).first()
+
+
+def undo(turn, event_id):
+    """Deshacer: a line taken out comes back, or a changed quantity returns, from the cesta's ledger, while nothing else changed it since."""
+    from .basket import apply_changes
+    from .basket_models import BasketEvent, BasketItem
+    from .request_views import RequestConflict
+    from rest_framework.exceptions import ValidationError
+    entry = BasketEvent.objects.filter(pk=event_id, user=turn.user, account=turn.account, kind__in=('removed', 'changed')).first()
+    current = BasketItem.objects.filter(user=turn.user, account=turn.account, supplier_item_id=entry.supplier_item_id).first() if entry else None
+    turn.session.step, turn.session.options = 'idle', []
+    if entry is None or entry.supplier_item_id is None or (current.quantity if current else 0) != entry.quantity_after:
+        turn.say(text('Ya no se puede deshacer: la cesta cambió desde entonces. Escribe «cesta» para verla.'))
+        return
+    try:
+        apply_changes(turn.user, turn.account, [{'supplier_item_id': entry.supplier_item_id, 'quantity': entry.quantity_before, 'mode': 'set',
+                                                 'expected_part_id': entry.part_id}], source='whatsapp')
+    except (ValidationError, RequestConflict) as error:
+        turn.say(text(f'No pude deshacerlo: {refused(error)}'))
+        return
+    turn.say(text(f'Listo, volví a dejar {entry.quantity_before} × {entry.codigo} · {entry.supplier_name} en tu cesta.'))
 
 
 def ask_account(turn, question):

@@ -117,6 +117,9 @@ export type LedgerEntry = { id: number; kind: string; quantity: number; directio
 // asked for (available), whether its article changed since it was added (changed) and where it was added (source).
 export type BasketLine = { key: string; part: Part; offer: Offer; quantity: number; available?: boolean; changed?: boolean; source?: 'web' | 'whatsapp' };
 export type ServerBasket = { lines: BasketLine[]; count: number };
+// The cesta's ledger (mall/basket_models.py BasketEvent): each change, with the article as it was then.
+export type BasketEvent = { id: number; kind: 'added' | 'changed' | 'removed' | 'moved_in' | 'sent'; sku: string; codigo: string; brand: string; supplier_name: string;
+  quantity_before: number; quantity_after: number; source: 'web' | 'whatsapp'; reference: string; created_at: string };
 export const roleLabel: Record<string, string> = { supplier_retail: 'Proveedor minorista', supplier_wholesale: 'Proveedor mayorista', client_business: 'Cliente empresarial', client_walkin: 'Cliente particular' };
 const fieldLabel: Record<string, string> = {
   username: 'Usuario', password: 'Contraseña', email: 'Correo electrónico', token: 'Código de invitación',

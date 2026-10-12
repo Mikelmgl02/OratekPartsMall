@@ -311,7 +311,7 @@ from .request_models import (ClientRequestSubmission, SupplierRequest, SupplierR
                              DealShortfall, DealShortfallLine)
 from .analytics_models import UsageEvent, UsageVisit
 from .assistant_models import WhatsAppAssistantSession
-from .basket_models import BasketItem
+from .basket_models import BasketEvent, BasketItem
 from .inbox_models import AccountWhatsApp, ConversationRead, InboxCursor, InboxGroup, PushSubscription, WhatsAppContact, WhatsAppMessage
 from .matching_models import MatchingQueue, MatchingCase, SupplierCodeMapping, MatchingDecision
 from .technical_models import PartType, TechnicalTemplate, TechnicalField, PartSpecification, Application, ItemApplication

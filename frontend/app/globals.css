@@ -2580,3 +2580,15 @@ body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-s
 /* The cesta on the server (basket.tsx): a line WhatsApp added, and one that can no longer go as it is. */
 .basket-page-source { display:inline-flex; align-items:center; gap:4px; width:fit-content; margin-bottom:4px; padding:2px 8px; border-radius:999px; background:#e7f4ec; color:#256b45; font-size:11px; font-weight:600; }
 .basket-page-stale { display:flex; align-items:center; gap:6px; margin-top:6px; color:#8a5a12; font-size:12.5px; font-weight:600; }
+
+/* The cesta's ledger (basket.tsx BasketActivity). */
+.basket-page-activity { display:grid; gap:10px; padding:18px 20px; border:1px solid var(--line); border-radius:14px; background:#fff; }
+.basket-page-activity h2 { display:flex; align-items:center; gap:8px; margin:0; font-size:15px; }
+.basket-page-activity ol { display:grid; gap:8px; margin:0; padding:0; list-style:none; }
+.basket-page-activity li { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 10px; font-size:13px; line-height:1.45; }
+.basket-page-activity time { flex:0 0 auto; min-width:92px; color:#6b776f; font-size:12px; font-variant-numeric:tabular-nums; }
+.basket-page-activity li span { flex:1 1 220px; overflow-wrap:anywhere; }
+.basket-page-activity li.removed span { color:#7a4b12; }
+.basket-page-activity li.sent span { color:#256b45; }
+.basket-page-activity em { display:inline-flex; align-items:center; gap:3px; font-style:normal; font-size:11px; font-weight:600; color:#256b45; }
+.basket-page-activity>.button { justify-self:start; }

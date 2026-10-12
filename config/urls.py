@@ -140,6 +140,7 @@ urlpatterns = [
     path('api/v1/wishlist/<uuid:part_id>/', WishlistDetail.as_view()),
     path('api/v1/accounts/<uuid:account_id>/requests/', AccountRequests.as_view()),
     path('api/v1/accounts/<uuid:account_id>/basket/', basket.BasketView.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/basket/activity/', basket.BasketActivity.as_view()),
     path('api/v1/accounts/<uuid:account_id>/sent-requests/', ClientSentRequests.as_view()),
     path('api/v1/accounts/<uuid:account_id>/sent-requests/<uuid:pk>/', ClientSentRequestDetail.as_view()),
     path('api/v1/accounts/<uuid:account_id>/catalog/<uuid:part_id>/request-state/', ClientPartRequestState.as_view()),

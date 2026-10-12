@@ -156,6 +156,23 @@ def ai_spend(today):
             'features': [{**row, 'label': FEATURE_LABELS.get(row['feature'], row['feature'])} for row in rows]}
 
 
+def basket_kpis(start, now):
+    """The cestas in the period, from their ledger (mall.basket_models.BasketEvent), so WhatsApp counts as much as the site: lines added
+    (and moved in from a browser), by WhatsApp, quantities changed, lines taken out and sent; and the cestas open now, with those idle a week.
+    Counts and units only; superusers' cestas are left out."""
+    from .basket_models import BasketEvent, BasketItem
+    added = Q(kind__in=('added', 'moved_in'))
+    totals = BasketEvent.objects.filter(created_at__gte=start, created_at__lte=now, user__is_superuser=False).aggregate(
+        added=Count('pk', filter=added), added_whatsapp=Count('pk', filter=added & Q(source='whatsapp')),
+        added_units=Coalesce(Sum('quantity_after', filter=added), 0), changed=Count('pk', filter=Q(kind='changed')),
+        removed=Count('pk', filter=Q(kind='removed')), sent=Count('pk', filter=Q(kind='sent')),
+        sent_units=Coalesce(Sum(F('quantity_before') - F('quantity_after'), filter=Q(kind='sent')), 0))
+    cestas = BasketItem.objects.filter(user__is_superuser=False).values('user_id', 'account_id').annotate(last=Max('updated_at'))
+    totals.update(open_cestas=cestas.count(), idle_cestas=cestas.filter(last__lt=now - timedelta(days=7)).count(),
+                  open_lines=BasketItem.objects.filter(user__is_superuser=False).count())
+    return totals
+
+
 class AnalyticsDashboard(APIView):
     permission_classes = [IsSuperuser]
 
@@ -242,4 +259,5 @@ class AnalyticsDashboard(APIView):
                          'daily': [{'date': day.isoformat(), **counts} for day, counts in daily.items()],
                          'top_searches': top_searches, 'missing_searches': missing_searches,
                          'top_parts': top_parts, 'suppliers': suppliers, 'visitors': visitors,
-                         'quotations': quotation_kpis(start, now), 'reliability': supplier_reliability(start, now), 'ai': ai_spend(today)})
+                         'quotations': quotation_kpis(start, now), 'reliability': supplier_reliability(start, now), 'ai': ai_spend(today),
+                         'baskets': basket_kpis(start, now)})
