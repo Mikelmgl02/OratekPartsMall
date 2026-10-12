@@ -29,13 +29,21 @@ class AccountSerializer(serializers.ModelSerializer):
         return sorted({role.capability for role in obj.roles.all()})
     roles = serializers.SlugRelatedField(many=True, read_only=True, slug_field='code')
     permission = serializers.SerializerMethodField()
+    apiag_connected = serializers.SerializerMethodField()
+
+    def get_apiag_connected(self, obj) -> bool:
+        """Synced with apiag-cloud: its stock loads from there, so the Excel import is not offered."""
+        if hasattr(obj, 'apiag_linked'):  # AccountList annotates it: one query for the whole list
+            return obj.apiag_linked
+        from .apiag_models import ApiagConnection
+        return ApiagConnection.objects.filter(account=obj).exists()
     @extend_schema_field(serializers.ChoiceField(choices=Membership._meta.get_field('permission').choices))
     def get_permission(self, obj):
         # Only the caller's own membership, prefetched by AccountList; never other members' permissions.
         return obj.own_memberships[0].permission
     class Meta:
         model = Account
-        fields = ['id', 'name', 'roles', 'capabilities', 'permission']
+        fields = ['id', 'name', 'roles', 'capabilities', 'permission', 'apiag_connected']
 
 class PartCodeSerializer(serializers.ModelSerializer):
     kind = serializers.CharField(read_only=True)

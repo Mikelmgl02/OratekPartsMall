@@ -7,7 +7,7 @@ from django.db import models
 
 class SupplierInventoryImportJob(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)  # the supplier's ledger keeps the import when the uploader leaves
     supplier = models.ForeignKey('mall.Account', on_delete=models.PROTECT)
     filename = models.CharField(max_length=255)
     status = models.CharField(max_length=20, default='ready')

@@ -380,7 +380,7 @@ class PricingPrivacyTests(APITestCase):
         listed = self.client.get(self.messages(order)).data
         self.assertEqual((set(listed), set(listed['results'][0]), listed['assistant_notice']),
                          ({'results', 'cursor', 'has_more', 'has_earlier', 'assistant_notice'}, set(message), False))
-        self.assertEqual(set(self.client.get('/api/v1/accounts/').data['results'][0]), {'id', 'name', 'roles', 'capabilities', 'permission'})
+        self.assertEqual(set(self.client.get('/api/v1/accounts/').data['results'][0]), {'id', 'name', 'roles', 'capabilities', 'permission', 'apiag_connected'})
         part = self.client.get('/api/v1/catalog/').data['results'][0]
         self.assertEqual(set(part), {'id', 'sku', 'is_OEM', 'name', 'description', 'category', 'subcategory', 'part_type', 'codes', 'equivalents',
                                      'availability', 'images'})  # equivalents: catalog codes reached through OEM numbers, no supplier data

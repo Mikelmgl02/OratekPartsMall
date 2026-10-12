@@ -254,6 +254,8 @@ class SupplierItem(models.Model):
 
 class StockEntry(models.Model):
     item = models.ForeignKey(SupplierItem, on_delete=models.PROTECT, related_name="ledger", verbose_name='artículo del proveedor')
+    # The item's supplier, kept on the entry so a supplier's whole ledger is one indexed read (mall.inventory_history).
+    supplier = models.ForeignKey(Account, on_delete=models.PROTECT, null=True, blank=True, related_name='+', verbose_name='proveedor')
     kind = models.CharField(max_length=20, choices=[("sync", "Ajuste de existencias"), ("reserve", "Reserva"), ("release", "Liberación de reserva"), ("settle", "Pedido descontado por el proveedor"), ("shortfall", "Faltante físico"), ("delivery", "Entrega")], verbose_name='tipo de movimiento')
     quantity = models.PositiveIntegerField(default=0, verbose_name='cantidad del movimiento')
     direction = models.CharField(max_length=6, choices=[('credit', 'Crédito'), ('debit', 'Débito')], default='credit', verbose_name='dirección')
@@ -268,9 +270,16 @@ class StockEntry(models.Model):
     reservation = models.ForeignKey('mall.StockReservation', on_delete=models.PROTECT, null=True, blank=True, related_name='entries',
                                     verbose_name='reserva de pedido')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='fecha de creación')
+
+    def save(self, *args, **kwargs):
+        if self.supplier_id is None and self.item_id:
+            self.supplier_id = self.item.supplier_id
+        super().save(*args, **kwargs)
+
     class Meta:
         verbose_name = 'movimiento de existencias'
         verbose_name_plural = 'movimientos de existencias'
+        indexes = [models.Index(fields=['supplier', '-created_at', '-id'], name='stock_entry_supplier_idx')]
         # Every entry moves at least one unit of one balance. A sync moves the reported count only; reserve, release and settle move
         # reserved units only, by their quantity; every entry but a sync points to the reservation it moves (mall.check_stock_ledger).
         constraints = [
@@ -306,6 +315,7 @@ class InventoryUpdate(models.Model):
 from .classification_models import CatalogClassificationState, CatalogClassificationSuggestion
 from .catalog_assistant_models import CatalogAssistantJob, CatalogAssistantSuggestion, CategorySuggestionCache
 from .supplier_import_models import SupplierInventoryImportJob, SupplierInventoryImportBatch
+from .inventory_history_models import InventoryRun, InventoryChange
 from .request_models import (ClientRequestSubmission, SupplierRequest, SupplierRequestLine, RequestContribution,
                              DealQuotation, DealQuotationLine, DealEvent, DealMessage, DealAttachment, DealCommand, StockReservation,
                              DealShortfall, DealShortfallLine)

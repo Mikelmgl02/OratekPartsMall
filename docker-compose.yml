@@ -123,6 +123,7 @@ services:
     depends_on:
       app:
         condition: service_healthy
+        restart: true  # long-running: recreated with app, so it never runs code older than the migrated database
     healthcheck:
       # Fails when the worker loop has not completed a pass or a query for MATCHING_HEARTBEAT_MAX_AGE (600 s).
       test: ["CMD", "python", "-m", "mall.matching_runner", "--healthcheck"]
@@ -145,6 +146,7 @@ services:
     depends_on:
       app:
         condition: service_healthy
+        restart: true  # long-running: recreated with app, so it never runs code older than the migrated database
     healthcheck:
       test: ["CMD", "python", "-m", "mall.apiag_sync_runner", "--healthcheck"]
       interval: 30s
@@ -177,6 +179,7 @@ services:
     depends_on:
       app:
         condition: service_healthy
+        restart: true  # long-running: recreated with app, so it never runs code older than the migrated database
       redis:
         condition: service_healthy
     expose:

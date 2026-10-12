@@ -13,6 +13,8 @@ from mall.analytics import AnalyticsDashboard, UsageEvents
 from mall.deal_admin import DealAdminCancel, DealAdminDetail, DealAdminList
 from mall.apiag_connection import ApiagConnectionTest, ApiagConnectionView
 from mall.apiag_sync_views import ApiagStatusView, ApiagSyncRequestView
+from mall.inventory_history import (LedgerEntries, LedgerRun, LedgerRunChanges, LedgerRuns, ManagementLedgerEntries, ManagementLedgerRun,
+                                    ManagementLedgerRunChanges, ManagementLedgerRuns)
 from mall.sku_proposal_views import ProposalBulk, ProposalDetail, ProposalList, ProposalSummary
 from mall.wishlist import WishlistList, WishlistState, WishlistDetail
 from mall.catalog_import import CatalogImport, CatalogImportJobView
@@ -202,6 +204,14 @@ urlpatterns = [
     path('api/v1/accounts/<uuid:account_id>/inventory/import/jobs/<uuid:pk>/', SupplierInventoryImportJobView.as_view()),
     path('api/v1/accounts/<uuid:account_id>/inventory/import/jobs/<uuid:pk>/errors/', SupplierInventoryImportErrors.as_view()),
     path('api/v1/accounts/<uuid:account_id>/inventory/<uuid:item_id>/ledger/', views.LedgerList.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/ledger/', LedgerEntries.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/ledger/runs/', LedgerRuns.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/ledger/runs/<uuid:run_id>/', LedgerRun.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/ledger/runs/<uuid:run_id>/changes/', LedgerRunChanges.as_view()),
+    path('api/v1/management/accounts/<uuid:account_id>/ledger/', ManagementLedgerEntries.as_view()),
+    path('api/v1/management/accounts/<uuid:account_id>/ledger/runs/', ManagementLedgerRuns.as_view()),
+    path('api/v1/management/accounts/<uuid:account_id>/ledger/runs/<uuid:run_id>/', ManagementLedgerRun.as_view()),
+    path('api/v1/management/accounts/<uuid:account_id>/ledger/runs/<uuid:run_id>/changes/', ManagementLedgerRunChanges.as_view()),
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema')),
 ]

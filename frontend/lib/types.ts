@@ -1,6 +1,6 @@
 export type Page<T> = { count: number; next: string | null; previous: string | null; results: T[] };
 export type MembershipPermission = 'owner' | 'manager' | 'staff';
-export type Account = { id: string; name: string; roles: string[]; capabilities: string[]; permission?: MembershipPermission };
+export type Account = { id: string; name: string; roles: string[]; capabilities: string[]; permission?: MembershipPermission; apiag_connected?: boolean };
 export type SessionUser = { id: number; username: string; first_name: string; last_name: string; is_superuser: boolean };
 export type AdminSection = 'inventory' | 'alternates' | 'oem' | 'accounts' | 'users' | 'invitations' | 'analytics' | 'deals' | 'templates' | 'applications';
 export type Member = { id: number; user: number; account: string; permission: MembershipPermission; username: string; email: string; account_name: string; user_active: boolean; permission_label: string };

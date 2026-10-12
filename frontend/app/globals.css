@@ -1511,6 +1511,23 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .supplier-pricing-tabs { display:flex; flex-wrap:wrap; gap:6px; border-bottom:1px solid var(--line); padding-bottom:10px; }
 .supplier-pricing-tabs>button { display:inline-flex; align-items:center; gap:7px; padding:9px 13px; border-radius:8px; font-size:12px; color:#7a896f; }
 .supplier-pricing-tabs>button.selected { color:#46662f; background:#eaf1df; font-weight:600; }
+/* Libro de movimientos del proveedor (supplier-ledger.tsx) */
+.inventory-tabs { margin:4px 0 12px; }
+.supplier-ledger-panel, .admin-supplier-ledger { display:flex; flex-direction:column; gap:12px; min-width:0; }
+.ledger-filters input[type=date] { padding:8px 9px; border:1px solid var(--line); border-radius:7px; background:white; color:var(--ink); font-size:12px; }
+.ledger-origin { display:inline-flex; align-items:center; padding:3px 8px; border-radius:999px; font-size:10px; font-weight:700; letter-spacing:.02em; background:#eef2ea; color:#5d6f50; white-space:nowrap; }
+.ledger-origin.quotation { background:#e7f0ff; color:#2f5c9c; }
+.ledger-origin.excel { background:#eaf5e5; color:#3f6f32; }
+.ledger-origin.apiag { background:#f3ecff; color:#6a4aa0; }
+.ledger-origin.manual { background:#fff4e2; color:#8a5a14; }
+.ledger-credit { color:#3f6f32; font-weight:700; }
+.ledger-debit { color:#a1543c; font-weight:700; }
+.ledger-zero { color:#9aa58f; }
+.ledger-fields { display:flex; flex-direction:column; gap:3px; padding:6px 0; font-size:11px; line-height:1.45; white-space:normal; overflow-wrap:anywhere; }
+.ledger-run-counts { display:grid; grid-template-columns:repeat(auto-fit, minmax(110px, 1fr)); gap:8px; margin:0; }
+.ledger-run-counts div { padding:10px 12px; border:1px solid var(--line); border-radius:9px; }
+.ledger-run-counts dt { font-size:10px; color:#7a896f; text-transform:uppercase; letter-spacing:.04em; }
+.ledger-run-counts dd { margin:4px 0 0; font-size:15px; font-weight:700; color:#405238; }
 .supplier-pricing-panel { display:flex; flex-direction:column; gap:16px; min-width:0; }
 .supplier-pricing-heading { display:flex; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; gap:12px 18px; }
 .supplier-pricing-heading>div:first-child { min-width:0; flex:1 1 280px; }

@@ -161,7 +161,7 @@ class PricingPermissionTests(APITestCase):
             return response.data['results'], len(queries)
         rows, small = accounts()
         self.assertEqual([(row['name'], row['permission']) for row in rows], [('PROVEEDOR PRECIOS', 'staff')])
-        self.assertEqual(set(rows[0]), {'id', 'name', 'roles', 'capabilities', 'permission'})
+        self.assertEqual(set(rows[0]), {'id', 'name', 'roles', 'capabilities', 'permission', 'apiag_connected'})
         for index in range(3):
             self.account(f'CUENTA EXTRA {index}', 'client_business', {self.staff: ['owner', 'manager', 'staff'][index], self.owner: 'owner'})
         rows, large = accounts()

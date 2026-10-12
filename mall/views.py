@@ -1,5 +1,5 @@
 from django.db import transaction
-from django.db.models import F, Prefetch, Q, Value
+from django.db.models import Exists, F, OuterRef, Prefetch, Q, Value
 from django.db.models.functions import Greatest
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -67,8 +67,10 @@ class LogoutView(APIView):
 class AccountList(generics.ListAPIView):
     serializer_class = AccountSerializer
     def get_queryset(self):
+        from .apiag_models import ApiagConnection
         own = Prefetch('memberships', queryset=Membership.objects.filter(user=self.request.user), to_attr='own_memberships')
-        return Account.objects.filter(memberships__user=self.request.user, active=True).prefetch_related('roles', own).order_by('name', 'id')
+        return (Account.objects.filter(memberships__user=self.request.user, active=True).prefetch_related('roles', own)
+                .annotate(apiag_linked=Exists(ApiagConnection.objects.filter(account=OuterRef('pk')))).order_by('name', 'id'))
 
 def catalog_parts(search=''):
     """The canonical catalog SKUs the search finds (mall.catalog_search: every word, any order, accents and separators ignored)."""
@@ -172,7 +174,13 @@ class InventoryIngest(APIView):
         serializer.is_valid(raise_exception=True)
         if serializer.validated_data['source'] == 'apiag':  # only the pull (mall.apiag_sync) writes them, with their sucursales
             raise ValidationError({'source': 'Los artículos de apiag-cloud solo se actualizan desde su sincronización.'})
-        item = ingest_inventory(supplier=supplier, actor=request.user, data=serializer.validated_data)
+        from .inventory_history import RESERVED_PREFIXES, Recorder
+        if serializer.validated_data['update_id'].startswith(RESERVED_PREFIXES):
+            raise ValidationError({'update_id': 'Ese prefijo está reservado para las cargas Excel y la sincronización con apiag-cloud.'})
+        recorder = Recorder(supplier, 'manual', serializer.validated_data['update_id'], actor=request.user)
+        item = ingest_inventory(supplier=supplier, actor=request.user, data=serializer.validated_data, recorder=recorder)
+        if recorder.touched:  # a replay records nothing: its run stays as it was
+            recorder.finish()
         return Response(SupplierItemSerializer(item).data)
 
 class LedgerList(generics.ListAPIView):

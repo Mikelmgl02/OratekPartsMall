@@ -16,6 +16,7 @@ What a run asks for:
 Withdrawn items (retired, or no longer ACTIVO there) drop to 0 and keep their history. A failed run changes no cursor: the next
 one asks again from the same point, and values are absolute, so applying a page twice changes nothing."""
 import json
+import logging
 import time as clock
 import uuid
 from collections import Counter
@@ -37,6 +38,8 @@ from .apiag_tokens import TokenUnreadable, token
 from .models import Account, SupplierItem
 from .serializers import InventorySerializer
 from .services import ingest_inventory
+
+logger = logging.getLogger(__name__)
 
 FEED_PATH = '/api/motionpartes/stock/'
 PAGE_SIZE = 500
@@ -127,9 +130,16 @@ def upsert_sucursales(account, listed, now):
     return found
 
 
-def set_branch_rows(item, quantities, current):
-    """Make the item's rows say {ApiagSucursal: units}: rows at 0 or for unlisted sucursales go."""
+def set_branch_rows(item, quantities, current, recorder=None):
+    """Make the item's rows say {ApiagSucursal: units}: rows at 0 or for unlisted sucursales go. The recorder keeps the units each
+    sucursal had before and has now, even when the item's total did not move (units shifted between sucursales)."""
     wanted = {sucursal.pk: units for sucursal, units in quantities.items() if units > 0}
+    if recorder is not None:
+        from .inventory_history import branch_changes
+        names = {**{row.sucursal_id: row.sucursal.nombre for row in current.values()}, **{sucursal.pk: sucursal.nombre for sucursal in quantities}}
+        moved = branch_changes({key: row.quantity for key, row in current.items()}, wanted, names)
+        if moved:
+            recorder.record(item, 'stock', branches=moved)
     SupplierItemBranchStock.objects.filter(item=item).exclude(sucursal_id__in=list(wanted)).delete()
     for sucursal_id, units in wanted.items():
         row = current.get(sucursal_id)
@@ -146,28 +156,36 @@ def note(totals, samples, kind, text):
         samples.append(text)
 
 
-def write(account, actor, data, totals, samples, label):
+def write(account, actor, data, totals, samples, label, recorder=None):
     """ingest_inventory in its own savepoint, so one refused item does not undo the page. Returns the item or None."""
     try:
         with transaction.atomic():
-            return ingest_inventory(supplier=account, actor=actor, data=data, queue_matching=False)
+            return ingest_inventory(supplier=account, actor=actor, data=data, queue_matching=False, recorder=recorder)
     except ValidationError as error:
         detail = error.detail if isinstance(error.detail, str) else json.dumps(error.detail, ensure_ascii=False, default=str)
         note(totals, samples, 'refused', f'{label}: {detail}'[:300])
         return None
 
 
-def withdraw(account, actor, item, update_id, totals, samples):
+def withdraw(account, actor, item, update_id, totals, samples, recorder=None, reason='unseen'):
+    """Take an item off sale: its count to 0 and its sucursal rows gone. reason: retired (retired in apiag-cloud), refused (its data is
+    not valid) or unseen (a full pull no longer lists it)."""
+    before = item.reported_quantity
+    rows = {row.sucursal_id: row for row in SupplierItemBranchStock.objects.filter(item=item).select_related('sucursal')}
     if item.reported_quantity:
         data = {'update_id': update_id, 'supplier_invent_id': item.supplier_invent_id, 'codigo': item.codigo, 'brand': item.brand,
                 'description': item.description, 'references': item.references, 'source': 'apiag', 'quantity': 0}
-        if write(account, actor, data, totals, samples, item.codigo) is None:
+        if write(account, actor, data, totals, samples, item.codigo, recorder) is None:
             return
     SupplierItemBranchStock.objects.filter(item=item).delete()
     totals['withdrawn'] += 1
+    if recorder is not None and (before or rows):
+        from .inventory_history import branch_changes
+        moved = branch_changes({key: row.quantity for key, row in rows.items()}, {}, {key: row.sucursal.nombre for key, row in rows.items()})
+        recorder.record(item, 'withdrawn', fields={'reason': reason}, before=before, after=0, branches=moved)
 
 
-def apply_page(account, actor, sucursales, entries, label, totals, samples, seen):
+def apply_page(account, actor, sucursales, entries, label, totals, samples, seen, recorder=None):
     with transaction.atomic():
         Account.objects.select_for_update().get(pk=account.pk)
         ids = [str(entry['id']) for entry in entries if isinstance(entry, dict) and 'id' in entry]
@@ -175,7 +193,7 @@ def apply_page(account, actor, sucursales, entries, label, totals, samples, seen
         existing = {item.supplier_invent_id: item for item in
                     SupplierItem.objects.select_for_update().filter(supplier=account, supplier_invent_id__in=ids).order_by('pk')}
         current = {}
-        for row in SupplierItemBranchStock.objects.filter(item__in=list(existing.values())):
+        for row in SupplierItemBranchStock.objects.filter(item__in=list(existing.values())).select_related('sucursal'):
             current.setdefault(row.item_id, {})[row.sucursal_id] = row
         for entry in entries:
             if not isinstance(entry, dict) or 'id' not in entry:
@@ -190,7 +208,7 @@ def apply_page(account, actor, sucursales, entries, label, totals, samples, seen
                 continue
             if entry.get('status') == 'retired':
                 if item is not None and (item.reported_quantity or item.pk in current):
-                    withdraw(account, actor, item, update_id, totals, samples)
+                    withdraw(account, actor, item, update_id, totals, samples, recorder, 'retired')
                 continue
             quantities = {}
             for row in entry.get('stock') or []:
@@ -205,20 +223,20 @@ def apply_page(account, actor, sucursales, entries, label, totals, samples, seen
             except ValidationError as error:
                 note(totals, samples, 'refused', f'{entry.get("codigo") or (item and item.codigo) or sid}: {json.dumps(error.detail, ensure_ascii=False, default=str)}'[:300])
                 if item is not None and (item.reported_quantity or item.pk in current):
-                    withdraw(account, actor, item, update_id, totals, samples)  # its last units must not stay on sale unchecked
+                    withdraw(account, actor, item, update_id, totals, samples, recorder, 'refused')  # its last units must not stay on sale unchecked
                 continue
             if item is None or not same(item, data):
                 created = item is None
-                item = write(account, actor, data, totals, samples, data['codigo'])
+                item = write(account, actor, data, totals, samples, data['codigo'], recorder)
                 if item is None:
                     continue
                 totals['created' if created else 'updated'] += 1
             else:
                 totals['unchanged'] += 1
-            set_branch_rows(item, quantities, current.get(item.pk, {}))
+            set_branch_rows(item, quantities, current.get(item.pk, {}), recorder)
 
 
-def withdraw_unseen(account, actor, seen, label, totals, samples):
+def withdraw_unseen(account, actor, seen, label, totals, samples, recorder=None):
     """After a complete full pull: the account's apiag items it did not list are no longer published there."""
     gone = [pk for pk, sid in SupplierItem.objects.filter(supplier=account, source='apiag').filter(
         Q(reported_quantity__gt=0) | Q(branch_stock__isnull=False)).distinct().values_list('pk', 'supplier_invent_id') if sid not in seen]
@@ -226,7 +244,7 @@ def withdraw_unseen(account, actor, seen, label, totals, samples):
         with transaction.atomic():
             Account.objects.select_for_update().get(pk=account.pk)
             for item in SupplierItem.objects.select_for_update().filter(pk__in=gone[start:start + PAGE_SIZE]).order_by('pk'):
-                withdraw(account, actor, item, f'{label} · {item.supplier_invent_id} retirado'[:120], totals, samples)
+                withdraw(account, actor, item, f'{label} · {item.supplier_invent_id} retirado'[:120], totals, samples, recorder, 'unseen')
 
 
 # --- one run ---------------------------------------------------------------------------------------------------------------------
@@ -248,7 +266,20 @@ def plan(sync, now):
 
 
 def run(sync, lease, now):
-    """Pull everything the plan asks for. Returns the summary to store; raises SyncFailed."""
+    """Pull everything the plan asks for. Returns the summary to store; raises SyncFailed. The supplier's ledger keeps what the pull
+    changed, also when it stops halfway (its pages already applied stay)."""
+    state = {}
+    try:
+        return pull(sync, lease, now, state)
+    finally:
+        if state.get('recorder'):
+            try:
+                state['recorder'].finish(mode=state['mode'])
+            except Exception:  # closing the ledger's run never hides why the pull stopped
+                logger.exception('Could not close the ledger run of an apiag-cloud pull.')
+
+
+def pull(sync, lease, now, state):
     connection = sync.connection
     account = connection.account
     try:
@@ -274,8 +305,13 @@ def run(sync, lease, now):
                 stamp = parse_datetime(str(page['server_time']))
                 stamp = timezone.localtime(stamp if stamp and timezone.is_aware(stamp) else now)
                 label = f'apiag-cloud {stamp:%Y-%m-%d %H:%M} #{lease.hex[:4]}'
-            apply_page(account, actor, sucursales, page['items'], label, totals, samples, seen)
+                from .inventory_history import Recorder
+                recorder = state['recorder'] = Recorder(account, 'apiag', label, actor=actor, mode=mode)  # a run row only if something changes
+                state['mode'] = mode
+            apply_page(account, actor, sucursales, page['items'], label, totals, samples, seen, recorder)
             totals['pages'] += 1
+            if recorder.touched:
+                recorder.finish(done=False, mode=mode)  # a pull stopped halfway keeps the counts of the pages it applied
             ApiagSync.objects.filter(pk=sync.pk, lease=lease).update(progress={'mode': mode, **totals})
             following = page.get('next')
             if following is None:
@@ -287,7 +323,7 @@ def run(sync, lease, now):
             break
         mode, since = 'full', None
     if mode == 'full':
-        withdraw_unseen(account, actor, seen, label, totals, samples)
+        withdraw_unseen(account, actor, seen, label, totals, samples, recorder)
     return {'mode': mode, 'server_time': first['server_time'], 'sucursales_version': first.get('sucursales_version', ''),
             'counts': dict(totals), 'samples': samples}
 

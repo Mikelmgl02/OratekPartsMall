@@ -66,3 +66,25 @@ test('the proxy forwards Productos nuevos', async ({ page }) => {
   expect(bulk.status(), await bulk.text()).toBe(400);
   expect(await bulk.text()).not.toContain('La ruta solicitada no existe');
 });
+
+test('the proxies forward the supplier ledger routes and their filters', async ({ page }) => {
+  test.skip(!process.env.E2E_ADMIN_TOKEN, 'A disposable superuser token is required.');
+  await page.context().addCookies([{ name: 'partsmall_session', value: process.env.E2E_ADMIN_TOKEN!, url: origin, httpOnly: true, sameSite: 'Strict' }]);
+  const roles = await (await page.request.get('/api/management/roles')).json() as { code: string; capability: string }[];
+  const suppliers = new Set(roles.filter(role => role.capability === 'supplier').map(role => role.code));
+  const accounts = await (await page.request.get('/api/management/accounts?page=1')).json();
+  const supplier = (accounts.results ?? accounts).find((row: { roles: string[] }) => row.roles.some(code => suppliers.has(code)))?.id;
+  const zero = '00000000-0000-4000-8000-000000000000';
+  if (supplier) {
+    for (const path of [`/api/management/accounts/${supplier}/ledger?page=1&origin=excel&kind=sync&after=2026-01-01&before=2026-12-31&search=X`,
+      `/api/management/accounts/${supplier}/ledger/runs?page=1&origin=apiag`]) {
+      const response = await page.request.get(path);
+      expect(response.status(), `${path}: ${await response.text()}`).toBe(200);
+    }
+  }
+  // Unknown runs and a superuser on the members' route are the backend's 404s, never the proxy's.
+  for (const path of [`/api/management/accounts/${supplier ?? zero}/ledger/runs/${zero}`, `/api/management/accounts/${supplier ?? zero}/ledger/runs/${zero}/changes?action=created&search=X`,
+    `/api/market/accounts/${supplier ?? zero}/ledger?page=1&origin=quotation&item=${zero}`, `/api/market/accounts/${supplier ?? zero}/ledger/runs/${zero}/changes?action=stock`]) {
+    expect(await (await page.request.get(path)).text(), path).not.toContain('La ruta solicitada no existe');
+  }
+});

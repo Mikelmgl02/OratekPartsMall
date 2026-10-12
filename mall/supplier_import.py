@@ -56,6 +56,17 @@ class SupplierBatchRequest(serializers.Serializer):
                                                 'se liquida); gross, todavía lo incluye (la reserva sigue apartando sus unidades).')
 
 
+SYNCED = ('Esta cuenta se sincroniza con apiag-cloud: sus existencias llegan de su sincronización, así que la carga Excel no está '
+          'disponible.')
+
+
+def refuse_synced(supplier):
+    """An account synced with apiag-cloud loads its stock from there only: two sources would fight over the same counts."""
+    from .apiag_models import ApiagConnection
+    if ApiagConnection.objects.filter(account=supplier).exists():
+        raise ValidationError({'detail': SYNCED})
+
+
 class StaleSupplierPreview(APIException):
     status_code = 409
     default_detail = 'Las existencias o su vínculo cambiaron desde la vista previa. Revisa el archivo otra vez antes de importar.'
@@ -265,7 +276,7 @@ def _workbook_response(rows, filename, *, errors=False):
 class SupplierInventoryImportTemplate(APIView):
     @extend_schema(responses={(200, XLSX_TYPE): bytes})
     def get(self, request, account_id):
-        account_for(request.user, account_id, 'supplier')
+        refuse_synced(account_for(request.user, account_id, 'supplier'))
         return _workbook_response([{'supplier_invent_id': '000123', 'codigo': '58411-1R000-KSM',
                                     'brand': 'KSM', 'description': 'REEMPLAZA ESTA FILA CON TUS DATOS', 'quantity': 5,
                                     'references': 'HYUNDAI:58411-1R000; 58411-1R000'}],
@@ -278,6 +289,7 @@ class SupplierInventoryImport(APIView):
     @extend_schema(request=SupplierImportRequest, responses=OpenApiTypes.OBJECT)
     def post(self, request, account_id):
         supplier = account_for(request.user, account_id, 'supplier')
+        refuse_synced(supplier)
         serializer = SupplierImportRequest(data=request.data)
         serializer.is_valid(raise_exception=True)
         file = serializer.validated_data['file']
@@ -349,6 +361,7 @@ class SupplierInventoryImportJobView(APIView):
                 # Stock ingestion also takes this account lock first. Taking
                 # it before the job/item locks gives every writer one order.
                 Account.objects.select_for_update().get(pk=supplier.pk)
+                refuse_synced(supplier)  # also a job staged before the account was connected
                 job = self.get_job(request, account_id, pk, lock=True)
                 if index < job.completed_batches:
                     return Response(job_result(job))
@@ -369,8 +382,10 @@ class SupplierInventoryImportJobView(APIView):
                     raise ValidationError({'detail': 'Indica, para cada pedido confirmado de las filas '
                                                      f'{", ".join(map(str, sorted(undecided)[:10]))}, si el saldo de tu archivo ya lo descuenta.'})
                 settled = kept = 0
+                from .inventory_history import Recorder
+                recorder = Recorder(supplier, 'excel', f'excel-{job.pk}', actor=request.user, import_job=job, filename=job.filename)
                 for row in batch.data:
-                    item = ingest_inventory(supplier=supplier, actor=request.user,
+                    item = ingest_inventory(supplier=supplier, actor=request.user, recorder=recorder,
                                             data={**row['data'], 'source': 'upload', 'update_id': f'excel-{job.pk}-{row["row"]}'})
                     expected = expected_matches[row['row']]
                     if ((str(item.part_id) if item.part_id else None) != expected['part_id']
@@ -398,6 +413,7 @@ class SupplierInventoryImportJobView(APIView):
                 job.processed_rows += len(batch.data)
                 job.status = 'completed' if job.completed_batches == job.total_batches else 'importing'
                 job.save(update_fields=['applied_summary', 'preview', 'completed_batches', 'processed_rows', 'status'])
+                recorder.finish(done=job.status == 'completed')
                 if job.status == 'completed':
                     from .matching_queue import enqueue_matching
                     enqueue_matching()

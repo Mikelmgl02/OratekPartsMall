@@ -14,7 +14,9 @@ def matching_part(codigo, brand):
     return matches[0] if len(matches) == 1 else None
 
 @transaction.atomic
-def ingest_inventory(*, supplier, actor, data, queue_matching=True):
+def ingest_inventory(*, supplier, actor, data, queue_matching=True, recorder=None):
+    """Create or update one supplier item from a load and move its count; recorder (mall.inventory_history.Recorder) keeps what changed
+    for the supplier's ledger."""
     # Serialize writes per supplier, including creation and idempotency checks.
     Account.objects.select_for_update().get(pk=supplier.pk)
     digest = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
@@ -28,6 +30,8 @@ def ingest_inventory(*, supplier, actor, data, queue_matching=True):
         defaults={'codigo': data['codigo'], 'brand': data['brand'], 'source': data['source']})
     if not created and item.source != data['source']:
         raise ValidationError('Este artículo pertenece a otro origen de inventario. Un administrador debe revisar el origen antes de actualizarlo.')
+    from .inventory_history import field_changes, snapshot
+    before, quantity_before = (None, 0) if created else (snapshot(item), item.reported_quantity)
     if 'description' not in data:
         data = {**data, 'description': item.description}
     from .part_references import normalize_references
@@ -42,11 +46,17 @@ def ingest_inventory(*, supplier, actor, data, queue_matching=True):
     item.references = data['references']
     item.reported_quantity = data['quantity']
     item.save()
+    entry = None
     if delta:
-        StockEntry.objects.create(item=item, kind='sync', quantity=abs(delta), direction='credit' if delta > 0 else 'debit',
+        entry = StockEntry.objects.create(item=item, kind='sync', quantity=abs(delta), direction='credit' if delta > 0 else 'debit',
             reported_after=item.reported_quantity, reserved_after=item.reserved_quantity,
             actor=actor, reference=data['update_id'])
     InventoryUpdate.objects.create(supplier=supplier, key=data['update_id'], payload_hash=digest, item=item)
+    if recorder is not None:
+        fields = {} if created else field_changes(before, item)
+        action = 'created' if created else 'updated' if fields else 'stock' if delta else None
+        if action:
+            recorder.record(item, action, fields=fields, before=quantity_before, after=item.reported_quantity, entry=entry)
     # queue_matching=False: the caller knows only the quantity moved (the apiag-cloud pull), which changes nothing to match.
     if changed or (queue_matching and item.matching_status != 'matched'):
         enqueue_matching()
