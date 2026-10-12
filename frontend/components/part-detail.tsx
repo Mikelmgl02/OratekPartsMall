@@ -2,7 +2,7 @@
 
 import { referenceLabel, visibleReferences } from '@/lib/reference-label';
 import { useEffect, useState } from 'react';
-import { ArrowUpRight, Check, CheckCircle2, LoaderCircle, LockKeyhole, Package, Store } from 'lucide-react';
+import { ArrowUpRight, Check, CheckCircle2, LoaderCircle, LockKeyhole, MessageCircle, Package, Store } from 'lucide-react';
 import Modal from './modal';
 import PartGallery from './part-image';
 import PartTechnical from './part-technical';
@@ -12,7 +12,8 @@ import PartRequestStates, { ItemRequestStates } from './part-request-states';
 import { BasketLine, Offer, Part, request } from '@/lib/types';
 import type { ClientPartRequestState } from '@/lib/request-types';
 import { previewOffers } from '@/lib/preview';
-export default function PartDetail({ part, preview, canQuote, accountId, basketLines, onClose, onAdd, onBasket, saved, saving, onFavorite }: { part: Part; preview: boolean; canQuote: boolean; accountId: string; basketLines: BasketLine[]; onClose: () => void; onAdd: (offer: Offer, quantity: number) => void; onBasket: () => void; saved: boolean; saving: boolean; onFavorite: () => void }) {
+// onAsk: Preguntar al proveedor, the conversation with that supplier (before ordering, or about this part), from a client account.
+export default function PartDetail({ part, preview, canQuote, accountId, basketLines, onClose, onAdd, onAsk, onBasket, saved, saving, onFavorite }: { part: Part; preview: boolean; canQuote: boolean; accountId: string; basketLines: BasketLine[]; onClose: () => void; onAdd: (offer: Offer, quantity: number) => void; onAsk?: (offer: Offer) => void; onBasket: () => void; saved: boolean; saving: boolean; onFavorite: () => void }) {
   const [offers, setOffers] = useState<Offer[]>([]);
   const [busy, setBusy] = useState(!preview && canQuote);
   const [error, setError] = useState('');
@@ -66,7 +67,7 @@ export default function PartDetail({ part, preview, canQuote, accountId, basketL
       // The active account's own stock: listed, but an account never asks itself for a quotation.
       const own = !preview && offer.supplier_id === accountId;
       return <div key={offer.supplier_id} className={`${offer.items?.length ? 'sku-supplier-group' : ''}${own ? ' own-offer' : ''}`}>
-        <div className="supplier-option"><span className="supplier-avatar"><Store size={21}/></span><div><h4>{offer.supplier_name}{own && <span className="own-offer-tag">Tu cuenta</span>}</h4><p><CheckCircle2 size={13}/>Disponible <span className="dot-separator">·</span> Sin reseñas todavía</p>{!offer.items?.length && !own && <ItemRequestStates draftQuantity={genericDraft}/>}{own && <p className="own-offer-note">Es tu propio inventario: no puedes pedirte una cotización a ti mismo.</p>}</div>{!offer.items?.length && !own && <div className="supplier-item-actions">{genericDraft > 0 ? <><button className="button soft" onClick={onBasket}><Check size={16}/>Agregado</button><button className="button text small" aria-label={`Agregar más de ${offer.supplier_name}`} onClick={() => onAdd(offer, quantity)}>Agregar más<ArrowUpRight size={14}/></button></> : <button className="button primary" onClick={() => onAdd(offer, quantity)}>Agregar a la cesta<ArrowUpRight size={16}/></button>}</div>}</div>
+        <div className="supplier-option"><span className="supplier-avatar"><Store size={21}/></span><div><h4>{offer.supplier_name}{own && <span className="own-offer-tag">Tu cuenta</span>}</h4><p><CheckCircle2 size={13}/>Disponible <span className="dot-separator">·</span> Sin reseñas todavía</p>{!offer.items?.length && !own && <ItemRequestStates draftQuantity={genericDraft}/>}{own && <p className="own-offer-note">Es tu propio inventario: no puedes pedirte una cotización a ti mismo.</p>}{!own && !preview && onAsk && <button type="button" className="button text small supplier-ask" aria-label={`Preguntar a ${offer.supplier_name}`} onClick={() => onAsk(offer)}><MessageCircle size={14}/>Preguntar al proveedor</button>}</div>{!offer.items?.length && !own && <div className="supplier-item-actions">{genericDraft > 0 ? <><button className="button soft" onClick={onBasket}><Check size={16}/>Agregado</button><button className="button text small" aria-label={`Agregar más de ${offer.supplier_name}`} onClick={() => onAdd(offer, quantity)}>Agregar más<ArrowUpRight size={14}/></button></> : <button className="button primary" onClick={() => onAdd(offer, quantity)}>Agregar a la cesta<ArrowUpRight size={16}/></button>}</div>}</div>
         {offer.items?.map(item => {
           const draft = quantityInBasket(offer, item.id, item.codigo, item.brand);
           const history = requestState?.items.find(row => row.supplier_item_id === item.id && row.supplier_id === offer.supplier_id && row.codigo === item.codigo && row.brand === item.brand);

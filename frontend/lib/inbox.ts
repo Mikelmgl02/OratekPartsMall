@@ -24,7 +24,8 @@ export type InboxSummary = {
 };
 // What the panel needs to open a conversation (threadId) on one of its orders (orderId: its document, and the tag of what is written)
 // without loading the conversation list first.
-export type InboxTarget = { threadId?: string; orderId: string; reference: string; side: InboxSide; account: InboxParty; counterpart: InboxParty };
+// draft: a message prefilled in the composer, in general (Preguntar al proveedor, from the catalog). orderId '' : a conversation without orders.
+export type InboxTarget = { threadId?: string; orderId: string; reference: string; side: InboxSide; account: InboxParty; counterpart: InboxParty; draft?: string };
 
 export const INBOX_EVENT = 'motionpartes:inbox';
 export function inboxChanged() { window.dispatchEvent(new Event(INBOX_EVENT)); }

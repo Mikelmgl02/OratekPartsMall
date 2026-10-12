@@ -5,7 +5,7 @@ from django.conf.urls.static import static
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from rest_framework.authtoken.views import ObtainAuthToken
 from rest_framework.throttling import AnonRateThrottle
-from mall import basket, deal_attachments, email_notifications, inbox, login_hints, management, push, views, whatsapp, whatsapp_accounts, whatsapp_verification
+from mall import basket, threads, deal_attachments, email_notifications, inbox, login_hints, management, push, views, whatsapp, whatsapp_accounts, whatsapp_verification
 from mall.technical_api import (PartTypeList, PartTypeDetail, TemplateDetail, ApplicationList, ApplicationDetail,
                                ItemTechnicalDetail, CatalogTechnicalDetail)
 from mall.matching_views import MatchingOverview, MatchingReview
@@ -157,6 +157,10 @@ urlpatterns = [
     path('api/v1/accounts/<uuid:account_id>/deals/<uuid:pk>/actions/', DealActions.as_view()),
     path('api/v1/accounts/<uuid:account_id>/deals/<uuid:pk>/messages/', DealMessages.as_view()),
     path('api/v1/accounts/<uuid:account_id>/deals/<uuid:pk>/attachments/<int:attachment_id>/', deal_attachments.DealAttachmentFile.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/threads/', threads.Threads.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/threads/<uuid:thread_id>/messages/', threads.ThreadMessages.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/threads/<uuid:thread_id>/attachments/<int:attachment_id>/', deal_attachments.DealAttachmentFile.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/threads/<uuid:thread_id>/attachments/<int:attachment_id>/retry/', deal_attachments.DealAttachmentRetry.as_view()),
     path('api/v1/accounts/<uuid:account_id>/deals/<uuid:pk>/attachments/<int:attachment_id>/retry/', deal_attachments.DealAttachmentRetry.as_view()),
     path('api/v1/accounts/<uuid:account_id>/pricing/settings/', PricingSettingsView.as_view()),
     path('api/v1/accounts/<uuid:account_id>/pricing/history/', PricingHistory.as_view()),

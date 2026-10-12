@@ -400,49 +400,61 @@ def message_data(message):
             'attachments': [attachment_data(attachment) for attachment in message.attachments.all()], 'created_at': iso(message.created_at)}
 
 
+def chat_page(request, thread, solo=None):
+    """A page of the conversation (DealThread): every order's messages in one line, or only solo's (an order of it)."""
+    filters = MessageCursor(data=request.query_params)
+    filters.is_valid(raise_exception=True)
+    after = filters.validated_data.get('after')
+    messages = DealMessage.objects.filter(thread=thread).select_related('account', 'actor', 'order').prefetch_related('attachments')
+    if solo is not None:
+        messages = messages.filter(order=solo)
+    before = filters.validated_data.get('before')
+    if before is not None:
+        page = list(reversed(list(messages.filter(id__lt=before).order_by('-id')[:100])))
+    elif after is None:
+        page = list(reversed(list(messages.order_by('-id')[:100])))
+    else:
+        page = list(messages.filter(id__gt=after).order_by('id')[:100])
+    cursor = page[-1].pk if page else (after or 0)
+    # Privacy disclosure (decision D3): both parties learn that the supplier's AI assistant may read its order's messages. Only the flag
+    # travels; nothing about the assistant's runs or proposals ever does.
+    return Response({'results': [message_data(message) for message in page], 'cursor': cursor, 'thread_id': str(thread.pk),
+                     'has_more': messages.filter(id__gt=cursor).exists(),
+                     'has_earlier': bool(page) and messages.filter(id__lt=page[0].pk).exists(),
+                     'assistant_notice': pricing_settings(thread.supplier).assistant_enabled})
+
+
+def chat_post(request, account, thread, order):
+    """A message into the conversation as the account's, tagged with order (None: general), with its files; the same send again (a retry)
+    answers the message as it was saved."""
+    serializer = MessageSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    data = serializer.validated_data
+    files = validate_uploads(request.FILES.getlist('files'))
+    if not data['body'] and not files:
+        raise ValidationError({'body': ['Escribe un mensaje o adjunta un archivo.']})
+    message = DealMessage.objects.filter(thread=thread, account=account, message_id=data['message_id']).first()
+    if message:
+        if message.body != data['body']:
+            raise RequestConflict('Este identificador ya se utilizó para otro mensaje.')
+    else:
+        message = DealMessage.objects.create(thread=thread, order=None if data['general'] else order, account=account, actor=request.user,
+                                             message_id=data['message_id'], body=data['body'])
+        for upload, kind, content_type, name in files:
+            store(message, kind, content_type, name, upload.read())
+    return Response(message_data(message), status=200)
+
+
 class DealMessages(APIView):
-    @extend_schema(responses=OpenApiTypes.OBJECT)
+    @extend_schema(responses=OpenApiTypes.OBJECT, description='La conversación con la otra parte de esta orden: los mensajes de todas sus '
+                   'órdenes, cada uno con la suya (solo=1 deja los de esta orden).')
     def get(self, request, account_id, pk):
         _, row = participant(request.user, account_id, pk)
-        filters = MessageCursor(data=request.query_params)
-        filters.is_valid(raise_exception=True)
-        after = filters.validated_data.get('after')
-        # The conversation with this order's other party (DealThread), every order's messages in one line; solo=1 keeps this order's.
-        messages = DealMessage.objects.filter(thread_id=row.thread_id).select_related('account', 'actor', 'order').prefetch_related('attachments')
-        if request.query_params.get('solo') == '1':
-            messages = messages.filter(order=row)
-        before = filters.validated_data.get('before')
-        if before is not None:
-            page = list(reversed(list(messages.filter(id__lt=before).order_by('-id')[:100])))
-        elif after is None:
-            page = list(reversed(list(messages.order_by('-id')[:100])))
-        else:
-            page = list(messages.filter(id__gt=after).order_by('id')[:100])
-        cursor = page[-1].pk if page else (after or 0)
-        # Privacy disclosure (decision D3): both parties learn that the supplier's AI assistant may read this conversation. Only the flag
-        # travels; nothing about the assistant's runs or proposals ever does.
-        return Response({'results': [message_data(message) for message in page], 'cursor': cursor, 'thread_id': str(row.thread_id),
-                         'has_more': messages.filter(id__gt=cursor).exists(),
-                         'has_earlier': bool(page) and messages.filter(id__lt=page[0].pk).exists(),
-                         'assistant_notice': pricing_settings(row.supplier).assistant_enabled})
+        return chat_page(request, row.thread, solo=row if request.query_params.get('solo') == '1' else None)
 
-    @extend_schema(request=MessageSerializer, responses=OpenApiTypes.OBJECT)
+    @extend_schema(request=MessageSerializer, responses=OpenApiTypes.OBJECT, description='Un mensaje en la conversación, sobre esta orden '
+                   '(o en general, sin orden, con general=true).')
     @transaction.atomic
     def post(self, request, account_id, pk):
         account, row = participant(request.user, account_id, pk, lock=True)
-        serializer = MessageSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        data = serializer.validated_data
-        files = validate_uploads(request.FILES.getlist('files'))
-        if not data['body'] and not files:
-            raise ValidationError({'body': ['Escribe un mensaje o adjunta un archivo.']})
-        message = DealMessage.objects.filter(thread_id=row.thread_id, account=account, message_id=data['message_id']).first()
-        if message:  # the same send again (a retry): the message as it was saved
-            if message.body != data['body']:
-                raise RequestConflict('Este identificador ya se utilizó para otro mensaje.')
-        else:
-            message = DealMessage.objects.create(thread_id=row.thread_id, order=None if data['general'] else row, account=account, actor=request.user,
-                                                 message_id=data['message_id'], body=data['body'])
-            for upload, kind, content_type, name in files:
-                store(message, kind, content_type, name, upload.read())
-        return Response(message_data(message), status=200)
+        return chat_post(request, account, row.thread, row)

@@ -359,11 +359,13 @@ function ChatFiles({ base, files, retrying, onRetry }: { base: string; files: De
 }
 
 // The conversation with the other party (one per client and supplier, mall/inbox.py): every order's messages in one line, each with its
-// order's chip. What is written here goes about this order (orderId, its reference) unless it is switched to General; Solo esta orden keeps
-// this order's messages.
-export function DealChat({ account, orderId, reference, active, supplier, insert, compact = false }: { account: Account; orderId: string; reference?: string; active: boolean; supplier: boolean; insert: { text: string; id: number } | null; compact?: boolean }) {
-  const path = `/api/market/accounts/${account.id}/deals/${orderId}/messages`;
-  const filesPath = `/api/market/accounts/${account.id}/deals/${orderId}/attachments`;
+// order's chip. What is written here goes about this order (orderId, its reference) unless it is switched to General (startGeneral: a
+// question from the catalog); Solo esta orden keeps this order's messages. Without an order (thread: a conversation before any order) it
+// is the conversation's chat, in general. insert puts a draft in the composer, with a note saying where it came from.
+export function DealChat({ account, orderId, thread, reference, active, supplier, insert, startGeneral = false, compact = false }: { account: Account; orderId?: string; thread?: string; reference?: string; active: boolean; supplier: boolean; insert: { text: string; id: number; note?: string } | null; startGeneral?: boolean; compact?: boolean }) {
+  const base = orderId ? `/api/market/accounts/${account.id}/deals/${orderId}` : `/api/market/accounts/${account.id}/threads/${thread}`;
+  const path = `${base}/messages`;
+  const filesPath = `${base}/attachments`;
   const [messages, setMessages] = useState<DealMessage[]>([]);
   const [body, setBody] = useState('');
   const [files, setFiles] = useState<File[]>([]);
@@ -371,7 +373,7 @@ export function DealChat({ account, orderId, reference, active, supplier, insert
   const picker = useRef<HTMLInputElement>(null);
   // Privacy disclosure (D3): the supplier enabled its AI assistant, which may read this conversation.
   const [assistantNotice, setAssistantNotice] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState('');  // the note of a draft put in the composer
   const composer = useRef<HTMLTextAreaElement>(null);
   const [error, setError] = useState('');
   const [ready, setReady] = useState(false);
@@ -391,9 +393,9 @@ export function DealChat({ account, orderId, reference, active, supplier, insert
   const atBottom = useRef(true);
   const stick = useRef(false);
   const [newBelow, setNewBelow] = useState(false);
-  const [threadId, setThreadId] = useState<string | null>(null);
+  const [threadId, setThreadId] = useState<string | null>(thread ?? null);
   const [solo, setSolo] = useState(false);
-  const [general, setGeneral] = useState(false);
+  const [general, setGeneral] = useState(startGeneral || !orderId);
   const scope = useRef({ orderId, solo });
   const query = (extra: Record<string, string>) => { const params = new URLSearchParams({ ...(solo ? { solo: '1' } : {}), ...extra }); return params.size ? `?${params}` : ''; };
   const merge = (items: DealMessage[]) => setMessages(values => [...new Map([...values, ...items].map(value => [value.id, value])).values()].sort((a, b) => a.id - b.id));
@@ -428,7 +430,7 @@ export function DealChat({ account, orderId, reference, active, supplier, insert
   useEffect(() => {
     mounted.current = true; void fetchMessages();
     const timer = setInterval(() => { if (document.visibilityState === 'visible' && !(realtimeLive() && Date.now() - fetched.current < 30000)) void fetchMessages(); }, 3000);
-    const off = onDealNudge(threadId ?? orderId, ['message'], () => void fetchMessages());
+    const off = onDealNudge([threadId, orderId], ['message'], () => void fetchMessages());  // any order's message, or a general one
     return () => { mounted.current = false; clearInterval(timer); off(); };
   }, [fetchMessages, orderId, threadId]);
   useEffect(() => { if (active) void fetchMessages(); }, [active, fetchMessages]);
@@ -458,11 +460,12 @@ export function DealChat({ account, orderId, reference, active, supplier, insert
   useEffect(() => {
     const last = messages.at(-1)?.id;
     if (!active || solo || !last || last <= readUpTo.current || document.visibilityState !== 'visible') return;  // filtered, others may be unread
-    readUpTo.current = last; void markConversationRead(orderId, last);
+    readUpTo.current = last; void markConversationRead((orderId || threadId)!, last);
   }, [active, messages, orderId, solo]);
   useEffect(() => {
     if (!insert) return;
-    setBody(value => (value.trim() ? `${value.trimEnd()}\n${insert.text}` : insert.text).slice(0, 4000)); setCopied(true);
+    setBody(value => (value.trim() ? `${value.trimEnd()}\n${insert.text}` : insert.text).slice(0, 4000));
+    setCopied(insert.note ?? 'Pregunta del asistente copiada. Revísala y envíala cuando quieras.');
     requestAnimationFrame(() => composer.current?.focus());
   }, [insert]);
   async function earlier() {
@@ -514,7 +517,7 @@ export function DealChat({ account, orderId, reference, active, supplier, insert
         message = await request<DealMessage>(filesPath, { method: 'POST', body: form });
       } else message = await request<DealMessage>(path, { method: 'POST', body: JSON.stringify({ body: text, message_id: pending.current.id, general }) });
       if (!mounted.current) return;
-      stick.current = true; merge([message]); setBody(''); setFiles([]); setCopied(false); pending.current = null; void fetchMessages();
+      stick.current = true; merge([message]); setBody(''); setFiles([]); setCopied(''); pending.current = null; void fetchMessages();
     } catch (caught) { if (mounted.current) setError(failure(caught)); }
     finally { sendLock.current = false; if (mounted.current) { setSending(false); requestAnimationFrame(() => composer.current?.focus()); } }
   }
@@ -529,16 +532,16 @@ export function DealChat({ account, orderId, reference, active, supplier, insert
       : 'El proveedor usa un asistente de IA (Google Gemini) que puede leer las notas de tu orden y los mensajes sobre ella para preparar tu cotización. No recibe precios ni existencias.'}</p>}
     {error && <div className="notice error" role="alert">{error}<button type="button" onClick={() => void fetchMessages()}>Actualizar mensajes</button></div>}
     {hasEarlier && <button type="button" className="button soft small" disabled={loadingEarlier} onClick={() => void earlier()}>Cargar mensajes anteriores</button>}
-    <div className="deal-chat-tools"><button type="button" className={`deal-chat-filter${solo ? ' on' : ''}`} aria-pressed={solo} onClick={() => setSolo(value => !value)}
-      title={solo ? 'Ver toda la conversación' : 'Ver solo los mensajes de esta orden'}>Solo esta orden{reference ? ` · ${shortReference(reference)}` : ''}</button></div>
+    {orderId && <div className="deal-chat-tools"><button type="button" className={`deal-chat-filter${solo ? ' on' : ''}`} aria-pressed={solo} onClick={() => setSolo(value => !value)}
+      title={solo ? 'Ver toda la conversación' : 'Ver solo los mensajes de esta orden'}>Solo esta orden{reference ? ` · ${shortReference(reference)}` : ''}</button></div>}
     <div ref={log} className="deal-chat-messages" role="log" aria-label="Mensajes del acuerdo" aria-live="polite" onScroll={scrolled}>{!ready && !error ? <p>Cargando mensajes…</p> : !messages.length ? <p className="deal-chat-empty">Inicia la conversación sobre esta orden.</p> : messages.map(message => <article key={message.id} className={message.account_id === account.id ? 'own' : ''}><header><strong>{message.account_name}</strong><span>{message.actor_name} · {date(message.created_at)}{message.channel === 'whatsapp' && <em className="deal-chat-whatsapp"> · vía WhatsApp</em>}</span>{message.order_reference
         ? <span className={`deal-chat-order${message.order_id === orderId ? ' current' : ''}`} title={`Sobre la orden ${message.order_reference}`}>{shortReference(message.order_reference)}</span>
         : <span className="deal-chat-order general" title="Sobre la relación, sin orden">General</span>}</header>{message.body && <p>{message.body}</p>}{!!message.attachments?.length && <ChatFiles base={filesPath} files={message.attachments} retrying={retrying} onRetry={id => void retry(id)}/>}</article>)}</div>
     {newBelow && <button type="button" className="deal-chat-new" onClick={toLatest}><ArrowDown size={14}/>Mensajes nuevos</button>}
-    <form onSubmit={event => { event.preventDefault(); void send(); }}><label>Mensaje<textarea ref={composer} aria-label="Mensaje del acuerdo" required={!files.length} maxLength={4000} readOnly={sending} value={body} onChange={event => { setBody(event.target.value); setCopied(false); }} onKeyDown={composerKey} onPaste={pasted} placeholder={files.length ? 'Agrega un mensaje (opcional)…' : 'Escribe a la otra parte…'}/></label>
+    <form onSubmit={event => { event.preventDefault(); void send(); }}><label>Mensaje<textarea ref={composer} aria-label="Mensaje del acuerdo" required={!files.length} maxLength={4000} readOnly={sending} value={body} onChange={event => { setBody(event.target.value); setCopied(''); }} onKeyDown={composerKey} onPaste={pasted} placeholder={files.length ? 'Agrega un mensaje (opcional)…' : 'Escribe a la otra parte…'}/></label>
       {!!files.length && <ul className="deal-chat-attached" aria-label="Archivos para enviar">{files.map((file, index) => <li key={`${file.name}-${index}`}><Paperclip size={13}/><span>{file.name}</span><small>{fileSize(file.size)}</small><button type="button" disabled={sending} aria-label={`Quitar ${file.name}`} onClick={() => setFiles(values => values.filter((_, other) => other !== index))}><X size={13}/></button></li>)}</ul>}
-      {copied && <small className="deal-chat-copied" role="status">Pregunta del asistente copiada. Revísala y envíala cuando quieras.</small>}<div className="deal-chat-send">
-        <button type="button" className={`deal-chat-tag${general ? ' general' : ''}`} disabled={sending} onClick={() => setGeneral(value => !value)} aria-label={general ? 'Escribes en general, sin orden. Cambiar a esta orden' : `Escribes sobre ${reference || 'esta orden'}. Cambiar a general`}
-          title={general ? 'Sin orden: sobre la relación. Toca para escribir sobre esta orden' : 'Toca para escribir en general, sin orden'}>{general ? 'General' : `Sobre ${reference ? shortReference(reference) : 'esta orden'}`}</button><input ref={picker} type="file" multiple hidden accept={CHAT_ACCEPT} aria-label="Elegir archivos" onChange={event => { attach([...(event.target.files || [])]); event.target.value = ''; }}/><button type="button" className="button soft deal-chat-attach" disabled={sending} onClick={() => picker.current?.click()} aria-label="Adjuntar archivos" title="Fotos, PDF, Excel, Word, audio o video"><Paperclip size={15}/></button><small className="deal-chat-hint">Enter para enviar · Shift+Enter para otra línea</small><button type="submit" className="button primary" disabled={sending || (!body.trim() && !files.length)}>{sending ? <LoaderCircle size={15} className="spin"/> : <Send size={15}/>}Enviar mensaje</button></div></form>
+      {copied && <small className="deal-chat-copied" role="status">{copied}</small>}<div className="deal-chat-send">
+        {orderId && <button type="button" className={`deal-chat-tag${general ? ' general' : ''}`} disabled={sending} onClick={() => setGeneral(value => !value)} aria-label={general ? 'Escribes en general, sin orden. Cambiar a esta orden' : `Escribes sobre ${reference || 'esta orden'}. Cambiar a general`}
+          title={general ? 'Sin orden: sobre la relación. Toca para escribir sobre esta orden' : 'Toca para escribir en general, sin orden'}>{general ? 'General' : `Sobre ${reference ? shortReference(reference) : 'esta orden'}`}</button>}<input ref={picker} type="file" multiple hidden accept={CHAT_ACCEPT} aria-label="Elegir archivos" onChange={event => { attach([...(event.target.files || [])]); event.target.value = ''; }}/><button type="button" className="button soft deal-chat-attach" disabled={sending} onClick={() => picker.current?.click()} aria-label="Adjuntar archivos" title="Fotos, PDF, Excel, Word, audio o video"><Paperclip size={15}/></button><small className="deal-chat-hint">Enter para enviar · Shift+Enter para otra línea</small><button type="submit" className="button primary" disabled={sending || (!body.trim() && !files.length)}>{sending ? <LoaderCircle size={15} className="spin"/> : <Send size={15}/>}Enviar mensaje</button></div></form>
   </section>;
 }

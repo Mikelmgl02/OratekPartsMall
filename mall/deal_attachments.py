@@ -165,6 +165,15 @@ def transcribe(content, content_type):
     return re.sub(r'\s+', ' ', text).strip()[:4000]
 
 
+def conversation(user, account_id, order_id, thread_id):
+    """The conversation a file is asked through: an order's (its parties) or the conversation's own id (its participants)."""
+    if thread_id is not None:
+        from .threads import thread_participant
+        return thread_participant(user, account_id, thread_id)[1]
+    from .deal_views import participant
+    return participant(user, account_id, order_id)[1].thread
+
+
 def byte_range(header, size):
     """(start, end) of a single 'bytes=' range within size, 'unsatisfiable' past its end, or None for the whole file."""
     found = re.fullmatch(r'bytes=(\d*)-(\d*)', header.strip())
@@ -185,11 +194,10 @@ class DealAttachmentFile(APIView):
 
     @extend_schema(responses={(200, '*/*'): OpenApiTypes.BINARY}, description='Un archivo del chat de la orden, solo para sus partes: fotos, '
                    'audio, video y PDF se abren en el navegador; lo demás se descarga.')
-    def get(self, request, account_id, pk, attachment_id):
-        from .deal_views import participant
+    def get(self, request, account_id, attachment_id, pk=None, thread_id=None):
         from .models import DealAttachment
-        _, row = participant(request.user, account_id, pk)
-        attachment = DealAttachment.objects.filter(pk=attachment_id, message__thread_id=row.thread_id, failed=False).exclude(file='').first()
+        thread = conversation(request.user, account_id, pk, thread_id)
+        attachment = DealAttachment.objects.filter(pk=attachment_id, message__thread=thread, failed=False).exclude(file='').first()
         if attachment is None:
             raise NotFound('Este archivo no está disponible.')
         inline = attachment.content_type.startswith(INLINE)
@@ -225,14 +233,14 @@ class DealAttachmentRetry(APIView):
 
     @extend_schema(request=None, responses=OpenApiTypes.OBJECT, description='Pide de nuevo a WhatsApp un archivo que no se pudo recibir; '
                    'cualquiera de las partes puede hacerlo. Responde el mensaje con el archivo ya disponible (y una nota de voz transcrita).')
-    def post(self, request, account_id, pk, attachment_id):
+    def post(self, request, account_id, attachment_id, pk=None, thread_id=None):
         from django.db import transaction
-        from .deal_views import message_data, participant
+        from .deal_views import message_data
         from .models import DealAttachment
         from .whatsapp_bridge import TooLarge, fetch_media
-        _, row = participant(request.user, account_id, pk)
+        thread = conversation(request.user, account_id, pk, thread_id)
         with transaction.atomic():  # one retry at a time
-            attachment = (DealAttachment.objects.select_for_update().filter(pk=attachment_id, message__thread_id=row.thread_id, failed=True)
+            attachment = (DealAttachment.objects.select_for_update().filter(pk=attachment_id, message__thread=thread, failed=True)
                           .exclude(whatsapp_media_id='').first())
             if attachment is None:
                 raise NotFound('Este archivo no necesita reintentarse.')

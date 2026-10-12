@@ -175,8 +175,8 @@ export default function ConversationList({ hidden, floatTop = null, onPeek, sele
     const open = menu?.kind === 'row' && menu.id === row.id;
     const current = sameConversation(selected, row);
     // One order: its reference; several: how many are in progress (all of them in the tooltip).
-    const orders = (row.order_count ?? 1) > 1 ? `${row.open_orders || row.order_count} ${(row.open_orders || row.order_count) === 1 ? 'orden' : 'órdenes'}` : shortReference(row.reference);
-    const listed = row.orders?.length ? row.orders.map(order => `${order.reference} · ${dealStatusLabels[order.status]}`).join('\n') : `${row.reference} · ${status}`;
+    const orders = row.order_count === 0 ? 'Consulta' : (row.order_count ?? 1) > 1 ? `${row.open_orders || row.order_count} ${(row.open_orders || row.order_count) === 1 ? 'orden' : 'órdenes'}` : shortReference(row.reference);
+    const listed = row.orders?.length ? row.orders.map(order => `${order.reference} · ${dealStatusLabels[order.status]}`).join('\n') : row.order_count === 0 ? 'Consulta, sin órdenes todavía' : `${row.reference} · ${status}`;
     return <li key={row.id} className={`inbox-row${current ? ' current' : ''}${dragging === row.id ? ' dragging' : ''}${open ? ' menu-open' : ''}`} draggable
       onDragStart={event => { event.dataTransfer.setData('text/plain', row.counterpart.name); event.dataTransfer.effectAllowed = 'move'; setDragging(row.id); setMenu(null); }}
       onDragEnd={() => { setDragging(null); setOver(null); }}>

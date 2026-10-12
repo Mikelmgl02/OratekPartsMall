@@ -10,7 +10,7 @@ import CatalogFilterPanel, { ActiveCatalogFilters } from './catalog-filters';
 import { catalogQuery, emptyFacets, emptyFilters, filterCount, matchesFilters, previewFacets } from '@/lib/catalog-filters';
 import { isCodeSearch, matchesSearch } from '@/lib/catalog-search';
 import StoreSearch from './store-search';
-import { InboxButtons } from './inbox';
+import { InboxButtons, useInbox } from './inbox';
 import { inboxChanged } from '@/lib/inbox';
 import { forgetPush } from '@/lib/push';
 import AuthModal from './auth-modal';
@@ -322,6 +322,20 @@ export default function Catálogo() {
     if (!preview && offer.selected_item && added > 0) trackUsage(user, accountId, { kind: 'basket_add', part_id: part.id, supplier_item_id: offer.selected_item.id, quantity: added });
     setNotice(`${offer.selected_item?.codigo || part.sku} se agregó a tu cesta.`);
   }
+  // Preguntar al proveedor: the conversation of the active client account with that supplier (made the first time), opened in the panel with
+  // a question about this part ready to finish and send.
+  const inbox = useInbox();
+  async function ask(part: Part, offer: Offer) {
+    if (!account || !inbox) return;
+    try {
+      const data = await request<{ thread_id: string; account: { id: string; name: string }; counterpart: { id: string; name: string } }>(
+        `/api/market/accounts/${account.id}/threads`, { method: 'POST', body: JSON.stringify({ supplier_id: offer.supplier_id }) });
+      const item = offer.items?.length === 1 ? offer.items[0] : undefined;
+      setDetail(null);
+      inbox.open({ threadId: data.thread_id, orderId: '', reference: '', side: 'client', account: data.account, counterpart: data.counterpart,
+        draft: `Hola, consulta sobre ${item ? `${item.codigo}${item.brand ? ` (${item.brand})` : ''}` : part.description || part.sku} · SKU ${part.sku}: ` });
+    } catch (caught) { setNotice(caught instanceof Error ? caught.message : 'No se pudo abrir la conversación con el proveedor.'); }
+  }
   function openPart(part: Part) {
     setDetail(part);
     if (!preview) trackUsage(user, accountId, { kind: 'part_view', part_id: part.id });
@@ -453,7 +467,7 @@ export default function Catálogo() {
     </footer>
     {filtersOpen && <Modal title="Filtrar repuestos" drawer className="catalog-filter-drawer" onClose={() => setFiltersOpen(false)}><CatalogFilterPanel facets={facets} filters={filters} loading={busy || initialLoading} onChange={changeFilters}/><div className="filter-drawer-footer"><button className="button primary" onClick={() => setFiltersOpen(false)}>{busy ? 'Ver resultados · Actualizando…' : `Ver ${totalParts.toLocaleString('es')} ${totalParts === 1 ? 'repuesto' : 'repuestos'}`}<ArrowRight size={16}/></button></div></Modal>}
     {authOpen && <AuthModal initialMode={authMode} initialUsername={authUsername} onClose={() => setAuthOpen(false)} onSuccess={async () => {applySearch(''); changeFilters(emptyFilters); setView('catalog'); await loadSession();}}/>}
-    {detail && <PartDetail key={`${accountId}:${detail.id}`} part={detail} preview={preview} canQuote={canQuote} accountId={accountId} basketLines={currentBasket} onClose={() => setDetail(null)} onAdd={(offer, quantity) => addToBasket(detail, offer, quantity)} onBasket={() => setBasketPage(true)} saved={wishlist.ids.has(detail.id)} saving={wishlist.pending.has(detail.id)} onFavorite={() => toggleFavorite(detail)}/>}
+    {detail && <PartDetail key={`${accountId}:${detail.id}`} part={detail} preview={preview} canQuote={canQuote} accountId={accountId} basketLines={currentBasket} onClose={() => setDetail(null)} onAdd={(offer, quantity) => addToBasket(detail, offer, quantity)} onAsk={serverBasket ? offer => void ask(detail, offer) : undefined} onBasket={() => setBasketPage(true)} saved={wishlist.ids.has(detail.id)} saving={wishlist.pending.has(detail.id)} onFavorite={() => toggleFavorite(detail)}/>}
     {helpOpen && <Modal title="Una forma más fácil de encontrar repuestos" onClose={() => setHelpOpen(false)}><div className="how-steps">{[{Icon: Search, title: 'Encuentra tu repuesto', text: 'Busca en el catálogo compartido por nombre, marca o código.'}, {Icon: Store, title: 'Elige tus proveedores', text: 'Consulta quién tiene existencias y agrega repuestos a tu cesta.'}, {Icon: LockKeyhole, title: 'Solicita una cotización privada', text: 'Cada proveedor cotizará sus propios repuestos. Los precios serán privados.'}, {Icon: Truck, title: 'Confirma tu acuerdo', text: 'Revisa la cotización, solicita ajustes si los necesitas y confirma las condiciones con el proveedor.'}].map(({Icon, title, text}, i) => <div key={title}><span className="round-icon"><Icon size={21}/></span><div><small>0{i+1}</small><h3>{title}</h3><p>{text}</p></div></div>)}</div><div className="notice">Envía tu cesta para crear órdenes por proveedor. El proveedor revisa y cotiza; tú confirmas o solicitas ajustes. Cuando ambas partes confirman, el acuerdo queda cerrado y aparece en tu historial.</div><p className="private-note">Estadísticas para mejorar el catálogo: al iniciar sesión registramos tus visitas, búsquedas, repuestos consultados y artículos agregados a la cesta. Solo los superusuarios pueden consultar estas estadísticas; no usamos rastreadores externos.</p></Modal>}
     {notice && <div className="toast" role="status"><Check size={17}/>{notice}<button aria-label="Cerrar notificación" onClick={() => setNotice('')}><X size={14}/></button></div>}
   </>;

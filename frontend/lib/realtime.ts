@@ -30,11 +30,12 @@ export function connectRealtime(onLive: (live: boolean) => void) {
   return () => { stopped = true; clearTimeout(timer); socket?.close(); if (live) state(false); };
 }
 
-// Runs on every nudge about this order or this conversation (an id of either), of these kinds.
-export function onDealNudge(id: string, kinds: DealNudge['kind'][], run: () => void) {
+// Runs on every nudge about these orders or conversations (ids of either), of these kinds.
+export function onDealNudge(ids: string | (string | null | undefined)[], kinds: DealNudge['kind'][], run: () => void) {
+  const watched = new Set((Array.isArray(ids) ? ids : [ids]).filter(Boolean));
   const listener = (event: Event) => {
     const detail = (event as CustomEvent<DealNudge>).detail;
-    if ((detail.orderId === id || detail.threadId === id) && kinds.includes(detail.kind)) run();
+    if ((watched.has(detail.orderId ?? '') || watched.has(detail.threadId ?? '')) && kinds.includes(detail.kind)) run();
   };
   window.addEventListener(DEAL_EVENT, listener);
   return () => window.removeEventListener(DEAL_EVENT, listener);

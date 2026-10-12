@@ -45,13 +45,16 @@ export default function ConversationsPanel({ initial, onClose, onShowing }: { in
       const row = data.results[0];
       if (!current || !row) return;
       setThread(row);
-      setSelected(target => target && !target.threadId ? { ...target, threadId: row.id } : target);
+      // A conversation opened by its id alone (from the catalog) shows its current order, if it has one; the question still goes in general.
+      setSelected(target => target && (!target.threadId || (!target.orderId && row.order_id)) ? { ...target, threadId: row.id, orderId: target.orderId || row.order_id || '',
+        reference: target.reference || row.reference } : target);
     }).catch(() => {});
     return () => { current = false; };
   }, [conversationKey]);
   const [dealOpen, setDealOpen] = useState(false);
   // A question the quote assistant suggests lands in the panel's chat composer (never sent by itself).
-  const [chatInsert, setChatInsert] = useState<{ text: string; id: number } | null>(null);
+  const [chatInsert, setChatInsert] = useState<{ text: string; id: number; note?: string } | null>(
+    initial?.draft ? { text: initial.draft, id: Date.now(), note: 'Escribe tu pregunta y envíala: le llega al proveedor en su conversación contigo.' } : null);
   const [layout, setLayout] = useState<Layout>(savedLayout);
   const [section, setSection] = useState<DealTab>('order');
   const box = useRef<HTMLDivElement>(null);
@@ -163,29 +166,30 @@ export default function ConversationsPanel({ initial, onClose, onShowing }: { in
         <header ref={header} className="inbox-conversation-header">
           <button type="button" className="icon-button inbox-back" aria-label="Volver a conversaciones" onClick={() => setSelected(null)}><ArrowLeft size={18}/></button>
           {listToggle}
-          <div className="inbox-conversation-title"><strong>{selected.counterpart.name}</strong><span>{selected.side === 'supplier' ? 'Tu cliente' : 'Tu proveedor'} · {
+          <div className="inbox-conversation-title"><strong>{selected.counterpart.name}</strong><span>{selected.side === 'supplier' ? 'Tu cliente' : 'Tu proveedor'} · {!selected.orderId ? 'Consulta, sin órdenes' :
             thread?.orders && thread.orders.length > 1
               ? <select className="inbox-order-picker" aria-label="Orden" value={selected.orderId} onChange={event => {
                   const order = thread.orders!.find(item => item.id === event.target.value);
                   if (order) setSelected(target => target && { ...target, orderId: order.id, reference: order.reference });
                 }}>{thread.orders.map(order => <option key={order.id} value={order.id}>{order.reference} · {dealStatusLabels[order.status]}</option>)}</select>
               : selected.reference}</span></div>
-          <div className="inbox-sections" role="group" aria-label="Secciones de la orden">
+          {selected.orderId && <><div className="inbox-sections" role="group" aria-label="Secciones de la orden">
             {SECTIONS.map(([value, label, Icon]) => <button type="button" key={value} aria-pressed={layout.sideOpen && section === value} title={label} onClick={() => toggleSection(value)}><Icon size={15}/><span>{label}</span></button>)}
           </div>
           {selected.side === 'supplier'
             ? <Link className="button soft small inbox-open-order" href={`/proveedor/${selected.account.id}/ordenes/${selected.orderId}`} onClick={onClose} title="Abrir orden"><ArrowUpRight size={15}/><span>Abrir orden</span></Link>
-            : <button type="button" className="button soft small inbox-open-order" onClick={() => setDealOpen(true)} title="Abrir orden"><ArrowUpRight size={15}/><span>Abrir orden</span></button>}
+            : <button type="button" className="button soft small inbox-open-order" onClick={() => setDealOpen(true)} title="Abrir orden"><ArrowUpRight size={15}/><span>Abrir orden</span></button>}</>}
         </header>
-        <div className={`inbox-conversation-body${layout.sideOpen ? ' side-open' : ''}`}>
-          <div className="inbox-chat"><DealChat key={selected.threadId ?? selected.orderId} account={accountOf(selected)} orderId={selected.orderId} reference={selected.reference} active supplier={selected.side === 'supplier'} insert={chatInsert} compact/></div>
-          {layout.sideOpen && separator('side', 'Ajustar el ancho de la orden')}
+        <div className={`inbox-conversation-body${layout.sideOpen && selected.orderId ? ' side-open' : ''}`}>
+          <div className="inbox-chat"><DealChat key={selected.threadId ?? selected.orderId} account={accountOf(selected)} orderId={selected.orderId || undefined} thread={selected.threadId}
+            reference={selected.reference} active supplier={selected.side === 'supplier'} insert={chatInsert} startGeneral={!!initial?.draft && initial.threadId === selected.threadId} compact/></div>
+          {layout.sideOpen && selected.orderId && separator('side', 'Ajustar el ancho de la orden')}
           {/* Kept mounted while closed: an open editor, a half-written adjustment or a confirmation keeps its state. */}
-          <div className="inbox-side" hidden={!layout.sideOpen}>
+          {selected.orderId && <div className="inbox-side" hidden={!layout.sideOpen}>
             <DealDetail key={selected.orderId} embedded account={accountOf(selected)} orderId={selected.orderId} reference={selected.reference} side={selected.side}
               tab={section} onTab={setSection} onPricing={pricingChanged}
               onCopyToChat={text => { setChatInsert({ text, id: Date.now() }); if (!wide()) setLayout(current => ({ ...current, sideOpen: false })); }}/>
-          </div>
+          </div>}
         </div>
       </section> : <section className="inbox-conversation inbox-placeholder">{!layout.listOpen && listToggle}<MessagesSquare size={30}/><p>Elige una conversación para ver su chat y su orden.</p></section>}
     </div>

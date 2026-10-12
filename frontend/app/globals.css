@@ -2622,3 +2622,5 @@ body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-s
 .deal-chat-tag.general { background:#fff; border-style:dashed; color:#5d6a61; }
 .deal-chat-send>.deal-chat-tag { margin-right:4px; }
 .inbox-order-picker { max-width:100%; padding:1px 4px; border:1px solid var(--line); border-radius:6px; background:#fff; color:inherit; font:inherit; font-size:12px; }
+/* Preguntar al proveedor (part-detail.tsx): a quiet link under the supplier's name. */
+.supplier-ask { display:inline-flex; align-items:center; gap:5px; margin-top:4px; padding:0; }
