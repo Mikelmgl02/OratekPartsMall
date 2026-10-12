@@ -141,7 +141,8 @@ function RunDetail({ basePath, id, onClose }: { basePath: string; id: string; on
   useEffect(() => { let live = true; request<LedgerRun>(`${basePath}/runs/${id}`).then(data => { if (live) setRun(data); }).catch(reason => { if (live) setError((reason as Error).message); }); return () => { live = false; }; }, [basePath, id]);
   useEffect(() => { const timer = setTimeout(() => setQuery(search.trim()), 300); return () => clearTimeout(timer); }, [search]);
   const params = useMemo(() => ({ action, search: query }), [action, query]);
-  return <Modal title={run ? `${run.origin_label} · ${run.name}` : 'Carga'} wide drawer className="side-panel" onClose={onClose}>
+  // An apiag-cloud pull's name already says apiag-cloud (its label); the others need their origin in front.
+  return <Modal title={run ? run.origin === 'apiag' ? run.name : `${run.origin_label} · ${run.name}` : 'Carga'} wide drawer className="side-panel" onClose={onClose}>
     {error && <div className="notice error" role="alert">{error}</div>}
     {!run && !error && <div className="loading"><LoaderCircle className="spin"/>Cargando…</div>}
     {run && <div className="stack-form ledger-run">
