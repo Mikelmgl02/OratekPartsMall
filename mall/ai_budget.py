@@ -17,7 +17,7 @@ from rest_framework.exceptions import APIException
 from .quote_assistant_models import AIUsageRecord, QuoteAssistantRun
 
 ESTIMATED_OUTPUT_TOKENS = 1500
-FEATURE_BUDGETS = {'quote_assistant': 'QUOTE_ASSISTANT_MONTHLY_USD'}
+FEATURE_BUDGETS = {'quote_assistant': 'QUOTE_ASSISTANT_MONTHLY_USD', 'whatsapp_assistant': 'WHATSAPP_ASSISTANT_MONTHLY_USD'}
 USAGE_FIELDS = ('calls', 'cached_calls', 'failed_calls', 'input_tokens', 'output_tokens', 'thinking_tokens', 'cost_micro_usd')
 TOKEN_FIELDS = ('input_tokens', 'output_tokens', 'thinking_tokens')
 # Every feature that records AI usage. The catalog features record platform usage (account null) through generate_json(feature=...);
@@ -25,7 +25,7 @@ TOKEN_FIELDS = ('input_tokens', 'output_tokens', 'thinking_tokens')
 FEATURE_LABELS = {'quote_assistant': 'Asistente de cotización', 'catalog_classification': 'Clasificación de importaciones',
                   'catalog_assistant': 'Asistente de inventario', 'catalog_grouping': 'Agrupación de SKU', 'category_suggestions': 'Tipos de repuesto',
                   'oem_lookup': 'Referencias OEM', 'matching': 'Emparejamiento de proveedores',
-                  'chat_transcription': 'Transcripción de notas de voz'}
+                  'chat_transcription': 'Transcripción de notas de voz', 'whatsapp_assistant': 'Asistente de WhatsApp'}
 logger = logging.getLogger(__name__)
 
 

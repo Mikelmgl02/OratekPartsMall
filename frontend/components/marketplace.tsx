@@ -107,18 +107,27 @@ export default function Catálogo() {
 
   const [authUsername, setAuthUsername] = useState('');
   function openAuth(mode: 'login' | 'signup' = 'login', username = '') { setAuthMode(mode); setAuthUsername(username); setAuthOpen(true); }
-  // A notice's link opened signed out (?conversacion=<deal>~<hint>): straight to the sign-in, with the username the notice was sent to;
-  // once signed in, the inbox opens the conversation.
+  // A notice's link opened signed out (?conversacion=<deal>~<hint>), or the WhatsApp assistant's link to the cesta (?vista=cesta&cuenta=
+  // <account>&ingreso=<hint>): straight to the sign-in, with the username it was sent to; once signed in, the conversation or the cesta opens.
   const noticeLinkHandled = useRef(false);
   useEffect(() => {
     if (!sessionReady || authenticated || noticeLinkHandled.current) return;
-    const value = new URL(window.location.href).searchParams.get('conversacion');
-    if (!value) return;
+    const params = new URL(window.location.href).searchParams;
+    const value = params.get('conversacion'), signIn = params.get('ingreso');
+    if (!value && !signIn) return;
     noticeLinkHandled.current = true;
-    const hint = value.split('~')[1];
+    const hint = value ? value.split('~')[1] : signIn;
     (hint ? request<{ username: string }>(`/api/session/hint?hint=${encodeURIComponent(hint)}`).then(data => data.username).catch(() => '') : Promise.resolve(''))
       .then(username => openAuth('login', username));
   }, [sessionReady, authenticated]);
+  // Signed in, the sign-in hint of the assistant's link leaves the address bar.
+  useEffect(() => {
+    if (!authenticated) return;
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has('ingreso')) return;
+    url.searchParams.delete('ingreso');
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+  }, [authenticated]);
 
   const loadSession = useCallback(async () => {
     const generation = ++sessionGeneration.current;

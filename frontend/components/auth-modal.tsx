@@ -33,7 +33,7 @@ export default function AuthModal({ onClose, onSuccess, initialMode = 'login', i
     <div className="segmented"><button className={mode === 'login' ? 'selected' : ''} onClick={() => {setMode('login'); setError('');}}>Iniciar sesión</button><button className={mode === 'signup' ? 'selected' : ''} onClick={() => {setMode('signup'); setError('');}}>Tengo una invitación</button></div>
     <form onSubmit={submit} className="stack-form">
       {mode === 'signup' && <><label>Código de invitación<input name="token" required placeholder="Tu código de invitación" autoComplete="off"/></label><label>Correo electrónico<input type="email" name="email" required autoComplete="email" placeholder="tu@empresa.com"/></label></>}
-      {mode === 'login' && initialUsername && <p className="notice auth-link-notice" role="status">Inicia sesión para abrir la conversación de tu aviso.</p>}
+      {mode === 'login' && initialUsername && <p className="notice auth-link-notice" role="status">{typeof window !== 'undefined' && new URL(window.location.href).searchParams.has('ingreso') ? 'Inicia sesión para ver tu cesta.' : 'Inicia sesión para abrir la conversación de tu aviso.'}</p>}
       <label>Usuario<input name="username" required maxLength={150} autoComplete="username" placeholder="Tu usuario" defaultValue={mode === 'login' ? initialUsername : undefined}/></label>
       <label>Contraseña<input ref={password} type="password" name="password" required minLength={mode === 'signup' ? 8 : undefined} autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} placeholder="Introduce tu contraseña"/></label>
       {error && <div className="notice error" role="alert">{error}</div>}

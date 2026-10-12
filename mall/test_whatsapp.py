@@ -23,7 +23,7 @@ from . import login_hints, whatsapp_templates
 
 CLOUD = {'WHATSAPP_ACCESS_TOKEN': 'EAAG-prueba', 'WHATSAPP_PHONE_NUMBER_ID': '1055', 'WHATSAPP_API_VERSION': 'v23.0', 'WHATSAPP_APP_SECRET': 'secreto',
          'WHATSAPP_VERIFY_TOKEN': 'verifica', 'RESEND_API_KEY': '', 'VAPID_PRIVATE_KEY': '', 'CHANNEL_LAYERS': {},
-         'SITE_URL': 'https://motionpartes.example.invalid'}
+         'SITE_URL': 'https://motionpartes.example.invalid', 'WHATSAPP_ASSISTANT_MONTHLY_USD': 0}  # the assistant has its own tests
 
 
 class Reply:

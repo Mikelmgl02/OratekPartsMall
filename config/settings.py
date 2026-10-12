@@ -186,6 +186,8 @@ def env_usd(name, default):
 # (40 of the 200 platform budget is the recommended cap). AI_MONTHLY_BUDGET_USD caps every feature that records AI usage.
 QUOTE_ASSISTANT_MONTHLY_USD = env_usd('QUOTE_ASSISTANT_MONTHLY_USD', '0')
 AI_MONTHLY_BUDGET_USD = env_usd('AI_MONTHLY_BUDGET_USD', '200')
+# The WhatsApp shopping assistant (mall.whatsapp_assistant): on with Gemini and WhatsApp configured and this monthly cap above 0.
+WHATSAPP_ASSISTANT_MONTHLY_USD = env_usd('WHATSAPP_ASSISTANT_MONTHLY_USD', '10')
 QUOTE_ASSISTANT_RUNS_PER_REVISION = max(1, int(os.getenv('QUOTE_ASSISTANT_RUNS_PER_REVISION', '5')))
 QUOTE_ASSISTANT_DAILY_RUNS_PER_ACCOUNT = max(1, int(os.getenv('QUOTE_ASSISTANT_DAILY_RUNS_PER_ACCOUNT', '30')))
 # PLACEHOLDER token prices in USD per million tokens, used only to estimate and record AI spend against the caps above. They are NOT

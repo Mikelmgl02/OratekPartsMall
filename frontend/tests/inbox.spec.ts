@@ -1,4 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
+import { fakeServerBasket } from './server-basket';
 
 const empty = { count: 0, next: null, previous: null, results: [] };
 const acct = { id: '11111111-1111-1111-1111-111111111111', name: 'FRANK MOTORS', roles: ['client_business'], capabilities: ['client'], permission: 'owner' };
@@ -461,6 +462,27 @@ test('a notice link opened signed out goes straight to the sign-in with the user
   await signIn.getByLabel('Contraseña', { exact: true }).fill('Clave938!');
   await signIn.locator('form').getByRole('button', { name: 'Iniciar sesión' }).click();
   await expect(page.getByRole('dialog', { name: 'Conversaciones', exact: true }).getByRole('region', { name: 'Orden ORD-0123 con GRUPO RAZOR PARTS', exact: true })).toBeVisible();
+});
+
+test('the WhatsApp assistant’s cesta link opened signed out goes to the sign-in, then shows that account’s cesta without the hint', async ({ page }) => {
+  await mockInbox(page, { current: pending() });
+  let signedIn = false;
+  await page.route('**/api/session', route => {
+    if (route.request().method() === 'POST') { signedIn = true; return route.fulfill({ json: { authenticated: true } }); }
+    return route.fulfill({ json: signedIn ? { authenticated: true, user: { id: 1, username: 'FRANCISCO', first_name: 'Francisco', last_name: '', is_superuser: false },
+      accounts: { count: 1, next: null, previous: null, results: [acct] } } : { authenticated: false } });
+  });
+  await page.route(/\/api\/session\/hint\?/, route => route.fulfill({ json: { username: 'FRANCISCO' } }));
+  await fakeServerBasket(page);
+  await page.goto(`/?vista=cesta&cuenta=${acct.id}&ingreso=MQ:1xFlI0:firma-de-prueba`);
+  const signIn = page.getByRole('dialog', { name: 'Bienvenido a MotionPartes', exact: true });
+  await expect(signIn.getByRole('status')).toContainText('Inicia sesión para ver tu cesta.');
+  await expect(signIn.getByLabel('Usuario', { exact: true })).toHaveValue('FRANCISCO');
+  await signIn.getByLabel('Contraseña', { exact: true }).fill('Clave938!');
+  await signIn.locator('form').getByRole('button', { name: 'Iniciar sesión' }).click();
+  await expect(page.getByRole('main', { name: 'Cesta de solicitudes', exact: true })).toContainText('Tu cesta se guarda en tu cuenta');
+  await expect.poll(() => new URL(page.url()).searchParams.has('ingreso')).toBe(false);
+  expect(new URL(page.url()).searchParams.get('vista')).toBe('cesta');
 });
 
 test.describe('on a touch phone', () => {
