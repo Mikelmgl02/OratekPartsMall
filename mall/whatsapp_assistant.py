@@ -53,15 +53,19 @@ con el contexto y decide UNA acción:
   cantidad.
 - elegir: elige una de las opciones numeradas que se le mostraron (opcion = su número).
 - cantidad: dice cuántas unidades quiere (cantidad).
-- ver_cesta: quiere ver su cesta. quitar: quiere quitar una línea de su cesta (opcion = su número en la cesta).
+- ver_cesta: quiere ver su cesta. quitar: quiere quitar una línea de su cesta (opcion = su número en la cesta). cambiar: quiere otra
+  cantidad para una línea de su cesta, sin quitarla (opcion = su número en la cesta, cantidad = la nueva cantidad total), por ejemplo
+  «el 1 a 8» o «solo quería 8 del primero». Con un solo artículo en la cesta, opcion puede ser 0.
 - cuenta: quiere comprar para otra de sus cuentas.
 - orden: escribe al proveedor sobre una orden ya enviada (entrega, confirmación, una pregunta sobre su cotización).
 - responder: un saludo, una pregunta sobre cómo funciona o algo que no es ninguna de las anteriores. En respuesta escribe una contestación
-  breve y amable en español (máximo 3 frases): qué puede hacer el asistente y cómo pedirlo.
+  breve y amable en español (máximo 3 frases): qué puede hacer el asistente y cómo pedirlo. El asistente solo busca repuestos y
+  agrega, cambia o quita artículos de la cesta; si pide otra cosa, dilo y sugiere hacerlo en MotionPartes. Nunca propongas pasos que no
+  existan.
 Nunca inventes repuestos, precios, existencias, plazos ni datos de pedidos. Usa 0 en opcion o cantidad cuando no aplique."""
 
 SCHEMA = {'type': 'object', 'properties': {
-    'accion': {'type': 'string', 'enum': ['buscar', 'elegir', 'cantidad', 'ver_cesta', 'quitar', 'cuenta', 'orden', 'responder']},
+    'accion': {'type': 'string', 'enum': ['buscar', 'elegir', 'cantidad', 'ver_cesta', 'quitar', 'cambiar', 'cuenta', 'orden', 'responder']},
     'consultas': {'type': 'array', 'items': {'type': 'string'}},
     'codigos': {'type': 'array', 'items': {'type': 'string'}},
     'opcion': {'type': 'integer'},
@@ -250,6 +254,8 @@ def understand(turn, words, image):
         show_cart(turn)
     elif action == 'quitar':
         remove(turn, decision.get('opcion') or 0)
+    elif action == 'cambiar':
+        change(turn, decision.get('opcion') or 0, quantity)
     elif action == 'cuenta' and len(turn.accounts) > 1:
         ask_account(turn, '¿Para cuál de tus cuentas es la compra?')
     elif action == 'orden':
@@ -302,8 +308,11 @@ def tap(turn, identifier):
         pick(turn, value)
     elif kind == 'qty' and value.isdigit():
         add(turn, int(value))
-    elif kind == 'remove':
+    elif kind == 'remove':  # confirmed with its button
         remove_item(turn, value)
+    elif identifier == 'menu:keep':
+        turn.session.step = 'idle'
+        turn.say(text('Listo, no quité nada. ¿Qué más necesitas?'))
     elif identifier == 'menu:cesta':
         show_cart(turn)
     else:
@@ -476,31 +485,69 @@ def show_cart(turn):
         turn.say(text(f'Tu cesta{whose} está vacía. Dime qué repuesto buscas o envíame una foto de su etiqueta.'))
         return
     session.step = 'cart'
-    session.options = [{'id': f'remove:{row.supplier_item_id}', 'label': f'{row.quantity} × {row.codigo} · {row.supplier_item.supplier.name}'} for row in rows[:20]]
+    session.options = [{'id': f'remove:{row.supplier_item_id}', 'label': line_label(row)} for row in rows[:20]]
     lines = '\n'.join(f'{index}. {option["label"]}' for index, option in enumerate(session.options, 1))
     more = f'\n… y {len(rows) - 20} más.' if len(rows) > 20 else ''
-    turn.say(text(f'Tu cesta{whose}:\n{lines}{more}\n\nPara quitar uno, escribe «quita el 2». Revísala y envía la solicitud en MotionPartes:\n{cart_link(turn)}'))
+    example = 2 if len(rows) > 1 else 1
+    turn.say(text(f'Tu cesta{whose}:\n{lines}{more}\n\nPara cambiar una cantidad escribe, por ejemplo, «el {example} a 8»; para quitar uno, «quita el {example}». '
+                  f'Revísala y envía la solicitud en MotionPartes:\n{cart_link(turn)}'))
+
+
+def line_label(row):
+    return f'{row.quantity} × {row.codigo} · {row.supplier_item.supplier.name}'
+
+
+def cart_line(turn, number):
+    """The cesta's line «number» as the cesta lists it (the only one when there is one and no number was said), or None after saying why."""
+    from .basket_models import BasketItem
+    rows = list(BasketItem.objects.filter(user=turn.user, account=turn.account).select_related('supplier_item__supplier').order_by('created_at', 'id'))
+    if not rows:
+        turn.session.step = 'idle'
+        turn.say(text('Tu cesta está vacía. Dime qué repuesto buscas o envíame una foto de su etiqueta.'))
+        return None
+    if not number and len(rows) == 1:
+        return rows[0]
+    if not 1 <= number <= len(rows):
+        turn.say(text(f'Tu cesta tiene {len(rows)} artículos: dime cuál, del 1 al {len(rows)}.' if len(rows) > 1 else 'Tu cesta tiene un solo artículo, el 1.'))
+        return None
+    return rows[number - 1]
 
 
 def remove(turn, number):
-    options = turn.session.options if turn.session.step == 'cart' else []
-    if not options:
-        show_cart(turn)
-    elif not 1 <= number <= len(options):
-        turn.say(text(f'Elige un número del 1 al {len(options)} de tu cesta.'))
-    else:
-        remove_item(turn, options[number - 1]['id'].split(':', 1)[1], options[number - 1]['label'])
+    """Taking a line out asks first: a button confirms it (a stray «1» never empties a cesta)."""
+    row = cart_line(turn, number)
+    if row is not None:
+        turn.session.step = 'cart'
+        body = f'¿Quito {line_label(row)} de tu cesta?'
+        turn.say(buttons(body, [(f'remove:{row.supplier_item_id}', 'Sí, quitar'), ('menu:keep', 'No')]), body)
 
 
-def remove_item(turn, item_id, label=''):
+def change(turn, number, quantity):
+    from .basket import apply_changes
+    if quantity <= 0:
+        turn.say(text('¿Cuántas unidades quieres? Escribe, por ejemplo, «el 1 a 8».'))
+        return
+    row = cart_line(turn, number)
+    if row is None:
+        return
+    quantity = min(quantity, 9999)
+    apply_changes(turn.user, turn.account, [{'supplier_item_id': row.supplier_item_id, 'quantity': quantity, 'mode': 'set'}])
+    turn.session.step, turn.session.options = 'idle', []
+    turn.say(text(f'Listo: ahora pides {quantity} × {row.codigo} · {row.supplier_item.supplier.name}. Revisa tu cesta en MotionPartes:\n{cart_link(turn)}'))
+
+
+def remove_item(turn, item_id):
     from .basket import apply_changes
     from .basket_models import BasketItem
-    if as_uuid(item_id) is None:
-        return show_cart(turn)
-    apply_changes(turn.user, turn.account, [{'supplier_item_id': as_uuid(item_id), 'quantity': 0, 'mode': 'set'}])
-    count = BasketItem.objects.filter(user=turn.user, account=turn.account).count()
+    row = (BasketItem.objects.filter(user=turn.user, account=turn.account, supplier_item_id=as_uuid(item_id)).select_related('supplier_item__supplier').first()
+           if as_uuid(item_id) else None)
     turn.session.step, turn.session.options = 'idle', []
-    turn.say(text(f'Listo, quité {label or "ese artículo"}. Te {"queda" if count == 1 else "quedan"} {count} {"artículo" if count == 1 else "artículos"} en la cesta.'))
+    if row is None:
+        turn.say(text('Ese artículo ya no está en tu cesta.'))
+        return
+    apply_changes(turn.user, turn.account, [{'supplier_item_id': row.supplier_item_id, 'quantity': 0, 'mode': 'set'}])
+    count = BasketItem.objects.filter(user=turn.user, account=turn.account).count()
+    turn.say(text(f'Listo, quité {line_label(row)}. Te {"queda" if count == 1 else "quedan"} {count} {"artículo" if count == 1 else "artículos"} en la cesta.'))
 
 
 def ask_account(turn, question):

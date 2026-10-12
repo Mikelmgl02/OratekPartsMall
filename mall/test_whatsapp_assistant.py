@@ -119,12 +119,28 @@ class WhatsAppAssistantTests(ChatStorage, APITestCase):
         self.writes('cesta')  # no AI
         [cart] = meta.sent()
         self.assertIn('1. 3 × 58411-1R000-G · PROVEEDOR B\n2. 4 × 58411-1R000-G · PROVEEDOR A', cart['text']['body'])
+        self.decisions.append({'accion': 'cambiar', 'opcion': 2, 'cantidad': 8})
+        self.writes('el 2 a 8')
+        [changed] = meta.sent()
+        self.assertIn('Listo: ahora pides 8 × 58411-1R000-G · PROVEEDOR A.', changed['text']['body'])
+        self.assertEqual(BasketItem.objects.get(supplier_item=self.item_a).quantity, 8)
         self.decisions.append({'accion': 'quitar', 'opcion': 1})
         self.writes('quita el 1')
+        [confirm] = meta.sent()  # taking a line out asks first
+        self.assertEqual(confirm['interactive']['body']['text'], '¿Quito 3 × 58411-1R000-G · PROVEEDOR B de tu cesta?')
+        self.assertEqual([button['reply']['id'] for button in confirm['interactive']['action']['buttons']], [f'remove:{self.item_b.pk}', 'menu:keep'])
+        self.assertEqual(BasketItem.objects.count(), 2)
+        self.taps('menu:keep', kind='button_reply')
+        self.assertEqual(BasketItem.objects.count(), 2)
+        meta.sent()
+        self.taps(f'remove:{self.item_b.pk}', kind='button_reply')
         [removed] = meta.sent()
         self.assertIn('Listo, quité 3 × 58411-1R000-G · PROVEEDOR B. Te queda 1 artículo en la cesta.', removed['text']['body'])
         self.assertEqual(list(BasketItem.objects.values_list('supplier_item', flat=True)), [self.item_a.pk])
-        self.assertEqual((self.decisions, self.generate.call_count), ([], 5))  # every one read once; quantities and taps need no AI
+        self.decisions.append({'accion': 'cambiar', 'opcion': 0, 'cantidad': 6})  # one line left: no number needed
+        self.writes('mejor 6')
+        self.assertEqual(BasketItem.objects.get().quantity, 6)
+        self.assertEqual((self.decisions, self.generate.call_count), ([], 7))  # every one read once; quantities and taps need no AI
 
     def test_the_accounts_own_articles_are_never_offered_and_a_client_with_several_accounts_chooses_first(self, urlopen):
         meta = urlopen.side_effect = FakeMeta()
