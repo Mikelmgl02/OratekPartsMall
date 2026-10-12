@@ -1,10 +1,12 @@
-"""The person's deal inbox, across every account they belong to: the conversations of their deals with unread counts, and notifications
-of what the other party did on them. Read by polling, nudged by the websocket (realtime.py); nothing here changes a deal.
+"""The person's deal inbox, across every account they belong to: their conversations, one per client and supplier pair (DealThread: one
+linear chat with all their orders, each message tagged with its order when it has one), with unread counts, and notifications of what the
+other party did on their orders. Read by polling, nudged by the websocket (realtime.py); nothing here changes a deal.
 
-A person takes part in a deal through a membership of its client account (with the client capability) or of its supplier account
-(with the supplier capability), the rule of deal_views.participant. Unread messages are the ones someone else wrote after the person's
-read mark; notifications are the deal events of accounts the person does not belong to. The person organizes their conversations list
-by pinning conversations (listed first, under Fijadas) and keeping others in groups they make; the rest list as Sin grupo."""
+A person takes part in a conversation through a membership of its client account (with the client capability) or of its supplier account
+(with the supplier capability), the rule of deal_views.participant. Unread messages are the ones someone else wrote after the person's read
+mark of the conversation; notifications are the deal events of accounts the person does not belong to. The person organizes their list by
+pinning conversations (listed first, under Fijadas) and keeping others in groups they make; the rest list as Sin grupo. Where an endpoint
+names a conversation, an order's id names its conversation too (links in notices and pushes name orders)."""
 import uuid
 from datetime import timedelta
 
@@ -21,11 +23,13 @@ from rest_framework.views import APIView
 
 from .deal_attachments import describe
 from .inbox_models import ConversationRead, InboxCursor, InboxGroup
-from .models import Account, DealEvent, DealMessage, SupplierRequest
+from .models import Account, DealEvent, DealMessage, DealThread, SupplierRequest
 
 NOTIFICATION_PAGE = 30
 GROUP_LIMIT = 30
 ACTIVITY_WRITE = timedelta(minutes=1)
+ORDERS_LISTED = 12  # a conversation's orders listed with it, latest first
+CLOSED = ('delivered', 'cancelled')
 SNIPPET = 140
 TITLES = {
     'order_sent': '{who} te envió una orden', 'order_appended': '{who} agregó artículos a la orden',
@@ -52,6 +56,26 @@ def my_deals(user):
             .annotate(side=Case(When(supplier__in=suppliers, then=Value('supplier')), default=Value('client'))))
 
 
+def my_threads(user):
+    """The conversations the person takes part in, with side: 'supplier' when they act for its supplier, 'client' otherwise."""
+    suppliers = member_accounts(user, 'supplier')
+    return (DealThread.objects.filter(Q(client__in=member_accounts(user, 'client')) | Q(supplier__in=suppliers))
+            .annotate(side=Case(When(supplier__in=suppliers, then=Value('supplier')), default=Value('client'))))
+
+
+def thread_named(user, identifier):
+    """The person's conversation named by its id or by one of its orders' ids (404 otherwise)."""
+    try:
+        identifier = uuid.UUID(str(identifier))
+    except ValueError:
+        identifier = None
+    row = my_threads(user).filter(Q(pk=identifier) | Q(orders__pk=identifier)).distinct().first() if identifier else None
+    if row is None:
+        from django.http import Http404
+        raise Http404('No tienes esta conversación.')
+    return row
+
+
 def cursor_for(user):
     cursor = InboxCursor.objects.filter(user=user).first()
     if cursor is None:
@@ -65,31 +89,33 @@ def cursor_for(user):
 
 
 def unread(messages, user, cursor):
-    """The messages someone else wrote after the person's read mark of their deal (or after the inbox floor, whichever is later)."""
-    read = ConversationRead.objects.filter(user=user, order=OuterRef('order_id')).values('last_message_id')
+    """The messages someone else wrote after the person's read mark of their conversation (or after the inbox floor, whichever is later)."""
+    read = ConversationRead.objects.filter(user=user, thread=OuterRef('thread_id')).values('last_message_id')
     upto = Greatest(Coalesce(Subquery(read), Value(0), output_field=BigIntegerField()), Value(cursor.message_floor),
                     output_field=BigIntegerField())
     return messages.exclude(actor=user).annotate(read_upto=upto).filter(id__gt=F('read_upto'))
 
 
 def unread_messages(user, cursor):
-    return unread(DealMessage.objects.filter(order__in=my_deals(user).values('pk')), user, cursor)
+    return unread(DealMessage.objects.filter(thread__in=my_threads(user).values('pk')), user, cursor)
 
 
-def with_activity(deals, user, cursor):
-    unread_count = (unread(DealMessage.objects.filter(order=OuterRef('pk')), user, cursor).order_by().values('order')
+def with_activity(threads, user, cursor):
+    """Each conversation with its unread messages, its last message and its latest activity (a message, or a change of one of its orders)."""
+    unread_count = (unread(DealMessage.objects.filter(thread=OuterRef('pk')), user, cursor).order_by().values('thread')
                     .annotate(total=Count('pk')).values('total'))
-    latest = DealMessage.objects.filter(order=OuterRef('pk')).order_by('-id')
-    return deals.annotate(unread=Coalesce(Subquery(unread_count, output_field=IntegerField()), Value(0)),
-                          last_message_id=Subquery(latest.values('id')[:1]),
-                          activity=Greatest('updated_at', Coalesce(Subquery(latest.values('created_at')[:1]), 'updated_at')))
+    latest = DealMessage.objects.filter(thread=OuterRef('pk')).order_by('-id')
+    changed = SupplierRequest.objects.filter(thread=OuterRef('pk')).order_by('-updated_at').values('updated_at')[:1]
+    return threads.annotate(unread=Coalesce(Subquery(unread_count, output_field=IntegerField()), Value(0)),
+                            last_message_id=Subquery(latest.values('id')[:1]),
+                            activity=Greatest(Coalesce(Subquery(changed), 'created_at'), Coalesce(Subquery(latest.values('created_at')[:1]), 'created_at')))
 
 
-def placed(deals, user):
-    """Each deal with where the person keeps it in their list: pinned, in one of their groups (with its position), or neither."""
-    place = ConversationRead.objects.filter(user=user, order=OuterRef('pk'))
-    return deals.annotate(list_pinned=Subquery(place.values('pinned_at')[:1]), list_group=Subquery(place.values('group_id')[:1]),
-                          list_position=Subquery(place.values('group__position')[:1]))
+def placed(threads, user):
+    """Each conversation with where the person keeps it in their list: pinned, in one of their groups (with its position), or neither."""
+    place = ConversationRead.objects.filter(user=user, thread=OuterRef('pk'))
+    return threads.annotate(list_pinned=Subquery(place.values('pinned_at')[:1]), list_group=Subquery(place.values('group_id')[:1]),
+                            list_position=Subquery(place.values('group__position')[:1]))
 
 
 def list_order(rows):
@@ -102,7 +128,7 @@ def list_order(rows):
 
 def groups_of(user):
     """The person's groups in order, each with how many of their conversations it lists (pinned ones list under Fijadas instead)."""
-    counts = (ConversationRead.objects.filter(group=OuterRef('pk'), pinned_at__isnull=True, order__in=my_deals(user).values('pk'))
+    counts = (ConversationRead.objects.filter(group=OuterRef('pk'), pinned_at__isnull=True, thread__in=my_threads(user).values('pk'))
               .order_by().values('group').annotate(total=Count('pk')).values('total'))
     groups = InboxGroup.objects.filter(user=user).annotate(total=Coalesce(Subquery(counts, output_field=IntegerField()), Value(0)))
     return [group_data(group, group.total) for group in groups]
@@ -117,9 +143,12 @@ def notifications(user):
 
 
 def own_side(row):
+    """(the person's party, the other party) of an order or a conversation, with their names (an order keeps the names it was sent with)."""
     supplier = row.side == 'supplier'
-    return ({'id': str(row.supplier_id), 'name': row.supplier_name} if supplier else {'id': str(row.client_id), 'name': row.client_name},
-            {'id': str(row.client_id), 'name': row.client_name} if supplier else {'id': str(row.supplier_id), 'name': row.supplier_name})
+    client_name = row.client_name if hasattr(row, 'client_name') else row.client.name
+    supplier_name = row.supplier_name if hasattr(row, 'supplier_name') else row.supplier.name
+    return ({'id': str(row.supplier_id), 'name': supplier_name} if supplier else {'id': str(row.client_id), 'name': client_name},
+            {'id': str(row.client_id), 'name': client_name} if supplier else {'id': str(row.supplier_id), 'name': supplier_name})
 
 
 def message_preview(message, user):
@@ -127,7 +156,26 @@ def message_preview(message, user):
         return None
     return {'id': message.pk, 'body': snippet(describe(message)), 'account_id': str(message.account_id), 'account_name': message.account.name,
             'actor_name': message.actor.get_full_name() or message.actor.username, 'mine': message.actor_id == user.pk,
+            'order_id': str(message.order_id) if message.order_id else None, 'reference': message.order.reference if message.order_id else None,
             'created_at': iso(message.created_at)}
+
+
+def order_brief(order):
+    return {'id': str(order.pk), 'reference': order.reference, 'status': order.status}
+
+
+def thread_orders(thread_ids):
+    """Each conversation's orders, latest first: {thread id: [orders]}."""
+    found = {}
+    for order in SupplierRequest.objects.filter(thread_id__in=thread_ids).only('id', 'thread_id', 'reference', 'status', 'updated_at', 'created_at').order_by('-created_at', '-id'):
+        found.setdefault(order.thread_id, []).append(order)
+    return found
+
+
+def focus(orders):
+    """The order a conversation opens on: the one most recently changed among those still in progress, or else the latest."""
+    open_orders = [order for order in orders if order.status not in CLOSED]
+    return max(open_orders, key=lambda order: order.updated_at) if open_orders else (orders[0] if orders else None)
 
 
 def event_title(event):
@@ -144,7 +192,7 @@ def snippet(body):
 def notification_data(event, deal, cursor):
     mine, counterpart = own_side(deal)
     return {'id': event.pk, 'kind': event.kind, 'title': event_title(event), 'description': event.description, 'order_id': str(deal.pk),
-            'reference': deal.reference, 'status': deal.status, 'side': deal.side, 'account': mine,
+            'thread_id': str(deal.thread_id), 'reference': deal.reference, 'status': deal.status, 'side': deal.side, 'account': mine,
             'counterpart': counterpart, 'created_at': iso(event.created_at), 'unseen': event.pk > cursor.seen_event_id}
 
 
@@ -164,30 +212,32 @@ class InboxSummary(APIView):
         if not cursor.active_at or now - cursor.active_at > ACTIVITY_WRITE:  # someone using the app gets no email about a message
             InboxCursor.objects.filter(pk=cursor.pk).update(active_at=now)
         unread = unread_messages(user, cursor)
-        totals = unread.aggregate(messages=Count('pk'), conversations=Count('order', distinct=True))
+        totals = unread.aggregate(messages=Count('pk'), conversations=Count('thread', distinct=True))
         latest_message = unread.select_related('account', 'actor', 'order').order_by('-id').first()
         unseen = notifications(user).filter(id__gt=cursor.seen_event_id)
         latest_event = event_rows(user, unseen.order_by('-id'), 1)
         message = None
         if latest_message:
-            row = my_deals(user).get(pk=latest_message.order_id)
-            mine, counterpart = own_side(row)
-            message = {**message_preview(latest_message, user), 'order_id': str(row.pk), 'reference': row.reference,
-                       'account': mine, 'counterpart': counterpart, 'side': row.side}
+            thread = my_threads(user).select_related('client', 'supplier').get(pk=latest_message.thread_id)
+            mine, counterpart = own_side(thread)
+            shown = latest_message.order or focus(thread_orders([thread.pk]).get(thread.pk, []))
+            message = {**message_preview(latest_message, user), 'thread_id': str(thread.pk), 'order_id': str(shown.pk) if shown else None,
+                       'reference': shown.reference if shown else '', 'account': mine, 'counterpart': counterpart, 'side': thread.side}
         return Response({'unread_messages': totals['messages'], 'unread_conversations': totals['conversations'],
                          'unseen_notifications': unseen.count(), 'latest_message': message,
                          'latest_notification': notification_data(*latest_event[0], cursor) if latest_event else None})
 
 
 class InboxConversations(generics.GenericAPIView):
-    @extend_schema(responses=OpenApiTypes.OBJECT, description='Los acuerdos de la persona, del más reciente al más antiguo (mensaje o '
-                   'cambio de estado), con su lado, la otra parte, el último mensaje y cuántos mensajes no ha leído; primero los fijados, '
-                   'luego los de cada grupo de la persona y al final los demás (groups lista sus grupos). search filtra por referencia o '
-                   'nombre de cuenta; unread=1 deja solo los que tienen mensajes sin leer; order=<id> deja ese acuerdo; side=client|supplier '
-                   'deja sus compras o sus ventas (sides cuenta las conversaciones y los mensajes sin leer de cada lado).')
+    @extend_schema(responses=OpenApiTypes.OBJECT, description='Las conversaciones de la persona, una por cliente y proveedor, de la más '
+                   'reciente a la más antigua (mensaje o cambio de una de sus órdenes), con su lado, la otra parte, sus órdenes (la que abre '
+                   'primero en order_id), el último mensaje y cuántos mensajes no ha leído; primero las fijadas, luego las de cada grupo de la '
+                   'persona y al final las demás (groups lista sus grupos). search filtra por nombre de cuenta o referencia de una de sus '
+                   'órdenes; unread=1 deja solo las que tienen mensajes sin leer; order=<id> deja la conversación con ese id o con esa orden; '
+                   'side=client|supplier deja sus compras o sus ventas (sides cuenta las conversaciones y los mensajes sin leer de cada lado).')
     def get(self, request):
         user, cursor = request.user, cursor_for(request.user)
-        rows = placed(with_activity(my_deals(user), user, cursor), user)
+        rows = placed(with_activity(my_threads(user), user, cursor), user)
         # Someone who both buys and sells sees their purchases (client) and sales (supplier) apart; these counts tell the list they do.
         sides = {side: {'conversations': 0, 'unread': 0} for side in ('client', 'supplier')}
         for row in rows.order_by().values('side').annotate(conversations=Count('pk'), unread_messages=Sum('unread')):
@@ -197,22 +247,29 @@ class InboxConversations(generics.GenericAPIView):
             rows = rows.filter(side=side)
         search = request.query_params.get('search', '').strip()
         if search:
-            rows = rows.filter(Q(reference__icontains=search) | Q(client_name__icontains=search) | Q(supplier_name__icontains=search))
+            rows = rows.filter(pk__in=DealThread.objects.filter(Q(client__name__icontains=search) | Q(supplier__name__icontains=search)
+                                                                | Q(orders__reference__icontains=search)).values('pk'))
         if request.query_params.get('unread') == '1':
             rows = rows.filter(unread__gt=0)
         order = request.query_params.get('order', '')
-        if order:  # a push notification's link names its deal
+        if order:  # a notice's or a push's link names an order (or the conversation)
             try:
-                rows = rows.filter(pk=uuid.UUID(order))
+                named = uuid.UUID(order)
+                rows = rows.filter(pk__in=DealThread.objects.filter(Q(pk=named) | Q(orders__pk=named)).values('pk'))
             except ValueError:
                 rows = rows.none()
-        page = self.paginate_queryset(list_order(rows))
-        messages = DealMessage.objects.select_related('account', 'actor').in_bulk([row.last_message_id for row in page if row.last_message_id])
+        page = self.paginate_queryset(list_order(rows.select_related('client', 'supplier')))
+        messages = DealMessage.objects.select_related('account', 'actor', 'order').in_bulk([row.last_message_id for row in page if row.last_message_id])
+        orders = thread_orders([row.pk for row in page])
         results = []
         for row in page:
             mine, counterpart = own_side(row)
-            results.append({'id': str(row.pk), 'reference': row.reference, 'status': row.status, 'side': row.side, 'account': mine,
-                            'counterpart': counterpart, 'unread': row.unread, 'activity': iso(row.activity),
+            listed = orders.get(row.pk, [])
+            shown = focus(listed)
+            results.append({'id': str(row.pk), 'order_id': str(shown.pk) if shown else None, 'reference': shown.reference if shown else '',
+                            'status': shown.status if shown else 'pending', 'orders': [order_brief(order) for order in listed[:ORDERS_LISTED]],
+                            'order_count': len(listed), 'open_orders': sum(order.status not in CLOSED for order in listed),
+                            'side': row.side, 'account': mine, 'counterpart': counterpart, 'unread': row.unread, 'activity': iso(row.activity),
                             'last_message': message_preview(messages.get(row.last_message_id), user),
                             'pinned': row.list_pinned is not None, 'group': str(row.list_group) if row.list_group else None})
         response = self.get_paginated_response(results)
@@ -226,19 +283,19 @@ class ReadMark(serializers.Serializer):
 
 
 class InboxConversationRead(APIView):
-    @extend_schema(request=ReadMark, responses=OpenApiTypes.OBJECT, description='Marca la conversación como leída hasta ese mensaje. '
-                   'La marca solo avanza; un número mayor que el último mensaje del acuerdo se limita a él.')
+    @extend_schema(request=ReadMark, responses=OpenApiTypes.OBJECT, description='Marca la conversación (por su id o el de una de sus '
+                   'órdenes) como leída hasta ese mensaje. La marca solo avanza; un número mayor que el último mensaje se limita a él.')
     def post(self, request, pk):
-        row = generics.get_object_or_404(my_deals(request.user), pk=pk)
+        row = thread_named(request.user, pk)
         data = ReadMark(data=request.data)
         data.is_valid(raise_exception=True)
         upto = min(data.validated_data['last_message_id'], row.messages.aggregate(top=Max('id'))['top'] or 0)
-        mark, _ = ConversationRead.objects.get_or_create(user=request.user, order=row)
+        mark, _ = ConversationRead.objects.get_or_create(user=request.user, thread=row)
         ConversationRead.objects.filter(pk=mark.pk).update(last_message_id=Greatest('last_message_id', Value(upto)))
         mark.refresh_from_db()
         from .realtime import publish_later  # the person's other tabs and devices update their badges
-        publish_later({request.user.pk}, 'read', row.pk)
-        return Response({'order_id': str(row.pk), 'last_message_id': mark.last_message_id})
+        publish_later({request.user.pk}, 'read', thread_id=row.pk)
+        return Response({'thread_id': str(row.pk), 'last_message_id': mark.last_message_id})
 
 
 class Placement(serializers.Serializer):
@@ -250,7 +307,7 @@ class InboxConversationPlace(APIView):
     @extend_schema(request=Placement, responses=OpenApiTypes.OBJECT, description='Dónde guarda la persona la conversación en su lista: '
                    'pinned la fija arriba (o la devuelve a su grupo); group la pone en uno de sus grupos (null la deja sin grupo).')
     def post(self, request, pk):
-        row = generics.get_object_or_404(my_deals(request.user), pk=pk)
+        row = thread_named(request.user, pk)
         data = Placement(data=request.data)
         data.is_valid(raise_exception=True)
         changes = {}
@@ -261,13 +318,13 @@ class InboxConversationPlace(APIView):
             changes['group'] = generics.get_object_or_404(InboxGroup, user=request.user, pk=group) if group else None
         if not changes:
             raise ValidationError({'detail': 'Indica si la conversación va fijada (pinned) o en qué grupo (group).'})
-        mark, _ = ConversationRead.objects.get_or_create(user=request.user, order=row)
+        mark, _ = ConversationRead.objects.get_or_create(user=request.user, thread=row)
         for field, value in changes.items():
             setattr(mark, field, value)
         mark.save(update_fields=[*changes, 'updated_at'])  # never the read mark, which another request may be moving
         from .realtime import publish_later  # the person's other tabs and devices list it there too
-        publish_later({request.user.pk}, 'read', row.pk)
-        return Response({'order_id': str(row.pk), 'pinned': mark.pinned_at is not None, 'group': str(mark.group_id) if mark.group_id else None})
+        publish_later({request.user.pk}, 'read', thread_id=row.pk)
+        return Response({'thread_id': str(row.pk), 'pinned': mark.pinned_at is not None, 'group': str(mark.group_id) if mark.group_id else None})
 
 
 class GroupName(serializers.Serializer):
@@ -312,7 +369,7 @@ class InboxGroupDetail(APIView):
         group = generics.get_object_or_404(InboxGroup, user=request.user, pk=pk)
         group.name = group_name(request, group)
         saved_group(request, group)
-        return Response(group_data(group, group.conversations.filter(pinned_at__isnull=True, order__in=my_deals(request.user).values('pk')).count()))
+        return Response(group_data(group, group.conversations.filter(pinned_at__isnull=True, thread__in=my_threads(request.user).values('pk')).count()))
 
     @extend_schema(responses={204: None}, description='Elimina el grupo; sus conversaciones quedan sin grupo.')
     def delete(self, request, pk):

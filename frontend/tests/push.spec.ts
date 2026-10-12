@@ -4,7 +4,7 @@ const empty = { count: 0, next: null, previous: null, results: [] };
 const acct = { id: '11111111-1111-1111-1111-111111111111', name: 'FRANK MOTORS', roles: ['client_business'], capabilities: ['client'], permission: 'owner' };
 const order = '22222222-2222-2222-2222-222222222222';
 const supplier = { id: '44444444-4444-4444-4444-444444444444', name: 'GRUPO RAZOR PARTS' };
-const conversation = { id: order, reference: 'ORD-0123', status: 'quoted', side: 'client', account: { id: acct.id, name: acct.name }, counterpart: supplier, unread: 1, activity: new Date().toISOString(), last_message: null };
+const conversation = { id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', order_id: order, orders: [{ id: order, reference: 'ORD-0123', status: 'quoted' }], order_count: 1, open_orders: 1, reference: 'ORD-0123', status: 'quoted', side: 'client', account: { id: acct.id, name: acct.name }, counterpart: supplier, unread: 1, activity: new Date().toISOString(), last_message: null };
 // The default headless shell denies notifications; Chromium's new headless mode grants them like a desktop browser.
 test.use({ channel: 'chromium' });
 
@@ -99,7 +99,7 @@ test('a delivered push shows a system notification when the site is not in front
   const link = await context.newPage();
   const posts = await mock(link, true);
   await link.goto(`/?conversacion=${order}`);
-  await expect(link.getByRole('dialog', { name: 'Conversaciones', exact: true }).getByRole('region', { name: 'Orden ORD-0123 con GRUPO RAZOR PARTS', exact: true })).toBeVisible();
+  await expect(link.getByRole('dialog', { name: 'Conversaciones', exact: true }).getByRole('region', { name: 'Conversación con GRUPO RAZOR PARTS', exact: true })).toBeVisible();
   expect(posts.some(post => post.path === `?order=${order}`)).toBe(true);
   expect(new URL(link.url()).searchParams.get('conversacion')).toBeNull();
 });

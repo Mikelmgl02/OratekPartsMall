@@ -170,7 +170,7 @@ class Target:
 
 def targets(order, account_id, actor_id, preference):
     """The other party's people who opted in with a verified number and want this kind of notice, and its account's own number when it has
-    one; a number shared by both gets one notice."""
+    one; a number shared by both gets one notice. order may be an order or a conversation (only its two parties count)."""
     users = push.other_side(order, account_id, actor_id)
     people = [Target(cursor.whatsapp_number, user_id=cursor.user_id, cursor=cursor) for cursor in InboxCursor.objects.filter(
         user_id__in=users, user__is_active=True, whatsapp_opt_in_at__isnull=False, whatsapp_verified_at__isnull=False, **{preference: True})
@@ -183,13 +183,15 @@ def targets(order, account_id, actor_id, preference):
     return people + accounts
 
 
-def conversation_of(order, target):
-    """The ?conversacion= value of a link for this target: a person's carries their sign-in hint (mall.login_hints)."""
-    return login_hints.conversation(order.pk, target.user_id) if target.user_id else str(order.pk)
+def conversation_of(deal, target):
+    """The ?conversacion= value of a link for this target (an order, or a conversation): a person's carries their sign-in hint
+    (mall.login_hints)."""
+    return login_hints.conversation(deal.pk, target.user_id) if target.user_id else str(deal.pk)
 
 
-def log_row(target, order, kind, name):
-    return WhatsAppMessage.objects.create(user_id=target.user_id, account_id=target.account_id, order=order, number=target.number, template=name, kind=kind)
+def log_row(target, order, kind, name, thread=None):
+    return WhatsAppMessage.objects.create(user_id=target.user_id, account_id=target.account_id, order=order, number=target.number, template=name, kind=kind,
+                                          thread_id=thread.pk if thread else order.thread_id if order else None)
 
 
 def queue(people, order, kind, name, body):
@@ -199,24 +201,26 @@ def queue(people, order, kind, name, body):
 def message_saved(sender, instance, created=False, raw=False, **kwargs):
     if not created or raw or not whatsapp_enabled():
         return
-    message, order = instance, instance.order
+    message, order, thread = instance, instance.order, instance.thread
+    deal = order or thread  # what the links open: the order a message is about, or the conversation
 
     def collect():
+        from .inbox import focus, thread_orders
         from .whatsapp_bridge import continuing, relay_files, relay_text, window_open
         # Asking for an adjustment also writes its reason as a message: the adjustment's own notice covers it.
-        if DealEvent.objects.filter(order=order, actor_id=message.actor_id, kind='request_adjustment', description=message.body).exists():
+        if order and DealEvent.objects.filter(order=order, actor_id=message.actor_id, kind='request_adjustment', description=message.body).exists():
             return
         now = timezone.now()
-        notified = set(ConversationRead.objects.filter(order=order, whatsapp_at__gte=now - COOLDOWN).values_list('user_id', flat=True))
+        notified = set(ConversationRead.objects.filter(thread=thread, whatsapp_at__gte=now - COOLDOWN).values_list('user_id', flat=True))
 
         def recently_notified(target):  # one template notice per conversation every COOLDOWN
             if target.user_id:
                 return target.user_id in notified
-            return WhatsAppMessage.objects.filter(account_id=target.account_id, order=order, kind='message', created_at__gte=now - COOLDOWN).exists()
+            return WhatsAppMessage.objects.filter(account_id=target.account_id, thread=thread, kind='message', created_at__gte=now - COOLDOWN).exists()
         relays, notices = [], []
-        recipients = targets(order, message.account_id, message.actor_id, 'whatsapp_messages')
+        recipients = targets(thread, message.account_id, message.actor_id, 'whatsapp_messages')
         # Someone whose latest message here came by WhatsApp is talking from there: the replies follow, even with the site open somewhere.
-        latest = dict(DealMessage.objects.filter(order=order, actor_id__in={target.user_id for target in recipients if target.user_id})
+        latest = dict(DealMessage.objects.filter(thread=thread, actor_id__in={target.user_id for target in recipients if target.user_id})
                       .order_by('actor_id', '-id').distinct('actor_id').values_list('actor_id', 'channel'))
         for target in recipients:
             if target.cursor and target.cursor.active_at and target.cursor.active_at >= now - ACTIVE and latest.get(target.user_id) != 'whatsapp':
@@ -227,17 +231,20 @@ def message_saved(sender, instance, created=False, raw=False, **kwargs):
                 notices.append(target)
         for target in notices:
             if target.user_id:
-                mark, _ = ConversationRead.objects.get_or_create(user_id=target.user_id, order=order)
+                mark, _ = ConversationRead.objects.get_or_create(user_id=target.user_id, thread=thread)
                 ConversationRead.objects.filter(pk=mark.pk).update(whatsapp_at=now)
-        first = {target.number: not continuing(target.number, order, now) for target in relays}  # before this relay is logged
+        first = {target.number: not continuing(target.number, thread, now) for target in relays}  # before this relay is logged
         jobs = []
         for target in relays:  # the text (named at the start of a stretch), then each file as its own message
-            conversation = conversation_of(order, target)
+            conversation = conversation_of(deal, target)
             payloads = [relay_text(target.number, message, order, conversation, first[target.number]), *relay_files(target.number, message, conversation)]
-            jobs += [(log_row(target, order, 'message', f'{settings.WHATSAPP_TEMPLATE_MESSAGE} ({"archivo" if "_attachment" in payload else "relevo"})'[:80]).pk,
-                      payload) for payload in payloads if payload]
-        body = [param(message.account.name, 60), param(order.reference, 32), param(describe(message), 120)]
-        jobs += queue(notices, order, 'message', settings.WHATSAPP_TEMPLATE_MESSAGE, body)
+            jobs += [(log_row(target, order, 'message', f'{settings.WHATSAPP_TEMPLATE_MESSAGE} ({"archivo" if "_attachment" in payload else "relevo"})'[:80],
+                              thread).pk, payload) for payload in payloads if payload]
+        # The template names an order: the message's, or else the order the conversation is about now (its button opens the conversation).
+        named = order or focus(thread_orders([thread.pk]).get(thread.pk, []))
+        body = [param(message.account.name, 60), param(named.reference if named else 'MotionPartes', 32), param(describe(message), 120)]
+        jobs += [(log_row(target, order, 'message', settings.WHATSAPP_TEMPLATE_MESSAGE, thread).pk,
+                  template(target.number, settings.WHATSAPP_TEMPLATE_MESSAGE, body, conversation_of(deal, target))) for target in notices]
         if jobs:
             push.dispatch(lambda: deliver(jobs))
     transaction.on_commit(collect)

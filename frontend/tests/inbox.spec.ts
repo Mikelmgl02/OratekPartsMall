@@ -6,15 +6,18 @@ const acct = { id: '11111111-1111-1111-1111-111111111111', name: 'FRANK MOTORS',
 const order = '22222222-2222-2222-2222-222222222222', order2 = '33333333-3333-3333-3333-333333333333';
 const now = Date.now(), iso = (m: number) => new Date(now - m * 60000).toISOString();
 const party = { id: acct.id, name: acct.name }, sup = { id: '44444444-4444-4444-4444-444444444444', name: 'GRUPO RAZOR PARTS' };
+// Each conversation (one per client and supplier) here has one order; the server lists them with their own ids.
+const conversationOf = (index: number) => `aaaaaaaa-aaaa-4aaa-8aaa-${String(index).padStart(12, '0')}`;
 const conversations = [
   { id: order, reference: 'ORD-0123', status: 'quoted', side: 'client', account: party, counterpart: sup, unread: 2, activity: iso(2), last_message: { id: 12, body: 'SÍ, PODEMOS ENTREGAR EL LUNES ANTES DE LAS 12.', account_id: sup.id, account_name: sup.name, actor_name: 'Carlos Ruiz', mine: false, created_at: iso(2) } },
   { id: order2, reference: 'ORD-0119', status: 'reviewed', side: 'client', account: party, counterpart: { id: '5', name: 'AUTOPARTES DEL ISTMO' }, unread: 1, activity: iso(95), last_message: { id: 9, body: '¿EL DISCO ES VENTILADO?', account_id: '5', account_name: 'AUTOPARTES DEL ISTMO', actor_name: 'Ana', mine: false, created_at: iso(95) } },
   { id: '66666666-6666-6666-6666-666666666666', reference: 'ORD-0102', status: 'handshaked', side: 'client', account: party, counterpart: { id: '7', name: 'REPUESTOS PANAMÁ' }, unread: 0, activity: iso(60 * 30), last_message: { id: 3, body: 'GRACIAS, CONFIRMADO.', account_id: acct.id, account_name: acct.name, actor_name: 'Francisco', mine: true, created_at: iso(60 * 30) } },
-];
+].map((row, index) => ({ ...row, id: conversationOf(index + 1), order_id: row.id, orders: [{ id: row.id, reference: row.reference, status: row.status }],
+  order_count: 1, open_orders: ['delivered', 'cancelled'].includes(row.status) ? 0 : 1 }));
 const notifications = [
-  { id: 30, kind: 'quote', title: 'GRUPO RAZOR PARTS publicó la cotización v2', description: '', order_id: order, reference: 'ORD-0123', status: 'quoted', side: 'client', account: party, counterpart: sup, created_at: iso(5), unseen: true },
-  { id: 28, kind: 'review_started', title: 'AUTOPARTES DEL ISTMO empezó a revisar tu orden', description: 'EL PROVEEDOR ABRIÓ LA ORDEN. ARTÍCULOS BLOQUEADOS.', order_id: order2, reference: 'ORD-0119', status: 'reviewed', side: 'client', account: party, counterpart: conversations[1].counterpart, created_at: iso(100), unseen: true },
-  { id: 20, kind: 'accept', title: 'REPUESTOS PANAMÁ confirmó el acuerdo', description: '', order_id: conversations[2].id, reference: 'ORD-0102', status: 'handshaked', side: 'client', account: party, counterpart: conversations[2].counterpart, created_at: iso(60 * 30), unseen: false },
+  { id: 30, kind: 'quote', title: 'GRUPO RAZOR PARTS publicó la cotización v2', description: '', order_id: order, thread_id: conversationOf(1), reference: 'ORD-0123', status: 'quoted', side: 'client', account: party, counterpart: sup, created_at: iso(5), unseen: true },
+  { id: 28, kind: 'review_started', title: 'AUTOPARTES DEL ISTMO empezó a revisar tu orden', description: 'EL PROVEEDOR ABRIÓ LA ORDEN. ARTÍCULOS BLOQUEADOS.', order_id: order2, thread_id: conversationOf(2), reference: 'ORD-0119', status: 'reviewed', side: 'client', account: party, counterpart: conversations[1].counterpart, created_at: iso(100), unseen: true },
+  { id: 20, kind: 'accept', title: 'REPUESTOS PANAMÁ confirmó el acuerdo', description: '', order_id: conversations[2].order_id, thread_id: conversations[2].id, reference: 'ORD-0102', status: 'handshaked', side: 'client', account: party, counterpart: conversations[2].counterpart, created_at: iso(60 * 30), unseen: false },
 ];
 const line = (id: string, codigo: string, desc: string, q: number) => ({ id, part_id: 'p', sku: codigo.replace(/-[A-Z]$/, ''), name: '', codigo, brand: 'KSM', description: desc, quantity: q });
 const deal: Record<string, unknown> & { quotation: unknown } = { id: order, reference: 'ORD-0123', status: 'quoted', version: 4, created_at: iso(300), updated_at: iso(5), notes: 'ENTREGA EN TALLER DE VÍA ESPAÑA.', handshaked_at: null,
@@ -41,7 +44,9 @@ async function mockInbox(page: Page, summary: { current: Summary }) {
   await page.route(/\/api\/market\/inbox$/, route => route.fulfill({ json: summary.current }));
   await page.route(/\/api\/market\/inbox\/conversations(\?.*)?$/, route => {
     const url = new URL(route.request().url()); calls.push({ method: 'GET', url: url.pathname + url.search, body: null });
-    const rows = conversations.filter(row => (!url.searchParams.get('search') || row.reference.includes(url.searchParams.get('search')!)) && (url.searchParams.get('unread') !== '1' || row.unread > 0));
+    const search = url.searchParams.get('search'), named = url.searchParams.get('order');  // order: a conversation's id or one of its orders'
+    const rows = conversations.filter(row => (!search || row.reference.includes(search) || row.counterpart.name.includes(search.toUpperCase())) && (url.searchParams.get('unread') !== '1' || row.unread > 0)
+      && (!named || row.id === named || row.orders.some(item => item.id === named)));
     return route.fulfill({ json: { count: rows.length, next: null, previous: null, results: rows } });
   });
   await page.route(/\/api\/market\/inbox\/notifications(\?.*)?$/, route => route.fulfill({ json: { results: notifications, has_more: false } }));
@@ -77,7 +82,7 @@ test('a notification opens the panel on its deal: the quotation beside the chat,
   await expect.poll(() => calls.find(call => call.url.endsWith('/notifications/seen'))?.body).toEqual({ last_event_id: 30 });
   await menu.getByRole('button', { name: /GRUPO RAZOR PARTS publicó la cotización v2/ }).click();
   const panel = page.getByRole('dialog', { name: 'Conversaciones', exact: true });
-  const conversation = panel.getByRole('region', { name: 'Orden ORD-0123 con GRUPO RAZOR PARTS', exact: true });
+  const conversation = panel.getByRole('region', { name: 'Conversación con GRUPO RAZOR PARTS', exact: true });
   await expect(conversation.getByRole('region', { name: 'Cotización vigente v2', exact: true })).toContainText('USD 612.40');
   await expect(conversation.getByRole('log', { name: 'Mensajes del acuerdo', exact: true })).toContainText('SÍ, PODEMOS ENTREGAR EL LUNES ANTES DE LAS 12.');
   await expect(conversation.getByRole('log').getByRole('article').filter({ hasText: 'COTIZACIÓN V2' })).toContainText('Carlos Ruiz · ');
@@ -93,8 +98,8 @@ test('a notification opens the panel on its deal: the quotation beside the chat,
   expect(calls.find(call => call.url === 'messages')?.body).toMatchObject({ body: 'Perfecto, el lunes\nGracias' });  // as typed
   await expect(composer).toHaveValue('');
   await expect(composer).toBeFocused();  // ready for the next message
-  await panel.getByRole('button', { name: /AUTOPARTES DEL ISTMO/ }).click();
-  await expect(panel.getByRole('region', { name: 'Orden ORD-0119 con AUTOPARTES DEL ISTMO', exact: true })).toBeVisible();
+  await panel.getByRole('button', { name: /^AUTOPARTES DEL ISTMO/ }).click();
+  await expect(panel.getByRole('region', { name: 'Conversación con AUTOPARTES DEL ISTMO', exact: true })).toBeVisible();
   await panel.getByRole('button', { name: 'No leídas', exact: true }).click();
   await expect(panel.getByRole('complementary', { name: 'Tus conversaciones', exact: true }).getByRole('listitem')).toHaveCount(2);
   expect(calls.some(call => call.url.endsWith('?unread=1'))).toBe(true);
@@ -113,7 +118,7 @@ test('a new message or notification between polls shows a toast that opens its c
   await expect(toast).toContainText('YA SALIÓ EL PEDIDO.');
   await expect(page.getByRole('button', { name: 'Mensajes, 4 sin leer', exact: true })).toBeVisible();
   await toast.click();
-  await expect(page.getByRole('dialog', { name: 'Conversaciones', exact: true }).getByRole('region', { name: 'Orden ORD-0123 con GRUPO RAZOR PARTS', exact: true })).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'Conversaciones', exact: true }).getByRole('region', { name: 'Conversación con GRUPO RAZOR PARTS', exact: true })).toBeVisible();
 });
 
 test('mobile: the list, the chat and the document take turns in a full-screen panel', async ({ page }) => {
@@ -123,7 +128,7 @@ test('mobile: the list, the chat and the document take turns in a full-screen pa
   await page.getByRole('button', { name: 'Mensajes, 3 sin leer', exact: true }).click();
   const panel = page.getByRole('dialog', { name: 'Conversaciones', exact: true });
   await expect(panel.getByRole('complementary', { name: 'Tus conversaciones', exact: true })).toBeVisible();
-  await panel.getByRole('button', { name: /GRUPO RAZOR PARTS/ }).click();
+  await panel.getByRole('button', { name: /^GRUPO RAZOR PARTS/ }).click();
   await expect(panel.getByRole('complementary', { name: 'Tus conversaciones', exact: true })).toBeHidden();
   await expect(panel.getByRole('log', { name: 'Mensajes del acuerdo', exact: true })).toBeVisible();
   const sections = panel.getByRole('group', { name: 'Secciones de la orden', exact: true });
@@ -283,8 +288,8 @@ test('like a desktop chat app: sections toggle a right panel, the side columns r
   await expect(list).toBeHidden();
   await expect(panel).toBeVisible();
   await toggle.hover();
-  await list.getByRole('button', { name: /AUTOPARTES DEL ISTMO/ }).click();  // choosing a conversation there hides it too
-  await expect(panel.getByRole('region', { name: 'Orden ORD-0119 con AUTOPARTES DEL ISTMO', exact: true })).toBeVisible();
+  await list.getByRole('button', { name: /^AUTOPARTES DEL ISTMO/ }).click();  // choosing a conversation there hides it too
+  await expect(panel.getByRole('region', { name: 'Conversación con AUTOPARTES DEL ISTMO', exact: true })).toBeVisible();
   await expect(list).toBeHidden();
   await panel.getByRole('button', { name: 'Cerrar ventana', exact: true }).click();
   await page.getByRole('button', { name: 'Mensajes, 3 sin leer', exact: true }).click();
@@ -324,8 +329,8 @@ test('like a desktop sidebar: one line per conversation, pinned ones first, the 
   await page.getByRole('button', { name: 'Mensajes, 3 sin leer', exact: true }).click();
   const panel = page.getByRole('dialog', { name: 'Conversaciones', exact: true });
   const list = panel.getByRole('complementary', { name: 'Tus conversaciones', exact: true });
-  const row = (reference: string) => list.getByRole('listitem').filter({ has: page.getByRole('button', { name: `Organizar ${reference}`, exact: true }) });
-  const istmo = list.getByRole('button', { name: /AUTOPARTES DEL ISTMO/ });
+  const row = (counterpart: string) => list.getByRole('listitem').filter({ has: page.getByRole('button', { name: `Organizar ${counterpart}`, exact: true }) });
+  const istmo = list.getByRole('button', { name: /^AUTOPARTES DEL ISTMO/ });
   await expect(istmo).toHaveText(/^AUTOPARTES DEL ISTMOORD-0119, En revisión1$/);  // a single line: the other party, the reference, the unread count
   await expect(istmo).toHaveAttribute('title', /¿EL DISCO ES VENTILADO\?/);  // the last message only in its tooltip
   await expect(list.getByRole('group')).toHaveCount(1);  // no Fijadas, groups or Sin grupo headings until the person organizes the list
@@ -335,21 +340,21 @@ test('like a desktop sidebar: one line per conversation, pinned ones first, the 
   await list.getByLabel('Nombre del nuevo grupo', { exact: true }).press('Enter');
   const urgent = list.getByRole('group', { name: 'Urgentes', exact: true });
   await expect(urgent).toContainText('Vacío.');
-  await row('ORD-0119').getByRole('button', { name: 'Organizar ORD-0119', exact: true }).click();
-  const menu = list.getByRole('menu', { name: 'Organizar ORD-0119', exact: true });
+  await row('AUTOPARTES DEL ISTMO').getByRole('button', { name: 'Organizar AUTOPARTES DEL ISTMO', exact: true }).click();
+  const menu = list.getByRole('menu', { name: 'Organizar AUTOPARTES DEL ISTMO', exact: true });
   await expect(menu.getByRole('menuitem').first()).toBeFocused();
   await page.keyboard.press('Escape');  // closes the menu, never the panel
   await expect(menu).toHaveCount(0);
   await expect(panel).toBeVisible();
-  await row('ORD-0119').getByRole('button', { name: 'Organizar ORD-0119', exact: true }).click();
+  await row('AUTOPARTES DEL ISTMO').getByRole('button', { name: 'Organizar AUTOPARTES DEL ISTMO', exact: true }).click();
   await menu.getByRole('menuitemradio', { name: 'Mover a Urgentes', exact: true }).click();
   await expect(urgent.getByRole('listitem')).toHaveText([/AUTOPARTES DEL ISTMO/]);
-  expect(writes.at(-1)).toEqual({ url: `conversations/${order2}/place`, method: 'POST', body: { group: groups[0].id, pinned: false } });
+  expect(writes.at(-1)).toEqual({ url: `conversations/${conversations[1].id}/place`, method: 'POST', body: { group: groups[0].id, pinned: false } });
 
-  await row('ORD-0123').getByRole('button', { name: 'Organizar ORD-0123', exact: true }).click();
+  await row('GRUPO RAZOR PARTS').getByRole('button', { name: 'Organizar GRUPO RAZOR PARTS', exact: true }).click();
   await list.getByRole('menuitem', { name: 'Fijar', exact: true }).click();
   await expect(list.getByRole('group', { name: 'Fijadas', exact: true }).getByRole('listitem')).toHaveText([/GRUPO RAZOR PARTS/]);
-  await row('ORD-0102').dragTo(urgent);  // or dragged onto a group
+  await row('REPUESTOS PANAMÁ').dragTo(urgent);  // or dragged onto a group
   await expect(urgent.getByRole('listitem')).toHaveCount(2);
   expect(writes.at(-1)).toEqual({ url: `conversations/${conversations[2].id}/place`, method: 'POST', body: { group: groups[0].id, pinned: false } });
   await expect(list.getByRole('group', { name: 'Sin grupo', exact: true }).getByRole('listitem')).toHaveCount(0);
@@ -379,7 +384,7 @@ test('like a desktop sidebar: one line per conversation, pinned ones first, the 
 
 test('someone who buys and sells sees Compras and Ventas apart; the choice is remembered and a purchase opened elsewhere shows Compras', async ({ page }) => {
   await mockInbox(page, { current: pending() });
-  const rows = conversations.map(row => row.id === order2 ? { ...row, side: 'supplier' } : row);  // they sell to AUTOPARTES DEL ISTMO
+  const rows = conversations.map(row => row.order_id === order2 ? { ...row, side: 'supplier' } : row);  // they sell to AUTOPARTES DEL ISTMO
   await page.route(/\/accounts\/[^/]+\/requests\/[^/?]+$/, route => route.fulfill({ json: { ...deal, id: order2, reference: 'ORD-0119' } }));  // the sale, seen as its supplier
   const sides = { client: { conversations: 2, unread: 2 }, supplier: { conversations: 1, unread: 1 } };
   const asked: string[] = [];
@@ -394,11 +399,11 @@ test('someone who buys and sells sees Compras and Ventas apart; the choice is re
   const list = panel.getByRole('complementary', { name: 'Tus conversaciones', exact: true });
   const switcher = list.getByRole('group', { name: 'Compras y ventas', exact: true });
   await expect(switcher.getByRole('button')).toHaveText(['Ambas', 'Compras2', 'Ventas1']);  // with each side's unread messages
-  await expect(list.getByRole('button', { name: /AUTOPARTES DEL ISTMO/ })).toContainText('Venta');
-  await expect(list.getByRole('button', { name: /GRUPO RAZOR PARTS/ })).toContainText('Compra');
+  await expect(list.getByRole('button', { name: /^AUTOPARTES DEL ISTMO/ })).toContainText('Venta');
+  await expect(list.getByRole('button', { name: /^GRUPO RAZOR PARTS/ })).toContainText('Compra');
   await switcher.getByRole('button', { name: /^Ventas/ }).click();
   await expect(list.getByRole('listitem')).toHaveCount(1);
-  await expect(list.getByRole('button', { name: /AUTOPARTES DEL ISTMO/ })).not.toContainText('Venta');  // one side: no tags
+  await expect(list.getByRole('button', { name: /^AUTOPARTES DEL ISTMO/ })).not.toContainText('Venta');  // one side: no tags
   expect(asked.at(-1)).toBe('supplier');
   await panel.getByRole('button', { name: 'Cerrar ventana', exact: true }).click();
   await page.getByRole('button', { name: 'Mensajes, 3 sin leer', exact: true }).click();
@@ -407,19 +412,19 @@ test('someone who buys and sells sees Compras and Ventas apart; the choice is re
   await page.getByRole('button', { name: 'Notificaciones, 2 nuevas', exact: true }).click();
   await page.getByRole('region', { name: 'Notificaciones', exact: true }).getByRole('button', { name: /GRUPO RAZOR PARTS publicó la cotización v2/ }).click();
   await expect(switcher.getByRole('button', { name: /^Compras/ })).toHaveAttribute('aria-pressed', 'true');  // the purchase it opened
-  await expect(list.getByRole('button', { name: /GRUPO RAZOR PARTS/ })).toHaveAttribute('aria-current', 'true');
+  await expect(list.getByRole('button', { name: /^GRUPO RAZOR PARTS/ })).toHaveAttribute('aria-current', 'true');
 });
 
 test('a dated reference shows its last part on the conversation line, whole in its tooltip', async ({ page }) => {
   await mockInbox(page, { current: pending() });
-  const dated = { ...conversations[0], reference: 'ORD-20261010-55791743' };
+  const dated = { ...conversations[0], reference: 'ORD-20261010-55791743', orders: [{ ...conversations[0].orders[0], reference: 'ORD-20261010-55791743' }] };
   await page.route(/\/api\/market\/inbox\/conversations(\?.*)?$/, route => route.fulfill({ json: { count: 1, next: null, previous: null, results: [dated] } }));
   await page.goto('/');
   await page.getByRole('button', { name: 'Mensajes, 3 sin leer', exact: true }).click();
-  const line = page.getByRole('complementary', { name: 'Tus conversaciones', exact: true }).getByRole('button', { name: /GRUPO RAZOR PARTS/ });
+  const line = page.getByRole('complementary', { name: 'Tus conversaciones', exact: true }).getByRole('button', { name: /^GRUPO RAZOR PARTS/ });
   await expect(line).toContainText('…55791743');
   await expect(line).not.toContainText('ORD-20261010');
-  await expect(line).toHaveAttribute('title', /GRUPO RAZOR PARTS · ORD-20261010-55791743/);
+  await expect(line).toHaveAttribute('title', /^GRUPO RAZOR PARTS\nORD-20261010-55791743 · Cotizada/);  // its orders, whole, in the tooltip
 });
 
 test('a page left open while a newer build went live offers to reload, over the conversations panel too', async ({ page }) => {
@@ -461,7 +466,7 @@ test('a notice link opened signed out goes straight to the sign-in with the user
   expect(hints).toEqual(['MQ:1xFlI0:firma-de-prueba']);
   await signIn.getByLabel('Contraseña', { exact: true }).fill('Clave938!');
   await signIn.locator('form').getByRole('button', { name: 'Iniciar sesión' }).click();
-  await expect(page.getByRole('dialog', { name: 'Conversaciones', exact: true }).getByRole('region', { name: 'Orden ORD-0123 con GRUPO RAZOR PARTS', exact: true })).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'Conversaciones', exact: true }).getByRole('region', { name: 'Conversación con GRUPO RAZOR PARTS', exact: true })).toBeVisible();
 });
 
 test('the WhatsApp assistant’s cesta link opened signed out goes to the sign-in, then shows that account’s cesta without the hint', async ({ page }) => {
@@ -493,7 +498,7 @@ test.describe('on a touch phone', () => {
     await page.getByRole('button', { name: 'Mensajes, 3 sin leer', exact: true }).click();
     const panel = page.getByRole('dialog', { name: 'Conversaciones', exact: true });
     await expect(panel.getByPlaceholder('Orden o cuenta…')).toHaveCSS('font-size', '16px');
-    await panel.getByRole('button', { name: /GRUPO RAZOR PARTS/ }).click();
+    await panel.getByRole('button', { name: /^GRUPO RAZOR PARTS/ }).click();
     const composer = panel.getByLabel('Mensaje del acuerdo', { exact: true });
     await expect(composer).toHaveCSS('font-size', '16px');
     await composer.focus();
@@ -582,7 +587,7 @@ test('the chat shows its files (a voice note with its transcript) and sends phot
   await expect(log).not.toContainText('No se pudo recibir');
   expect(retried).toBe(1);
 
-  const conversation = page.getByRole('region', { name: 'Orden ORD-0123 con GRUPO RAZOR PARTS', exact: true });
+  const conversation = page.getByRole('region', { name: 'Conversación con GRUPO RAZOR PARTS', exact: true });
   const picker = conversation.getByLabel('Elegir archivos', { exact: true });
   await picker.setInputFiles({ name: 'grande.mp4', mimeType: 'video/mp4', buffer: Buffer.alloc(17 * 1024 * 1024) });
   await expect(conversation.getByRole('alert')).toContainText('«grande.mp4» pesa más de 16 MB.');
@@ -600,4 +605,60 @@ test('the chat shows its files (a voice note with its transcript) and sends phot
   expect(sent[0].body).toContain('filename="factura.pdf"');
   expect(sent[0].body).not.toContain('otra.pdf');
   await expect(attached).toHaveCount(0);
+});
+
+test('one conversation per supplier: its orders’ messages in one chat with their chips, a filter, and what a message goes about', async ({ page }) => {
+  const calls = await mockInbox(page, { current: pending() });
+  const both = { ...conversations[0], order_count: 2, open_orders: 2, orders: [{ id: order, reference: 'ORD-0123', status: 'quoted' }, { id: order2, reference: 'ORD-0119', status: 'reviewed' }] };
+  await page.route(/\/api\/market\/inbox\/conversations(\?.*)?$/, route => route.fulfill({ json: { count: 1, next: null, previous: null, results: [both] } }));
+  const second = { ...deal, id: order2, reference: 'ORD-0119', status: 'reviewed', quotation: null, quotations: [] };
+  await page.route(new RegExp(`/sent-requests/${order2}$`), route => route.fulfill({ json: second }));
+  const chat = [
+    { id: 40, message_id: 'x1', body: '¿ENVÍAN EL TAMBOR HOY?', account_id: acct.id, account_name: acct.name, actor_name: 'Francisco', created_at: iso(30), order_id: order, order_reference: 'ORD-0123' },
+    { id: 41, message_id: 'x2', body: 'EL DISCO LLEGA EL LUNES.', account_id: sup.id, account_name: sup.name, actor_name: 'Carlos Ruiz', created_at: iso(20), order_id: order2, order_reference: 'ORD-0119' },
+    { id: 42, message_id: 'x3', body: 'GRACIAS POR SU PREFERENCIA.', account_id: sup.id, account_name: sup.name, actor_name: 'Carlos Ruiz', created_at: iso(10), order_id: null, order_reference: null },
+  ];
+  const posted: Record<string, unknown>[] = [];
+  await page.route(/\/deals\/[^/]+\/messages(\?.*)?$/, route => {
+    const url = new URL(route.request().url()), on = url.pathname.split('/').at(-2);
+    if (route.request().method() === 'POST') {
+      const body = route.request().postDataJSON(); posted.push({ order: on, ...body });
+      return route.fulfill({ json: { id: 50, message_id: body.message_id, body: body.body, account_id: acct.id, account_name: acct.name, actor_name: 'Francisco', created_at: new Date().toISOString(),
+        order_id: body.general ? null : on, order_reference: body.general ? null : on === order ? 'ORD-0123' : 'ORD-0119' } });
+    }
+    const shown = url.searchParams.get('solo') === '1' ? chat.filter(message => message.order_id === on) : chat;
+    return route.fulfill({ json: { results: url.searchParams.has('after') ? [] : shown, cursor: 42, has_more: false, has_earlier: false, assistant_notice: false, thread_id: both.id } });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Mensajes, 3 sin leer', exact: true }).click();
+  const panel = page.getByRole('dialog', { name: 'Conversaciones', exact: true });
+  await expect(panel.getByRole('complementary', { name: 'Tus conversaciones', exact: true }).getByRole('button', { name: /^GRUPO RAZOR PARTS/ })).toContainText('2 órdenes');
+  const conversation = panel.getByRole('region', { name: 'Conversación con GRUPO RAZOR PARTS', exact: true });
+  const log = conversation.getByRole('log', { name: 'Mensajes del acuerdo', exact: true });
+  await expect(log.getByRole('article')).toHaveCount(3);  // every order's messages, and the general one, in one line
+  await expect(log.getByRole('article').nth(0)).toContainText('ORD-0123');
+  await expect(log.getByRole('article').nth(1)).toContainText('ORD-0119');
+  await expect(log.getByRole('article').nth(2)).toContainText('General');
+  const picker = conversation.getByLabel('Orden', { exact: true });
+  await expect(picker).toHaveValue(order);
+  await expect(conversation.getByRole('button', { name: 'Escribes sobre ORD-0123. Cambiar a general', exact: true })).toBeVisible();
+
+  await conversation.getByRole('button', { name: /^Solo esta orden/ }).click();  // this order's messages
+  await expect(log.getByRole('article')).toHaveText([/ENVÍAN EL TAMBOR HOY/]);
+  expect(calls.some(call => call.url.includes('read'))).toBe(true);
+  await conversation.getByRole('button', { name: /^Solo esta orden/ }).click();
+  await expect(log.getByRole('article')).toHaveCount(3);
+
+  await picker.selectOption(order2);  // the other order: its document beside the chat, and what is written goes about it
+  await expect(conversation.getByRole('button', { name: 'Escribes sobre ORD-0119. Cambiar a general', exact: true })).toBeVisible();
+  await expect(log.getByRole('article')).toHaveCount(3);  // the same conversation
+  const composer = conversation.getByLabel('Mensaje del acuerdo', { exact: true });
+  await composer.fill('¿Y la factura?');
+  await composer.press('Enter');
+  await expect.poll(() => posted.at(-1)).toMatchObject({ order: order2, body: '¿Y la factura?', general: false });
+  await conversation.getByRole('button', { name: 'Escribes sobre ORD-0119. Cambiar a general', exact: true }).click();
+  await composer.fill('Saludos a todos');
+  await composer.press('Enter');
+  await expect.poll(() => posted.at(-1)).toMatchObject({ body: 'Saludos a todos', general: true });
+  await expect(log.getByRole('article').last()).toContainText('General');
 });

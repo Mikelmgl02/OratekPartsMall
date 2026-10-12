@@ -28,7 +28,9 @@ async function panel(page: Page, side: 'client' | 'supplier', status: Deal['stat
   await page.route('**/api/session', route => route.fulfill({ json: { authenticated: true, user: { id: 1, username: 'EMPLEADO', first_name: '', last_name: '', is_superuser: false },
     accounts: { ...empty, count: 1, results: [{ ...account, permission: 'owner' }] } } }));
   await page.route(/\/api\/market\/inbox$/, route => route.fulfill({ json: { unread_messages: 0, unread_conversations: 0, unseen_notifications: 0, latest_message: null, latest_notification: null } }));
-  await page.route(/\/api\/market\/inbox\/conversations(\?.*)?$/, route => route.fulfill({ json: { ...empty, count: 1, results: [{ id: orderId, reference: 'ORD-0123', status: deal.status, side,
+  // One conversation (its own id) with this order.
+  await page.route(/\/api\/market\/inbox\/conversations(\?.*)?$/, route => route.fulfill({ json: { ...empty, count: 1, results: [{ id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    order_id: orderId, reference: 'ORD-0123', status: deal.status, orders: [{ id: orderId, reference: 'ORD-0123', status: deal.status }], order_count: 1, open_orders: 1, side,
     account: { id: account.id, name: account.name }, counterpart, unread: 0, activity: stamp, last_message: null }] } }));
   await page.route(/\/deals\/[^/]+\/messages(\?.*)?$/, route => route.fulfill({ json: { results: [], cursor: 0, has_more: false, has_earlier: false } }));
   await page.route(new RegExp(`/(requests|sent-requests)/${orderId}$`), route => route.fulfill({ json: deal }));

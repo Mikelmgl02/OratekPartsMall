@@ -42,8 +42,9 @@ export function InboxProvider({ children }: { children: ReactNode }) {
       const message = data.latest_message, event = data.latest_notification;
       // The first summary after a sign-in only sets the marks: what was already waiting shows as badges, not as toasts.
       if (seen.current) {
-        if (message && message.id > seen.current.message && message.order_id !== showingRef.current)
-          toast({ key: `m${message.id}`, title: `${message.account_name} · ${message.reference}`, body: message.body, target: { orderId: message.order_id, reference: message.reference, side: message.side, account: message.account, counterpart: message.counterpart } });
+        if (message && message.id > seen.current.message && (message.thread_id ?? message.order_id) !== showingRef.current)
+          toast({ key: `m${message.id}`, title: message.reference ? `${message.account_name} · ${message.reference}` : message.account_name, body: message.body,
+            target: { threadId: message.thread_id, orderId: message.order_id, reference: message.reference, side: message.side, account: message.account, counterpart: message.counterpart } });
         if (event && event.id > seen.current.event) toast({ key: `e${event.id}`, title: event.title, body: event.reference, target: targetOf(event) });
       }
       seen.current = { message: Math.max(seen.current?.message ?? 0, message?.id ?? 0), event: Math.max(seen.current?.event ?? 0, event?.id ?? 0) };
@@ -65,11 +66,12 @@ export function InboxProvider({ children }: { children: ReactNode }) {
     return connectRealtime(setLive);
   }, [available, polling]);
   const open = useCallback((target?: InboxTarget) => setPanel({ target, key: Date.now() }), []);
-  // A push notification's link (?conversacion=<deal>) or its click on an open page names only the deal: look up its conversation.
+  // A push notification's link (?conversacion=<deal>) or its click on an open page names an order (or a conversation): look up its
+  // conversation, opened on that order.
   const openOrder = useCallback(async (orderId: string) => {
     try {
       const data = await request<Page<InboxConversation>>(`/api/market/inbox/conversations?order=${encodeURIComponent(orderId)}`);
-      open(data.results[0] ? targetOf(data.results[0]) : undefined);
+      open(data.results[0] ? targetOf(data.results[0], orderId) : undefined);
     } catch { open(); }
   }, [open]);
   const synced = useRef(false);

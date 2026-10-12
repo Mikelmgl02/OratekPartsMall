@@ -55,12 +55,14 @@ def recipients(order, account_id, actor_id, preference):
 
 
 def their_account(order, account_id, user=None):
-    """The name of the account the recipients act for: the deal's party that did not act. An administrator's decision (no account)
-    reaches both parties, so each recipient gets the party they belong to."""
+    """The name of the account the recipients act for: the deal's party that did not act (order: an order or a conversation). An
+    administrator's decision (no account) reaches both parties, so each recipient gets the party they belong to."""
+    client = getattr(order, 'client_name', None) or order.client.name
+    supplier = getattr(order, 'supplier_name', None) or order.supplier.name
     if account_id is None and user is not None:
         from .models import Membership
-        return order.supplier_name if Membership.objects.filter(user=user, account_id=order.supplier_id).exists() else order.client_name
-    return order.supplier_name if account_id == order.client_id else order.client_name
+        return supplier if Membership.objects.filter(user=user, account_id=order.supplier_id).exists() else client
+    return supplier if account_id == order.client_id else client
 
 
 def compose(user, order, account, subject, lead, quote, action):
@@ -98,28 +100,30 @@ def deliver(emails):
 def message_saved(sender, instance, created=False, raw=False, **kwargs):
     if not created or raw or not email_enabled():
         return
-    message, order = instance, instance.order
+    message, order, thread = instance, instance.order, instance.thread
 
     def collect():
         # Asking for an adjustment also writes its reason as a message: the adjustment's own email already quotes it.
-        if DealEvent.objects.filter(order=order, actor_id=message.actor_id, kind='request_adjustment', description=message.body).exists():
+        if order and DealEvent.objects.filter(order=order, actor_id=message.actor_id, kind='request_adjustment', description=message.body).exists():
             return
         now = timezone.now()
         using_app = set(InboxCursor.objects.filter(active_at__gte=now - ACTIVE).values_list('user_id', flat=True))
-        emailed = set(ConversationRead.objects.filter(order=order, emailed_at__gte=now - COOLDOWN).values_list('user_id', flat=True))
-        people = [user for user in recipients(order, message.account_id, message.actor_id, 'email_messages') if user.pk not in using_app | emailed]
+        emailed = set(ConversationRead.objects.filter(thread=thread, emailed_at__gte=now - COOLDOWN).values_list('user_id', flat=True))
+        people = [user for user in recipients(thread, message.account_id, message.actor_id, 'email_messages') if user.pk not in using_app | emailed]
         if not people:
             return
         for user in people:
-            mark, _ = ConversationRead.objects.get_or_create(user=user, order=order)
+            mark, _ = ConversationRead.objects.get_or_create(user=user, thread=thread)
             ConversationRead.objects.filter(pk=mark.pk).update(emailed_at=now)
         author = message.actor.get_full_name() or message.actor.username
         text = describe(message)  # a message of only files says what they are
         quote = text if len(text) <= QUOTED else f'{text[:QUOTED - 1]}…'
-        account = their_account(order, message.account_id)
-        emails = [(user.email, *compose(user, order, account, f'Nuevo mensaje de {message.account.name} · {order.reference}',
-                                        f'{author} de {message.account.name} te escribió en la orden {order.reference}. Puede haber más '
-                                        'mensajes en la conversación.', quote, 'Responder en MotionPartes')) for user in people]
+        account = their_account(thread, message.account_id)
+        about = f' · {order.reference}' if order else ''  # a general message names no order
+        where = f'en la orden {order.reference}' if order else 'en su conversación contigo'
+        emails = [(user.email, *compose(user, order or thread, account, f'Nuevo mensaje de {message.account.name}{about}',
+                                        f'{author} de {message.account.name} te escribió {where}. Puede haber más mensajes en la conversación.',
+                                        quote, 'Responder en MotionPartes')) for user in people]
         push.dispatch(lambda: deliver(emails))
     transaction.on_commit(collect)
 

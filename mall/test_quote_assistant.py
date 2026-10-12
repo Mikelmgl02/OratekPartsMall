@@ -590,7 +590,7 @@ class QuoteAssistantTests(APITestCase):
             for user, account in [(self.buyer, self.client_account), (self.seller_a, self.supplier_a)]:
                 self.client.force_authenticate(user)
                 response = self.client.get(self.messages(order, account))
-                self.assertEqual((set(response.data), response.data['assistant_notice']), ({'results', 'cursor', 'has_more', 'has_earlier', 'assistant_notice'}, enabled))
+                self.assertEqual((set(response.data), response.data['assistant_notice']), ({'results', 'cursor', 'has_more', 'has_earlier', 'assistant_notice', 'thread_id'}, enabled))
 
 
 @skipUnless(connection.vendor == 'postgresql', 'Requires PostgreSQL row locks.')

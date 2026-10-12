@@ -22,11 +22,35 @@ class ClientRequestSubmission(models.Model):
         constraints = [models.UniqueConstraint(fields=['client', 'submission_id'], name='unique_client_request_submission')]
 
 
+class DealThread(models.Model):
+    """The conversation between a client account and a supplier account: one per pair (who buys from whom), with every order between
+    them. Its messages are one linear chat, each tagged with the order it is about when there is one (DealMessage.order); read marks, pins
+    and groups are per thread (ConversationRead)."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    client = models.ForeignKey('mall.Account', on_delete=models.PROTECT, related_name='client_threads')
+    supplier = models.ForeignKey('mall.Account', on_delete=models.PROTECT, related_name='supplier_threads')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['client', 'supplier'], name='unique_deal_thread')]
+
+    @classmethod
+    def between(cls, client_id, supplier_id):
+        """The pair's thread, made the first time they deal."""
+        from django.db import IntegrityError, transaction
+        try:
+            with transaction.atomic():
+                return cls.objects.get_or_create(client_id=client_id, supplier_id=supplier_id)[0]
+        except IntegrityError:  # made at the same moment by another request
+            return cls.objects.get(client_id=client_id, supplier_id=supplier_id)
+
+
 class SupplierRequest(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     submission = models.ForeignKey(ClientRequestSubmission, on_delete=models.PROTECT, related_name='requests')
     client = models.ForeignKey('mall.Account', on_delete=models.PROTECT, related_name='sent_supplier_requests')
     supplier = models.ForeignKey('mall.Account', on_delete=models.PROTECT, related_name='received_supplier_requests')
+    thread = models.ForeignKey(DealThread, on_delete=models.PROTECT, related_name='orders')  # the pair's conversation (set on save)
     client_name = models.CharField(max_length=200)
     supplier_name = models.CharField(max_length=200)
     reference = models.CharField(max_length=32, unique=True)
@@ -67,6 +91,11 @@ class SupplierRequest(models.Model):
                        models.CheckConstraint(condition=Q(status='cancelled', cancelled_at__isnull=False, cancelled_side__in=['client', 'supplier', 'admin'])
                                               & ~Q(cancel_reason='') | (~Q(status='cancelled') & Q(cancelled_at__isnull=True, cancelled_side='', cancel_reason='')),
                                               name='supplier_request_cancel_fields')]
+
+    def save(self, *args, **kwargs):
+        if self.thread_id is None:  # every order belongs to its pair's conversation
+            self.thread = DealThread.between(self.client_id, self.supplier_id)
+        super().save(*args, **kwargs)
 
 
 class SupplierRequestLine(models.Model):
@@ -207,8 +236,12 @@ class DealEvent(models.Model):
 
 
 class DealMessage(models.Model):
+    """A message in the conversation between a client and a supplier (DealThread), tagged with the order it is about when there is one:
+    written from that order, answering one of its messages, or by WhatsApp while that order was the topic. Untagged ones are about the
+    relationship (a question before any order, a greeting)."""
     id = models.BigAutoField(primary_key=True)
-    order = models.ForeignKey(SupplierRequest, on_delete=models.PROTECT, related_name='messages')
+    thread = models.ForeignKey(DealThread, on_delete=models.PROTECT, related_name='messages')
+    order = models.ForeignKey(SupplierRequest, on_delete=models.PROTECT, null=True, blank=True, related_name='messages')
     account = models.ForeignKey('mall.Account', on_delete=models.PROTECT)
     actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     message_id = models.UUIDField()
@@ -219,7 +252,12 @@ class DealMessage(models.Model):
 
     class Meta:
         ordering = ['id']
-        constraints = [models.UniqueConstraint(fields=['order', 'account', 'message_id'], name='unique_deal_message_send')]
+        constraints = [models.UniqueConstraint(fields=['thread', 'account', 'message_id'], name='unique_deal_message_send')]
+
+    def save(self, *args, **kwargs):
+        if self.thread_id is None and self.order_id is not None:  # written about an order: in its pair's conversation
+            self.thread_id = SupplierRequest.objects.values_list('thread_id', flat=True).get(pk=self.order_id)
+        super().save(*args, **kwargs)
 
 
 class DealAttachment(models.Model):

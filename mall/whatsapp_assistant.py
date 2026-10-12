@@ -108,8 +108,9 @@ def send(number, user_id, payload):
     """One assistant message, logged (kind "assistant"; with the order it speaks of, when it passed a message there, so the conversation
     goes on with that order); Meta's refusal is logged, never raised."""
     payload = dict(payload)
-    order_id, kind = payload.pop('_order', None), payload.pop('_kind', 'assistant')  # "ask": which order a message is for (the bridge)
-    row = WhatsAppMessage.objects.create(user_id=user_id, number=number, template='asistente', kind=kind, order_id=order_id)
+    order_id, thread_id = payload.pop('_order', None), payload.pop('_thread', None)
+    kind = payload.pop('_kind', 'assistant')  # "ask": which conversation a message is for (the bridge)
+    row = WhatsAppMessage.objects.create(user_id=user_id, number=number, template='asistente', kind=kind, order_id=order_id, thread_id=thread_id)
     try:
         accepted(row.pk, graph({'messaging_product': 'whatsapp', 'to': number.lstrip('+'), **payload}))
     except Exception as error:
@@ -613,36 +614,40 @@ def set_account(turn, account_id):
 
 
 def to_order(turn, words):
-    """A message that seems meant for the supplier of an order already sent (the order last notified to this number): it goes there only
-    once the person confirms it with its button, never on Gemini's word alone."""
+    """A message that seems meant for a supplier (or client) the person deals with: it goes into their conversation (the one last notified
+    to this number, tagged with that notice's order) only once the person confirms it with its button, never on Gemini's word alone."""
     from .whatsapp_bridge import author, deal_row, other
     row = deal_row(turn.number, None, turn.now)
     who = author(row, turn.people, turn.holders) if row else None
     if not who or not words:
-        turn.say(text('Para escribir en una orden, responde a uno de sus mensajes (mantén presionado el mensaje y elige Responder) o ábrela en '
-                      f'MotionPartes: {site()}/'))
+        turn.say(text('Para escribirle a un proveedor, responde a uno de sus mensajes (mantén presionado el mensaje y elige Responder) o abre '
+                      f'la conversación en MotionPartes: {site()}/'))
         return
-    turn.session.pending = {**turn.session.pending, 'pasar': {'order': str(row.order_id), 'texto': words[:4000], 'wamid': turn.message.get('id', '')}}
-    body = f'¿Paso tu mensaje «{words[:120]}» a la orden {row.order.reference} con {other(row.order, who[1])}?'
-    turn.say(buttons(body, [(f'pass:{row.order_id}', 'Sí, pasarlo'), ('menu:hold', 'No')]), body)
+    turn.session.pending = {**turn.session.pending, 'pasar': {'thread': str(row.thread_id), 'texto': words[:4000], 'wamid': turn.message.get('id', '')}}
+    about = f' (sobre {row.order.reference})' if row.order_id else ''
+    body = f'¿Paso tu mensaje «{words[:120]}» a tu conversación con {other(row.thread, who[1])}{about}?'
+    turn.say(buttons(body, [(f'pass:{row.thread_id}', 'Sí, pasarlo'), ('menu:hold', 'No')]), body)
 
 
-def pass_on(turn, order_id):
-    """The confirmed message into the order's chat, as the person's (✅ on it), and the conversation goes on with that order."""
+def pass_on(turn, thread_id):
+    """The confirmed message into the conversation, as the person's (✅ on it, tagged with its latest notice's order), and the conversation
+    goes on there."""
     from .whatsapp_bridge import author, bring_text, other
     held = turn.session.pending.get('pasar') or {}
     turn.session.pending = {key: value for key, value in turn.session.pending.items() if key != 'pasar'}
-    row = (WhatsAppMessage.objects.filter(number=turn.number, order_id=as_uuid(order_id)).exclude(status__in=('received', 'failed'))
-           .select_related('order', 'user').order_by('-id').first()) if as_uuid(order_id) and held.get('order') == order_id else None
+    row = (WhatsAppMessage.objects.filter(number=turn.number, thread_id=as_uuid(thread_id)).exclude(status__in=('received', 'failed'))
+           .select_related('order', 'thread__client', 'thread__supplier', 'user').order_by('-id').first()
+           if as_uuid(thread_id) and held.get('thread') == thread_id else None)
     who = author(row, turn.people, turn.holders) if row else None
     if not who:
-        turn.say(text('Ese mensaje ya no está pendiente. Para escribir en una orden, responde a uno de sus mensajes o ábrela en MotionPartes.'))
+        turn.say(text('Ese mensaje ya no está pendiente. Para escribirle a un proveedor, responde a uno de sus mensajes o abre la conversación en '
+                      'MotionPartes.'))
         return
     user, account_id = who
-    bring_text(row.order, account_id, user, turn.number, held.get('wamid', ''), held['texto'], turn.now)
-    WhatsAppMessage.objects.filter(number=turn.number, wamid=held.get('wamid', ''), status='received').update(order=row.order)
-    turn.say({**text(f'Pasé tu mensaje a la orden {row.order.reference} con {other(row.order, account_id)}. Su respuesta te llegará por aquí.'),
-              '_order': row.order_id})
+    bring_text(row.thread, row.order, account_id, user, turn.number, held.get('wamid', ''), held['texto'], turn.now)
+    WhatsAppMessage.objects.filter(number=turn.number, wamid=held.get('wamid', ''), status='received').update(order=row.order, thread=row.thread)
+    turn.say({**text(f'Pasé tu mensaje a tu conversación con {other(row.thread, account_id)}. Su respuesta te llegará por aquí.'),
+              '_order': row.order_id, '_thread': row.thread_id})
 
 
 def show_orders(turn):

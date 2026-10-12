@@ -3,7 +3,7 @@
 import { inboxChanged } from './inbox';
 
 export const DEAL_EVENT = 'motionpartes:deal';
-export type DealNudge = { orderId: string; kind: 'message' | 'event' | 'read' };
+export type DealNudge = { orderId: string | null; threadId: string | null; kind: 'message' | 'event' | 'read' };
 let live = false;
 export function realtimeLive() { return live; }
 
@@ -15,10 +15,11 @@ export function connectRealtime(onLive: (live: boolean) => void) {
     socket = new WebSocket(`${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws/inbox/`);
     socket.onopen = () => { attempt = 0; state(true); inboxChanged(); };  // catch up on whatever happened while disconnected
     socket.onmessage = event => {
-      let data: { kind?: DealNudge['kind']; order_id?: string | null };
+      let data: { kind?: DealNudge['kind']; order_id?: string | null; thread_id?: string | null };
       try { data = JSON.parse(event.data); } catch { return; }
       inboxChanged();
-      if (data.order_id && data.kind) window.dispatchEvent(new CustomEvent<DealNudge>(DEAL_EVENT, { detail: { orderId: data.order_id, kind: data.kind } }));
+      if ((data.order_id || data.thread_id) && data.kind)
+        window.dispatchEvent(new CustomEvent<DealNudge>(DEAL_EVENT, { detail: { orderId: data.order_id ?? null, threadId: data.thread_id ?? null, kind: data.kind } }));
     };
     socket.onclose = () => {
       if (live) state(false);
@@ -29,11 +30,11 @@ export function connectRealtime(onLive: (live: boolean) => void) {
   return () => { stopped = true; clearTimeout(timer); socket?.close(); if (live) state(false); };
 }
 
-// Runs on every nudge about this deal (of these kinds).
-export function onDealNudge(orderId: string, kinds: DealNudge['kind'][], run: () => void) {
+// Runs on every nudge about this order or this conversation (an id of either), of these kinds.
+export function onDealNudge(id: string, kinds: DealNudge['kind'][], run: () => void) {
   const listener = (event: Event) => {
     const detail = (event as CustomEvent<DealNudge>).detail;
-    if (detail.orderId === orderId && kinds.includes(detail.kind)) run();
+    if ((detail.orderId === id || detail.threadId === id) && kinds.includes(detail.kind)) run();
   };
   window.addEventListener(DEAL_EVENT, listener);
   return () => window.removeEventListener(DEAL_EVENT, listener);

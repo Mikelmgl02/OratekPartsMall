@@ -53,8 +53,9 @@ def other_side(order, account_id, actor_id):
     return users
 
 
-def payload(order, title, body):
-    return {'title': title, 'body': body, 'tag': f'deal-{order.pk}', 'url': f'/?conversacion={order.pk}', 'order_id': str(order.pk)}
+def payload(deal, title, body):
+    """deal: an order, or a conversation (a general message); the link opens the conversation either way."""
+    return {'title': title, 'body': body, 'tag': f'deal-{deal.pk}', 'url': f'/?conversacion={deal.pk}', 'order_id': str(deal.pk)}
 
 
 def send(subscriptions, data):
@@ -89,8 +90,9 @@ def notify_later(order, account_id, actor_id, build):
 
 def message_saved(sender, instance, created=False, raw=False, **kwargs):
     if created and not raw and push_enabled():
-        notify_later(instance.order, instance.account_id, instance.actor_id,
-                     lambda: (f'{instance.account.name} · {instance.order.reference}', snippet(describe(instance))))
+        about = f' · {instance.order.reference}' if instance.order_id else ''  # a general message names no order
+        notify_later(instance.order or instance.thread, instance.account_id, instance.actor_id,
+                     lambda: (f'{instance.account.name}{about}', snippet(describe(instance))))
 
 
 def event_saved(sender, instance, created=False, raw=False, **kwargs):

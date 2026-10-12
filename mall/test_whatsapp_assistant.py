@@ -237,18 +237,18 @@ class WhatsAppAssistantTests(ChatStorage, APITestCase):
         self.decisions.append({'accion': 'orden'})
         self.writes('dile que lo necesito el lunes')
         [ask] = meta.sent()  # for the supplier? only once confirmed
-        self.assertEqual(ask['interactive']['body']['text'], f'¿Paso tu mensaje «dile que lo necesito el lunes» a la orden {order_a.reference} con PROVEEDOR A?')
+        self.assertEqual(ask['interactive']['body']['text'], f'¿Paso tu mensaje «dile que lo necesito el lunes» a tu conversación con PROVEEDOR A (sobre {order_a.reference})?')
         self.assertEqual(DealMessage.objects.filter(channel='whatsapp').count(), 1)
         self.taps('menu:hold', kind='button_reply')
         self.assertIn('no lo pasé', meta.sent()[0]['text']['body'])
-        self.taps(f'pass:{order_a.pk}', kind='button_reply')  # a stale button: nothing waits anymore
+        self.taps(f'pass:{order_a.thread_id}', kind='button_reply')  # a stale button: nothing waits anymore
         self.assertIn('ya no está pendiente', meta.sent()[0]['text']['body'])
         self.decisions.append({'accion': 'orden'})
         self.writes('¿ya salió mi pedido?')
         meta.sent()
-        self.taps(f'pass:{order_a.pk}', kind='button_reply')
+        self.taps(f'pass:{order_a.thread_id}', kind='button_reply')
         replies = meta.sent()
-        self.assertIn(f'Pasé tu mensaje a la orden {order_a.reference} con PROVEEDOR A.', replies[-1]['text']['body'])
+        self.assertIn('Pasé tu mensaje a tu conversación con PROVEEDOR A.', replies[-1]['text']['body'])
         self.assertEqual(list(DealMessage.objects.filter(order=order_a, channel='whatsapp').values_list('body', flat=True)), ['Sí, antes de las 3', '¿ya salió mi pedido?'])
         self.writes('gracias')  # it goes on with that order
         self.assertEqual(DealMessage.objects.filter(order=order_a, channel='whatsapp').count(), 3)
@@ -267,9 +267,9 @@ class WhatsAppAssistantTests(ChatStorage, APITestCase):
         self.assertFalse(DealMessage.objects.filter(channel='whatsapp').exists())  # never a guess
         asked = meta.sent()
         self.assertEqual(len(asked), 2)
-        self.assertEqual([button['reply']['id'] for button in asked[-1]['interactive']['action']['buttons']], [f'order:{order_b.pk}', f'order:{order_a.pk}'])
-        self.assertIn('¿Para cuál es tu mensaje?', asked[-1]['interactive']['body']['text'])
-        self.taps(f'order:{order_b.pk}', kind='button_reply')
+        self.assertEqual([button['reply']['id'] for button in asked[-1]['interactive']['action']['buttons']], [f'thread:{order_b.thread_id}', f'thread:{order_a.thread_id}'])
+        self.assertIn('¿Para quién es tu mensaje?', asked[-1]['interactive']['body']['text'])
+        self.taps(f'thread:{order_b.thread_id}', kind='button_reply')
         self.assertEqual(list(DealMessage.objects.filter(channel='whatsapp').values_list('order', 'body')),
                          [(order_b.pk, 'perfecto'), (order_b.pk, '¿y la factura?')])
         self.assertEqual([payload['type'] for payload in meta.sent()], ['reaction', 'reaction'])
@@ -279,3 +279,23 @@ class WhatsAppAssistantTests(ChatStorage, APITestCase):
         self.writes('ok A', context={'id': reply_to_a})  # Responder on A's message: no question
         self.assertEqual(DealMessage.objects.get(order=order_a, channel='whatsapp').body, 'ok A')
         self.assertEqual(self.generate.call_count, 0)
+
+    def test_two_orders_with_one_supplier_are_one_conversation_so_nothing_is_asked(self, urlopen):
+        meta = urlopen.side_effect = FakeMeta()
+        self.client.force_authenticate(self.buyer)
+        first = SupplierRequest.objects.get(pk=self.submit(self.payload([(self.item_a, 1)])).data['requests'][0]['id'])
+        self.client.force_authenticate(self.seller_a)
+        self.client.post(f'{self.url(self.supplier_a)}{first.pk}/review/', {}, format='json')
+        self.client.force_authenticate(self.buyer)
+        second = SupplierRequest.objects.get(pk=self.submit(self.payload([(self.item_a2, 1)])).data['requests'][0]['id'])
+        self.assertEqual(first.thread_id, second.thread_id)
+        self.opt_in(self.buyer, NUMBER)
+        WhatsAppContact.objects.create(number=NUMBER, last_inbound_at=timezone.now())
+        self.say(self.seller_a, self.supplier_a, first, 'La primera sale hoy')
+        self.say(self.seller_a, self.supplier_a, second, 'La segunda, mañana')
+        meta.sent()
+        self.writes('perfecto, gracias')  # two orders, one supplier: one conversation, no question
+        message = DealMessage.objects.get(channel='whatsapp')
+        self.assertEqual((message.thread_id, message.order_id, message.body), (first.thread_id, second.pk, 'perfecto, gracias'))  # tagged with the latest
+        self.assertEqual([payload['type'] for payload in meta.sent()], ['reaction'])
+        self.assertFalse(WhatsAppMessage.objects.filter(kind='ask').exists())

@@ -189,7 +189,7 @@ class WhatsAppTests(APITestCase):
                          ['CLIENTE ORIGINAL', order.reference, '¿Pueden entregar el lunes?'])  # no newlines in a template parameter
         self.say(self.buyer, self.client_account, order, 'otro')
         self.assertEqual(self.sent(urlopen), [])  # within the cooldown
-        ConversationRead.objects.filter(user=self.seller_a, order=order).update(whatsapp_at=timezone.now() - timedelta(minutes=31))
+        ConversationRead.objects.filter(user=self.seller_a, thread=order.thread).update(whatsapp_at=timezone.now() - timedelta(minutes=31))
         InboxCursor.objects.filter(user=self.seller_a).update(active_at=timezone.now())  # using the app right now
         self.say(self.buyer, self.client_account, order, 'y otro')
         self.assertEqual(self.sent(urlopen), [])
@@ -365,7 +365,7 @@ class WhatsAppBridgeTests(APITestCase):
         self.opt_in(self.buyer, '+50761111111')
         self.write('+50761111111', '', 'wamid.MAPA', kind='location')
         [pointer] = self.sent(urlopen)
-        self.assertIn('pasamos a la orden textos, fotos, documentos, audios y videos', pointer['text']['body'])
+        self.assertIn('pasamos a la conversación textos, fotos, documentos, audios y videos', pointer['text']['body'])
         WhatsAppContact.objects.update(replied_at=None)
         WhatsAppMessage.objects.create(user=self.buyer, order=self.order(), number='+50761111111', template='motionpartes_novedad_orden',
                                        kind='quote', status='failed')  # a notice that never reached them

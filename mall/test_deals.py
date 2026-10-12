@@ -294,7 +294,7 @@ class DealWorkflowTests(APITestCase):
 
     def test_chat_can_load_earlier_messages_and_keeps_new_cursor_separate(self):
         order = self.order()
-        DealMessage.objects.bulk_create([DealMessage(order=order, account=self.client_account, actor=self.buyer,
+        DealMessage.objects.bulk_create([DealMessage(order=order, thread=order.thread, account=self.client_account, actor=self.buyer,
                                                     message_id=uuid.uuid4(), body=str(index)) for index in range(205)])
         url = self.messages(order)
         latest = self.client.get(url).data

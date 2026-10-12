@@ -16,7 +16,7 @@ async function handle(request: NextRequest, context: Context) {
   if (!allowed) return json({ detail: 'La ruta solicitada no existe.' }, 404);
   if (request.method !== 'GET' && !validOrigin(request)) return json({ detail: 'El origen de la solicitud no es válido.' }, 403);
   const query = new URLSearchParams();
-  for (const key of ['search', 'page', 'status', 'after', 'before']) {
+  for (const key of ['search', 'page', 'status', 'after', 'before', 'solo']) {
     const value = request.nextUrl.searchParams.get(key);
     if (value) query.set(key, value);
   }

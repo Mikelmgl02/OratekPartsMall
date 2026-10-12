@@ -376,6 +376,8 @@ class DealActions(APIView):
 class MessageSerializer(serializers.Serializer):
     message_id = serializers.UUIDField()
     body = serializers.CharField(max_length=4000, trim_whitespace=True, allow_blank=True, required=False, default='')  # kept as typed
+    # Posted from an order, a message is tagged with it; general=true leaves it about the relationship (the conversation, untagged).
+    general = serializers.BooleanField(required=False, default=False)
     # Sent as multipart (mall.deal_attachments): photos, documents, audio or video; a message with files may have no text.
     files = serializers.ListField(child=serializers.FileField(), required=False, write_only=True)
 
@@ -394,6 +396,7 @@ def message_data(message):
     return {'id': message.pk, 'message_id': str(message.message_id), 'body': message.body,
             'account_id': str(message.account_id), 'account_name': message.account.name,
             'actor_name': message.actor.get_full_name() or message.actor.username, 'channel': message.channel,
+            'order_id': str(message.order_id) if message.order_id else None, 'order_reference': message.order.reference if message.order_id else None,
             'attachments': [attachment_data(attachment) for attachment in message.attachments.all()], 'created_at': iso(message.created_at)}
 
 
@@ -404,7 +407,10 @@ class DealMessages(APIView):
         filters = MessageCursor(data=request.query_params)
         filters.is_valid(raise_exception=True)
         after = filters.validated_data.get('after')
-        messages = row.messages.select_related('account', 'actor').prefetch_related('attachments')
+        # The conversation with this order's other party (DealThread), every order's messages in one line; solo=1 keeps this order's.
+        messages = DealMessage.objects.filter(thread_id=row.thread_id).select_related('account', 'actor', 'order').prefetch_related('attachments')
+        if request.query_params.get('solo') == '1':
+            messages = messages.filter(order=row)
         before = filters.validated_data.get('before')
         if before is not None:
             page = list(reversed(list(messages.filter(id__lt=before).order_by('-id')[:100])))
@@ -415,7 +421,7 @@ class DealMessages(APIView):
         cursor = page[-1].pk if page else (after or 0)
         # Privacy disclosure (decision D3): both parties learn that the supplier's AI assistant may read this conversation. Only the flag
         # travels; nothing about the assistant's runs or proposals ever does.
-        return Response({'results': [message_data(message) for message in page], 'cursor': cursor,
+        return Response({'results': [message_data(message) for message in page], 'cursor': cursor, 'thread_id': str(row.thread_id),
                          'has_more': messages.filter(id__gt=cursor).exists(),
                          'has_earlier': bool(page) and messages.filter(id__lt=page[0].pk).exists(),
                          'assistant_notice': pricing_settings(row.supplier).assistant_enabled})
@@ -430,12 +436,13 @@ class DealMessages(APIView):
         files = validate_uploads(request.FILES.getlist('files'))
         if not data['body'] and not files:
             raise ValidationError({'body': ['Escribe un mensaje o adjunta un archivo.']})
-        message = row.messages.filter(account=account, message_id=data['message_id']).first()
+        message = DealMessage.objects.filter(thread_id=row.thread_id, account=account, message_id=data['message_id']).first()
         if message:  # the same send again (a retry): the message as it was saved
             if message.body != data['body']:
                 raise RequestConflict('Este identificador ya se utilizó para otro mensaje.')
         else:
-            message = DealMessage.objects.create(order=row, account=account, actor=request.user, message_id=data['message_id'], body=data['body'])
+            message = DealMessage.objects.create(thread_id=row.thread_id, order=None if data['general'] else row, account=account, actor=request.user,
+                                                 message_id=data['message_id'], body=data['body'])
             for upload, kind, content_type, name in files:
                 store(message, kind, content_type, name, upload.read())
         return Response(message_data(message), status=200)

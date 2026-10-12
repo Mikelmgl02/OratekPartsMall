@@ -162,7 +162,7 @@ test('the client sees in the deal chat that the supplier uses an AI assistant, a
   const dialog = page.getByRole('dialog');
   await dialog.getByRole('button', { name: 'Conversación', exact: true }).click();
   await expect(dialog.getByRole('note', { name: 'Aviso de asistente de IA', exact: true })).toHaveText(
-    'El proveedor usa un asistente de IA (Google Gemini) que puede leer las notas de tu orden y esta conversación para preparar tu cotización. No recibe precios ni existencias.');
+    'El proveedor usa un asistente de IA (Google Gemini) que puede leer las notas de tu orden y los mensajes sobre ella para preparar tu cotización. No recibe precios ni existencias.');
   await dialog.getByRole('button', { name: 'Cotización', exact: true }).click();
   await expect(dialog.getByText('Asistente de cotización (IA)', { exact: true })).toHaveCount(0);
   expect(unexpected).toEqual([]);

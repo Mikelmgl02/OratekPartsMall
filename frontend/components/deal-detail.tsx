@@ -12,7 +12,7 @@ import type { SupplierRequestLine } from '@/lib/request-types';
 import type { Deal, DealAttachment, DealMessage, Quotation } from '@/lib/deal-types';
 import type { QuotationTrace, QuoteDraft, QuoteDraftEnvelope, QuoteDraftLine } from '@/lib/pricing-types';
 import { supplierPricingHref, supplierSectionHref } from '@/lib/supplier-navigation';
-import { markConversationRead } from '@/lib/inbox';
+import { markConversationRead, shortReference } from '@/lib/inbox';
 import { onDealNudge, realtimeLive } from '@/lib/realtime';
 
 const QuoteEditor = dynamic(() => import('./quotation-editor'), { ssr: false, loading: () => <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando editor de cotización…</div> });
@@ -274,7 +274,7 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
           {(deal.quotations?.length || 0) > 1 && <details className="deal-quote-history"><summary>Versiones anteriores ({deal.quotations.length - 1})</summary>{deal.quotations.slice(0, -1).map(quote => <QuoteView key={quote.id} quote={quote} historical/>)}</details>}
         </div>
         {/* Keep conversation mounted so refreshes and draft messages survive tab changes. */}
-        {!embedded && <div hidden={tab !== 'chat'}><DealChat account={account} orderId={orderId} active={tab === 'chat'} supplier={supplier} insert={chatInsert}/></div>}
+        {!embedded && <div hidden={tab !== 'chat'}><DealChat account={account} orderId={orderId} reference={deal?.reference || reference} active={tab === 'chat'} supplier={supplier} insert={chatInsert}/></div>}
         {tab === 'history' && <ol className="deal-events">{deal.events?.length ? deal.events.map(event => <li key={event.id}><span>{date(event.created_at)} · {event.account_name} · {event.actor_name}</span><p>{event.description}</p></li>) : <li>Esta orden se creó antes de habilitar el registro de actividad.</li>}</ol>}
         <div className="deal-footer"><small>Orden {deal.reference} · La entrega se coordina con el proveedor.</small><button type="button" className="button soft small" disabled={busy} onClick={() => { setError(''); void load(); }}><RefreshCw size={14}/>Actualizar</button></div>
       </>}
@@ -358,7 +358,10 @@ function ChatFiles({ base, files, retrying, onRetry }: { base: string; files: De
   })}</div>;
 }
 
-export function DealChat({ account, orderId, active, supplier, insert, compact = false }: { account: Account; orderId: string; active: boolean; supplier: boolean; insert: { text: string; id: number } | null; compact?: boolean }) {
+// The conversation with the other party (one per client and supplier, mall/inbox.py): every order's messages in one line, each with its
+// order's chip. What is written here goes about this order (orderId, its reference) unless it is switched to General; Solo esta orden keeps
+// this order's messages.
+export function DealChat({ account, orderId, reference, active, supplier, insert, compact = false }: { account: Account; orderId: string; reference?: string; active: boolean; supplier: boolean; insert: { text: string; id: number } | null; compact?: boolean }) {
   const path = `/api/market/accounts/${account.id}/deals/${orderId}/messages`;
   const filesPath = `/api/market/accounts/${account.id}/deals/${orderId}/attachments`;
   const [messages, setMessages] = useState<DealMessage[]>([]);
@@ -388,6 +391,11 @@ export function DealChat({ account, orderId, active, supplier, insert, compact =
   const atBottom = useRef(true);
   const stick = useRef(false);
   const [newBelow, setNewBelow] = useState(false);
+  const [threadId, setThreadId] = useState<string | null>(null);
+  const [solo, setSolo] = useState(false);
+  const [general, setGeneral] = useState(false);
+  const scope = useRef({ orderId, solo });
+  const query = (extra: Record<string, string>) => { const params = new URLSearchParams({ ...(solo ? { solo: '1' } : {}), ...extra }); return params.size ? `?${params}` : ''; };
   const merge = (items: DealMessage[]) => setMessages(values => [...new Map([...values, ...items].map(value => [value.id, value])).values()].sort((a, b) => a.id - b.id));
   const fetched = useRef(0);
   const fetchMessages = useCallback(async () => {
@@ -396,9 +404,10 @@ export function DealChat({ account, orderId, active, supplier, insert, compact =
     try {
       let more = true;
       while (more && mounted.current) {
-        const data = await request<{ results: DealMessage[]; cursor: number; has_more: boolean; has_earlier: boolean; assistant_notice?: boolean }>(`${path}${cursor.current === null ? '' : `?after=${cursor.current}`}`);
+        const data = await request<{ results: DealMessage[]; cursor: number; has_more: boolean; has_earlier: boolean; assistant_notice?: boolean; thread_id?: string }>(`${path}${query(cursor.current === null ? {} : { after: String(cursor.current) })}`);
         if (!mounted.current) return;
         if (cursor.current === null) setHasEarlier(data.has_earlier);
+        if (data.thread_id) setThreadId(data.thread_id);
         setAssistantNotice(data.assistant_notice === true);
         const box = log.current, reading = !!box && box.scrollHeight - box.scrollTop - box.clientHeight > box.clientHeight;
         merge(data.results);
@@ -407,14 +416,21 @@ export function DealChat({ account, orderId, active, supplier, insert, compact =
       }
     } catch (caught) { if (mounted.current) setError(failure(caught)); }
     finally { loading.current = false; }
-  }, [path]);
-  // New messages arrive at once over the inbox's websocket; while it is connected the 3-second poll becomes a 30-second safety net.
+  }, [path, solo]);  // eslint-disable-line react-hooks/exhaustive-deps
+  // Every order shows the whole conversation, so switching orders keeps it; Solo esta orden (on, off, or on another order) reads it again.
+  useEffect(() => {
+    const before = scope.current; scope.current = { orderId, solo };
+    if (before.solo === solo && (!solo || before.orderId === orderId)) return;
+    cursor.current = null; setMessages([]); setReady(false); setHasEarlier(false);
+  }, [orderId, solo]);
+  // New messages arrive at once over the inbox's websocket (any order's, or general ones: the conversation's nudges); while it is connected
+  // the 3-second poll becomes a 30-second safety net.
   useEffect(() => {
     mounted.current = true; void fetchMessages();
     const timer = setInterval(() => { if (document.visibilityState === 'visible' && !(realtimeLive() && Date.now() - fetched.current < 30000)) void fetchMessages(); }, 3000);
-    const off = onDealNudge(orderId, ['message'], () => void fetchMessages());
+    const off = onDealNudge(threadId ?? orderId, ['message'], () => void fetchMessages());
     return () => { mounted.current = false; clearInterval(timer); off(); };
-  }, [fetchMessages, orderId]);
+  }, [fetchMessages, orderId, threadId]);
   useEffect(() => { if (active) void fetchMessages(); }, [active, fetchMessages]);
   useLayoutEffect(() => {
     if (!stick.current || !log.current) return;
@@ -441,9 +457,9 @@ export function DealChat({ account, orderId, active, supplier, insert, compact =
   }
   useEffect(() => {
     const last = messages.at(-1)?.id;
-    if (!active || !last || last <= readUpTo.current || document.visibilityState !== 'visible') return;
+    if (!active || solo || !last || last <= readUpTo.current || document.visibilityState !== 'visible') return;  // filtered, others may be unread
     readUpTo.current = last; void markConversationRead(orderId, last);
-  }, [active, messages, orderId]);
+  }, [active, messages, orderId, solo]);
   useEffect(() => {
     if (!insert) return;
     setBody(value => (value.trim() ? `${value.trimEnd()}\n${insert.text}` : insert.text).slice(0, 4000)); setCopied(true);
@@ -453,7 +469,7 @@ export function DealChat({ account, orderId, active, supplier, insert, compact =
     if (!messages.length || loadingEarlier) return;
     setLoadingEarlier(true);
     try {
-      const data = await request<{ results: DealMessage[]; has_earlier: boolean }>(`${path}?before=${messages[0].id}`);
+      const data = await request<{ results: DealMessage[]; has_earlier: boolean }>(`${path}${query({ before: String(messages[0].id) })}`);
       if (!mounted.current) return;
       const height = log.current?.scrollHeight || 0;
       merge(data.results); setHasEarlier(data.has_earlier);
@@ -493,10 +509,10 @@ export function DealChat({ account, orderId, active, supplier, insert, compact =
       let message: DealMessage;
       if (files.length) {
         const form = new FormData();
-        form.append('message_id', pending.current.id); form.append('body', text);
+        form.append('message_id', pending.current.id); form.append('body', text); form.append('general', general ? 'true' : 'false');
         for (const file of files) form.append('files', file);
         message = await request<DealMessage>(filesPath, { method: 'POST', body: form });
-      } else message = await request<DealMessage>(path, { method: 'POST', body: JSON.stringify({ body: text, message_id: pending.current.id }) });
+      } else message = await request<DealMessage>(path, { method: 'POST', body: JSON.stringify({ body: text, message_id: pending.current.id, general }) });
       if (!mounted.current) return;
       stick.current = true; merge([message]); setBody(''); setFiles([]); setCopied(false); pending.current = null; void fetchMessages();
     } catch (caught) { if (mounted.current) setError(failure(caught)); }
@@ -507,16 +523,22 @@ export function DealChat({ account, orderId, active, supplier, insert, compact =
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing || window.matchMedia('(pointer: coarse)').matches) return;
     event.preventDefault(); void send();
   }
-  return <section className={`deal-chat${compact ? ' compact' : ''}`} aria-label="Conversación del acuerdo">{!compact && <><h3>Conversación privada</h3><p>Cliente y proveedor pueden conversar durante todo el acuerdo. Las decisiones sobre la cotización se realizan en la pestaña Cotización.</p></>}
+  return <section className={`deal-chat${compact ? ' compact' : ''}`} aria-label="Conversación del acuerdo">{!compact && <><h3>Conversación privada</h3><p>Una sola conversación con {supplier ? 'tu cliente' : 'tu proveedor'}, con todas sus órdenes: lo que escribas aquí queda marcado con esta orden. Las decisiones sobre la cotización se realizan en la pestaña Cotización.</p></>}
     {assistantNotice && <p className="deal-chat-ai-notice" role="note" aria-label="Aviso de asistente de IA"><Bot size={15}/>{supplier
-      ? 'Tu cuenta tiene activado el asistente de IA: cuando lo usas, las notas de la orden y esta conversación desde la última versión se envían a Google Gemini para interpretarlas, sin precios ni existencias. Tu cliente ve este aviso.'
-      : 'El proveedor usa un asistente de IA (Google Gemini) que puede leer las notas de tu orden y esta conversación para preparar tu cotización. No recibe precios ni existencias.'}</p>}
+      ? 'Tu cuenta tiene activado el asistente de IA: cuando lo usas, las notas de la orden y los mensajes sobre ella desde la última versión se envían a Google Gemini para interpretarlas, sin precios ni existencias. Tu cliente ve este aviso.'
+      : 'El proveedor usa un asistente de IA (Google Gemini) que puede leer las notas de tu orden y los mensajes sobre ella para preparar tu cotización. No recibe precios ni existencias.'}</p>}
     {error && <div className="notice error" role="alert">{error}<button type="button" onClick={() => void fetchMessages()}>Actualizar mensajes</button></div>}
     {hasEarlier && <button type="button" className="button soft small" disabled={loadingEarlier} onClick={() => void earlier()}>Cargar mensajes anteriores</button>}
-    <div ref={log} className="deal-chat-messages" role="log" aria-label="Mensajes del acuerdo" aria-live="polite" onScroll={scrolled}>{!ready && !error ? <p>Cargando mensajes…</p> : !messages.length ? <p className="deal-chat-empty">Inicia la conversación sobre esta orden.</p> : messages.map(message => <article key={message.id} className={message.account_id === account.id ? 'own' : ''}><header><strong>{message.account_name}</strong><span>{message.actor_name} · {date(message.created_at)}{message.channel === 'whatsapp' && <em className="deal-chat-whatsapp"> · vía WhatsApp</em>}</span></header>{message.body && <p>{message.body}</p>}{!!message.attachments?.length && <ChatFiles base={filesPath} files={message.attachments} retrying={retrying} onRetry={id => void retry(id)}/>}</article>)}</div>
+    <div className="deal-chat-tools"><button type="button" className={`deal-chat-filter${solo ? ' on' : ''}`} aria-pressed={solo} onClick={() => setSolo(value => !value)}
+      title={solo ? 'Ver toda la conversación' : 'Ver solo los mensajes de esta orden'}>Solo esta orden{reference ? ` · ${shortReference(reference)}` : ''}</button></div>
+    <div ref={log} className="deal-chat-messages" role="log" aria-label="Mensajes del acuerdo" aria-live="polite" onScroll={scrolled}>{!ready && !error ? <p>Cargando mensajes…</p> : !messages.length ? <p className="deal-chat-empty">Inicia la conversación sobre esta orden.</p> : messages.map(message => <article key={message.id} className={message.account_id === account.id ? 'own' : ''}><header><strong>{message.account_name}</strong><span>{message.actor_name} · {date(message.created_at)}{message.channel === 'whatsapp' && <em className="deal-chat-whatsapp"> · vía WhatsApp</em>}</span>{message.order_reference
+        ? <span className={`deal-chat-order${message.order_id === orderId ? ' current' : ''}`} title={`Sobre la orden ${message.order_reference}`}>{shortReference(message.order_reference)}</span>
+        : <span className="deal-chat-order general" title="Sobre la relación, sin orden">General</span>}</header>{message.body && <p>{message.body}</p>}{!!message.attachments?.length && <ChatFiles base={filesPath} files={message.attachments} retrying={retrying} onRetry={id => void retry(id)}/>}</article>)}</div>
     {newBelow && <button type="button" className="deal-chat-new" onClick={toLatest}><ArrowDown size={14}/>Mensajes nuevos</button>}
     <form onSubmit={event => { event.preventDefault(); void send(); }}><label>Mensaje<textarea ref={composer} aria-label="Mensaje del acuerdo" required={!files.length} maxLength={4000} readOnly={sending} value={body} onChange={event => { setBody(event.target.value); setCopied(false); }} onKeyDown={composerKey} onPaste={pasted} placeholder={files.length ? 'Agrega un mensaje (opcional)…' : 'Escribe a la otra parte…'}/></label>
       {!!files.length && <ul className="deal-chat-attached" aria-label="Archivos para enviar">{files.map((file, index) => <li key={`${file.name}-${index}`}><Paperclip size={13}/><span>{file.name}</span><small>{fileSize(file.size)}</small><button type="button" disabled={sending} aria-label={`Quitar ${file.name}`} onClick={() => setFiles(values => values.filter((_, other) => other !== index))}><X size={13}/></button></li>)}</ul>}
-      {copied && <small className="deal-chat-copied" role="status">Pregunta del asistente copiada. Revísala y envíala cuando quieras.</small>}<div className="deal-chat-send"><input ref={picker} type="file" multiple hidden accept={CHAT_ACCEPT} aria-label="Elegir archivos" onChange={event => { attach([...(event.target.files || [])]); event.target.value = ''; }}/><button type="button" className="button soft deal-chat-attach" disabled={sending} onClick={() => picker.current?.click()} aria-label="Adjuntar archivos" title="Fotos, PDF, Excel, Word, audio o video"><Paperclip size={15}/></button><small className="deal-chat-hint">Enter para enviar · Shift+Enter para otra línea</small><button type="submit" className="button primary" disabled={sending || (!body.trim() && !files.length)}>{sending ? <LoaderCircle size={15} className="spin"/> : <Send size={15}/>}Enviar mensaje</button></div></form>
+      {copied && <small className="deal-chat-copied" role="status">Pregunta del asistente copiada. Revísala y envíala cuando quieras.</small>}<div className="deal-chat-send">
+        <button type="button" className={`deal-chat-tag${general ? ' general' : ''}`} disabled={sending} onClick={() => setGeneral(value => !value)} aria-label={general ? 'Escribes en general, sin orden. Cambiar a esta orden' : `Escribes sobre ${reference || 'esta orden'}. Cambiar a general`}
+          title={general ? 'Sin orden: sobre la relación. Toca para escribir sobre esta orden' : 'Toca para escribir en general, sin orden'}>{general ? 'General' : `Sobre ${reference ? shortReference(reference) : 'esta orden'}`}</button><input ref={picker} type="file" multiple hidden accept={CHAT_ACCEPT} aria-label="Elegir archivos" onChange={event => { attach([...(event.target.files || [])]); event.target.value = ''; }}/><button type="button" className="button soft deal-chat-attach" disabled={sending} onClick={() => picker.current?.click()} aria-label="Adjuntar archivos" title="Fotos, PDF, Excel, Word, audio o video"><Paperclip size={15}/></button><small className="deal-chat-hint">Enter para enviar · Shift+Enter para otra línea</small><button type="submit" className="button primary" disabled={sending || (!body.trim() && !files.length)}>{sending ? <LoaderCircle size={15} className="spin"/> : <Send size={15}/>}Enviar mensaje</button></div></form>
   </section>;
 }

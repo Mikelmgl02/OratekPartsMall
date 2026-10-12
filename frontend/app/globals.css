@@ -2609,3 +2609,16 @@ body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-s
 .basket-page-activity li.sent span { color:#256b45; }
 .basket-page-activity em { display:inline-flex; align-items:center; gap:3px; font-style:normal; font-size:11px; font-weight:600; color:#256b45; }
 .basket-page-activity>.button { justify-self:start; }
+
+/* One conversation per client and supplier (deal-detail.tsx DealChat): each message's order chip, the filter and what a message goes about. */
+.deal-chat-messages article header { flex-wrap:wrap; }
+.deal-chat-order { display:inline-flex; align-items:center; margin-left:auto; padding:1px 8px; border-radius:999px; background:#eef1ec; color:#4e5a52; font-size:11px; font-weight:600; font-variant-numeric:tabular-nums; }
+.deal-chat-order.current { background:#e1efe5; color:#256b45; }
+.deal-chat-order.general { background:transparent; border:1px dashed #cfd7d1; color:#7a857d; font-weight:500; }
+.deal-chat-tools { display:flex; justify-content:flex-end; gap:8px; }
+.deal-chat-filter, .deal-chat-tag { border:1px solid var(--line); border-radius:999px; background:#fff; color:#3d4a42; font:inherit; font-size:12px; font-weight:600; padding:4px 12px; cursor:pointer; }
+.deal-chat-filter.on { background:#232b26; border-color:#232b26; color:#fff; }
+.deal-chat-tag { flex:0 0 auto; background:#e1efe5; border-color:#c4dccb; color:#256b45; }
+.deal-chat-tag.general { background:#fff; border-style:dashed; color:#5d6a61; }
+.deal-chat-send>.deal-chat-tag { margin-right:4px; }
+.inbox-order-picker { max-width:100%; padding:1px 4px; border:1px solid var(--line); border-radius:6px; background:#fff; color:inherit; font:inherit; font-size:12px; }

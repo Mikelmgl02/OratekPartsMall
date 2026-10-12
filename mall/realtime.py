@@ -1,5 +1,5 @@
 """Realtime nudges for the deal inbox over a websocket (Django Channels: daphne serves /ws/inbox/, Redis carries messages between the
-web workers and the socket server). The socket carries no deal content, only "deal X changed" (a message, an event, a read mark): the
+web workers and the socket server). The socket carries no deal content, only "deal X changed" (a message, an event, a read mark; with its conversation's id): the
 page then fetches what changed through the usual API, which keeps every permission check in one place, and polls less while connected.
 The socket signs in with the site's session cookie (the API token, SameSite=strict). Without REDIS_URL nothing is published and pages
 keep polling as before."""
@@ -52,39 +52,41 @@ class InboxSocket(AsyncJsonWebsocketConsumer):
         pass  # the page only listens
 
     async def inbox_changed(self, event):
-        await self.send_json({'kind': event['kind'], 'order_id': event.get('order_id')})
+        await self.send_json({'kind': event['kind'], 'order_id': event.get('order_id'), 'thread_id': event.get('thread_id')})
 
 
-def publish(user_ids, kind, order_id=None):
-    """Tells these people's open pages that something changed; best effort (Redis down only means they wait for their next poll)."""
+def publish(user_ids, kind, order_id=None, thread_id=None):
+    """Tells these people's open pages that something changed (an order, a conversation); best effort (Redis down only means they wait for
+    their next poll)."""
     layer = get_channel_layer() if settings.CHANNEL_LAYERS else None
     if layer is None or not user_ids:
         return
     try:
         for user_id in user_ids:
             async_to_sync(layer.group_send)(GROUP.format(user_id), {'type': 'inbox.changed', 'kind': kind,
-                                                                   'order_id': str(order_id) if order_id else None})
+                                                                   'order_id': str(order_id) if order_id else None,
+                                                                   'thread_id': str(thread_id) if thread_id else None})
     except Exception:
         log.warning('Realtime publish failed', exc_info=True)
 
 
-def publish_later(user_ids, kind, order_id=None):
+def publish_later(user_ids, kind, order_id=None, thread_id=None):
     """After the commit, from a thread, so a slow Redis never holds the request."""
     if settings.CHANNEL_LAYERS and user_ids:
-        transaction.on_commit(lambda: push.dispatch(lambda: publish(user_ids, kind, order_id)))
+        transaction.on_commit(lambda: push.dispatch(lambda: publish(user_ids, kind, order_id, thread_id)))
 
 
-def participants(order):
-    """Everyone who acts for either party of the deal (the deal-access rule), the author's other tabs included."""
-    sides = Q(account_id=order.client_id, account__roles__capability='client') | Q(account_id=order.supplier_id, account__roles__capability='supplier')
+def participants(deal):
+    """Everyone who acts for either party of an order or a conversation (the deal-access rule), the author's other tabs included."""
+    sides = Q(account_id=deal.client_id, account__roles__capability='client') | Q(account_id=deal.supplier_id, account__roles__capability='supplier')
     return set(Membership.objects.filter(sides, account__active=True, user__is_active=True).values_list('user_id', flat=True))
 
 
 def message_saved(sender, instance, created=False, raw=False, **kwargs):
     if created and not raw and settings.CHANNEL_LAYERS:
-        publish_later(participants(instance.order), 'message', instance.order_id)
+        publish_later(participants(instance.thread), 'message', instance.order_id, instance.thread_id)
 
 
 def event_saved(sender, instance, created=False, raw=False, **kwargs):
     if created and not raw and settings.CHANNEL_LAYERS:
-        publish_later(participants(instance.order), 'event', instance.order_id)
+        publish_later(participants(instance.order), 'event', instance.order_id, instance.order.thread_id)

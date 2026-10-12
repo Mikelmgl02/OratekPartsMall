@@ -47,12 +47,12 @@ def window_open(number, now=None):
     return WhatsAppContact.objects.filter(number=number, last_inbound_at__gt=(now or timezone.now()) - WINDOW).exists()
 
 
-def continuing(number, order, now):
-    """Whether the last WhatsApp with this number, either way (codes aside), was about this order within STRETCH: the conversation is
-    going on there, and its next message needs no header."""
-    last = (WhatsAppMessage.objects.filter(number=number).exclude(kind='verify').exclude(status='failed').order_by('-id')
-            .values_list('order_id', 'created_at').first())
-    return bool(last) and last[0] == order.pk and last[1] >= now - STRETCH
+def continuing(number, thread, now):
+    """Whether the last WhatsApp with this number, either way (codes aside), was about this conversation within STRETCH: it is going on
+    there, and its next message needs no header."""
+    last = (WhatsAppMessage.objects.filter(number=number).exclude(kind__in=('verify', 'ask')).exclude(status='failed').order_by('-id')
+            .values_list('thread_id', 'created_at').first())
+    return bool(last) and last[0] == thread.pk and last[1] >= now - STRETCH
 
 
 def conversation_link(conversation):
@@ -69,8 +69,8 @@ def relay_text(number, message, order, conversation, first=True):
     files, which go on their own)."""
     body = message.body[:BODY_LIMIT]
     if first:
-        heading = f'*{message.account.name}* · {order.reference}'
-        body = (f'{heading}\n{body}' if body else heading) + f'\n\nEscribe aquí para contestar en la orden, o ábrela en MotionPartes: {conversation_link(conversation)}'
+        heading = f'*{message.account.name}*' + (f' · {order.reference}' if order else '')  # a general message names no order
+        body = (f'{heading}\n{body}' if body else heading) + f'\n\nEscribe aquí para contestar, o abre la conversación en MotionPartes: {conversation_link(conversation)}'
     return text_message(number, body) if body else None
 
 
@@ -153,7 +153,7 @@ def message_key(wamid, now):
     return uuid.uuid5(uuid.NAMESPACE_URL, f'whatsapp:{wamid or now}')
 
 
-def bring_in(order, account_id, user, number, wamid, kind, media, caption, now):
+def bring_in(thread, order, account_id, user, number, wamid, kind, media, caption, now):
     """A file someone sent by WhatsApp, into the deal's chat with its caption once downloaded (and a voice note transcribed), so the chat,
     the relays and the notices get it whole. One Meta would not give, or too large, still shows, as not received, and either party can
     ask for it again (mall.deal_attachments.DealAttachmentRetry) by Meta's id."""
@@ -168,8 +168,8 @@ def bring_in(order, account_id, user, number, wamid, kind, media, caption, now):
     voice = kind == 'audio' and bool(media.get('voice'))
     transcript = transcribe(content, content_type) if voice else ''
     with transaction.atomic():
-        message, created = DealMessage.objects.get_or_create(order=order, account_id=account_id, message_id=message_key(wamid, now),
-                                                             defaults={'actor': user, 'body': caption[:4000], 'channel': 'whatsapp'})
+        message, created = DealMessage.objects.get_or_create(thread=thread, account_id=account_id, message_id=message_key(wamid, now),
+                                                             defaults={'order': order, 'actor': user, 'body': caption[:4000], 'channel': 'whatsapp'})
         if created:
             store(message, kind, content_type, name, content, voice=voice, failed=not content, transcript=transcript,
                   whatsapp_media_id=str(media.get('id', ''))[:64])
@@ -194,25 +194,26 @@ def pointer(number, contact, now, text):
 
 def deal_row(number, context_id, now):
     """The notice or relay a reply belongs to: the one it answers, or the last one to that number within FIND_DEAL (that Meta took; a failed
-    one never reached them)."""
-    rows = WhatsAppMessage.objects.filter(number=number, order__isnull=False).exclude(status__in=('received', 'failed')).select_related('order', 'user')
+    one never reached them). The reply goes into its conversation (thread), tagged with its order when it had one."""
+    rows = (WhatsAppMessage.objects.filter(number=number, thread__isnull=False).exclude(status__in=('received', 'failed'))
+            .select_related('order', 'thread__client', 'thread__supplier', 'user'))
     return (rows.filter(wamid=context_id).first() if context_id else None) or rows.filter(created_at__gte=now - FIND_DEAL).order_by('-id').first()
 
 
-def order_row(number, context_id, now):
-    """With the assistant on: the order a message continues, by the notice or relay it answers (WhatsApp's reply context) or by the last
-    WhatsApp with this number having been about that order within STRETCH. None for a reply to the assistant, or when the conversation was
-    last with the assistant or is older: then the assistant takes it."""
+def thread_row(number, context_id, now):
+    """With the assistant on: the conversation a message continues, by the notice or relay it answers (WhatsApp's reply context) or by the
+    last WhatsApp with this number having been about it within STRETCH (its latest notice or relay to the number: its order is the tag).
+    None for a reply to the assistant, or when the number was last talking with the assistant or is older: then the assistant takes it."""
     rows = WhatsAppMessage.objects.filter(number=number).exclude(kind__in=('verify', 'ask')).exclude(status='failed')
     if context_id:
-        answered = rows.filter(wamid=context_id).first()
-        if answered is not None:
-            return deal_row(number, context_id, now) if answered.order_id else None
+        replied = rows.filter(wamid=context_id).first()
+        if replied is not None:
+            return deal_row(number, context_id, now) if replied.thread_id else None
     last = rows.order_by('-id').first()
-    if last is None or last.order_id is None or last.created_at < now - STRETCH:
+    if last is None or last.thread_id is None or last.created_at < now - STRETCH:
         return None
-    return (rows.filter(order_id=last.order_id).exclude(status='received').select_related('order', 'user').order_by('-id').first()
-            or deal_row(number, None, now))
+    return (rows.filter(thread_id=last.thread_id).exclude(status='received').select_related('order', 'thread__client', 'thread__supplier', 'user')
+            .order_by('-id').first() or deal_row(number, None, now))
 
 
 def answered(number, context_id):
@@ -220,19 +221,20 @@ def answered(number, context_id):
     return bool(context_id) and WhatsAppMessage.objects.filter(number=number, wamid=context_id).exists()
 
 
-def open_orders(number, now, people, accounts):
-    """The orders a plain message could be for, the latest first, that its writer may still write in: [(the order's latest notice or relay
-    to it, (user, account id))]. Within STRETCH: the order the person last wrote in and those that wrote to them since, or, when they have
-    not written in any, those that wrote to them. More than one, and only the person can say which."""
+def open_threads(number, now, people, accounts):
+    """The conversations a plain message could be for, the latest first, that its writer may still write in: [(the conversation's latest
+    notice or relay to the number, (user, account id))]. Within STRETCH: the one the person last wrote in and those that wrote to them since,
+    or, when they have not written in any, those that wrote to them. Several orders of one conversation are one: the message goes there.
+    More than one conversation (several counterparts), and only the person can say which."""
     found = []
-    rows = (WhatsAppMessage.objects.filter(number=number, order__isnull=False, created_at__gte=now - STRETCH).exclude(kind='verify')
+    rows = (WhatsAppMessage.objects.filter(number=number, thread__isnull=False, created_at__gte=now - STRETCH).exclude(kind__in=('verify', 'ask'))
             .exclude(status='failed').order_by('-id'))
     mine = rows.filter(status='received').first()
     if mine is not None:
         rows = rows.filter(id__gte=mine.id)
-    for order_id in dict.fromkeys(rows.values_list('order_id', flat=True)):
-        row = (WhatsAppMessage.objects.filter(number=number, order_id=order_id).exclude(status__in=('received', 'failed'))
-               .select_related('order', 'user').order_by('-id').first())
+    for thread_id in dict.fromkeys(rows.values_list('thread_id', flat=True)):
+        row = (WhatsAppMessage.objects.filter(number=number, thread_id=thread_id).exclude(status__in=('received', 'failed'))
+               .select_related('order', 'thread__client', 'thread__supplier', 'user').order_by('-id').first())
         who = author(row, people, accounts) if row else None
         if who:
             found.append((row, who))
@@ -240,76 +242,82 @@ def open_orders(number, now, people, accounts):
 
 
 def hold(number, message, found, now):
-    """A plain message while several orders are open: kept (with any others still waiting) until the person taps which order it is for."""
+    """A plain message while conversations with several counterparts are open: kept (with any others still waiting) until the person taps
+    which one it is for."""
     from .assistant_models import WhatsAppAssistantSession
     from . import whatsapp_assistant as assistant
     session, _ = WhatsAppAssistantSession.objects.get_or_create(number=number)
     waiting = [held for held in (session.pending.get('para_orden') or []) if held.get('id') != message.get('id')]
     session.pending = {**session.pending, 'para_orden': (waiting + [message])[-5:]}
     session.save(update_fields=['pending', 'updated_at'])
-    lines = [f'{index}. {other(row.order, who[1])} · {row.order.reference}' for index, (row, who) in enumerate(found, 1)]
-    body = 'Tienes conversaciones abiertas con varias órdenes. ¿Para cuál es tu mensaje?\n' + '\n'.join(lines)
-    choices = [(f'order:{row.order_id}', other(row.order, who[1]), row.order.reference[-8:]) for row, who in found]
+    lines = [f'{index}. {other(row.thread, who[1])}' + (f' · {row.order.reference}' if row.order_id else '') for index, (row, who) in enumerate(found, 1)]
+    body = 'Tienes conversaciones abiertas con varios proveedores o clientes. ¿Para quién es tu mensaje?\n' + '\n'.join(lines)
+    choices = [(f'thread:{row.thread_id}', other(row.thread, who[1]), row.order.reference[-8:] if row.order_id else '') for row, who in found]
     payload = ({**assistant.buttons(body, [(identifier, title) for identifier, title, _ in choices]), '_kind': 'ask'} if len(choices) <= 3
-               else {**assistant.choice_list(body, 'Ver órdenes', choices), '_kind': 'ask'})
+               else {**assistant.choice_list(body, 'Ver conversaciones', choices), '_kind': 'ask'})
     push.dispatch(lambda: assistant.send(number, None, payload))
 
 
-def other(order, account_id):
-    """The other party's name, for the one writing as account_id."""
-    return order.supplier_name if account_id == order.client_id else order.client_name
+def other(deal, account_id):
+    """The other party's name (of an order, as sent; of a conversation, as the account is named now), for the one writing as account_id."""
+    client = getattr(deal, 'client_name', None) or deal.client.name
+    supplier = getattr(deal, 'supplier_name', None) or deal.supplier.name
+    return supplier if account_id == deal.client_id else client
 
 
-def bring_text(order, account_id, user, number, wamid, body, now):
+def bring_text(thread, order, account_id, user, number, wamid, body, now):
+    """A text into the conversation as the writer's (tagged with the order when known), confirmed with a ✅."""
     from .models import DealMessage
-    DealMessage.objects.get_or_create(order=order, account_id=account_id, message_id=message_key(wamid, now),
-                                      defaults={'actor': user, 'body': body[:4000], 'channel': 'whatsapp'})
+    DealMessage.objects.get_or_create(thread=thread, account_id=account_id, message_id=message_key(wamid, now),
+                                      defaults={'order': order, 'actor': user, 'body': body[:4000], 'channel': 'whatsapp'})
     if wamid:
         push.dispatch(lambda: react(number, wamid))
 
 
-def chosen(number, order_id, wamid, now, people, accounts):
-    """The person tapped which order their waiting messages are for: in they go, and the conversation goes on with that order."""
+def chosen(number, thread_id, wamid, now, people, accounts):
+    """The person tapped which conversation their waiting messages are for: in they go (tagged with its latest notice's order), and the
+    conversation goes on there."""
     from .assistant_models import WhatsAppAssistantSession
-    row = (WhatsAppMessage.objects.filter(number=number, order_id=order_id).exclude(status__in=('received', 'failed'))
-           .select_related('order', 'user').order_by('-id').first())
+    row = (WhatsAppMessage.objects.filter(number=number, thread_id=thread_id).exclude(status__in=('received', 'failed'))
+           .select_related('order', 'thread__client', 'thread__supplier', 'user').order_by('-id').first())
     who = author(row, people, accounts) if row else None
     if not who:
-        push.dispatch(lambda: reply(number, f'Ya no puedes escribir en esa orden. Ábrela en MotionPartes: {settings.SITE_URL.rstrip("/")}/'))
+        push.dispatch(lambda: reply(number, f'Ya no puedes escribir en esa conversación. Ábrela en MotionPartes: {settings.SITE_URL.rstrip("/")}/'))
         return
     user, account_id = who
     session = WhatsAppAssistantSession.objects.filter(number=number).first()
     waiting = (session.pending.pop('para_orden', None) or []) if session else []
     if session:
         session.save(update_fields=['pending', 'updated_at'])
-    WhatsAppMessage.objects.create(user=user if row.user_id else None, account_id=None if row.user_id else account_id, order=row.order, number=number,
-                                   template='', kind='reply', wamid=wamid, status='received')
-    WhatsAppMessage.objects.filter(number=number, wamid__in=[held.get('id') for held in waiting if held.get('id')], status='received').update(order=row.order)
+    WhatsAppMessage.objects.create(user=user if row.user_id else None, account_id=None if row.user_id else account_id, order=row.order, thread=row.thread,
+                                   number=number, template='', kind='reply', wamid=wamid, status='received')
+    WhatsAppMessage.objects.filter(number=number, wamid__in=[held.get('id') for held in waiting if held.get('id')], status='received').update(
+        order=row.order, thread=row.thread)
     for held in waiting:
         kind = held.get('type', 'text')
         media = held.get(kind) if kind in MEDIA and isinstance(held.get(kind), dict) else None
         if media:
-            push.dispatch(lambda held=held, kind=kind, media=media: bring_in(row.order, account_id, user, number, held.get('id', ''), kind, media,
-                                                                             (media.get('caption') or '').strip(), now))
+            push.dispatch(lambda held=held, kind=kind, media=media: bring_in(row.thread, row.order, account_id, user, number, held.get('id', ''), kind,
+                                                                             media, (media.get('caption') or '').strip(), now))
         else:
             body = ((held.get(kind) or {}).get('body' if kind == 'text' else 'text') or '').strip()
             if body:
-                bring_text(row.order, account_id, user, number, held.get('id', ''), body, now)
+                bring_text(row.thread, row.order, account_id, user, number, held.get('id', ''), body, now)
     if not waiting:
-        push.dispatch(lambda: reply(number, f'Listo: lo que escribas ahora va a la orden {row.order.reference} con {other(row.order, account_id)}.'))
+        push.dispatch(lambda: reply(number, f'Listo: lo que escribas ahora va a tu conversación con {other(row.thread, account_id)}.'))
 
 
 def author(row, people, accounts):
-    """(user, account id) writing the reply: the person or the account the answered notice went to, while still a party to the deal."""
-    from .inbox import my_deals
+    """(user, account id) writing the reply: the person or the account the answered notice went to, while still a party to its conversation."""
+    from .inbox import my_threads
     from .models import Membership
-    order = row.order
+    thread = row.thread
     if row.user_id and any(cursor.user_id == row.user_id for cursor in people):
-        deal = my_deals(row.user).filter(pk=order.pk).first()
-        if deal:
-            return row.user, deal.supplier_id if deal.side == 'supplier' else deal.client_id
+        mine = my_threads(row.user).filter(pk=thread.pk).first()
+        if mine:
+            return row.user, mine.supplier_id if mine.side == 'supplier' else mine.client_id
     holder = next((item for item in accounts if item.account_id == row.account_id), None) if row.account_id else None
-    if holder and row.account_id in (order.client_id, order.supplier_id):
+    if holder and row.account_id in (thread.client_id, thread.supplier_id):
         user = holder.whatsapp_verified_by
         if user and user.is_active and Membership.objects.filter(user=user, account_id=row.account_id).exists():
             return user, row.account_id
@@ -353,37 +361,37 @@ def inbound(message, now):
     from . import whatsapp_assistant
     context_id = (message.get('context') or {}).get('id')
     tapped = ((message.get('interactive') or {}).get('button_reply') or (message.get('interactive') or {}).get('list_reply') or {}).get('id', '')
-    if kind == 'interactive' and tapped.startswith('order:'):  # which order the waiting messages are for
+    if kind == 'interactive' and tapped.startswith(('thread:', 'order:')):  # which conversation the waiting messages are for
         chosen(number, tapped.split(':', 1)[1], wamid, now, people, accounts)
         return
     if kind != 'interactive' and not answered(number, context_id):
-        found = open_orders(number, now, people, accounts)
-        if len(found) > 1:  # several orders open: never a guess
+        found = open_threads(number, now, people, accounts)
+        if len(found) > 1:  # several counterparts' conversations open: never a guess
             WhatsAppMessage.objects.create(user_id=people[0].user_id if people else None, account_id=None if people else accounts[0].account_id,
                                            number=number, template='', kind='reply', wamid=wamid, status='received')
             hold(number, message, found, now)
             return
     assistant = whatsapp_assistant.enabled()
-    row = order_row(number, context_id, now) if assistant else deal_row(number, context_id, now)
+    row = thread_row(number, context_id, now) if assistant else deal_row(number, context_id, now)
     who = author(row, people, accounts) if row else None
-    if not who and (assistant or kind == 'interactive'):  # not an order's conversation: the shopping assistant (mall.whatsapp_assistant)
+    if not who and (assistant or kind == 'interactive'):  # not a conversation with a supplier or client: the shopping assistant
         WhatsAppMessage.objects.create(user_id=people[0].user_id if people else None, account_id=None if people else accounts[0].account_id,
                                        number=number, template='', kind='assistant', wamid=wamid, status='received')
         push.dispatch(lambda: whatsapp_assistant.handle(number, people, accounts, message, now))
         return
     if not text and not media:
-        pointer(number, contact, now, 'Por ahora pasamos a la orden textos, fotos, documentos, audios y videos. Para enviar otra cosa, usa '
-                                      f'MotionPartes: {site}/')
+        pointer(number, contact, now, 'Por ahora pasamos a la conversación textos, fotos, documentos, audios y videos. Para enviar otra cosa, '
+                                      f'usa MotionPartes: {site}/')
         return
     if not who:
         pointer(number, contact, now, 'Para escribir en una orden, responde a uno de sus avisos (mantén presionado el aviso y elige Responder). '
                                       f'También puedes continuar en MotionPartes: {site}/ · Para dejar de recibir avisos, responde BAJA.')
         return
     user, account_id = who
-    WhatsAppMessage.objects.create(user=user if row.user_id else None, account_id=None if row.user_id else account_id, order=row.order, number=number,
-                                   template='', kind='reply', wamid=wamid, status='received')
-    order = row.order
+    WhatsAppMessage.objects.create(user=user if row.user_id else None, account_id=None if row.user_id else account_id, order=row.order, thread=row.thread,
+                                   number=number, template='', kind='reply', wamid=wamid, status='received')
+    thread, order = row.thread, row.order  # into the conversation, tagged with the order of what it answers when it had one
     if media:  # downloaded (and a voice note transcribed) before it reaches the chat: a few seconds
-        push.dispatch(lambda: bring_in(order, account_id, user, number, wamid, kind, media, caption, now))
+        push.dispatch(lambda: bring_in(thread, order, account_id, user, number, wamid, kind, media, caption, now))
         return
-    bring_text(order, account_id, user, number, wamid, text, now)
+    bring_text(thread, order, account_id, user, number, wamid, text, now)

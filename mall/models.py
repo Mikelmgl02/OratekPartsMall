@@ -317,7 +317,7 @@ from .catalog_assistant_models import CatalogAssistantJob, CatalogAssistantSugge
 from .supplier_import_models import SupplierInventoryImportJob, SupplierInventoryImportBatch
 from .inventory_history_models import InventoryRun, InventoryChange
 from .request_models import (ClientRequestSubmission, SupplierRequest, SupplierRequestLine, RequestContribution,
-                             DealQuotation, DealQuotationLine, DealEvent, DealMessage, DealAttachment, DealCommand, StockReservation,
+                             DealQuotation, DealQuotationLine, DealEvent, DealMessage, DealAttachment, DealThread, DealCommand, StockReservation,
                              DealShortfall, DealShortfallLine)
 from .analytics_models import UsageEvent, UsageVisit
 from .assistant_models import WhatsAppAssistantSession

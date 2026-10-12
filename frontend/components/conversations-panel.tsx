@@ -2,17 +2,19 @@
 import { type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { ArrowLeft, ArrowUpRight, FileText, Handshake, History, MessagesSquare, PanelLeft } from 'lucide-react';
+import { dealStatusLabels } from '@/lib/deal-types';
 import Modal from './modal';
 import ConversationList, { mostRecent } from './conversation-list';
 import DealDetail, { DealChat, type DealTab } from './deal-detail';
-import type { Account } from '@/lib/types';
+import { type Account, type Page, request } from '@/lib/types';
 import { InboxConversation, InboxTarget, targetOf } from '@/lib/inbox';
 
 // The chat and the deal detail need only the account's id (and its side) to talk to the account-scoped deal API.
 const accountOf = (target: InboxTarget): Account => ({ id: target.account.id, name: target.account.name, roles: [], capabilities: [target.side] });
 
-// Laid out like a desktop chat app: the conversations on the left (grouped, conversation-list.tsx), the chat in the middle, and the order's sections (Cotización,
-// Artículos, Actividad) toggled from the header's top-right corner into a panel on the right. Both side columns are resizable (drag
+// Laid out like a desktop chat app: the conversations on the left (one per client and supplier, grouped, conversation-list.tsx), the
+// conversation's chat in the middle (all its orders, linear), and one of its orders, chosen in the header, with its sections (Cotización,
+// Artículos, Actividad) toggled from the header's top-right corner into a panel on the right; what is written goes about that order. Both side columns are resizable (drag
 // or arrow keys on the dividers) and the list can be hidden; the layout is remembered in this browser. On a phone the list, the chat
 // and a section take turns.
 type Layout = { list: number; side: number; listOpen: boolean; sideOpen: boolean };
@@ -32,6 +34,21 @@ function savedLayout(): Layout {
 
 export default function ConversationsPanel({ initial, onClose, onShowing }: { initial?: InboxTarget; onClose: () => void; onShowing: (orderId: string | null) => void }) {
   const [selected, setSelected] = useState<InboxTarget | null>(initial ?? null);
+  // The open conversation's row: its orders, for the header's order picker (read again when another conversation opens).
+  const [thread, setThread] = useState<InboxConversation | null>(null);
+  const conversationKey = selected ? selected.threadId ?? selected.orderId : null;
+  useEffect(() => {
+    setThread(null);
+    if (!conversationKey) return;
+    let current = true;
+    request<Page<InboxConversation>>(`/api/market/inbox/conversations?order=${encodeURIComponent(conversationKey)}`).then(data => {
+      const row = data.results[0];
+      if (!current || !row) return;
+      setThread(row);
+      setSelected(target => target && !target.threadId ? { ...target, threadId: row.id } : target);
+    }).catch(() => {});
+    return () => { current = false; };
+  }, [conversationKey]);
   const [dealOpen, setDealOpen] = useState(false);
   // A question the quote assistant suggests lands in the panel's chat composer (never sent by itself).
   const [chatInsert, setChatInsert] = useState<{ text: string; id: number } | null>(null);
@@ -75,7 +92,7 @@ export default function ConversationsPanel({ initial, onClose, onShowing }: { in
     const recent = mostRecent(rows);
     setSelected(current => current ?? (recent && wide() ? targetOf(recent) : null));
   }, []);
-  useEffect(() => { onShowing(selected?.orderId ?? null); }, [selected, onShowing]);
+  useEffect(() => { onShowing(selected?.threadId ?? selected?.orderId ?? null); }, [selected, onShowing]);
   useEffect(() => {
     if (beforePricing.current || !wide()) return;
     try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); } catch { /* the layout lasts this visit */ }
@@ -140,13 +157,19 @@ export default function ConversationsPanel({ initial, onClose, onShowing }: { in
     <div ref={box} className={`inbox-layout${layout.listOpen ? '' : ' list-closed'}`} style={{ '--inbox-list': `${layout.list}px`, '--inbox-side': `${layout.side}px` } as React.CSSProperties}>
       {/* Kept mounted while hidden, so its search, folded groups and scroll stay as they were. */}
       <ConversationList hidden={!layout.listOpen && peekTop === null} floatTop={layout.listOpen ? null : peekTop} onPeek={layout.listOpen ? undefined : peekEvent}
-        selectedId={selected?.orderId ?? null} selectedSide={selected?.side} onChoose={choose} onLoaded={loaded}/>
+        selected={selected} selectedSide={selected?.side} onChoose={choose} onLoaded={loaded}/>
       {layout.listOpen && separator('list', 'Ajustar el ancho de las conversaciones')}
-      {selected ? <section className="inbox-conversation" aria-label={`Orden ${selected.reference} con ${selected.counterpart.name}`}>
+      {selected ? <section className="inbox-conversation" aria-label={`Conversación con ${selected.counterpart.name}`}>
         <header ref={header} className="inbox-conversation-header">
           <button type="button" className="icon-button inbox-back" aria-label="Volver a conversaciones" onClick={() => setSelected(null)}><ArrowLeft size={18}/></button>
           {listToggle}
-          <div className="inbox-conversation-title"><strong>{selected.counterpart.name}</strong><span>{selected.reference} · {selected.side === 'supplier' ? 'tu cliente' : 'tu proveedor'}</span></div>
+          <div className="inbox-conversation-title"><strong>{selected.counterpart.name}</strong><span>{selected.side === 'supplier' ? 'Tu cliente' : 'Tu proveedor'} · {
+            thread?.orders && thread.orders.length > 1
+              ? <select className="inbox-order-picker" aria-label="Orden" value={selected.orderId} onChange={event => {
+                  const order = thread.orders!.find(item => item.id === event.target.value);
+                  if (order) setSelected(target => target && { ...target, orderId: order.id, reference: order.reference });
+                }}>{thread.orders.map(order => <option key={order.id} value={order.id}>{order.reference} · {dealStatusLabels[order.status]}</option>)}</select>
+              : selected.reference}</span></div>
           <div className="inbox-sections" role="group" aria-label="Secciones de la orden">
             {SECTIONS.map(([value, label, Icon]) => <button type="button" key={value} aria-pressed={layout.sideOpen && section === value} title={label} onClick={() => toggleSection(value)}><Icon size={15}/><span>{label}</span></button>)}
           </div>
@@ -155,7 +178,7 @@ export default function ConversationsPanel({ initial, onClose, onShowing }: { in
             : <button type="button" className="button soft small inbox-open-order" onClick={() => setDealOpen(true)} title="Abrir orden"><ArrowUpRight size={15}/><span>Abrir orden</span></button>}
         </header>
         <div className={`inbox-conversation-body${layout.sideOpen ? ' side-open' : ''}`}>
-          <div className="inbox-chat"><DealChat key={selected.orderId} account={accountOf(selected)} orderId={selected.orderId} active supplier={selected.side === 'supplier'} insert={chatInsert} compact/></div>
+          <div className="inbox-chat"><DealChat key={selected.threadId ?? selected.orderId} account={accountOf(selected)} orderId={selected.orderId} reference={selected.reference} active supplier={selected.side === 'supplier'} insert={chatInsert} compact/></div>
           {layout.sideOpen && separator('side', 'Ajustar el ancho de la orden')}
           {/* Kept mounted while closed: an open editor, a half-written adjustment or a confirmation keeps its state. */}
           <div className="inbox-side" hidden={!layout.sideOpen}>

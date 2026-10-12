@@ -58,7 +58,7 @@ class InboxTests(APITestCase):
         self.say(self.buyer, self.client_account, order, 'primero')
         second = self.say(self.buyer, self.client_account, order, 'segundo')
         [row] = self.inbox(self.seller_a, 'conversations/')['results']
-        self.assertEqual({key: row[key] for key in ['id', 'reference', 'side', 'unread']}, {'id': str(order.pk), 'reference': order.reference, 'side': 'supplier', 'unread': 2})
+        self.assertEqual({key: row[key] for key in ['id', 'reference', 'side', 'unread']}, {'id': str(order.thread_id), 'reference': order.reference, 'side': 'supplier', 'unread': 2})  # the conversation, on its order
         self.assertEqual((row['account']['id'], row['counterpart']['name']), (str(self.supplier_a.pk), 'CLIENTE ORIGINAL'))
         self.assertEqual((row['last_message']['id'], row['last_message']['body'], row['last_message']['mine']), (second, 'segundo', False))
         [mine] = self.inbox(self.buyer, 'conversations/')['results']
@@ -80,9 +80,9 @@ class InboxTests(APITestCase):
         orders = {row.supplier_id: row for row in SupplierRequest.objects.filter(pk__in=[item['id'] for item in response.data['requests']])}
         order_a, order_b = orders[self.supplier_a.pk], orders[self.supplier_b.pk]
         self.say(self.seller_b, self.supplier_b, order_b, 'b')
-        self.assertEqual([row['id'] for row in self.inbox(self.buyer, 'conversations/')['results']], [str(order_b.pk), str(order_a.pk)])
+        self.assertEqual([row['id'] for row in self.inbox(self.buyer, 'conversations/')['results']], [str(order_b.thread_id), str(order_a.thread_id)])
         self.say(self.seller_a, self.supplier_a, order_a, 'a')
-        self.assertEqual([row['id'] for row in self.inbox(self.buyer, 'conversations/')['results']], [str(order_a.pk), str(order_b.pk)])
+        self.assertEqual([row['id'] for row in self.inbox(self.buyer, 'conversations/')['results']], [str(order_a.thread_id), str(order_b.thread_id)])
 
     def test_people_pin_and_group_their_conversations_and_the_list_keeps_that_order(self):
         self.client.force_authenticate(self.buyer)
@@ -97,20 +97,20 @@ class InboxTests(APITestCase):
         self.assertEqual(self.mark(self.buyer, 'groups/', {'name': 'URGENTES'}).status_code, 400)  # names never repeat
         self.assertEqual(self.mark(self.buyer, 'groups/', {'name': '  '}).status_code, 400)
         self.assertEqual(self.mark(self.buyer, f'conversations/{order_a.pk}/place/', {'group': group}).data,
-                         {'order_id': str(order_a.pk), 'pinned': False, 'group': group})
-        self.assertEqual(listed(), [(str(order_a.pk), False, group), (str(order_b.pk), False, None)])  # a group lists before Sin grupo
+                         {'thread_id': str(order_a.thread_id), 'pinned': False, 'group': group})
+        self.assertEqual(listed(), [(str(order_a.thread_id), False, group), (str(order_b.thread_id), False, None)])  # a group lists before Sin grupo
         self.assertEqual(self.inbox(self.buyer, 'conversations/')['groups'], [{'id': group, 'name': 'Urgentes', 'count': 1}])
         self.mark(self.buyer, f'conversations/{order_b.pk}/place/', {'pinned': True})
-        self.assertEqual(listed(), [(str(order_b.pk), True, None), (str(order_a.pk), False, group)])  # Fijadas first
+        self.assertEqual(listed(), [(str(order_b.thread_id), True, None), (str(order_a.thread_id), False, group)])  # Fijadas first
         self.mark(self.buyer, f'conversations/{order_a.pk}/place/', {'pinned': True})
-        self.assertEqual(listed(), [(str(order_b.pk), True, None), (str(order_a.pk), True, group)])  # by activity, its group remembered
+        self.assertEqual(listed(), [(str(order_b.thread_id), True, None), (str(order_a.thread_id), True, group)])  # by activity, its group remembered
         self.assertEqual(self.inbox(self.buyer, 'conversations/')['groups'][0]['count'], 0)
         self.mark(self.buyer, f'conversations/{order_a.pk}/place/', {'pinned': False})
-        self.assertEqual(listed(), [(str(order_b.pk), True, None), (str(order_a.pk), False, group)])  # back in its group
+        self.assertEqual(listed(), [(str(order_b.thread_id), True, None), (str(order_a.thread_id), False, group)])  # back in its group
         self.assertEqual(self.mark(self.buyer, f'conversations/{order_a.pk}/place/', {}).status_code, 400)
         self.assertEqual(self.mark(self.buyer, f'groups/{group}/', {'name': 'Por cobrar'}).data, {'id': group, 'name': 'Por cobrar', 'count': 1})
         self.assertEqual(self.client.delete(f'/api/v1/inbox/groups/{group}/').status_code, 204)
-        self.assertEqual(listed(), [(str(order_b.pk), True, None), (str(order_a.pk), False, None)])  # its conversations stay, ungrouped
+        self.assertEqual(listed(), [(str(order_b.thread_id), True, None), (str(order_a.thread_id), False, None)])  # its conversations stay, ungrouped
         self.assertEqual(self.inbox(self.buyer, 'conversations/')['groups'], [])
 
     def test_groups_and_places_are_each_persons_own_and_never_move_the_read_mark(self):
@@ -141,9 +141,9 @@ class InboxTests(APITestCase):
         self.say(self.seller_b, self.supplier_b, purchase, 'hola')
         listing = self.inbox(self.seller_a, 'conversations/')
         self.assertEqual(listing['sides'], {'client': {'conversations': 1, 'unread': 1}, 'supplier': {'conversations': 1, 'unread': 0}})
-        self.assertEqual([(row['id'], row['side']) for row in self.inbox(self.seller_a, 'conversations/', side='client')['results']], [(str(purchase.pk), 'client')])
+        self.assertEqual([(row['id'], row['side']) for row in self.inbox(self.seller_a, 'conversations/', side='client')['results']], [(str(purchase.thread_id), 'client')])
         filtered = self.inbox(self.seller_a, 'conversations/', side='supplier')
-        self.assertEqual(([row['id'] for row in filtered['results']], filtered['sides']['client']['conversations']), ([str(sale.pk)], 1))  # counts ignore the filter
+        self.assertEqual(([row['id'] for row in filtered['results']], filtered['sides']['client']['conversations']), ([str(sale.thread_id)], 1))  # counts ignore the filter
         self.assertEqual(len(self.inbox(self.seller_a, 'conversations/', side='nada')['results']), 2)
         self.assertEqual(self.inbox(self.buyer, 'conversations/')['sides']['supplier'], {'conversations': 0, 'unread': 0})  # only buys
 
@@ -187,3 +187,34 @@ class InboxTests(APITestCase):
         cursor = InboxCursor.objects.get(user=self.seller_a)
         self.assertEqual(cursor.message_floor, DealMessage.objects.latest('id').pk)
         self.assertEqual(cursor.message_floor, message)
+
+    def test_orders_with_the_same_supplier_are_one_conversation_with_each_message_tagged(self):
+        self.client.force_authenticate(self.buyer)
+        first = SupplierRequest.objects.get(pk=self.submit(self.payload([(self.item_a, 1)])).data['requests'][0]['id'])
+        self.review(first)  # reviewed: the next order to PROVEEDOR A is another order
+        self.client.force_authenticate(self.buyer)
+        second = SupplierRequest.objects.get(pk=self.submit(self.payload([(self.item_a2, 2)])).data['requests'][0]['id'])
+        self.assertNotEqual(first.pk, second.pk)
+        self.assertEqual(first.thread_id, second.thread_id)  # one conversation per client and supplier
+        self.inbox(self.seller_a)
+        self.say(self.buyer, self.client_account, first, 'sobre la primera')
+        self.say(self.buyer, self.client_account, second, 'sobre la segunda')
+        [row] = self.inbox(self.seller_a, 'conversations/')['results']
+        self.assertEqual((row['id'], row['unread'], row['order_count'], row['open_orders']), (str(first.thread_id), 2, 2, 2))
+        self.assertEqual({order['reference'] for order in row['orders']}, {first.reference, second.reference})
+        self.assertEqual((row['last_message']['body'], row['last_message']['reference']), ('sobre la segunda', second.reference))
+        self.assertEqual(self.inbox(self.seller_a)['unread_conversations'], 1)
+        self.client.force_authenticate(self.seller_a)
+        chat = self.client.get(f'/api/v1/accounts/{self.supplier_a.pk}/deals/{first.pk}/messages/').data
+        self.assertEqual([(message['body'], message['order_reference']) for message in chat['results']],
+                         [('sobre la primera', first.reference), ('sobre la segunda', second.reference)])  # the whole conversation from either order
+        self.assertEqual(chat['thread_id'], str(first.thread_id))
+        solo = self.client.get(f'/api/v1/accounts/{self.supplier_a.pk}/deals/{first.pk}/messages/', {'solo': '1'}).data['results']
+        self.assertEqual([message['body'] for message in solo], ['sobre la primera'])
+        general = self.client.post(f'/api/v1/accounts/{self.supplier_a.pk}/deals/{first.pk}/messages/',
+                                   {'message_id': str(uuid.uuid4()), 'body': '¿Algo más?', 'general': True}, format='json').data
+        self.assertEqual((general['order_id'], general['order_reference']), (None, None))  # about the relationship, no order
+        self.assertEqual(self.mark(self.seller_a, f'conversations/{second.pk}/read/', {'last_message_id': 10 ** 9}).data['thread_id'], str(first.thread_id))
+        self.assertEqual(self.inbox(self.seller_a)['unread_messages'], 0)  # read from either order, the conversation is read
+        self.assertEqual(len(self.inbox(self.buyer, 'conversations/', search=second.reference)['results']), 1)
+        self.assertEqual(self.inbox(self.buyer, 'conversations/', order=str(second.pk))['results'][0]['id'], str(first.thread_id))

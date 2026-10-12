@@ -189,7 +189,7 @@ class DealAttachmentFile(APIView):
         from .deal_views import participant
         from .models import DealAttachment
         _, row = participant(request.user, account_id, pk)
-        attachment = DealAttachment.objects.filter(pk=attachment_id, message__order=row, failed=False).exclude(file='').first()
+        attachment = DealAttachment.objects.filter(pk=attachment_id, message__thread_id=row.thread_id, failed=False).exclude(file='').first()
         if attachment is None:
             raise NotFound('Este archivo no está disponible.')
         inline = attachment.content_type.startswith(INLINE)
@@ -232,7 +232,7 @@ class DealAttachmentRetry(APIView):
         from .whatsapp_bridge import TooLarge, fetch_media
         _, row = participant(request.user, account_id, pk)
         with transaction.atomic():  # one retry at a time
-            attachment = (DealAttachment.objects.select_for_update().filter(pk=attachment_id, message__order=row, failed=True)
+            attachment = (DealAttachment.objects.select_for_update().filter(pk=attachment_id, message__thread_id=row.thread_id, failed=True)
                           .exclude(whatsapp_media_id='').first())
             if attachment is None:
                 raise NotFound('Este archivo no necesita reintentarse.')

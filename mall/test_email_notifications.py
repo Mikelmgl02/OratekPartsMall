@@ -73,7 +73,7 @@ class EmailNotificationTests(APITestCase):
         self.assertIn('¿Pueden entregar el lunes? &lt;b&gt;urgente&lt;/b&gt;', email['html'])  # the message is quoted, escaped
         self.say(self.buyer, self.client_account, order, 'otro mensaje')
         self.assertEqual(self.sent(urlopen), [])  # within the cooldown
-        ConversationRead.objects.filter(user=self.seller_a, order=order).update(emailed_at=timezone.now() - timedelta(minutes=16))
+        ConversationRead.objects.filter(user=self.seller_a, thread=order.thread).update(emailed_at=timezone.now() - timedelta(minutes=16))
         self.client.force_authenticate(self.seller_a)
         self.client.get('/api/v1/inbox/')  # using the app right now: the toast and the badges tell them
         self.say(self.buyer, self.client_account, order, 'y otro')

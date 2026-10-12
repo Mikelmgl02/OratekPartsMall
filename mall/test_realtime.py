@@ -64,7 +64,7 @@ class InboxSocketTests(APITransactionTestCase):
         seller, _ = await self.socket(self.seller_a)
         stranger, _ = await self.socket(self.seller_b)
         await sync_to_async(self.say)(self.buyer, self.client_account, order, 'hola')
-        nudge = {'kind': 'message', 'order_id': str(order.pk)}
+        nudge = {'kind': 'message', 'order_id': str(order.pk), 'thread_id': str(order.thread_id)}  # tagged with its order, in its conversation
         self.assertEqual(await seller.receive_json_from(timeout=2), nudge)
         self.assertEqual(await buyer.receive_json_from(timeout=2), nudge)  # the author's other tabs too
         self.assertTrue(await stranger.receive_nothing(timeout=0.3))
@@ -82,7 +82,7 @@ class InboxSocketTests(APITransactionTestCase):
             self.client.get('/api/v1/inbox/')
             return self.client.post(f'/api/v1/inbox/conversations/{order.pk}/read/', {'last_message_id': 10 ** 9}, format='json').status_code
         self.assertEqual(await sync_to_async(read)(), 200)
-        self.assertEqual(await seller.receive_json_from(timeout=2), {'kind': 'read', 'order_id': str(order.pk)})
+        self.assertEqual(await seller.receive_json_from(timeout=2), {'kind': 'read', 'order_id': None, 'thread_id': str(order.thread_id)})  # read marks are per conversation
         self.assertTrue(await buyer.receive_nothing(timeout=0.3))
         await seller.disconnect()
         await buyer.disconnect()

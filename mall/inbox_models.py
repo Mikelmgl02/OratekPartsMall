@@ -22,10 +22,10 @@ class InboxGroup(models.Model):
 
 
 class ConversationRead(models.Model):
-    """This person's state of a deal's conversation: the newest message they have seen (in the inbox panel or on the deal itself), and
-    where they keep it in their list (pinned on top, or in one of their groups)."""
+    """This person's state of a conversation (a DealThread: a client and a supplier): the newest message they have seen (in the inbox panel
+    or on one of its orders), and where they keep it in their list (pinned on top, or in one of their groups)."""
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='conversation_reads')
-    order = models.ForeignKey('mall.SupplierRequest', on_delete=models.CASCADE, related_name='reads')
+    thread = models.ForeignKey('mall.DealThread', on_delete=models.CASCADE, related_name='reads')
     last_message_id = models.BigIntegerField(default=0)
     # When the person was last emailed (or sent a WhatsApp) about unread messages of this deal (one per conversation per cooldown).
     emailed_at = models.DateTimeField(null=True, blank=True)
@@ -36,7 +36,7 @@ class ConversationRead(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        constraints = [models.UniqueConstraint(fields=['user', 'order'], name='unique_conversation_read')]
+        constraints = [models.UniqueConstraint(fields=['user', 'thread'], name='unique_conversation_read')]
 
 
 class InboxCursor(models.Model):
@@ -88,6 +88,7 @@ class WhatsAppMessage(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True, related_name='whatsapp_messages')
     account = models.ForeignKey('mall.Account', on_delete=models.CASCADE, null=True, blank=True, related_name='whatsapp_messages')
     order = models.ForeignKey('mall.SupplierRequest', on_delete=models.SET_NULL, null=True, blank=True, related_name='whatsapp_messages')
+    thread = models.ForeignKey('mall.DealThread', on_delete=models.SET_NULL, null=True, blank=True, related_name='whatsapp_messages')
     number = models.CharField(max_length=20)
     template = models.CharField(max_length=80)
     kind = models.CharField(max_length=40)
