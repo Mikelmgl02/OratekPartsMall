@@ -526,12 +526,17 @@ test('the chat shows its files (a voice note with its transcript) and sends phot
   const chat = [
     { ...messages[0], id: 20, body: '¿ASÍ ES EL TAMBOR?', attachments: [file(501, 'image', 'tambor.jpg', 'image/jpeg')] },
     { ...messages[1], id: 21, body: '', channel: 'whatsapp', attachments: [file(502, 'audio', 'audio-20261011.ogg', 'audio/ogg', { voice: true, transcript: 'Sí, ese mismo, lo tengo en bodega.' })] },
-    { ...messages[2], id: 22, body: 'TE PASO LA LISTA', attachments: [file(503, 'document', 'lista de precios.pdf', 'application/pdf', { size: 2.4 * 1024 * 1024 }), file(504, 'video', 'video.mp4', 'video/mp4', { failed: true })] },
+    { ...messages[2], id: 22, body: 'TE PASO LA LISTA', attachments: [file(503, 'document', 'lista de precios.pdf', 'application/pdf', { size: 2.4 * 1024 * 1024 }), file(504, 'video', 'video.mp4', 'video/mp4', { failed: true, retryable: true })] },
   ];
   const sent: { type: string; body: string }[] = [];
   await page.route(/\/deals\/[^/]+\/messages(\?.*)?$/, route => route.fulfill({ json: { results: route.request().url().includes('after=') ? [] : chat, cursor: 22, has_more: false, has_earlier: false, assistant_notice: false } }));
   await page.route(/\/deals\/[^/]+\/attachments\/\d+$/, route => route.fulfill({ body: Buffer.from(''), contentType: 'application/octet-stream' }));
   await page.route(/\/deals\/[^/]+\/attachments\/501$/, route => route.fulfill({ body: PNG, contentType: 'image/png' }));
+  let retried = 0;
+  await page.route(/\/deals\/[^/]+\/attachments\/504\/retry$/, route => {
+    retried += 1;
+    return route.fulfill({ json: { ...chat[2], attachments: [chat[2].attachments[0], file(504, 'video', 'video.mp4', 'video/mp4')] } });
+  });
   await page.route(/\/deals\/[^/]+\/attachments$/, route => {
     const request = route.request();
     sent.push({ type: request.headers()['content-type'] || '', body: request.postDataBuffer()?.toString('latin1') || '' });
@@ -550,6 +555,10 @@ test('the chat shows its files (a voice note with its transcript) and sends phot
   await expect(voice.getByRole('figure')).toContainText('Transcripción automáticaSí, ese mismo, lo tengo en bodega.');
   await expect(log.getByRole('link', { name: /lista de precios\.pdf/ })).toContainText('2,4 MB');
   await expect(log).toContainText('No se pudo recibir el video enviado por WhatsApp.');
+  await log.getByRole('button', { name: 'Reintentar', exact: true }).click();  // asked of WhatsApp again
+  await expect(log.getByLabel('video.mp4', { exact: true })).toBeVisible();
+  await expect(log).not.toContainText('No se pudo recibir');
+  expect(retried).toBe(1);
 
   const conversation = page.getByRole('region', { name: 'Orden ORD-0123 con GRUPO RAZOR PARTS', exact: true });
   const picker = conversation.getByLabel('Elegir archivos', { exact: true });

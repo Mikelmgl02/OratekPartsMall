@@ -2561,7 +2561,8 @@ body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-s
 .deal-chat-document:hover { border-color:#9fb8a6; }
 .deal-chat-document span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .deal-chat-document small, .deal-chat-attached small { flex:none; color:#6b776f; }
-.deal-chat-file-failed { display:flex; align-items:center; gap:6px; color:#8a5a12; font-size:12px; }
+.deal-chat-file-failed { display:flex; flex-wrap:wrap; align-items:center; gap:6px; color:#8a5a12; font-size:12px; }
+.deal-chat-file-failed .button { margin-left:4px; }
 .deal-chat-attached { display:flex; flex-wrap:wrap; gap:6px; margin:0; padding:0; list-style:none; }
 .deal-chat-attached li { display:inline-flex; align-items:center; gap:6px; max-width:100%; padding:3px 4px 3px 10px; border:1px solid var(--line); border-radius:999px; background:#eef3ef; font-size:12px; }
 .deal-chat-attached span { max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

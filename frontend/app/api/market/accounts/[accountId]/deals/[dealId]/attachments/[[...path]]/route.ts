@@ -7,12 +7,14 @@ const MAX_BODY = 34 * 1024 * 1024;  // the API takes 32 MB of files per message
 // The file's own headers, as the API sets them for privacy (no sniffing, a sandbox) and for Safari's media ranges.
 const PASSED = ['content-type', 'content-disposition', 'content-length', 'content-range', 'accept-ranges', 'cache-control', 'x-content-type-options', 'content-security-policy'];
 
-// The deals' chat files, which the JSON catch-all proxy cannot carry: POST sends a message with files (multipart), GET <id> opens one.
+// The deals' chat files, which the JSON catch-all proxy cannot carry: POST sends a message with files (multipart), GET <id> opens one,
+// POST <id>/retry asks WhatsApp again for one that could not be received.
 async function handle(request: NextRequest, context: Context) {
   const { accountId, dealId, path = [] } = await context.params;
   const download = request.method === 'GET' && path.length === 1 && /^\d{1,18}$/.test(path[0]);
   const upload = request.method === 'POST' && path.length === 0;
-  if (!uuid.test(accountId) || !uuid.test(dealId) || !(download || upload)) return json({ detail: 'La ruta solicitada no existe.' }, 404);
+  const retry = request.method === 'POST' && path.length === 2 && /^\d{1,18}$/.test(path[0]) && path[1] === 'retry';
+  if (!uuid.test(accountId) || !uuid.test(dealId) || !(download || upload || retry)) return json({ detail: 'La ruta solicitada no existe.' }, 404);
   const token = await sessionToken();
   if (!token) return json({ detail: 'Inicia sesión para continuar.' }, 401);
   try {
@@ -31,6 +33,10 @@ async function handle(request: NextRequest, context: Context) {
       return new NextResponse(response.body, { status: response.status, headers });
     }
     if (!validOrigin(request)) return json({ detail: 'El origen de la solicitud no es válido.' }, 403);
+    if (retry) {  // the server downloads it from Meta (and transcribes a voice note) before answering
+      const result = await django(`accounts/${accountId}/deals/${dealId}/attachments/${path[0]}/retry/`, { method: 'POST' }, token, 120000);
+      return json(result.data, result.status);
+    }
     if (Number(request.headers.get('content-length')) > MAX_BODY) return json({ detail: 'Los archivos de un mensaje pueden pesar hasta 32 MB en total.' }, 413);
     let body: FormData;
     try { body = await request.formData(); } catch { return json({ detail: 'Adjunta archivos válidos.' }, 400); }

@@ -152,6 +152,7 @@ urlpatterns = [
     path('api/v1/accounts/<uuid:account_id>/deals/<uuid:pk>/actions/', DealActions.as_view()),
     path('api/v1/accounts/<uuid:account_id>/deals/<uuid:pk>/messages/', DealMessages.as_view()),
     path('api/v1/accounts/<uuid:account_id>/deals/<uuid:pk>/attachments/<int:attachment_id>/', deal_attachments.DealAttachmentFile.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/deals/<uuid:pk>/attachments/<int:attachment_id>/retry/', deal_attachments.DealAttachmentRetry.as_view()),
     path('api/v1/accounts/<uuid:account_id>/pricing/settings/', PricingSettingsView.as_view()),
     path('api/v1/accounts/<uuid:account_id>/pricing/history/', PricingHistory.as_view()),
     path('api/v1/accounts/<uuid:account_id>/price-lists/', PriceListsView.as_view()),

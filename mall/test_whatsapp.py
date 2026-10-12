@@ -556,6 +556,36 @@ class WhatsAppMediaTests(ChatStorage, APITestCase):
             self.arrives({'id': 'wamid.VIDEO', 'type': 'video', 'video': {'id': '4444', 'mime_type': 'video/mp4'}})
         self.assertTrue(DealAttachment.objects.get(kind='video').failed)
 
+    def test_a_file_that_could_not_be_received_is_asked_again_by_either_party(self, urlopen):
+        meta = urlopen.side_effect = FakeMeta()  # Meta will not give it yet (an expired token, say)
+        order = self.order()
+        self.opt_in(self.buyer, '+50761111111')
+        self.review(order)
+        meta.sent()
+        self.arrives({'id': 'wamid.VOZ2', 'type': 'audio', 'audio': {'id': '5555', 'mime_type': 'audio/ogg; codecs=opus', 'voice': True}})
+        [attachment] = DealAttachment.objects.all()
+        self.assertEqual((attachment.failed, attachment.whatsapp_media_id), (True, '5555'))
+        retry = lambda user, account: (self.client.force_authenticate(user), self.client.post(
+            f'/api/v1/accounts/{account.pk}/deals/{order.pk}/attachments/{attachment.pk}/retry/'))[1]
+        self.client.force_authenticate(self.seller_a)
+        listed = self.client.get(f'/api/v1/accounts/{self.supplier_a.pk}/deals/{order.pk}/messages/').data['results'][-1]['attachments'][0]
+        self.assertEqual((listed['failed'], listed['retryable']), (True, True))
+        refused = retry(self.seller_a, self.supplier_a)
+        self.assertEqual(refused.status_code, 502)
+        self.assertIn('WhatsApp no entregó el archivo', refused.data['detail'])
+        self.assertTrue(DealAttachment.objects.get().failed)
+        self.assertEqual(retry(self.seller_b, self.supplier_b).status_code, 404)  # not a party
+
+        meta.files['5555'] = (b'OggS-voz', 'audio/ogg; codecs=opus')
+        with patch('mall.catalog_classification.provider_configuration', return_value=('clave', 'modelo')), \
+                patch('mall.catalog_classification.generate_json', return_value={'text': 'Ya lo tengo listo'}):
+            answer = retry(self.seller_a, self.supplier_a)
+        self.assertEqual(answer.status_code, 200)
+        [file] = answer.data['attachments']
+        self.assertEqual((file['failed'], file['retryable'], file['size'], file['transcript']), (False, False, 8, 'Ya lo tengo listo'))
+        self.assertEqual(DealAttachment.objects.get().file.read(), b'OggS-voz')
+        self.assertEqual(retry(self.buyer, self.client_account).status_code, 404)  # nothing left to retry
+
     def chat_files(self, *files):
         self.client.force_authenticate(self.seller_a)
         with self.captureOnCommitCallbacks(execute=True):

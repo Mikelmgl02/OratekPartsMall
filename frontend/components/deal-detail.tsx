@@ -345,10 +345,11 @@ function fileSize(bytes: number) {
 }
 
 // A message's files: photos open full size, audio and video play in place (a voice note with its transcript), documents open or download.
-function ChatFiles({ base, files }: { base: string; files: DealAttachment[] }) {
+function ChatFiles({ base, files, retrying, onRetry }: { base: string; files: DealAttachment[]; retrying: number | null; onRetry: (id: number) => void }) {
   return <div className="deal-chat-files">{files.map(file => {
     const href = `${base}/${file.id}`;
-    if (file.failed) return <p key={file.id} className="deal-chat-file-failed"><FileWarning size={15}/>No se pudo recibir {FILE_WORDS[file.kind]} enviado por WhatsApp.</p>;
+    if (file.failed) return <p key={file.id} className="deal-chat-file-failed"><FileWarning size={15}/>No se pudo recibir {FILE_WORDS[file.kind]} enviado por WhatsApp.
+      {file.retryable && <button type="button" className="button soft small" disabled={retrying !== null} onClick={() => onRetry(file.id)}>{retrying === file.id ? <LoaderCircle size={13} className="spin"/> : <RefreshCw size={13}/>}Reintentar</button>}</p>;
     if (file.kind === 'image') return <a key={file.id} className="deal-chat-image" href={href} target="_blank" rel="noopener" aria-label={`Abrir ${file.name}`}><img src={href} alt={file.name} loading="lazy"/></a>;
     if (file.kind === 'audio') return <figure key={file.id} className="deal-chat-audio"><audio controls preload="none" src={href} aria-label={file.voice ? 'Nota de voz' : file.name}/>
       {file.voice ? file.transcript ? <figcaption><span>Transcripción automática</span>{file.transcript}</figcaption> : null : <figcaption>{file.name}</figcaption>}</figure>;
@@ -363,6 +364,7 @@ export function DealChat({ account, orderId, active, supplier, insert, compact =
   const [messages, setMessages] = useState<DealMessage[]>([]);
   const [body, setBody] = useState('');
   const [files, setFiles] = useState<File[]>([]);
+  const [retrying, setRetrying] = useState<number | null>(null);
   const picker = useRef<HTMLInputElement>(null);
   // Privacy disclosure (D3): the supplier enabled its AI assistant, which may read this conversation.
   const [assistantNotice, setAssistantNotice] = useState(false);
@@ -459,6 +461,15 @@ export function DealChat({ account, orderId, active, supplier, insert, compact =
     } catch (caught) { if (mounted.current) setError(failure(caught)); }
     finally { if (mounted.current) setLoadingEarlier(false); }
   }
+  // Reintentar: a file that came by WhatsApp and could not be received, asked of WhatsApp again.
+  async function retry(id: number) {
+    setRetrying(id); setError('');
+    try {
+      const message = await request<DealMessage>(`${filesPath}/${id}/retry`, { method: 'POST' });
+      if (mounted.current) merge([message]);
+    } catch (caught) { if (mounted.current) setError(failure(caught)); }
+    finally { if (mounted.current) setRetrying(null); }
+  }
   // Files to send with the next message, checked against what the server takes.
   function attach(chosen: File[]) {
     if (!chosen.length) return;
@@ -502,7 +513,7 @@ export function DealChat({ account, orderId, active, supplier, insert, compact =
       : 'El proveedor usa un asistente de IA (Google Gemini) que puede leer las notas de tu orden y esta conversación para preparar tu cotización. No recibe precios ni existencias.'}</p>}
     {error && <div className="notice error" role="alert">{error}<button type="button" onClick={() => void fetchMessages()}>Actualizar mensajes</button></div>}
     {hasEarlier && <button type="button" className="button soft small" disabled={loadingEarlier} onClick={() => void earlier()}>Cargar mensajes anteriores</button>}
-    <div ref={log} className="deal-chat-messages" role="log" aria-label="Mensajes del acuerdo" aria-live="polite" onScroll={scrolled}>{!ready && !error ? <p>Cargando mensajes…</p> : !messages.length ? <p className="deal-chat-empty">Inicia la conversación sobre esta orden.</p> : messages.map(message => <article key={message.id} className={message.account_id === account.id ? 'own' : ''}><header><strong>{message.account_name}</strong><span>{message.actor_name} · {date(message.created_at)}{message.channel === 'whatsapp' && <em className="deal-chat-whatsapp"> · vía WhatsApp</em>}</span></header>{message.body && <p>{message.body}</p>}{!!message.attachments?.length && <ChatFiles base={filesPath} files={message.attachments}/>}</article>)}</div>
+    <div ref={log} className="deal-chat-messages" role="log" aria-label="Mensajes del acuerdo" aria-live="polite" onScroll={scrolled}>{!ready && !error ? <p>Cargando mensajes…</p> : !messages.length ? <p className="deal-chat-empty">Inicia la conversación sobre esta orden.</p> : messages.map(message => <article key={message.id} className={message.account_id === account.id ? 'own' : ''}><header><strong>{message.account_name}</strong><span>{message.actor_name} · {date(message.created_at)}{message.channel === 'whatsapp' && <em className="deal-chat-whatsapp"> · vía WhatsApp</em>}</span></header>{message.body && <p>{message.body}</p>}{!!message.attachments?.length && <ChatFiles base={filesPath} files={message.attachments} retrying={retrying} onRetry={id => void retry(id)}/>}</article>)}</div>
     {newBelow && <button type="button" className="deal-chat-new" onClick={toLatest}><ArrowDown size={14}/>Mensajes nuevos</button>}
     <form onSubmit={event => { event.preventDefault(); void send(); }}><label>Mensaje<textarea ref={composer} aria-label="Mensaje del acuerdo" required={!files.length} maxLength={4000} readOnly={sending} value={body} onChange={event => { setBody(event.target.value); setCopied(false); }} onKeyDown={composerKey} onPaste={pasted} placeholder={files.length ? 'Agrega un mensaje (opcional)…' : 'Escribe a la otra parte…'}/></label>
       {!!files.length && <ul className="deal-chat-attached" aria-label="Archivos para enviar">{files.map((file, index) => <li key={`${file.name}-${index}`}><Paperclip size={13}/><span>{file.name}</span><small>{fileSize(file.size)}</small><button type="button" disabled={sending} aria-label={`Quitar ${file.name}`} onClick={() => setFiles(values => values.filter((_, other) => other !== index))}><X size={13}/></button></li>)}</ul>}

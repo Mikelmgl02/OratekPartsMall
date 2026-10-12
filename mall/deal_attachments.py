@@ -20,7 +20,8 @@ from django.utils.http import content_disposition_header
 from django.utils.text import get_valid_filename
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import APIException, NotFound, ValidationError
+from rest_framework.response import Response
 from rest_framework.views import APIView
 
 log = logging.getLogger(__name__)
@@ -92,14 +93,20 @@ def store(message, kind, content_type, name, content, **fields):
     from .models import DealAttachment
     attachment = DealAttachment(message=message, kind=kind, content_type=content_type, name=name, size=len(content) if content else 0, **fields)
     if content:
-        stem, extension = os.path.splitext(name)
-        try:
-            stored = get_valid_filename(f'{stem[:80]}{extension[:10]}')
-        except SuspiciousFileOperation:  # nothing usable in the name: the storage keeps a plain one (people still see theirs)
-            stored = f'{NAMES[kind]}{get_valid_filename(extension[:10]) if extension[1:].isalnum() else ""}'
-        attachment.file.save(stored, ContentFile(content), save=False)
+        keep(attachment, content)
     attachment.save()
     return attachment
+
+
+def keep(attachment, content):
+    """The file's content into the private storage (the attachment is saved by the caller)."""
+    stem, extension = os.path.splitext(attachment.name)
+    try:
+        stored = get_valid_filename(f'{stem[:80]}{extension[:10]}')
+    except SuspiciousFileOperation:  # nothing usable in the name: the storage keeps a plain one (people still see theirs)
+        stored = f'{NAMES[attachment.kind]}{get_valid_filename(extension[:10]) if extension[1:].isalnum() else ""}'
+    attachment.file.save(stored, ContentFile(content), save=False)
+    attachment.size = len(content)
 
 
 def received(kind, content_type, filename, day):
@@ -133,7 +140,8 @@ def describe(message):
 
 def attachment_data(attachment):
     return {'id': attachment.pk, 'kind': attachment.kind, 'name': attachment.name, 'content_type': attachment.content_type,
-            'size': attachment.size, 'voice': attachment.voice, 'failed': attachment.failed, 'transcript': attachment.transcript}
+            'size': attachment.size, 'voice': attachment.voice, 'failed': attachment.failed, 'transcript': attachment.transcript,
+            'retryable': attachment.failed and bool(attachment.whatsapp_media_id)}
 
 
 def transcribe(content, content_type):
@@ -205,3 +213,39 @@ class DealAttachmentFile(APIView):
             response['Content-Security-Policy'] = "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox"
         response['Cache-Control'] = 'private, max-age=86400'
         return response
+
+
+class NotReceivedAgain(APIException):
+    status_code = 502
+    default_detail = 'WhatsApp no entregó el archivo. Inténtalo más tarde o pide que lo envíen de nuevo.'
+
+
+class DealAttachmentRetry(APIView):
+    """Reintentar: a file received by WhatsApp that could not be stored, asked of Meta again (an expired token, a network failure)."""
+
+    @extend_schema(request=None, responses=OpenApiTypes.OBJECT, description='Pide de nuevo a WhatsApp un archivo que no se pudo recibir; '
+                   'cualquiera de las partes puede hacerlo. Responde el mensaje con el archivo ya disponible (y una nota de voz transcrita).')
+    def post(self, request, account_id, pk, attachment_id):
+        from django.db import transaction
+        from .deal_views import message_data, participant
+        from .models import DealAttachment
+        from .whatsapp_bridge import TooLarge, fetch_media
+        _, row = participant(request.user, account_id, pk)
+        with transaction.atomic():  # one retry at a time
+            attachment = (DealAttachment.objects.select_for_update().filter(pk=attachment_id, message__order=row, failed=True)
+                          .exclude(whatsapp_media_id='').first())
+            if attachment is None:
+                raise NotFound('Este archivo no necesita reintentarse.')
+            try:
+                content, _ = fetch_media(attachment.whatsapp_media_id)
+            except TooLarge:
+                raise NotReceivedAgain(f'El archivo pesa más de {settings.CHAT_MEDIA_MAX_BYTES // (1024 * 1024)} MB; pide que lo envíen por otro medio.')
+            except Exception as error:
+                log.warning('WhatsApp file %s not received again: %s', attachment.pk, type(error).__name__)
+                raise NotReceivedAgain()
+            keep(attachment, content)
+            attachment.failed = False
+            if attachment.voice:
+                attachment.transcript = transcribe(content, attachment.content_type)
+            attachment.save()
+        return Response(message_data(attachment.message))

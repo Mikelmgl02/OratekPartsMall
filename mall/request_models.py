@@ -236,6 +236,8 @@ class DealAttachment(models.Model):
     voice = models.BooleanField(default=False)  # a WhatsApp voice note, as opposed to an audio file
     # Received but not stored (Meta refused the download, or the file was too large): the chat says it could not be received.
     failed = models.BooleanField(default=False)
+    # Meta's id of a file received by WhatsApp, to ask for it again (Reintentar) when it could not be received.
+    whatsapp_media_id = models.CharField(max_length=64, blank=True, default='')
     transcript = models.TextField(blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
 

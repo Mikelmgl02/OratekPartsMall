@@ -154,7 +154,8 @@ def message_key(wamid, now):
 
 def bring_in(order, account_id, user, number, wamid, kind, media, caption, now):
     """A file someone sent by WhatsApp, into the deal's chat with its caption once downloaded (and a voice note transcribed), so the chat,
-    the relays and the notices get it whole. One Meta would not give, or too large, still shows, as not received."""
+    the relays and the notices get it whole. One Meta would not give, or too large, still shows, as not received, and either party can
+    ask for it again (mall.deal_attachments.DealAttachmentRetry) by Meta's id."""
     from .deal_attachments import received, store, transcribe
     from .models import DealMessage
     content, content_type = b'', media.get('mime_type', '')
@@ -169,7 +170,8 @@ def bring_in(order, account_id, user, number, wamid, kind, media, caption, now):
         message, created = DealMessage.objects.get_or_create(order=order, account_id=account_id, message_id=message_key(wamid, now),
                                                              defaults={'actor': user, 'body': caption[:4000], 'channel': 'whatsapp'})
         if created:
-            store(message, kind, content_type, name, content, voice=voice, failed=not content, transcript=transcript)
+            store(message, kind, content_type, name, content, voice=voice, failed=not content, transcript=transcript,
+                  whatsapp_media_id=str(media.get('id', ''))[:64])
     if created and content and wamid:
         react(number, wamid)
 
