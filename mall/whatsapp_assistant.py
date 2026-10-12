@@ -57,7 +57,10 @@ con el contexto y decide UNA acción:
   cantidad para una línea de su cesta, sin quitarla (opcion = su número en la cesta, cantidad = la nueva cantidad total), por ejemplo
   «el 1 a 8» o «solo quería 8 del primero». Con un solo artículo en la cesta, opcion puede ser 0.
 - cuenta: quiere comprar para otra de sus cuentas.
-- orden: escribe al proveedor sobre una orden ya enviada (entrega, confirmación, una pregunta sobre su cotización).
+- pedidos: quiere ver sus pedidos, solicitudes u órdenes enviadas, su estado o sus cotizaciones («muéstrame mis pedidos», «¿cómo va mi
+  orden?»).
+- orden: quiere que su mensaje le llegue al proveedor de una orden ya enviada (por ejemplo «dile que lo necesito el lunes», «¿me lo pueden
+  entregar mañana?»). Las preguntas al asistente sobre sus pedidos son pedidos, no orden.
 - responder: un saludo, una pregunta sobre cómo funciona o algo que no es ninguna de las anteriores. En respuesta escribe una contestación
   breve y amable en español (máximo 3 frases): qué puede hacer el asistente y cómo pedirlo. El asistente solo busca repuestos y
   agrega, cambia o quita artículos de la cesta; si pide otra cosa, dilo y sugiere hacerlo en MotionPartes. Nunca propongas pasos que no
@@ -65,7 +68,7 @@ con el contexto y decide UNA acción:
 Nunca inventes repuestos, precios, existencias, plazos ni datos de pedidos. Usa 0 en opcion o cantidad cuando no aplique."""
 
 SCHEMA = {'type': 'object', 'properties': {
-    'accion': {'type': 'string', 'enum': ['buscar', 'elegir', 'cantidad', 'ver_cesta', 'quitar', 'cambiar', 'cuenta', 'orden', 'responder']},
+    'accion': {'type': 'string', 'enum': ['buscar', 'elegir', 'cantidad', 'ver_cesta', 'quitar', 'cambiar', 'cuenta', 'pedidos', 'orden', 'responder']},
     'consultas': {'type': 'array', 'items': {'type': 'string'}},
     'codigos': {'type': 'array', 'items': {'type': 'string'}},
     'opcion': {'type': 'integer'},
@@ -258,6 +261,8 @@ def understand(turn, words, image):
         change(turn, decision.get('opcion') or 0, quantity)
     elif action == 'cuenta' and len(turn.accounts) > 1:
         ask_account(turn, '¿Para cuál de tus cuentas es la compra?')
+    elif action == 'pedidos':
+        show_orders(turn)
     elif action == 'orden':
         to_order(turn, words)
     else:
@@ -310,6 +315,11 @@ def tap(turn, identifier):
         add(turn, int(value))
     elif kind == 'remove':  # confirmed with its button
         remove_item(turn, value)
+    elif kind == 'pass':  # confirmed: the message goes to the order's supplier
+        pass_on(turn, value)
+    elif identifier == 'menu:hold':
+        turn.session.pending = {key: held for key, held in turn.session.pending.items() if key != 'pasar'}
+        turn.say(text('Listo, no lo pasé. ¿En qué más te ayudo?'))
     elif kind == 'undo' and value.isdigit():
         undo(turn, int(value))
     elif identifier == 'menu:keep':
@@ -603,18 +613,50 @@ def set_account(turn, account_id):
 
 
 def to_order(turn, words):
-    """A message meant for the supplier of an order already sent: into the chat of the order last notified to this number (as before the
-    assistant), with a word saying so."""
-    from .whatsapp_bridge import author, bring_text, deal_row, other
+    """A message that seems meant for the supplier of an order already sent (the order last notified to this number): it goes there only
+    once the person confirms it with its button, never on Gemini's word alone."""
+    from .whatsapp_bridge import author, deal_row, other
     row = deal_row(turn.number, None, turn.now)
     who = author(row, turn.people, turn.holders) if row else None
     if not who or not words:
         turn.say(text('Para escribir en una orden, responde a uno de sus mensajes (mantén presionado el mensaje y elige Responder) o ábrela en '
                       f'MotionPartes: {site()}/'))
         return
+    turn.session.pending = {**turn.session.pending, 'pasar': {'order': str(row.order_id), 'texto': words[:4000], 'wamid': turn.message.get('id', '')}}
+    body = f'¿Paso tu mensaje «{words[:120]}» a la orden {row.order.reference} con {other(row.order, who[1])}?'
+    turn.say(buttons(body, [(f'pass:{row.order_id}', 'Sí, pasarlo'), ('menu:hold', 'No')]), body)
+
+
+def pass_on(turn, order_id):
+    """The confirmed message into the order's chat, as the person's (✅ on it), and the conversation goes on with that order."""
+    from .whatsapp_bridge import author, bring_text, other
+    held = turn.session.pending.get('pasar') or {}
+    turn.session.pending = {key: value for key, value in turn.session.pending.items() if key != 'pasar'}
+    row = (WhatsAppMessage.objects.filter(number=turn.number, order_id=as_uuid(order_id)).exclude(status__in=('received', 'failed'))
+           .select_related('order', 'user').order_by('-id').first()) if as_uuid(order_id) and held.get('order') == order_id else None
+    who = author(row, turn.people, turn.holders) if row else None
+    if not who:
+        turn.say(text('Ese mensaje ya no está pendiente. Para escribir en una orden, responde a uno de sus mensajes o ábrela en MotionPartes.'))
+        return
     user, account_id = who
-    wamid = turn.message.get('id', '')
-    bring_text(row.order, account_id, user, turn.number, wamid, words, turn.now)
-    WhatsAppMessage.objects.filter(number=turn.number, wamid=wamid, status='received').update(order=row.order)
-    supplier = other(row.order, account_id)
-    turn.say({**text(f'Pasé tu mensaje a la orden {row.order.reference} con {supplier}. Su respuesta te llegará por aquí.'), '_order': row.order_id})
+    bring_text(row.order, account_id, user, turn.number, held.get('wamid', ''), held['texto'], turn.now)
+    WhatsAppMessage.objects.filter(number=turn.number, wamid=held.get('wamid', ''), status='received').update(order=row.order)
+    turn.say({**text(f'Pasé tu mensaje a la orden {row.order.reference} con {other(row.order, account_id)}. Su respuesta te llegará por aquí.'),
+              '_order': row.order_id})
+
+
+def show_orders(turn):
+    """The account's latest solicitudes, each order with its supplier and state, and the link to Enviadas: read-only."""
+    from .login_hints import hint
+    from .models import SupplierRequest
+    orders = list(SupplierRequest.objects.filter(client=turn.account).order_by('-created_at', '-id')[:8])
+    turn.session.step, turn.session.options = 'idle', []
+    link = f'{site()}/?vista=solicitudes&cuenta={turn.account.pk}&ingreso={hint(turn.user.pk)}'
+    whose = f' de {turn.account.name}' if len(turn.accounts) > 1 else ''
+    if not orders:
+        turn.say(text(f'Aún no hay solicitudes enviadas{whose}. Dime qué repuesto buscas y te ayudo a armar la cesta.'))
+        return
+    lines = '\n'.join(f'{index}. {order.reference} · {order.supplier_name} · {order.get_status_display()} · {timezone.localtime(order.created_at):%d/%m}'
+                      for index, order in enumerate(orders, 1))
+    turn.say(text(f'Tus últimas solicitudes{whose}:\n{lines}\n\nSus artículos, cotizaciones y conversaciones están en MotionPartes:\n{link}\n'
+                  'Para escribirle a un proveedor, responde a un mensaje de su orden.'))
