@@ -427,12 +427,6 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .status.review { background:#fbebdf; color:#a98055; }
 .inventory-panel .pagination { padding-bottom:0; }
 .integration-note { display:flex; align-items:center; gap:15px; margin-top:25px; padding:22px; border:1px dashed #d5dfc6; border-radius:11px; }
-.integration-note.apiag-live { display:flex; align-items:flex-start; gap:16px; margin:0 0 18px; }
-.apiag-live-body { flex:1; min-width:0; display:flex; flex-direction:column; gap:6px; }
-.apiag-live-body p { margin:0; }
-.apiag-live-body .notice { margin:4px 0 0; }
-.apiag-live-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
-.apiag-live-head h3 { margin:0; }
 .apiag-live-samples summary { cursor:pointer; font-size:11px; }
 .apiag-live-samples ul { margin:6px 0 0; padding-left:18px; font-size:11px; }
 .ledger-branches { margin:0 0 16px; }
@@ -440,8 +434,18 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .ledger-branches table { width:auto; min-width:240px; }
 .ledger-branches th, .ledger-branches td { padding:6px 10px; font-size:12px; }
 .ledger-branches td { text-align:right; font-weight:700; }
-@media (max-width: 760px) { .integration-note.apiag-live { flex-wrap:wrap; } .integration-note.apiag-live > button { width:100%; justify-content:center; } }
+@media (max-width: 760px) { .apiag-bar-actions { width:100%; margin-left:0; justify-content:space-between; } .apiag-bar-details { padding-left:0; } }
 .apiag-mark { border-radius:9px; background:#e6eedb; color:#8da575; width:42px; height:42px; display:grid; place-items:center; font-size:23px; font-weight:800; }
+.apiag-mark.small { width:26px; height:26px; border-radius:7px; font-size:14px; flex:none; }
+/* The apiag-cloud connection of a synced supplier: one line, details on demand (supplier-apiag-card.tsx) */
+.apiag-bar { display:flex; flex-direction:column; gap:8px; margin:0 0 14px; padding:9px 12px; border:1px dashed #d5dfc6; border-radius:10px; }
+.apiag-bar-row { display:flex; align-items:center; gap:6px 10px; flex-wrap:wrap; min-width:0; font-size:11px; color:#637455; }
+.apiag-bar-row strong { font-size:12px; color:#405238; }
+.apiag-bar-meta { color:#7a896f; overflow-wrap:anywhere; }
+.apiag-bar-actions { display:flex; align-items:center; gap:6px; margin-left:auto; }
+.apiag-bar .notice { margin:0; }
+.apiag-bar-details { display:flex; flex-direction:column; gap:5px; padding:8px 0 2px 36px; border-top:1px solid var(--line); font-size:11px; color:#637455; }
+.apiag-bar-details p { margin:0; }
 .integration-note h3 { font-size:12px; margin-bottom:7px; }
 .integration-note p { font-size:10px; color:#8ea47b; line-height:1.6; }
 .ledger-entry { display:flex; align-items:center; gap:12px; padding:18px 0; border-bottom:1px solid var(--line); }

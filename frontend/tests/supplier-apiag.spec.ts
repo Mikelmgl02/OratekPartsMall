@@ -63,6 +63,10 @@ test('a connected supplier sees the last pull and asks for one now, and the inve
   await expect(page.getByRole('button', { name: 'Importar Excel', exact: true })).toHaveCount(0);  // its stock loads from apiag-cloud only
   await expect(page.getByRole('button', { name: 'Actualizar existencias', exact: true })).toHaveCount(0);
   await expect(card.getByText(/^mm\.oratek\.info · Última sincronización: /)).toBeVisible();
+  await expect(card.getByText('79 nuevos · 0 actualizados · 0 retirados', { exact: true })).toBeVisible();
+  expect((await card.boundingBox())!.height).toBeLessThan(70);   // one line until Detalles opens
+  await expect(card.getByText('Sucursales publicadas', { exact: false })).toHaveCount(0);
+  await card.getByRole('button', { name: 'Detalles' }).click();
   await expect(card.getByText('Sincronización completa: 79 nuevos · 0 actualizados · 0 retirados.')).toBeVisible();
   await expect(card.getByText('Sucursales publicadas: BODEGA PRINCIPAL, RICARDO J ALFARO.')).toBeVisible();
   await expect(page.getByText('Importa tus saldos desde Excel o actualiza registros de carga manual.', { exact: false })).toHaveCount(0);  // the static note gives way
@@ -93,6 +97,7 @@ test('errors, an unreadable token, refused items and no published sucursal are s
   await expect(card.getByText('2 no aplicados', { exact: false })).toBeVisible();
   await expect(card.getByText('Ninguna sucursal publicada', { exact: false })).toBeVisible();
   await card.screenshot({ path: '/tmp/motionpartes-apiag-card-errors.png' });
+  await card.getByRole('button', { name: 'Detalles' }).click();
   await card.getByText('Artículos no aplicados en la última sincronización').click();
   await expect(card.getByText('MANUAL (10) ya existe como carga manual: no se toca.')).toBeVisible();
 });
