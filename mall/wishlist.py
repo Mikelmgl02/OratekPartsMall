@@ -1,6 +1,7 @@
 """Personal favorites; saving never creates requests or reserves stock."""
 from django.db import transaction
 from django.db.models import Q
+from django.http import Http404
 from django.shortcuts import get_object_or_404
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
@@ -10,6 +11,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .catalog_availability import catalog_availability
+from .catalog_scope import catalog_scope
 from .models import Membership, Part, WishlistItem
 from .oem_links import equivalents_for
 from .serializers import PartSerializer
@@ -34,12 +36,19 @@ class WishlistSerializer(serializers.ModelSerializer):
         fields = ['part', 'saved_at', 'available']
 
 
+def saved(user, scope):
+    """The user's favorites within its catalog scope: a supplier-only user keeps only its own SKUs."""
+    query = WishlistItem.objects.filter(user=user)
+    return query if scope.full else query.filter(part_id__in=scope.own_part_ids())
+
+
 class WishlistList(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated, CatalogMember]
     serializer_class = WishlistSerializer
 
     def get_queryset(self):
-        query = WishlistItem.objects.filter(user=self.request.user)
+        self.scope = catalog_scope(self.request.user)
+        query = saved(self.request.user, self.scope)
         search = self.request.query_params.get('search', '').strip()
         if search:
             query = query.filter(Q(part__sku__icontains=search) | Q(part__name__icontains=search) |
@@ -51,7 +60,7 @@ class WishlistList(generics.ListAPIView):
     def list(self, request, *args, **kwargs):
         rows = list(self.paginate_queryset(self.get_queryset()))
         context = self.get_serializer_context()
-        context['availability_by_part'] = catalog_availability([row.part for row in rows if row.part.active])
+        context['availability_by_part'] = catalog_availability([row.part for row in rows if row.part.active], self.scope.own)
         context['equivalents_by_part'] = equivalents_for([row.part_id for row in rows])
         return self.get_paginated_response(self.get_serializer(rows, many=True, context=context).data)
 
@@ -61,7 +70,7 @@ class WishlistState(APIView):
 
     @extend_schema(responses=OpenApiTypes.OBJECT)
     def get(self, request):
-        ids = list(WishlistItem.objects.filter(user=request.user).values_list('part_id', flat=True))
+        ids = list(saved(request.user, catalog_scope(request.user)).values_list('part_id', flat=True))
         return Response({'part_ids': ids, 'count': len(ids)})
 
 
@@ -90,7 +99,10 @@ class WishlistDetail(APIView):
     @extend_schema(request=None, responses=OpenApiTypes.OBJECT)
     @transaction.atomic
     def put(self, request, part_id):
+        scope = catalog_scope(request.user)
         part = locked_canonical_part(part_id)
+        if not scope.parts(Part.objects.filter(pk=part.pk)).exists():
+            raise Http404  # outside a supplier-only user's own SKUs
         if not part.active:
             return Response({'detail': 'Este repuesto ya no está disponible en el catálogo.'}, status=400)
         row, _ = WishlistItem.objects.get_or_create(user=request.user, part=part)

@@ -69,6 +69,9 @@ class UsageEvents(APIView):
         if request.user.is_superuser:
             return Response({'recorded': False}, status=202)
         account = account_for(request.user, data['account_id'])
+        if data['kind'] != 'visit' and not account.roles.filter(capability='client').exists():
+            # Demand stats are clients' searches and views; a supplier looking at its own SKUs is no demand.
+            return Response({'recorded': False}, status=202)
         fingerprint = hashlib.sha256(json.dumps(data, sort_keys=True, default=str).encode()).hexdigest()
         # Serializing this user's writes also protects concurrent retry deduplication.
         User.objects.select_for_update().get(pk=request.user.pk)

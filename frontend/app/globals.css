@@ -2655,3 +2655,6 @@ body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-s
 .deal-chat-send>.deal-chat-tag { margin-right:4px; }
 /* Preguntar al proveedor (part-detail.tsx): a quiet link under the supplier's name. */
 .supplier-ask { display:inline-flex; align-items:center; gap:5px; margin-top:4px; padding:0; }
+.own-catalog-notice { margin:20px 0 12px; }
+.own-catalog-notice > svg { flex-shrink:0; }
+@media (max-width:640px) { .own-catalog-notice { flex-wrap:wrap; } .own-catalog-notice > div { flex:1 1 calc(100% - 32px); min-width:0; } .own-catalog-notice button { margin-left:32px; } }

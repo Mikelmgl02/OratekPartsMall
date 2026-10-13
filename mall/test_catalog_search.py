@@ -13,7 +13,9 @@ class CatalogSearchTests(APITestCase):
 
     def setUp(self):
         self.user = User.objects.create_user('search-buyer', 'search-buyer@example.invalid', 'StrongPassword123!')
-        Membership.objects.create(user=self.user, account=Account.objects.create(name='CLIENTE BUSCA'))
+        buyer = Account.objects.create(name='CLIENTE BUSCA')
+        buyer.roles.add(Role.objects.get(code='client_business'))
+        Membership.objects.create(user=self.user, account=buyer)
         self.supplier = Account.objects.create(name='PROVEEDOR BUSCA')
         self.supplier.roles.add(*Role.objects.filter(capability='supplier'))
         self.client.force_authenticate(self.user)

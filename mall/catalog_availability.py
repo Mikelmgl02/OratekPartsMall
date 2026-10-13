@@ -10,8 +10,12 @@ def stock_band(units):
     return 'sold_out' if units == 0 else 'low' if units <= low else 'medium' if units <= high else 'high'
 
 
-def catalog_availability(parts):
-    eligible_suppliers = Account.objects.filter(active=True, roles__capability='supplier').values('pk')
+def catalog_availability(parts, own=None):
+    """{part id: band, suppliers with stock, last update}; only the own suppliers' items in a supplier's view of the catalog."""
+    eligible_suppliers = Account.objects.filter(active=True, roles__capability='supplier')
+    if own is not None:
+        eligible_suppliers = eligible_suppliers.filter(pk__in=own)
+    eligible_suppliers = eligible_suppliers.values('pk')
     rows = (SupplierItem.objects.filter(part_id__in=[part.pk for part in parts],
                                        matching_status='matched', supplier_id__in=eligible_suppliers)
             .values('part_id').annotate(

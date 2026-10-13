@@ -5,7 +5,7 @@ import { ChevronDown, Search, SlidersHorizontal, X } from 'lucide-react';
 import type { CatalogFacet, CatalogFacets, CatalogFilters } from '@/lib/types';
 import { emptyFilters, filterCount, stockFilterLabels } from '@/lib/catalog-filters';
 
-type Props = { facets: CatalogFacets; filters: CatalogFilters; loading: boolean; onChange: (filters: CatalogFilters) => void };
+type Props = { facets: CatalogFacets; filters: CatalogFilters; loading: boolean; onChange: (filters: CatalogFilters) => void; suppliers?: boolean };
 
 function FacetSection({ title, options, selected, loading, onToggle }: { title: string; options: CatalogFacet[]; selected: string[]; loading: boolean; onToggle: (value: string) => void }) {
   const [search, setSearch] = useState('');
@@ -25,7 +25,8 @@ function FacetSection({ title, options, selected, loading, onToggle }: { title: 
   </details>;
 }
 
-export default function CatalogFilterPanel({ facets, filters, loading, onChange }: Props) {
+// suppliers: false in a supplier-only account's own catalog, which has no supplier filter.
+export default function CatalogFilterPanel({ facets, filters, loading, onChange, suppliers = true }: Props) {
   const radioName = useId();
   function toggle(field: 'category' | 'subcategory' | 'supplier', value: string) {
     const selected = filters[field];
@@ -39,8 +40,8 @@ export default function CatalogFilterPanel({ facets, filters, loading, onChange 
       <label className="facet-option"><input type="radio" name={radioName} checked={!filters.availability} onChange={() => onChange({ ...filters, availability: '' })}/><span>Todos los estados</span></label>
       {facets.availability.map(option => <label key={option.value} className="facet-option"><input type="radio" aria-label={option.label} name={radioName} checked={filters.availability === option.value} onChange={() => onChange({ ...filters, availability: option.value })} disabled={!loading && !option.count && filters.availability !== option.value}/><span>{option.label}</span><small>{option.count.toLocaleString('es')}</small></label>)}
     </div></details>
-    <FacetSection title="Proveedor" options={facets.supplier} selected={filters.supplier} loading={loading} onToggle={value => toggle('supplier', value)}/>
-    <p className="filter-panel-note">Cada resultado reúne los códigos equivalentes de un mismo SKU. Las existencias corresponden al SKU entre todos sus proveedores.</p>
+    {suppliers && <FacetSection title="Proveedor" options={facets.supplier} selected={filters.supplier} loading={loading} onToggle={value => toggle('supplier', value)}/>}
+    <p className="filter-panel-note">Cada resultado reúne los códigos equivalentes de un mismo SKU. {suppliers ? 'Las existencias corresponden al SKU entre todos sus proveedores.' : 'Las existencias son las de tu inventario.'}</p>
   </div>;
 }
 

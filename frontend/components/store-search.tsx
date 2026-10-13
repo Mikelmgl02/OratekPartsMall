@@ -28,7 +28,7 @@ export default function StoreSearch({ value, onChange, onSearch, onOpen, filters
   const [loading, setLoading] = useState(false);
   const cache = useRef(new Map<string, Part[]>());
   const term = value.trim();
-  const query = catalogQuery(term, 1, filters);
+  const query = catalogQuery(term, 1, filters, preview ? '' : accountId);
   const key = `${preview ? 'preview' : accountId}:${query}`;
   const wanted = open && term.length >= MIN_CHARS && (preview || !!accountId);
   useEffect(() => {

@@ -16,6 +16,7 @@ from .serializers import AccountSerializer, InventorySerializer, OfferSerializer
 from .services import ingest_inventory
 from .catalog_availability import catalog_availability
 from .catalog_filters import apply_filters, catalog_facets, filter_values
+from .catalog_scope import ACCOUNT_PARAMETER, FULL, request_scope
 from .catalog_search import search_parts, search_rank
 from .oem_links import equivalents_for
 
@@ -72,9 +73,10 @@ class AccountList(generics.ListAPIView):
         return (Account.objects.filter(memberships__user=self.request.user, active=True).prefetch_related('roles', own)
                 .annotate(apiag_linked=Exists(ApiagConnection.objects.filter(account=OuterRef('pk')))).order_by('name', 'id'))
 
-def catalog_parts(search=''):
-    """The canonical catalog SKUs the search finds (mall.catalog_search: every word, any order, accents and separators ignored)."""
-    return search_parts(Part.objects.filter(active=True, merged_into__isnull=True), search)
+def catalog_parts(search='', scope=FULL):
+    """The canonical catalog SKUs the search finds (mall.catalog_search: every word, any order, accents and separators ignored), within
+    the member's scope (mall.catalog_scope)."""
+    return search_parts(scope.parts(Part.objects.filter(active=True, merged_into__isnull=True)), search, scope.own)
 
 
 REUSED_MATCHES = 2000
@@ -82,6 +84,7 @@ REUSED_MATCHES = 2000
 class CatalogList(generics.ListAPIView):
     serializer_class = PartSerializer
     reuse_matches = True
+    @extend_schema(parameters=[ACCOUNT_PARAMETER])
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
         page = self.paginate_queryset(queryset)
@@ -93,16 +96,16 @@ class CatalogList(generics.ListAPIView):
 
     def serialize(self, parts):
         parts = list(parts)
-        context = {**self.get_serializer_context(), 'availability_by_part': catalog_availability(parts),
+        context = {**self.get_serializer_context(), 'availability_by_part': catalog_availability(parts, self.scope.own),
                    'equivalents_by_part': equivalents_for([part.pk for part in parts])}
         return self.get_serializer(parts, many=True, context=context).data
 
     def get_queryset(self):
-        if not Membership.objects.filter(user=self.request.user, account__active=True).exists():
-            raise PermissionDenied('Tu administrador debe configurar tu cuenta.')
-        self.catalog_filters = filter_values(self.request.query_params)
+        # The scope narrows the base before the reused matches and the facets read it, so neither reaches past it.
+        self.scope = request_scope(self.request)
+        self.catalog_filters = filter_values(self.request.query_params, self.scope.own)
         search = self.request.query_params.get('search', '').strip()
-        self.base_query = catalog_parts(search)
+        self.base_query = catalog_parts(search, self.scope)
         if search and self.reuse_matches:
             # The count, the page and the four facet queries read the matches by id instead of each running the search again.
             ids = list(self.base_query.order_by().values_list('pk', flat=True)[:REUSED_MATCHES + 1])
@@ -110,7 +113,7 @@ class CatalogList(generics.ListAPIView):
                 self.base_query = Part.objects.filter(pk__in=ids)
         query = apply_filters(self.base_query, self.catalog_filters).prefetch_related('codes', 'images')
         # A code search lists the exact code first, then the codes containing it; everything else stays in SKU order.
-        rank = search_rank(search)
+        rank = search_rank(search, self.scope.own)
         return query.annotate(search_rank=rank).order_by('search_rank', 'sku', 'id') if rank is not None else query.order_by('sku', 'id')
 
 
@@ -120,6 +123,7 @@ class CatalogSuggest(CatalogList):
     """The search box's preview while typing: the first results the search would list, without the count or the facets."""
     pagination_class = None
     reuse_matches = False
+    @extend_schema(parameters=[ACCOUNT_PARAMETER])
     def list(self, request, *args, **kwargs):
         if not request.query_params.get('search', '').strip():
             return Response([])

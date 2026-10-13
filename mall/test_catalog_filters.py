@@ -11,6 +11,7 @@ class CatalogFilterTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user('filter-buyer', 'filter-buyer@example.invalid', 'StrongPassword123!')
         buyer = Account.objects.create(name='CLIENTE')
+        buyer.roles.add(Role.objects.get(code='client_business'))
         Membership.objects.create(user=self.user, account=buyer)
         self.supplier = Account.objects.create(name='PROVEEDOR UNO')
         self.supplier.roles.add(*Role.objects.filter(capability='supplier'))

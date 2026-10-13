@@ -8,12 +8,13 @@ from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
 from rest_framework import filters, generics, serializers
 from .list_ordering import StableOrdering
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .catalog_scope import ACCOUNT_PARAMETER, request_scope
 from .management import IsSuperuser, UppercaseCharField
-from .models import Application, ItemApplication, Membership, Part, PartSpecification, PartType, TechnicalField, TechnicalTemplate
+from .models import Application, ItemApplication, Part, PartSpecification, PartType, TechnicalField, TechnicalTemplate
 from .technical_data import normalized_label
 
 # Multipliers to a common unit within each dimension. Never convert across dimensions.
@@ -353,9 +354,10 @@ class ItemTechnicalDetail(APIView):
 
 
 class CatalogTechnicalDetail(APIView):
-    @extend_schema(responses=OpenApiTypes.OBJECT, description='Ficha técnica del SKU activo y aplicaciones verificadas. No incluye fuentes internas.')
+    @extend_schema(responses=OpenApiTypes.OBJECT, parameters=[ACCOUNT_PARAMETER],
+                   description='Ficha técnica del SKU activo y aplicaciones verificadas. No incluye fuentes internas.')
     def get(self, request, pk):
-        if not Membership.objects.filter(user=request.user, account__active=True).exists():
-            raise PermissionDenied('Tu administrador debe configurar tu cuenta.')
-        part = get_object_or_404(Part.objects.select_related('part_type'), pk=pk, active=True, merged_into__isnull=True)
+        # Outside the member's scope (mall.catalog_scope) the SKU does not exist for it.
+        scope = request_scope(request)
+        part = get_object_or_404(scope.parts(Part.objects.select_related('part_type')), pk=pk, active=True, merged_into__isnull=True)
         return Response(sheet_data(part, public=True))

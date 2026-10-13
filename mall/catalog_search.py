@@ -70,11 +70,13 @@ def search_words(search):
     return [word for word in words if word not in FILLER] or words
 
 
-def matched_items():
-    return SupplierItem.objects.filter(matching_status='matched', supplier__active=True)
+def matched_items(own=None):
+    """The supplier codes a search reads: every active supplier's, or only the own ones in a supplier's view of the catalog."""
+    items = SupplierItem.objects.filter(matching_status='matched', supplier__active=True)
+    return items if own is None else items.filter(supplier_id__in=own)
 
 
-def word_q(word):
+def word_q(word, own=None):
     """The SKU, name, description, department or subgroup contain the word, or an alterno (code or brand), a matched supplier code or,
     for a code, an OEM number the SKU reaches or an aftermarket code filed under one. Uncorrelated subqueries, no joins."""
     key = compact(word)
@@ -86,7 +88,7 @@ def word_q(word):
         codes |= compact_has('code', key)
         items |= compact_has('codigo', key)
     match = (text | Q(pk__in=PartCode.objects.filter(codes).values('part_id'))
-             | Q(pk__in=matched_items().filter(items).values('part_id')))
+             | Q(pk__in=matched_items(own).filter(items).values('part_id')))
     library = library_q(key) if any(char.isdigit() for char in key) else None
     return match | library if library is not None else match
 
@@ -97,28 +99,29 @@ def code_key(search):
     return key if len(key) >= MIN_SEARCH and any(char.isdigit() for char in key) else ''
 
 
-def code_q(key, exact=False):
+def code_q(key, exact=False, own=None):
     return (compact_has('sku', key, exact)
             | Q(pk__in=PartCode.objects.filter(compact_has('code', key, exact)).values('part_id'))
-            | Q(pk__in=matched_items().filter(compact_has('codigo', key, exact)).values('part_id'))
+            | Q(pk__in=matched_items(own).filter(compact_has('codigo', key, exact)).values('part_id'))
             | library_q(key, exact=exact))
 
 
-def search_parts(query, search):
-    """The parts every word matches; a code split by spaces (MR 968365) also matches whole."""
+def search_parts(query, search, own=None):
+    """The parts every word matches; a code split by spaces (MR 968365) also matches whole. With own suppliers (mall.catalog_scope),
+    only their codes count, so another supplier's code finds nothing."""
     words = search_words(search)
     if not words:
         return query
-    match = reduce(operator.and_, map(word_q, words))
+    match = reduce(operator.and_, [word_q(word, own) for word in words])
     key = code_key(search)
-    return query.filter(match | code_q(key) if key and len(words) > 1 else match)
+    return query.filter(match | code_q(key, own=own) if key and len(words) > 1 else match)
 
 
-def search_rank(search):
+def search_rank(search, own=None):
     """0 for a SKU, alterno, supplier code or OEM number equal to the code searched, 1 for one containing it, 2 for the rest; None
     when the search is no code."""
     key = code_key(search)
     if not key:
         return None
-    return Case(When(code_q(key, exact=True), then=Value(0)), When(code_q(key), then=Value(1)), default=Value(2),
+    return Case(When(code_q(key, exact=True, own=own), then=Value(0)), When(code_q(key, own=own), then=Value(1)), default=Value(2),
                 output_field=IntegerField())

@@ -62,6 +62,11 @@ async function handle(request: NextRequest, context: Context) {
       for (const value of request.nextUrl.searchParams.getAll(key)) query.append(key, value);
     }
   }
+  // The active account (a uuid): a supplier-only account sees only its own SKUs (mall/catalog_scope.py).
+  if (route === 'catalog' || route === 'catalog/suggest') {
+    const account = request.nextUrl.searchParams.get('account');
+    if (account && new RegExp(`^${uuid}$`).test(account)) query.set('account', account);
+  }
   let body;
   if (request.method === 'POST') {
     try { body = JSON.stringify(await request.json()); } catch { return json({ detail: 'La solicitud no es válida.' }, 400); }

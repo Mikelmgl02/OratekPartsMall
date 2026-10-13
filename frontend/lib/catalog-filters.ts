@@ -10,10 +10,12 @@ export const stockFilterLabels: Record<string, string> = {
 export function filterCount(filters: CatalogFilters) {
   return filters.category.length + filters.subcategory.length + filters.supplier.length + Number(!!filters.availability);
 }
-export function catalogQuery(search: string, page: number, filters: CatalogFilters) {
+// account: the active account, so a supplier-only account gets only its own SKUs.
+export function catalogQuery(search: string, page: number, filters: CatalogFilters, account = '') {
   const query = new URLSearchParams({ search, page: String(page), include_facets: '1' });
   for (const key of ['category', 'subcategory', 'supplier'] as const) for (const value of filters[key]) query.append(key, value);
   if (filters.availability) query.set('availability', filters.availability);
+  if (account) query.set('account', account);
   return query.toString();
 }
 export function matchesFilters(part: Part, filters: CatalogFilters) {

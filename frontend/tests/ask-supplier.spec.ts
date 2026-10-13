@@ -19,7 +19,7 @@ test('a client asks a supplier about a part before ordering: the conversation op
   await page.route(/\/api\/market\/inbox$/, route => route.fulfill({ json: { unread_messages: 0, unread_conversations: 0, unseen_notifications: 0, latest_message: null, latest_notification: null } }));
   await page.route(/\/api\/market\/catalog(?:\?.*)?$/, route => route.fulfill({ json: { ...empty, count: 1, results: [part] } }));
   await page.route(`**/api/market/catalog/${part.id}/suppliers`, route => route.fulfill({ json: offers }));
-  await page.route(/\/api\/market\/catalog\/[^/]+\/technical$/, route => route.fulfill({ json: { part: part.id, part_type: null, revision: 0, template: null, values: {}, applications: [], missing_required: [] } }));
+  await page.route(/\/api\/market\/catalog\/[^/]+\/technical(?:\?.*)?$/, route => route.fulfill({ json: { part: part.id, part_type: null, revision: 0, template: null, values: {}, applications: [], missing_required: [] } }));
   await page.route('**/request-state', route => route.fulfill({ json: { part_id: part.id, totals: { sent_quantity: 0, pending_quantity: 0, reviewed_quantity: 0 }, items: [] } }));
   await fakeServerBasket(page, { parts: [part], offers: { [part.id]: offers } });
   await page.route(`**/api/market/accounts/${account.id}/threads`, route => {

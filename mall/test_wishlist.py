@@ -15,6 +15,7 @@ class WishlistTests(APITestCase):
         self.user = User.objects.create_user('wishlist-user', 'wishlist@example.invalid', 'StrongPassword123!')
         self.other = User.objects.create_user('other-user', 'other@example.invalid', 'StrongPassword123!')
         self.account = Account.objects.create(name='CLIENTE')
+        self.account.roles.add(Role.objects.get(code='client_business'))
         for user in [self.user, self.other]:
             Membership.objects.create(user=user, account=self.account)
         self.part = Part.objects.create(sku='58411-1R000', description='TAMBOR HYU ACCENT 11-16', category='FRENOS', subcategory='TAMBORES')

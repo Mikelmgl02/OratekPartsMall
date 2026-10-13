@@ -8,14 +8,16 @@ from rest_framework.exceptions import ValidationError
 from .catalog_grouping import merge_catalog_parts
 from .catalog_import import save_plan
 from .models import (Account, Membership, Application, ItemApplication, Part, PartSpecification, PartType,
-                     TechnicalTemplate, User)
+                     Role, TechnicalTemplate, User)
 
 
 class TechnicalDataTests(APITestCase):
     def setUp(self):
         self.root = User.objects.create_superuser('technical-root', 'technical-root@example.com', 'test-password')
         self.user = User.objects.create_user('technical-user', 'technical-user@example.com', 'test-password')
-        Membership.objects.create(user=self.user, account=Account.objects.create(name='TEST TECHNICAL'))
+        buyer = Account.objects.create(name='TEST TECHNICAL')
+        buyer.roles.add(Role.objects.get(code='client_business'))
+        Membership.objects.create(user=self.user, account=buyer)
         self.client.force_authenticate(self.root)
         self.part = Part.objects.create(sku='TEST-DISC', category='FRENOS', subcategory='DISCOS')
         self.type = self.part.part_type

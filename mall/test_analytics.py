@@ -29,6 +29,7 @@ class AnalyticsTests(APITestCase):
         self.account.roles.add(Role.objects.get(code='client_business'))
         Membership.objects.create(user=self.buyer, account=self.account)
         self.other_account = Account.objects.create(name='OTHER CLIENT')
+        self.other_account.roles.add(Role.objects.get(code='client_business'))
         Membership.objects.create(user=self.other, account=self.other_account)
         self.supplier = Account.objects.create(name='ANALYTICS SUPPLIER')
         self.supplier.roles.add(*Role.objects.filter(capability='supplier'))

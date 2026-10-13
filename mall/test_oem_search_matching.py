@@ -1,7 +1,7 @@
 from rest_framework.test import APITestCase
 
 from .matching_engine import MatchIndex, reconcile_items
-from .models import Account, Membership, MatchingCase, Part, PartCode, SupplierItem, User
+from .models import Account, Membership, MatchingCase, Part, PartCode, Role, SupplierItem, User
 from .oem_links import store_catalog_links, store_cross_references
 from .oem_reference import upsert_reference
 from .test_oem_finder import Fresh
@@ -94,7 +94,9 @@ class LibrarySearchTests(OEMLibraryTests):
     def setUp(self):
         super().setUp()
         self.buyer = User.objects.create_user('oem-search-buyer', 'oem-search-buyer@example.invalid', 'StrongPassword123!')
-        Membership.objects.create(user=self.buyer, account=Account.objects.create(name='CLIENTE'))
+        buyer = Account.objects.create(name='CLIENTE')
+        buyer.roles.add(Role.objects.get(code='client_business'))
+        Membership.objects.create(user=self.buyer, account=buyer)
         self.root = User.objects.create_superuser('oem-search-root', 'oem-search-root@example.invalid', 'Example938!')
         self.other = Part.objects.create(sku='90915-YZZD2', description='FILTRO ACEITE TOY')
 

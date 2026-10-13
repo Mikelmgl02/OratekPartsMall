@@ -217,6 +217,7 @@ class ManagementTests(APITestCase):
         self.assertEqual(self.client.get('/api/v1/management/alternates/').data['count'], 0)
         self.client.post('/api/v1/management/alternates/', {'part': str(part.pk), 'code': 'SUPPLIER-CODE'}, format='json')
         self.assertTrue(Alternate.objects.filter(pk=legacy.pk).exists())
+        self.account.roles.add(Role.objects.get(code='client_business'))  # a supplier-only member sees only its own SKUs
         self.client.force_authenticate(self.user)
         result = self.client.get('/api/v1/catalog/?search=SUPPLIER-CODE').data['results'][0]
         self.assertEqual(result['sku'], part.sku)
