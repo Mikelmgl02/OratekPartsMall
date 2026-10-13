@@ -1,11 +1,12 @@
 'use client';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { ArrowDown, Bot, Check, FileText, FileWarning, Handshake, History, LoaderCircle, LockKeyhole, Maximize2, MessageSquare, Paperclip, Pencil, RefreshCw, Send, UserRoundCog, X } from 'lucide-react';
+import { ArrowDown, Bot, Check, FileText, FileWarning, Handshake, History, LoaderCircle, LockKeyhole, Maximize2, MessageSquare, PackageSearch, Paperclip, Pencil, RefreshCw, Send, TriangleAlert, UserRoundCog, X } from 'lucide-react';
 import Modal from './modal';
 import { percent } from './price-explanation';
 import DealStatusBadge from './deal-status';
 import DealAfterHandshake from './deal-after-handshake';
+import ReorderMissing from './reorder-missing';
 import { UppercaseTextarea } from './uppercase-field';
 import { Account, ApiError, request } from '@/lib/types';
 import type { SupplierRequestLine } from '@/lib/request-types';
@@ -235,7 +236,7 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
         ] as const).filter(([value]) => !(embedded && value === 'chat')).map(([value, label, Icon]) => <button type="button" key={value} className={tab === value ? 'selected' : ''} aria-pressed={tab === value} title={value === 'quote' && hasDraft ? 'Hay un borrador de cotización guardado' : undefined} onClick={() => setTab(value)}><Icon size={15}/>{label}{value === 'quote' && hasDraft && <span className="deal-tab-dot" aria-hidden="true"/>}</button>)}</nav>
         {notice && <div className="notice success" role="status">{notice}</div>}
         <div ref={quoteTab} className="deal-quote-tab" hidden={tab !== 'quote'}>
-          <DealDocument deal={deal} supplier={supplier} folded={editorMounted} price={priced ? suggestedPrice : undefined} busy={busy} stockWarnings={stockWarnings} onRefresh={() => void load()}/>
+          <DealDocument deal={deal} accountId={account.id} supplier={supplier} folded={editorMounted} price={priced ? suggestedPrice : undefined} busy={busy} stockWarnings={stockWarnings} onRefresh={() => void load()}/>
           {!embedded && supplier && ['reviewed', 'adjustment'].includes(deal.status) && !editorMounted && <button type="button" className="button primary" onClick={startPricing}>Preparar cotización<FileText size={16}/></button>}
           {supplier && deal.quotation && <QuoteTrace key={deal.quotation.id} path={`${base}/requests/${orderId}/quotations/${deal.quotation.id}/trace`} currency={deal.quotation.currency}/>}
           {!embedded && supplier && canDecide && deal.status === 'quoted' && !revising && reviseButton}
@@ -284,11 +285,24 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   </section> : <Modal title={`Orden ${reference}`} wide className="deal-modal supplier-request-modal" onClose={() => { if (!inFlight.current) onClose?.(); }}>{content}</Modal>;
 }
 
+// Units the order will not bring (mall/reorder.py missing_lines): what the quotation does not offer, what the agreement will not deliver
+// (shortfalls accepted or waiting for an answer), or all of it once it ended cancelled; nothing is known before a quotation.
+function missingOf(deal: Deal) {
+  const coming = deal.status === 'cancelled' ? new Map<string, number>() : deal.handshaked_at && deal.agreement
+    ? new Map(deal.agreement.lines.map(line => [line.order_line_id, line.final - line.pending_missing]))
+    : deal.quotation ? new Map(deal.quotation.lines.map(line => [line.order_line_id, line.quantity])) : null;
+  if (!coming) return 0;
+  return deal.lines.reduce((sum, line) => sum + Math.max(0, line.quantity - Math.max(0, coming.get(line.id) ?? 0)), 0);
+}
+
 // The order's document (the Cotización tab): what the client asked for and, once quoted, the current quotation on the same lines, with its
-// total and terms; for the supplier, the stock to confirm. While the supplier prices it in the editor it folds under its heading.
-function DealDocument({ deal, supplier, folded, price, busy, stockWarnings, onRefresh }: { deal: Deal; supplier: boolean; folded: boolean;
+// total and terms; for the supplier, the stock to confirm. While the supplier prices it in the editor it folds under its heading. The client
+// can ask another supplier for what it will not bring (ReorderMissing).
+function DealDocument({ deal, accountId, supplier, folded, price, busy, stockWarnings, onRefresh }: { deal: Deal; accountId: string; supplier: boolean; folded: boolean;
   price?: (line: Deal['lines'][number]) => React.ReactNode; busy: boolean; stockWarnings: number; onRefresh: () => void }) {
   const quote = deal.quotation;
+  const short = supplier ? 0 : missingOf(deal);
+  const [reordering, setReordering] = useState(false);
   // Ampliar: the items, the document's main part, in a dialog as large as the screen, with every column.
   const [expanded, setExpanded] = useState(false);
   const open = openOrder.includes(deal.status);
@@ -314,6 +328,10 @@ function DealDocument({ deal, supplier, folded, price, busy, stockWarnings, onRe
     </div>}
     <DealLinesGrid lines={deal.lines} supplier={supplier} price={price} quote={quote}/>
     {!quote && !supplier && <p className="deal-document-hint">El proveedor preparará tu cotización: aquí verás lo que ofrece de cada artículo, sus precios y condiciones.</p>}
+    {short > 0 && <div className="deal-missing" role="group" aria-label="Lo que falta"><p><TriangleAlert size={15}/>{deal.status === 'cancelled'
+      ? `La orden se canceló sin sus ${short} ${short === 1 ? 'unidad' : 'unidades'}.` : deal.handshaked_at
+      ? `El acuerdo deja fuera ${short} ${short === 1 ? 'unidad' : 'unidades'} de lo que pediste.` : `La cotización no ofrece ${short} ${short === 1 ? 'unidad' : 'unidades'} de lo que pediste.`}</p>
+      <button type="button" className="button soft small" onClick={() => setReordering(true)}><PackageSearch size={15}/>Pedir lo que falta a otro proveedor</button></div>}
     {quote?.terms && <div className="deal-terms"><h4>Condiciones</h4><p>{quote.terms}</p></div>}
     {notes}
   </>;
@@ -325,6 +343,7 @@ function DealDocument({ deal, supplier, folded, price, busy, stockWarnings, onRe
       {quote?.terms && <div className="deal-terms"><h4>Condiciones</h4><p>{quote.terms}</p></div>}
       {notes}
     </Modal>}
+    {reordering && <ReorderMissing accountId={accountId} orderId={deal.id} reference={deal.reference} onClose={() => setReordering(false)}/>}
   </section>;
 }
 

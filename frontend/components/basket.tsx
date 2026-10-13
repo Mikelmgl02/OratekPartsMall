@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, Boxes, History, LockKeyhole, MessageCircle, Minus, Plus, ShoppingBag, Sparkles, Store, Trash2, TriangleAlert, Truck } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Boxes, History, LockKeyhole, MessageCircle, Minus, PackageSearch, Plus, ShoppingBag, Sparkles, Store, Trash2, TriangleAlert, Truck } from 'lucide-react';
 import { CatalogPhoto } from './part-image';
 import BasketSubmission from './basket-submission';
 import ClientRequestNavigation from './client-request-navigation';
@@ -32,9 +32,10 @@ function QuantityControl({ name, quantity, onChange, disabled }: { name: string;
 // What each entry of the cesta's ledger says, in the person's words.
 function eventText(entry: BasketEvent) {
   const article = `${entry.codigo} · ${entry.supplier_name || 'proveedor'}`;
+  const missing = entry.source === 'faltante' && entry.reference ? `, lo que faltó en ${entry.reference}` : '';  // Pedir lo que falta
   switch (entry.kind) {
-    case 'added': return `Agregaste ${entry.quantity_after} × ${article}`;
-    case 'changed': return `Cambiaste ${article} de ${entry.quantity_before} a ${entry.quantity_after}`;
+    case 'added': return `Agregaste ${entry.quantity_after} × ${article}${missing}`;
+    case 'changed': return `Cambiaste ${article} de ${entry.quantity_before} a ${entry.quantity_after}${missing}`;
     case 'removed': return `Quitaste ${entry.quantity_before} × ${article}`;
     case 'moved_in': return `Trajiste ${entry.quantity_after} × ${article} de la cesta de este navegador`;
     case 'sent': return `Enviaste ${entry.quantity_before - entry.quantity_after} × ${article}${entry.reference ? ` en ${entry.reference}` : ''}`;
@@ -108,7 +109,7 @@ export default function Basket({ lines, onChange, onClose, preview, account, syn
             const firstCode = visibleReferences({ codes: line.part.codes ?? [], equivalents: line.part.equivalents })[0];
             return <article className="basket-page-item" data-line-key={line.key} key={line.key} aria-label={`Artículo ${name} de ${line.offer.supplier_name}`}>
               <div className="basket-page-art"><CatalogPhoto image={line.part.images?.[0]} alt={line.part.name || description || line.part.sku} thumbnail/></div>
-              <div className="basket-page-item-info">{line.source === 'whatsapp' && <span className="basket-page-source"><MessageCircle size={12}/>Agregado por WhatsApp</span>}<span className="basket-page-sku">SKU INTERNO {line.part.sku || line.part.name}</span><h3>{name}</h3>{selected ? <span className="basket-page-code">{selected.codigo} · {selected.brand || 'SIN MARCA INDICADA'}</span> : <span className="basket-page-code">{firstCode ? `${firstCode.code} · ${firstCode.brand || 'SIN MARCA INDICADA'}` : line.part.sku}</span>}{selected && line.part.name && line.part.name !== name && <p className="basket-page-part-name">{line.part.name}</p>}{description && <p className="basket-page-description">{description}</p>}
+              <div className="basket-page-item-info">{line.source === 'whatsapp' && <span className="basket-page-source"><MessageCircle size={12}/>Agregado por WhatsApp</span>}{line.source === 'faltante' && <span className="basket-page-source missing"><PackageSearch size={12}/>Lo que faltó en otra orden</span>}<span className="basket-page-sku">SKU INTERNO {line.part.sku || line.part.name}</span><h3>{name}</h3>{selected ? <span className="basket-page-code">{selected.codigo} · {selected.brand || 'SIN MARCA INDICADA'}</span> : <span className="basket-page-code">{firstCode ? `${firstCode.code} · ${firstCode.brand || 'SIN MARCA INDICADA'}` : line.part.sku}</span>}{selected && line.part.name && line.part.name !== name && <p className="basket-page-part-name">{line.part.name}</p>}{description && <p className="basket-page-description">{description}</p>}
                 {line.available === false ? <p className="basket-page-stale" role="note"><TriangleAlert size={14}/>Este artículo ya no se puede solicitar. Quítalo de la cesta.</p>
                   : line.changed ? <p className="basket-page-stale" role="note"><TriangleAlert size={14}/>Cambió desde que lo agregaste. Quítalo y vuelve a elegirlo en el catálogo.</p> : null}</div>
               <div className="basket-page-item-service"><div><LockKeyhole size={16}/><span><strong>Cotización privada</strong><small>El precio lo indica tu proveedor.</small></span></div><div><Truck size={17}/><span><strong>Entrega del proveedor</strong><small>Coordina la entrega o el retiro al reservar.</small></span></div></div>

@@ -74,9 +74,10 @@ def event(user, account, item, part, codigo, brand, kind, before, after, source,
                        reference=reference)
 
 
-def apply_changes(user, account, changes, source='web'):
+def apply_changes(user, account, changes, source='web', reference=''):
     """The changes to the person's cesta, all or none, each in its ledger (BasketEvent; a browser's old cesta moving in, mode max, as
-    moved_in). A new article must be requestable, not the account's own, and still under the SKU the person chose it (expected_part_id)."""
+    moved_in; reference: the order whose missing units they are). A new article must be requestable, not the account's own, and still under
+    the SKU the person chose it (expected_part_id)."""
     ids = [change['supplier_item_id'] for change in changes]
     events = []
     with transaction.atomic():
@@ -98,7 +99,8 @@ def apply_changes(user, account, changes, source='web'):
                 total = row.quantity + quantity if mode == 'add' else max(row.quantity, quantity) if mode == 'max' else quantity
                 before, after = row.quantity, max(0, min(total, MAX_QUANTITY))
                 if after != before:
-                    events.append(event(user, account, item, row.part, row.codigo, row.brand, 'removed' if not after else 'changed', before, after, source))
+                    events.append(event(user, account, item, row.part, row.codigo, row.brand, 'removed' if not after else 'changed', before, after, source,
+                                        reference))
                 if total <= 0:
                     row.delete()
                     rows.pop(identifier)
@@ -121,7 +123,7 @@ def apply_changes(user, account, changes, source='web'):
             rows[identifier] = BasketItem.objects.create(user=user, account=account, supplier_item=item, part_id=item.part_id, codigo=item.codigo,
                                                          brand=item.brand, quantity=min(quantity, MAX_QUANTITY), source=source)
             events.append(event(user, account, item, item.part, item.codigo, item.brand, 'moved_in' if mode == 'max' else 'added', 0,
-                                min(quantity, MAX_QUANTITY), source))
+                                min(quantity, MAX_QUANTITY), source, reference))
             count += 1
         BasketEvent.objects.bulk_create(events)
 

@@ -6,6 +6,7 @@ import { ApiError, request } from '@/lib/types';
 import { INBOX_EVENT, InboxConversation, InboxNotification, InboxSummary, InboxTarget, ago, inboxChanged, targetOf } from '@/lib/inbox';
 import { PushState, disablePush, enablePush, pushStatus, syncPush } from '@/lib/push';
 import { connectRealtime } from '@/lib/realtime';
+import { CESTA_EVENT, type CestaRequest } from '@/lib/cesta';
 import type { Page } from '@/lib/types';
 
 const ConversationsPanel = dynamic(() => import('./conversations-panel'), { ssr: false });
@@ -66,6 +67,12 @@ export function InboxProvider({ children }: { children: ReactNode }) {
     return connectRealtime(setLive);
   }, [available, polling]);
   const open = useCallback((target?: InboxTarget) => setPanel({ target, key: Date.now() }), []);
+  // Ver cesta, from a deal in the panel (lib/cesta.ts): the cesta shows instead.
+  useEffect(() => {
+    const close = (event: Event) => { if ((event as CustomEvent<CestaRequest>).detail.open) { setPanel(null); setShowing(null); } };
+    window.addEventListener(CESTA_EVENT, close);
+    return () => window.removeEventListener(CESTA_EVENT, close);
+  }, []);
   // A push notification's link (?conversacion=<deal>) or its click on an open page names an order (or a conversation): look up its
   // conversation, opened on that order.
   const openOrder = useCallback(async (orderId: string) => {

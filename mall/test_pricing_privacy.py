@@ -34,7 +34,9 @@ SUMMARY_KEYS = {'id', 'reference', 'status', 'version', 'created_at', 'updated_a
                 'shortfall_pending', 'delivered_at', 'cancelled_at', 'cancelled_side', 'agreed_unit_count'}
 SENT_SUMMARY_KEYS = SUMMARY_KEYS | {'supplier', 'submission_id'}
 # After the handshake both parties see the agreement after accepted shortfalls, the shortfalls, the delivery and the cancellation.
-DEAL_KEYS = {'client', 'supplier', 'quotations', 'quotation', 'events', 'agreement', 'shortfalls', 'delivered_at', 'cancellation', 'stock_reserved'}
+# stock_hold: until when the sent quotation holds its own offered units (mall.deal_views.stock_hold), never the supplier's stock.
+DEAL_KEYS = {'client', 'supplier', 'quotations', 'quotation', 'events', 'agreement', 'shortfalls', 'delivered_at', 'cancellation', 'stock_reserved',
+             'stock_hold'}
 QUOTATION_KEYS = {'id', 'revision', 'currency', 'terms', 'total', 'created_at', 'supplier_confirmed_at', 'client_confirmed_at', 'lines'}
 QUOTATION_LINE_KEYS = {'order_line_id', 'codigo', 'sku', 'description', 'quantity', 'unit_price', 'total'}
 EVENT_KEYS = {'id', 'kind', 'description', 'account_name', 'actor_name', 'created_at', 'quotation_id'}

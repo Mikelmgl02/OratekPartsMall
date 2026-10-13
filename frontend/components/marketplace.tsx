@@ -12,6 +12,7 @@ import { isCodeSearch, matchesSearch } from '@/lib/catalog-search';
 import StoreSearch from './store-search';
 import { InboxButtons, useInbox } from './inbox';
 import { inboxChanged } from '@/lib/inbox';
+import { CESTA_EVENT, type CestaRequest } from '@/lib/cesta';
 import { forgetPush } from '@/lib/push';
 import AuthModal from './auth-modal';
 import AccountMenu from './account-menu';
@@ -248,6 +249,23 @@ export default function Catálogo() {
     window.addEventListener('focus', refresh); document.addEventListener('visibilitychange', refresh);
     return () => { window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refresh); };
   }, [serverBasket, basketKey]);
+  // A deal put what its order did not bring in a cesta (lib/cesta.ts): read it again, under its account, and show it when asked.
+  const cestaRequest = useRef<(request: CestaRequest) => boolean>(() => false);
+  cestaRequest.current = ({ accountId: target, open }) => {
+    if (!serverBasket && target === accountId) return false;
+    if (target !== accountId) {
+      if (!open) return true;  // another account's cesta: it loads when that account is chosen
+      if (!accounts.some(item => item.id === target)) return false;
+      selectAccount(target);  // its cesta loads with the account
+    } else { basketChange.current += 1; void reloadBasket(); }
+    if (open) setClientPage('cesta');
+    return true;
+  };
+  useEffect(() => {
+    const take = (event: Event) => { if (cestaRequest.current((event as CustomEvent<CestaRequest>).detail)) event.preventDefault(); };
+    window.addEventListener(CESTA_EVENT, take);
+    return () => window.removeEventListener(CESTA_EVENT, take);
+  }, []);
   useEffect(() => { if (notice) { const timer = setTimeout(() => setNotice(''), 4500); return () => clearTimeout(timer); } }, [notice]);
   // An own catalog has no supplier filter; one chosen under a client account would only linger as a chip.
   useEffect(() => { if (ownCatalog && filters.supplier.length) changeFilters({ ...filters, supplier: [] }); }, [ownCatalog, filters]); // eslint-disable-line react-hooks/exhaustive-deps

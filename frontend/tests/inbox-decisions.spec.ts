@@ -2,6 +2,7 @@ import { expect, Page, test } from '@playwright/test';
 import type { Deal, Quotation } from '../lib/deal-types';
 import type { SupplierRequestLine } from '../lib/request-types';
 import { mockQuoteDrafts } from './quote-draft-mock';
+import { fakeServerBasket } from './server-basket';
 
 // The conversations panel's right column: its Cotizaciones table opens the deal itself, embedded next to the chat, with its decisions above its sections.
 const clientId = '11111111-1111-4111-8111-111111111111';
@@ -75,6 +76,39 @@ test('a sent quotation says until when it holds its units, and when the hold lap
   const lapsed = await panel(page, 'supplier', 'quoted', true, [line], { stock_hold: { state: 'lapsed', units: 5, until: '2026-10-15T15:00:00Z' } });
   await expect(lapsed.document.getByRole('note', { name: 'Reserva de existencias', exact: true })).toHaveText(
     'La reserva venció el 10/15/2026, 10:00 a. m.: sus 5 unidades volvieron a tu inventario. Si el cliente confirma, se revisan tus existencias.');
+});
+
+test('a short quotation lets the client ask another supplier for what is missing, into the cesta', async ({ page }) => {
+  const short = { ...quote, total: '37.05', lines: [{ ...quote.lines[0], quantity: 3, total: '37.05' }] };  // 3 of the 5 asked for
+  const { document } = await panel(page, 'client', 'quoted', true, [line], { quotation: short, quotations: [short] });
+  const basket = await fakeServerBasket(page, { server: { [clientId]: [] } });
+  const other = { id: '99999999-9999-4999-8999-000000000001', name: 'AUTOPARTES DEL ISTMO' }, itemId = '99999999-9999-4999-8999-000000000002';
+  const item = { id: itemId, codigo: '58411-1R000-G', brand: 'KSM', description: 'TAMBOR' };
+  const posted: unknown[] = [];
+  await page.route(new RegExp(`/sent-requests/${orderId}/missing$`), route => {
+    if (route.request().method() !== 'POST') return route.fulfill({ json: { order: { id: orderId, reference: 'ORD-0123', status: 'quoted', supplier_name: supplier.name }, added_at: null,
+      lines: [{ order_line_id: lineId, part_id: line.part_id, sku: '58411-1R000', codigo: '58411-1R000-G', brand: 'KSM', description: 'TAMBOR', requested: 5, missing: 2,
+        in_basket: 0, suggested: itemId, offers: [{ supplier_id: other.id, supplier_name: other.name, known: true, items: [item] }] }] } });
+    posted.push(route.request().postDataJSON());
+    basket.lines[clientId] = [{ key: `${line.part_id}:${other.id}:${itemId}`, quantity: 2, source: 'faltante', available: true, changed: false,
+      part: { id: line.part_id, sku: '58411-1R000', name: '', description: 'TAMBOR', codes: [] },
+      offer: { supplier_id: other.id, supplier_name: other.name, in_stock: true, selected_item: item } }];
+    return route.fulfill({ json: { lines: basket.lines[clientId], count: 1 } });
+  });
+  await expect(document.getByRole('group', { name: 'Lo que falta', exact: true })).toContainText('La cotización no ofrece 2 unidades de lo que pediste.');
+  await document.getByRole('button', { name: 'Pedir lo que falta a otro proveedor', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Pedir lo que falta · ORD-0123', exact: true });
+  await expect(dialog).toContainText('REPUESTOS CENTRAL no traerá 2 unidades de esta orden.');
+  await expect(dialog.getByRole('list', { name: 'Lo que falta', exact: true })).toContainText('Faltan 2 de 5');
+  await expect(dialog.getByLabel('Proveedor para 58411-1R000-G', { exact: true })).toHaveValue(itemId);  // suggested, among those in stock
+  await expect(dialog.getByLabel('Unidades de 58411-1R000-G', { exact: true })).toHaveValue('2');
+  await dialog.getByRole('button', { name: 'Agregar a mi cesta (1)', exact: true }).click();
+  await expect(dialog.getByRole('status')).toContainText('Se agregó 1 artículo a tu cesta.');
+  expect(posted).toEqual([{ lines: [{ order_line_id: lineId, supplier_item_id: itemId, quantity: 2 }] }]);
+  await expect(page.getByRole('button', { name: 'Abrir cesta, 1 artículo', exact: true })).toBeVisible();  // the header counts it at once
+  await dialog.getByRole('button', { name: 'Ver cesta', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Conversaciones', exact: true })).toHaveCount(0);  // the cesta shows instead
+  await expect(page.getByText('Lo que faltó en otra orden', { exact: true })).toBeVisible();
 });
 
 test('a client confirms the quotation in two steps from the panel', async ({ page }) => {
