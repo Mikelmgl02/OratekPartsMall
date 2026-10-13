@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import AppShell from '@/components/app-shell';
+import DevToolsLink from '@/components/dev-tools-link';
 import '@fontsource/dm-sans/400.css';
 import '@fontsource/dm-sans/500.css';
 import '@fontsource/dm-sans/600.css';
@@ -17,5 +18,5 @@ export const metadata: Metadata = {
 };
 export const viewport: Viewport = { themeColor: '#ffffff' };
 export default function Layout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="es"><body><AppShell>{children}</AppShell></body></html>;
+  return <html lang="es"><body><AppShell>{children}</AppShell><DevToolsLink/></body></html>;
 }

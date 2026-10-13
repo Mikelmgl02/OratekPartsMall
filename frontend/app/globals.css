@@ -2782,3 +2782,5 @@ body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-s
 .diagrams-view { flex:999 1 560px; min-width:0; display:flex; padding:16px; box-sizing:border-box; }
 .diagrams-view iframe { flex:1; min-height:calc(100dvh - 32px); border:1px solid var(--line); border-radius:12px; background:#fff; }
 @media (max-width:700px) { .diagrams-list { max-width:none; border-right:0; border-bottom:1px solid var(--line); } }
+.dev-tools-link { position:fixed; left:12px; bottom:12px; z-index:40; display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border-radius:999px; background:#232b26; color:#fff; font-size:12px; font-weight:600; box-shadow:0 6px 18px #19221b33; opacity:.85; }
+.dev-tools-link:hover { opacity:1; }
