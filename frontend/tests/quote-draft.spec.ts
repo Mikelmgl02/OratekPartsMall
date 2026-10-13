@@ -77,6 +77,7 @@ async function fixture(page: Page, status: 'reviewed' | 'adjustment' = 'reviewed
 async function openQuote(page: Page) {
   await page.goto(orderUrl);
   await content(page).getByRole('button', { name: 'Cotización', exact: true }).click();
+  await content(page).getByRole('button', { name: 'Preparar cotización', exact: true }).click();  // the editor, from the order's document
 }
 async function editQuote(page: Page, column: 'unit_price' | 'quantity', value: string, codigo = '58411-1R000-G', id = lineId) {
   await quoteCell(page, column, id).click();
@@ -104,7 +105,7 @@ test('supplier edits survive a reload, autosave never calls deal actions and pub
   expect(state.actions).toEqual([]);
   await page.reload();
   await expect(content(page).locator('.deal-tabs .deal-tab-dot')).toBeVisible();
-  await content(page).getByRole('button', { name: 'Cotización', exact: true }).click();
+  await content(page).getByRole('button', { name: 'Preparar cotización', exact: true }).click();
   await expect(quoteCell(page, 'unit_price')).toContainText('12.50');
   await expect(quoteCell(page, 'quantity')).toHaveText('3');
   await expect(quoteCell(page, 'unit_price', secondId)).toContainText('4.00');

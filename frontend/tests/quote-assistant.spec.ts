@@ -80,7 +80,7 @@ async function fixture(page: Page, initial: AssistantState | undefined, { notice
 test('the supplier interprets the client\'s request, applies a quantity as a draft save and copies a question to the chat without sending it', async ({ page }) => {
   const state = await fixture(page, { configured: true, enabled: true, runs_left: 5, unavailable: '', latest_run: null });
   await page.goto(`/proveedor/${supplierId}/ordenes/${orderId}`);
-  await content(page).getByRole('button', { name: 'Cotización', exact: true }).click();
+  await content(page).getByRole('button', { name: 'Preparar cotización', exact: true }).click();
   await expect(panel(page)).toContainText('El asistente no propone precios: los precios salen solo de tus listas y reglas.');
   await panel(page).getByRole('button', { name: 'Interpretar solicitud del cliente', exact: true }).click();
   await expect(panel(page)).toContainText('EL CLIENTE NECESITA MENOS TAMBORES Y PIDE UN DESCUENTO.');
@@ -120,7 +120,7 @@ for (const [label, assistant] of [['without the assistant in the draft', undefin
   test(`the assistant panel is hidden ${label}`, async ({ page }) => {
     const state = await fixture(page, assistant && { ...assistant, runs_left: 0, unavailable: '', latest_run: null }, { notice: false });
     await page.goto(`/proveedor/${supplierId}/ordenes/${orderId}`);
-    await content(page).getByRole('button', { name: 'Cotización', exact: true }).click();
+    await content(page).getByRole('button', { name: 'Preparar cotización', exact: true }).click();
     await expect(quoteCell(page, 'quantity')).toHaveText('3');
     await expect(content(page).getByText('Asistente de cotización (IA)', { exact: true })).toHaveCount(0);
     await content(page).getByRole('button', { name: 'Conversación', exact: true }).click();
@@ -133,7 +133,7 @@ for (const [label, assistant] of [['without the assistant in the draft', undefin
 test('the panel explains why it cannot interpret yet and never calls the assistant', async ({ page }) => {
   const state = await fixture(page, { configured: true, enabled: true, runs_left: 5, unavailable: 'El cliente no escribió notas ni mensajes que el asistente pueda interpretar.', latest_run: null });
   await page.goto(`/proveedor/${supplierId}/ordenes/${orderId}`);
-  await content(page).getByRole('button', { name: 'Cotización', exact: true }).click();
+  await content(page).getByRole('button', { name: 'Preparar cotización', exact: true }).click();
   await expect(panel(page).getByRole('status')).toHaveText('El cliente no escribió notas ni mensajes que el asistente pueda interpretar.');
   await expect(panel(page).getByRole('button', { name: 'Interpretar solicitud del cliente', exact: true })).toBeDisabled();
   expect(state.runs).toEqual([]);

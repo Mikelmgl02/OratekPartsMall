@@ -156,12 +156,12 @@ test('drafts arrive priced from the list, explain each price and apply suggestio
   const content = page.locator('.deal-order-content');
   const quote = (line: string, column: string) => content.locator(`.quotation-grid[aria-label="Artículos de la cotización"] .ag-row[row-id="${line}"] .ag-cell[col-id="${column}"]`);
   await page.goto(`/proveedor/${supplierId}/ordenes/${orderId}`);
-  // Artículos shows the private suggested price with its origin.
+  // The order's document shows the private suggested price with its origin.
   const lines = content.locator('.supplier-request-lines');
   await expect(lines.getByRole('columnheader', { name: 'Precio sugerido' })).toBeVisible();
   await expect(lines.getByRole('row').nth(1)).toContainText('Lista GENERAL');
   await expect(lines.getByRole('row').nth(2)).toContainText('Sin precio en tu lista');
-  await content.getByRole('button', { name: 'Cotización', exact: true }).click();
+  await content.getByRole('button', { name: 'Preparar cotización', exact: true }).click();
   await expect(quote(lineA, 'unit_price')).toContainText('15.00');
   await expect(quote(lineA, 'price_source')).toHaveText('Lista');
   await expect(quote(lineB, 'price_source')).toHaveText('Sin precio');
@@ -196,8 +196,8 @@ test('drafts arrive priced from the list, explain each price and apply suggestio
   await expect(quote(lineA, 'price_source')).toHaveText('Lista');
   expect(drafts.reprices.at(-1)).toEqual({ save_id: any, expected_draft_version: 3, scope: 'lines', order_line_ids: [lineA] });
   expect(drafts.current().lines.map(line => [line.unit_price, line.price_source])).toEqual([['15.00', 'engine'], ['4.00', 'engine']]);
-  // Artículos follows the latest saved draft: the new list price shows as the second item's suggestion.
-  await content.getByRole('button', { name: 'Artículos', exact: true }).click();
+  // The document, folded above the editor, follows the latest saved draft: the new list price shows as the second item's suggestion.
+  await content.getByTitle('Ver el documento', { exact: true }).click();
   await expect(lines.getByRole('row').nth(2)).toContainText('Lista GENERAL');
   expect(drafts.saves.map(({ save_id: _, ...save }) => save)).toEqual([{ expected_draft_version: 0, lines: [{ order_line_id: lineA, unit_price: '13.00' }] },
     { expected_draft_version: 1, terms: 'RETIRO EN SUCURSAL' }]);

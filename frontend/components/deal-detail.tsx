@@ -43,14 +43,14 @@ const rejectReasons: [string, string][] = [['price_too_high', 'El precio es muy 
   ['found_elsewhere', 'Lo conseguí con otro proveedor'], ['delay', 'La respuesta tarda demasiado'], ['other', 'Otro motivo']];
 const openOrder = ['pending', 'reviewed', 'quoted', 'adjustment'];
 
-// embedded: the side panel of the conversations panel, next to its chat. There it shows no chat of its own (the assistant's
-// questions go to the panel's), never opens the order for review by itself, and puts the decisions above the section.
-export type DealTab = 'order' | 'quote' | 'chat' | 'history';
+// embedded: the document opened from the conversations panel's Cotizaciones, next to its chat. There it shows no chat of its own (the
+// assistant's questions go to the panel's), never opens the order for review by itself, and puts the decisions above its sections.
+// Cotización is the order's document: what the client asked for and, once quoted, the quotation on the same lines (DealDocument).
+type DealTab = 'quote' | 'chat' | 'history';
 
-// tab/onTab: the conversations panel shows the sections from its own header, so it holds the tab and the deal hides its tab bar.
-export default function DealDetail({ account, orderId, reference, side, onClose, onChanged, embedded = false, onCopyToChat, onPricing, tab: shownTab, onTab }: {
+export default function DealDetail({ account, orderId, reference, side, onClose, onChanged, embedded = false, onCopyToChat, onPricing }: {
   account: Account; orderId: string; reference?: string; side: 'client' | 'supplier'; onClose?: () => void; onChanged?: () => void;
-  embedded?: boolean; onCopyToChat?: (text: string) => void; onPricing?: (pricing: boolean) => void; tab?: DealTab; onTab?: (tab: DealTab) => void;
+  embedded?: boolean; onCopyToChat?: (text: string) => void; onPricing?: (pricing: boolean) => void;
 }) {
   const supplier = side === 'supplier';
   const base = `/api/market/accounts/${account.id}`;
@@ -60,12 +60,10 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
-  const [ownTab, setOwnTab] = useState<DealTab>('order');
-  const tab = shownTab ?? ownTab;
-  const onTabRef = useRef(onTab); onTabRef.current = onTab;
-  const setTab = useCallback((value: DealTab) => { if (onTabRef.current) onTabRef.current(value); else setOwnTab(value); }, []);
-  const [quoteVisited, setQuoteVisited] = useState(false);
-  useEffect(() => { if (tab === 'quote') setQuoteVisited(true); }, [tab]);  // also when the panel's header picks it
+  const [tab, setTab] = useState<DealTab>('quote');
+  // The supplier prices the order in the editor, opened on purpose (Preparar cotización, Fijar precios, Editar cotización): until then the
+  // document shows what was asked for, with the stock to confirm.
+  const [editing, setEditing] = useState(false);
   const [adjusting, setAdjusting] = useState(false);
   const [reason, setReason] = useState('');
   const [confirming, setConfirming] = useState(false);
@@ -121,9 +119,6 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
     const off = onDealNudge(orderId, ['event'], () => { if (!inFlight.current) void load(); });
     return () => { mounted.current = false; clearInterval(timer); off(); };
   }, [load, orderId, embedded]);
-  // In the panel the document is the quotation once there is one.
-  const opened = useRef(false);
-  useEffect(() => { if (embedded && deal && !opened.current) { opened.current = true; if (deal.quotation) setTab('quote'); } }, [embedded, deal, setTab]);
   const editable = supplier && !!deal && (['reviewed', 'adjustment'].includes(deal.status) || (deal.status === 'quoted' && revising));
   const draftKey = deal ? `${deal.id}:${deal.quotation?.id || 'new'}` : '';
   useEffect(() => {
@@ -154,7 +149,7 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
       const result = await request<Deal>(actionPath, { method: 'POST', body: JSON.stringify({ ...payload, operation_id: retry.current.id }) });
       if (!mounted.current) return true;
       retry.current = null; acceptDetail(result); setAdjusting(false); setReason(''); setConfirming(false); setSuggestAdjust(false);
-      setRejecting(false); setRejectCode(''); setRejectNote(''); setRevising(false);
+      setRejecting(false); setRejectCode(''); setRejectNote(''); setRevising(false); setEditing(false);
       setTab('quote');
       setNotice(actionNotices[action] || 'Cotización confirmada por el proveedor y enviada al cliente.');
       onChangedRef.current?.();
@@ -176,7 +171,8 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   const publishBlocked = supplier && loaded?.permissions.can_publish === false;
   // An account ordering from itself has no pair profile (the server refuses self-profiles).
   const pairProfile = supplier && deal?.client.id !== account.id ? loaded?.pricing.profile : undefined;
-  const editorMounted = editable && (tab === 'quote' || quoteVisited);
+  const editorMounted = editable && editing;
+  useEffect(() => { if (deal && !editable) setEditing(false); }, [deal, editable]);  // published, or changed elsewhere: the next one starts from the document
   // The panel widens the document while the price editor is on screen.
   const pricing = embedded && editorMounted && tab === 'quote';
   useEffect(() => { onPricing?.(pricing); }, [pricing, onPricing]);
@@ -191,8 +187,9 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   const activeStep = !deal ? 0 : deal.status === 'pending' ? 0 : deal.status === 'reviewed' ? 1 : deal.status === 'delivered' ? 4
     : ['handshaked', 'cancelled'].includes(deal.status) ? 3 : 2;
   const pendingShortfall = deal?.shortfalls?.find(item => item.status === 'pending');
+  const startPricing = () => { setEditing(true); setTab('quote'); };
   const reviseButton = <button type="button" className="button primary small" disabled={busy} onClick={() => {
-    setRevising(true); setQuoteVisited(true); setTab('quote');
+    setRevising(true); startPricing();
     // The editor opens under the sent version: bring it up (its loading placeholder first, while the draft loads).
     setTimeout(() => quoteTab.current?.querySelector('.deal-quote-editor, .quotation-grid-loading')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 120);
   }}><Pencil size={15}/>Editar cotización</button>;
@@ -216,9 +213,9 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
           return when ? <strong> {date(when)}</strong> : null;
         })()}</p></div>
         {embedded && <div className="deal-quick-actions" role="group" aria-label="Decisiones">
-          {supplier && canDecide && ['pending', 'reviewed', 'adjustment'].includes(deal.status) && !pricing && <button type="button" className="button primary small" disabled={busy}
-            onClick={async () => { if (deal.status === 'pending') await load(true); setQuoteVisited(true); setTab('quote'); }}><Pencil size={15}/>Fijar precios</button>}
-          {supplier && canDecide && deal.status === 'quoted' && !pricing && reviseButton}
+          {supplier && canDecide && ['pending', 'reviewed', 'adjustment'].includes(deal.status) && !editorMounted && <button type="button" className="button primary small" disabled={busy}
+            onClick={async () => { if (deal.status === 'pending') await load(true); startPricing(); }}><Pencil size={15}/>Fijar precios</button>}
+          {supplier && canDecide && deal.status === 'quoted' && !editorMounted && reviseButton}
           {!supplier && deal.status === 'quoted' && deal.quotation && <>
             <button type="button" className="button primary small" disabled={busy} onClick={() => { setTab('quote'); setConfirming(true); setAdjusting(false); setRejecting(false); }}><Handshake size={15}/>Confirmar</button>
             <button type="button" className="button soft small" disabled={busy} onClick={() => { setTab('quote'); setAdjusting(value => !value); setConfirming(false); setRejecting(false); }}>Solicitar ajuste</button>
@@ -232,27 +229,18 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
           <div><button type="submit" className="button primary danger small" disabled={busy || !rejectCode}>{busy ? <LoaderCircle size={15} className="spin"/> : <X size={15}/>}Rechazar orden</button><button type="button" className="button soft small" disabled={busy} onClick={() => setRejecting(false)}>Volver</button></div>
         </form>}
         {pendingShortfall && <div className="notice deal-shortfall-alert" role="status"><span>{supplier ? 'Reportaste un faltante: el cliente debe aceptar el acuerdo reducido o cancelarlo.' : 'El proveedor reportó un faltante. Revisa el acuerdo reducido y decide.'}</span>
-          <button type="button" className="button soft small" onClick={() => { setTab('quote'); setQuoteVisited(true); }}>Ver faltante</button></div>}
-        {!onTab && <nav className="deal-tabs" aria-label="Secciones del acuerdo">{([
-          ['order', 'Artículos', FileText], ['quote', 'Cotización', Handshake], ['chat', 'Conversación', MessageSquare], ['history', 'Actividad', History],
-        ] as const).filter(([value]) => !(embedded && value === 'chat')).map(([value, label, Icon]) => <button type="button" key={value} className={tab === value ? 'selected' : ''} aria-pressed={tab === value} title={value === 'quote' && hasDraft ? 'Hay un borrador de cotización guardado' : undefined} onClick={() => { setTab(value); if (value === 'quote') setQuoteVisited(true); }}><Icon size={15}/>{label}{value === 'quote' && hasDraft && <span className="deal-tab-dot" aria-hidden="true"/>}</button>)}</nav>}
+          <button type="button" className="button soft small" onClick={() => setTab('quote')}>Ver faltante</button></div>}
+        <nav className="deal-tabs" aria-label="Secciones del acuerdo">{([
+          ['quote', 'Cotización', Handshake], ['chat', 'Conversación', MessageSquare], ['history', 'Actividad', History],
+        ] as const).filter(([value]) => !(embedded && value === 'chat')).map(([value, label, Icon]) => <button type="button" key={value} className={tab === value ? 'selected' : ''} aria-pressed={tab === value} title={value === 'quote' && hasDraft ? 'Hay un borrador de cotización guardado' : undefined} onClick={() => setTab(value)}><Icon size={15}/>{label}{value === 'quote' && hasDraft && <span className="deal-tab-dot" aria-hidden="true"/>}</button>)}</nav>
         {notice && <div className="notice success" role="status">{notice}</div>}
-        {tab === 'order' && <>
-          <div className="supplier-request-detail-counts"><span>{deal.line_count} artículos</span><strong>{deal.unit_count.toLocaleString('es-PA')} unidades solicitadas</strong></div>
-          {deal.notes && <section className="supplier-request-notes"><h4>Notas del cliente</h4><p>{deal.notes}</p></section>}
-          {supplier && <div className="supplier-request-stock-heading"><div><h4>Existencias de tu inventario</h4><p>Disponibles = reportadas menos reservadas. Confirma las unidades que puedes suministrar.</p></div><button type="button" className="button soft small" disabled={busy} onClick={() => void load()}><RefreshCw size={15}/>Actualizar existencias</button></div>}
-          {stockWarnings > 0 && <div className="notice supplier-request-stock-warning" role="status">{stockWarnings} {stockWarnings === 1 ? 'artículo requiere' : 'artículos requieren'} confirmar disponibilidad. La orden conserva todas las unidades pedidas.</div>}
-          <DealLinesGrid lines={deal.lines} supplier={supplier} price={priced ? suggestedPrice : undefined}/>
-          {supplier && ['reviewed', 'adjustment'].includes(deal.status) && <button type="button" className="button primary" onClick={() => { setQuoteVisited(true); setTab('quote'); }}>Preparar cotización<FileText size={16}/></button>}
-          {deal.quotation && <button type="button" className="button soft" onClick={() => setTab('quote')}>Ver cotización · v{deal.quotation.revision}<FileText size={16}/></button>}
-          {!embedded && !supplier && ['pending', 'reviewed', 'adjustment'].includes(deal.status) && rejectButton}
-        </>}
         <div ref={quoteTab} className="deal-quote-tab" hidden={tab !== 'quote'}>
-          {deal.quotation && <QuoteView quote={deal.quotation}/>}
+          {deal.notes && <section className="supplier-request-notes"><h4>Notas del cliente</h4><p>{deal.notes}</p></section>}
+          <DealDocument deal={deal} supplier={supplier} folded={editorMounted} price={priced ? suggestedPrice : undefined} busy={busy} stockWarnings={stockWarnings} onRefresh={() => void load()}/>
+          {!embedded && supplier && ['reviewed', 'adjustment'].includes(deal.status) && !editorMounted && <button type="button" className="button primary" onClick={startPricing}>Preparar cotización<FileText size={16}/></button>}
           {supplier && deal.quotation && <QuoteTrace key={deal.quotation.id} path={`${base}/requests/${orderId}/quotations/${deal.quotation.id}/trace`} currency={deal.quotation.currency}/>}
           {!embedded && supplier && canDecide && deal.status === 'quoted' && !revising && reviseButton}
-          {!deal.quotation && !supplier && <div className="notice">El proveedor preparará tu cotización. Te aparecerán aquí las cantidades, precios y condiciones.</div>}
-          {editable && (tab === 'quote' || quoteVisited) && (draftLoad?.key === draftKey
+          {editorMounted && (draftLoad?.key === draftKey
             ? <QuoteEditor key={`${draftKey}:${draftLoad.draft ? draftLoad.draft.persisted ? 'saved' : 'virtual' : 'fallback'}`} deal={deal} draft={draftLoad.draft} draftPath={draftPath}
                 disabled={busy} onSend={values => act('quote', values)} onRetryDraft={retryDraft} pricingRevision={pricingRevision} simulatorHref={supplierPricingHref(account.id, 'simulator')}
                 onCopyToChat={text => { if (embedded) { onCopyToChat?.(text); return; } setChatInsert({ text, id: Date.now() }); setTab('chat'); }}
@@ -261,6 +249,7 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
           {supplier && deal.status === 'adjustment' && deal.quotation && <button type="button" className="button soft" disabled={busy || publishBlocked} onClick={() => void act('return_quote', { quotation_id: deal.quotation!.id })}>Devolver la misma cotización para confirmar<Send size={15}/></button>}
           {supplier && deal.status === 'adjustment' && deal.quotation && publishBlocked && <small className="deal-draft-warning">Solo un miembro con permiso para enviar cotizaciones puede devolverla.</small>}
           {supplier && deal.status === 'adjustment' && deal.quotation && hasDraft && <small className="deal-draft-warning">Si devuelves la misma cotización, se descartará el borrador en curso.</small>}
+          {!embedded && !supplier && ['pending', 'reviewed', 'adjustment'].includes(deal.status) && <div className="deal-client-decisions">{rejectButton}</div>}
           {!supplier && deal.status === 'quoted' && deal.quotation && <div className="deal-client-decisions">
             {confirming ? <div className="notice deal-confirmation"><strong>¿Confirmar este acuerdo por {money(deal.quotation.total, deal.quotation.currency)}?</strong><p>Aceptas las cantidades y condiciones de la cotización v{deal.quotation.revision}. El proveedor ya las confirmó.</p><div><button type="button" className="button primary" disabled={busy} onClick={() => void act('accept', { quotation_id: deal.quotation!.id })}>{busy ? <LoaderCircle size={15} className="spin"/> : <Handshake size={15}/>}Sí, confirmar acuerdo</button><button type="button" className="button soft" disabled={busy} onClick={() => setConfirming(false)}>Volver</button></div></div> : !embedded && <button type="button" className={`button ${suggestAdjust ? 'soft' : 'primary'}`} disabled={busy} onClick={() => { setConfirming(true); setAdjusting(false); setRejecting(false); }}>Confirmar cotización<Handshake size={16}/></button>}
             {!confirming && !embedded && <button type="button" className={`button ${suggestAdjust ? 'primary' : 'soft'}`} disabled={busy} aria-describedby={suggestAdjust ? 'deal-adjust-hint' : undefined} onClick={() => { setAdjusting(value => !value); setRejecting(false); }}>Solicitar ajuste</button>}
@@ -294,6 +283,30 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
       <p className="form-footnote">Este perfil también está en <a href={supplierPricingHref(account.id, 'clients', deal.client.id)}>Precios › Clientes</a>.</p>
     </Modal>}
   </section> : <Modal title={`Orden ${reference}`} wide className="deal-modal supplier-request-modal" onClose={() => { if (!inFlight.current) onClose?.(); }}>{content}</Modal>;
+}
+
+// The order's document (the Cotización tab): what the client asked for and, once quoted, the current quotation on the same lines, with its
+// total and terms; for the supplier, the stock to confirm. While the supplier prices it in the editor it folds under its heading.
+function DealDocument({ deal, supplier, folded, price, busy, stockWarnings, onRefresh }: { deal: Deal; supplier: boolean; folded: boolean;
+  price?: (line: Deal['lines'][number]) => React.ReactNode; busy: boolean; stockWarnings: number; onRefresh: () => void }) {
+  const quote = deal.quotation;
+  const open = openOrder.includes(deal.status);
+  const counts = `${deal.line_count} ${deal.line_count === 1 ? 'artículo' : 'artículos'} · ${deal.unit_count.toLocaleString('es-PA')} ${deal.unit_count === 1 ? 'unidad solicitada' : 'unidades solicitadas'}`;
+  const heading = <div className="deal-quote-heading"><div><h3>{quote ? `Cotización v${quote.revision}` : 'Artículos solicitados'}</h3>
+    <small>{counts} · {quote ? `Confirmada por el proveedor · ${date(quote.supplier_confirmed_at)}` : supplier ? 'Por cotizar' : 'Sin cotizar'}</small></div>
+    {quote && <strong>{money(quote.total, quote.currency)}</strong>}</div>;
+  const body = <>
+    {supplier && open && <div className="deal-document-stock">
+      <div className="supplier-request-stock-heading"><div><h4>Existencias de tu inventario</h4><p>Disponibles = reportadas menos reservadas. Confirma las unidades que puedes suministrar.</p></div><button type="button" className="button soft small" disabled={busy} onClick={onRefresh}><RefreshCw size={15}/>Actualizar existencias</button></div>
+      {stockWarnings > 0 && <div className="notice supplier-request-stock-warning" role="status">{stockWarnings} {stockWarnings === 1 ? 'artículo requiere' : 'artículos requieren'} confirmar disponibilidad. La orden conserva todas las unidades pedidas.</div>}
+    </div>}
+    <DealLinesGrid lines={deal.lines} supplier={supplier} price={price} quote={quote}/>
+    {!quote && !supplier && <p className="deal-document-hint">El proveedor preparará tu cotización: aquí verás lo que ofrece de cada artículo, sus precios y condiciones.</p>}
+    {quote?.terms && <div className="deal-terms"><h4>Condiciones</h4><p>{quote.terms}</p></div>}
+  </>;
+  return <section className="deal-quote deal-document" aria-label={quote ? `Cotización vigente v${quote.revision}` : 'Artículos solicitados'}>
+    {folded ? <details className="deal-document-fold"><summary title="Ver el documento">{heading}</summary>{body}</details> : <>{heading}{body}</>}
+  </section>;
 }
 
 export function QuoteView({ quote, historical = false }: { quote: Quotation; historical?: boolean }) {

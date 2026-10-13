@@ -1213,6 +1213,20 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .deal-terms { padding: 16px 18px; }
 .deal-terms h4 { margin: 0 0 8px; font-size: 13px; }
 .deal-terms p, .deal-events p, .deal-chat-messages p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; line-height: 1.6; }
+/* The order's document (deal-detail.tsx DealDocument): the items asked for and, once quoted, the quotation on the same lines; folded under
+   its heading while the supplier prices it in the editor. */
+.deal-document .deal-lines { border-bottom:1px solid var(--line); }
+.deal-document .deal-lines-tools { padding:12px 18px 0; }
+.deal-document-stock { display:grid; gap:10px; padding:14px 18px 2px; }
+.deal-document-stock .notice { margin:0; }
+.deal-document>.deal-lines-grid,.deal-document-fold>.deal-lines-grid { gap:10px; }
+.deal-document-hint { padding:12px 18px 16px; color:var(--muted); font-size:13px; line-height:1.55; }
+.deal-document-fold>summary { list-style:none; cursor:pointer; }
+.deal-document-fold>summary::-webkit-details-marker { display:none; }
+.deal-document-fold>summary h3::after { content:'Ver documento'; margin-left:10px; padding:2px 8px; border-radius:999px; background:#fff; color:#5d6a61; font-family:'DM Sans',Arial,sans-serif; font-size:11px; font-weight:600; vertical-align:middle; }
+.deal-document-fold[open]>summary h3::after { content:'Ocultar'; }
+.deal-line-short { color:#a1442f; font-weight:600; }
+.admin-grid-muted { color:var(--muted); }
 .deal-quote-editor { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; padding: 18px; background: #f6f7f3; border: 1px solid var(--line); border-radius: 14px; }
 .deal-quote-editor h3 { margin: 0; font-size: 17px; }
 .deal-quote-editor > p, .deal-chat > p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }

@@ -317,7 +317,7 @@ test('the order header shows the pair profile; configuring the client makes the 
   await page.goto(`/proveedor/${supplierId}/ordenes/${orderId}`);
   const chip = content.getByLabel('Perfil comercial del cliente');
   await expect(chip).toContainText('Sin perfil comercial · se usa la lista GENERAL');
-  await content.getByRole('button', { name: 'Cotización', exact: true }).click();
+  await content.getByRole('button', { name: 'Preparar cotización', exact: true }).click();
   await expect(quote(lineA, 'unit_price')).toContainText('15.00');
   // A saved draft keeps its engine prices: the profile change below only marks them stale.
   await content.getByLabel('Condiciones de entrega y cotización').fill('retiro en sucursal');

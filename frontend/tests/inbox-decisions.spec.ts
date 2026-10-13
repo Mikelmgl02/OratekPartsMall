@@ -147,7 +147,7 @@ test('a long order lists its items in a grid: searched, and narrowed to the ones
 test('a short grid’s column menu opens over the panel instead of being clipped by the grid', async ({ page }) => {
   const { document } = await panel(page, 'client', 'quoted', true);
   const grid = document.getByRole('region', { name: 'Líneas de la cotización v1', exact: true });
-  await grid.getByRole('columnheader', { name: 'Artículo' }).hover();
+  await grid.getByRole('columnheader', { name: 'Código / descripción' }).hover();
   await grid.locator('.ag-header-cell[col-id="item"] .ag-header-cell-menu-button').click();
   const menu = page.locator('.ag-menu');
   await expect(menu.getByText('Ordenar Ascendente')).toBeVisible();
@@ -160,7 +160,7 @@ test('a short grid’s column menu opens over the panel instead of being clipped
   await expect(menu).toHaveCount(0);
   await expect(grid).toBeVisible();
   const headers = await grid.getByRole('columnheader').count();
-  await grid.getByRole('columnheader', { name: 'Artículo' }).dragTo(page.locator('body'), { targetPosition: { x: 20, y: 20 } });  // dragged out of the grid
+  await grid.getByRole('columnheader', { name: 'Código / descripción' }).dragTo(page.locator('body'), { targetPosition: { x: 20, y: 20 } });  // dragged out of the grid
   await expect(grid.getByRole('columnheader')).toHaveCount(headers);
 });
 

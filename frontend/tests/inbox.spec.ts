@@ -272,9 +272,13 @@ test('like a desktop chat app: the Cotizaciones table on the right opens each do
   await row.getByRole('cell').nth(1).click();  // the whole row opens its document in the table's place
   await expect(panel.getByRole('region', { name: 'Cotización vigente v2', exact: true })).toBeVisible();  // on its quotation
   await expect(table).toBeHidden();
+  // One document: each item asked for with what the quotation offers of it; in the narrow column, the amount with "2 × USD 86.50" under it.
+  const lines = panel.getByRole('region', { name: 'Líneas de la cotización v2', exact: true });
+  await expect(lines.getByRole('columnheader')).toHaveText(['Código / descripción', 'Solicitadas', 'Importe']);
+  await expect(lines.getByRole('row').filter({ hasText: '58411-1R000-G' })).toContainText('2 × USD 86.50');
   const tabs = panel.getByRole('navigation', { name: 'Secciones del acuerdo', exact: true });
-  await tabs.getByRole('button', { name: 'Artículos', exact: true }).click();
-  await expect(panel.getByRole('region', { name: 'Artículos de la orden', exact: true })).toBeVisible();
+  await expect(tabs.getByRole('button')).toHaveText(['Cotización', 'Actividad']);
+  await tabs.getByRole('button', { name: 'Actividad', exact: true }).click();
   await expect(panel.getByRole('region', { name: 'Cotización vigente v2', exact: true })).toBeHidden();
   await panel.getByRole('button', { name: 'Volver a las cotizaciones', exact: true }).click();
   await expect(table).toBeVisible();

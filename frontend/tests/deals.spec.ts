@@ -121,6 +121,8 @@ async function asClient(page: Page) {
   await page.getByRole('button', {name:'Ver enviada ORD-PRUEBA-001', exact:true}).click();
 }
 async function quoteTab(page: Page) { await dialog(page).getByRole('button', {name:'Cotización', exact:true}).click(); }
+// The supplier prices the order in the editor, opened from its document.
+async function priceTab(page: Page) { await quoteTab(page); await dialog(page).getByRole('button', {name:'Preparar cotización', exact:true}).click(); }
 const quoteCell = (page: Page, column: string, id = lineId) => dialog(page).locator(`.quotation-grid[aria-label="Artículos de la cotización"] .ag-row[row-id="${id}"] .ag-cell[col-id="${column}"]`);
 async function editQuote(page: Page, column: 'unit_price' | 'quantity', value: string, codigo = '58411-1R000-G', id = lineId) {
   await quoteCell(page, column, id).click();
@@ -150,7 +152,7 @@ for (const mobile of [false, true]) test(`${mobile ? 'mobile' : 'desktop'}: priv
   await quoteTab(page);
   await expect(quoteCell(page, 'unit_price')).toContainText('12.50');
   expect(await dialog(page).evaluate(element => element.scrollWidth > element.clientWidth)).toBe(false);
-  await expect(dialog(page).locator('.ag-watermark')).not.toBeVisible();
+  await expect(dialog(page).locator('.ag-watermark:visible')).toHaveCount(0);
   expect(state.gridWarnings).toEqual([]);
   await page.getByTestId('page-viewport').evaluate(element => { element.scrollTop = 0; });
   await page.screenshot({path:`../output/ui/order-page-${mobile ? 'mobile' : 'desktop'}.png`});
@@ -172,7 +174,7 @@ for (const mobile of [false, true]) test(`${mobile ? 'mobile' : 'desktop'}: priv
   await openSupplierNavigation(page);
   await page.getByRole('tab', {name:'Solicitudes', exact:true}).click();
   await page.getByRole('link', {name:'Ver solicitud ORD-PRUEBA-001', exact:true}).click();
-  await quoteTab(page);
+  await priceTab(page);
   await editQuote(page, 'quantity', '3');
   await dialog(page).getByRole('button', {name:'Confirmar y enviar cotización', exact:true}).click();
   await expect(dialog(page).getByRole('region', {name:'Cotización vigente v2', exact:true})).toContainText('37.50');
@@ -205,7 +207,7 @@ for (const mobile of [false, true]) test(`${mobile ? 'mobile' : 'desktop'}: priv
 
 test('supplier can return an unchanged quotation after adjustment and the client must decide again', async ({page}) => {
   const state = await fixture(page);
-  await page.goto('/'); await asSupplier(page); await quoteTab(page);
+  await page.goto('/'); await asSupplier(page); await priceTab(page);
   await editQuote(page, 'unit_price', '10.00');
   await dialog(page).getByRole('button', {name:'Confirmar y enviar cotización', exact:true}).click();
   await asClient(page); await quoteTab(page);
@@ -231,7 +233,7 @@ test('supplier can return an unchanged quotation after adjustment and the client
 
 test('quotation grid blocks incomplete or invalid prices and commits the active cell before sending', async ({page}) => {
   const state = await fixture(page);
-  await page.goto('/'); await asSupplier(page); await quoteTab(page);
+  await page.goto('/'); await asSupplier(page); await priceTab(page);
   await dialog(page).getByRole('button', {name:'Confirmar y enviar cotización', exact:true}).click();
   await expect(dialog(page).getByRole('alert')).toContainText('Revisa el precio');
   await editQuote(page, 'unit_price', '-2.50');
@@ -260,7 +262,7 @@ test('supplier pastes an Excel range into the grid while identities and requeste
   const secondId = '44444444-4444-4444-8444-444444444445';
   const first = state.getOrder().lines[0];
   state.setLines([first, {...first, id:secondId, codigo:'00700-NP', quantity:1}]);
-  await page.goto('/'); await asSupplier(page); await quoteTab(page);
+  await page.goto('/'); await asSupplier(page); await priceTab(page);
   await page.evaluate(() => navigator.clipboard.writeText('2\t1,25\n0\t'));
   await quoteCell(page, 'quantity').click();
   const quantityEditor = dialog(page).getByLabel('Unidades ofrecidas de 58411-1R000-G', {exact:true});
@@ -281,7 +283,7 @@ test('supplier pastes an Excel range into the grid while identities and requeste
 
 test('a client accept refused for availability keeps the deal open, explains it without quantities and points to Solicitar ajuste', async ({page}) => {
   const state = await fixture(page);
-  await page.goto('/'); await asSupplier(page); await quoteTab(page);
+  await page.goto('/'); await asSupplier(page); await priceTab(page);
   await editQuote(page, 'unit_price', '10.00');
   await dialog(page).getByRole('button', {name:'Confirmar y enviar cotización', exact:true}).click();
   await expect(dialog(page).getByRole('region', {name:'Cotización vigente v1', exact:true})).toBeVisible();
@@ -318,7 +320,7 @@ test('a client accept refused for availability keeps the deal open, explains it 
 
 test('an accept refused because the deal moved on does not keep pointing the client to Solicitar ajuste', async ({page}) => {
   const state = await fixture(page);
-  await page.goto('/'); await asSupplier(page); await quoteTab(page);
+  await page.goto('/'); await asSupplier(page); await priceTab(page);
   await editQuote(page, 'unit_price', '10.00');
   await dialog(page).getByRole('button', {name:'Confirmar y enviar cotización', exact:true}).click();
   await expect(dialog(page).getByRole('region', {name:'Cotización vigente v1', exact:true})).toBeVisible();
