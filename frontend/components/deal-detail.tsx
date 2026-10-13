@@ -7,6 +7,7 @@ import { percent } from './price-explanation';
 import DealStatusBadge from './deal-status';
 import DealAfterHandshake, { type AfterMode, stepIcons, stepLabels, supplierSteps } from './deal-after-handshake';
 import ReorderMissing from './reorder-missing';
+import DealItemsTable from './deal-items-table';
 import { UppercaseTextarea } from './uppercase-field';
 import { Account, ApiError, request } from '@/lib/types';
 import type { SupplierRequestLine } from '@/lib/request-types';
@@ -124,7 +125,8 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
     latestVersion.current = value.version;
     if (typeof value.can_decide === 'boolean') setCanDecide(value.can_decide);
     setDeal(value);
-    if (changed) { setConfirming(false); setSuggestAdjust(false); setAfterMode(''); onChangedRef.current?.(); }
+    // Changed by the other party (or elsewhere): what this view said about its own last action no longer holds.
+    if (changed) { setConfirming(false); setSuggestAdjust(false); setAfterMode(''); setNotice(''); onChangedRef.current?.(); }
   }, []);
   const load = useCallback(async (open = false) => {
     try {
@@ -343,7 +345,7 @@ function DealDocument({ deal, accountId, supplier, folded, price, busy, stockWar
   const quote = deal.quotation;
   const short = supplier ? 0 : missingOf(deal);
   const [reordering, setReordering] = useState(false);
-  // Ampliar: the items, the document's main part, in a dialog as large as the screen, with every column.
+  // Ampliar: the items in the full grid (every column, search and filters), in a dialog as large as the screen.
   const [expanded, setExpanded] = useState(false);
   const open = openOrder.includes(deal.status);
   const counts = `${deal.line_count} ${deal.line_count === 1 ? 'artículo' : 'artículos'} · ${deal.unit_count.toLocaleString('es-PA')} ${deal.unit_count === 1 ? 'unidad solicitada' : 'unidades solicitadas'}`;
@@ -366,7 +368,7 @@ function DealDocument({ deal, accountId, supplier, folded, price, busy, stockWar
       <div className="supplier-request-stock-heading"><div><h4>Existencias de tu inventario</h4><p>Disponibles = reportadas menos reservadas. Confirma las unidades que puedes suministrar.</p></div><button type="button" className="button soft small" disabled={busy} onClick={onRefresh}><RefreshCw size={15}/>Actualizar existencias</button></div>
       {stockWarnings > 0 && <div className="notice supplier-request-stock-warning" role="status">{stockWarnings} {stockWarnings === 1 ? 'artículo requiere' : 'artículos requieren'} confirmar disponibilidad. La orden conserva todas las unidades pedidas.</div>}
     </div>}
-    <DealLinesGrid lines={deal.lines} supplier={supplier} price={price} quote={quote}/>
+    <DealItemsTable lines={deal.lines} quote={quote} showStock={supplier && open} price={price}/>
     {!quote && !supplier && <p className="deal-document-hint">El proveedor preparará tu cotización: aquí verás lo que ofrece de cada artículo, sus precios y condiciones.</p>}
     {short > 0 && <div className="deal-missing" role="group" aria-label="Lo que falta"><p><TriangleAlert size={15}/>{deal.status === 'cancelled'
       ? `La orden se canceló sin sus ${short} ${short === 1 ? 'unidad' : 'unidades'}.` : deal.handshaked_at

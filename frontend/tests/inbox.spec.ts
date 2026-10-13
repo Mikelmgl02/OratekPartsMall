@@ -277,10 +277,11 @@ test('like a desktop chat app: the Cotizaciones table on the right opens each do
   await expect(table).toBeHidden();
   // One document: each item asked for with what the quotation offers of it. The column widens for it, so its prices fit without scrolling.
   await expect.poll(async () => Math.round((await side.boundingBox())!.width)).toBeGreaterThan(540);
-  const lines = panel.getByRole('region', { name: 'Líneas de la cotización v2', exact: true });
-  await expect(lines.getByRole('columnheader')).toHaveText(['Código / descripción', 'Solicitadas', 'Ofrecidas', 'Precio', 'Importe']);
+  const lines = panel.getByRole('table', { name: 'Líneas de la cotización v2', exact: true });
+  await expect(lines.getByRole('columnheader')).toHaveText(['Artículo', 'Pedidas', 'Ofrecidas', 'Precio', 'Importe']);
   await expect(lines.getByRole('row').filter({ hasText: '58411-1R000-G' })).toContainText('USD 86.50');
-  expect(await lines.locator('.ag-center-cols-viewport').evaluate(element => element.scrollWidth > element.clientWidth)).toBe(false);
+  await expect(lines.getByRole('row').last()).toContainText('TotalUSD 612.40');
+  expect(await panel.locator('.deal-items-frame').evaluate(element => element.scrollWidth > element.clientWidth)).toBe(false);
   await panel.getByRole('button', { name: 'Ampliar la tabla', exact: true }).click();  // every column, as large as the screen
   const large = page.getByRole('dialog', { name: 'ORD-0123 · Cotización v2', exact: true });
   await expect(large.getByRole('columnheader')).toHaveText(['Código / descripción', 'Solicitadas', 'Ofrecidas', 'Precio unitario', 'Importe', 'SKU interno']);

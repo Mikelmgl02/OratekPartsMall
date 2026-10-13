@@ -157,7 +157,7 @@ test('drafts arrive priced from the list, explain each price and apply suggestio
   const quote = (line: string, column: string) => content.locator(`.quotation-grid[aria-label="Artículos de la cotización"] .ag-row[row-id="${line}"] .ag-cell[col-id="${column}"]`);
   await page.goto(`/proveedor/${supplierId}/ordenes/${orderId}`);
   // The order's document shows the private suggested price with its origin.
-  const lines = content.locator('.supplier-request-lines');
+  const lines = content.getByRole('table', { name: 'Artículos de la orden', exact: true });
   await expect(lines.getByRole('columnheader', { name: 'Precio sugerido' })).toBeVisible();
   await expect(lines.getByRole('row').nth(1)).toContainText('Lista GENERAL');
   await expect(lines.getByRole('row').nth(2)).toContainText('Sin precio en tu lista');

@@ -54,7 +54,12 @@ async function panel(page: Page, side: 'client' | 'supplier', status: Deal['stat
   await conversations.getByRole('table', { name: `Cotizaciones con ${counterpart.name}`, exact: true }).getByRole('button', { name: 'Abrir ORD-0123', exact: true }).click();
   const document = conversations.getByRole('region', { name: 'Documento de la orden', exact: true });
   await expect(document).toBeVisible();
-  return { document, conversations, actions, reviews, drafts };
+  // A change made elsewhere (the other party, a teammate), announced as the inbox's websocket does.
+  const change = async (patch: Partial<Deal>) => {
+    deal = { ...deal, ...patch, version: deal.version + 1 } as Deal;
+    await page.evaluate(id => window.dispatchEvent(new CustomEvent('motionpartes:deal', { detail: { orderId: id, threadId: null, kind: 'event' } })), orderId);
+  };
+  return { document, conversations, actions, reviews, drafts, change };
 }
 
 test('a client confirms or asks to adjust a quotation from the panel, next to the chat', async ({ page }) => {
@@ -170,18 +175,24 @@ test('a supplier edits a sent quotation on the go, until the client confirms it'
   await expect(document.getByRole('region', { name: 'Cotización vigente v1', exact: true })).toContainText('USD 61.75');  // still what the client sees
 });
 
-test('a long order lists its items in a grid: searched, and narrowed to the ones whose stock needs confirming', async ({ page }) => {
+test('a long order: the document lists its items in a plain table, and Ampliar searches them and narrows to the ones to review', async ({ page }) => {
   const many = Array.from({ length: 12 }, (_, index) => ({ ...line, id: `44444444-4444-4444-8444-${String(index).padStart(12, '0')}`, codigo: `COD-${index}`, sku: `SKU-${index}`,
     description: index === 5 ? 'BOMBA DE AGUA' : 'TAMBOR', stock: index === 7 ? null : { ...line.stock!, shortfall: index === 3 ? 2 : 0 } }));
   const { document } = await panel(page, 'supplier', 'pending', false, many);
-  const grid = document.getByRole('region', { name: 'Artículos de la orden', exact: true });
-  await expect(grid.getByRole('row')).toHaveCount(13);  // the heading and every item
+  const items = document.getByRole('table', { name: 'Artículos de la orden', exact: true });
+  await expect(items.getByRole('row')).toHaveCount(13);  // the heading and every item, without scrolling inside
+  await expect(items.getByRole('columnheader')).toHaveText(['Artículo', 'Pedidas', 'Disponibles']);
+  await expect(items.getByRole('row').filter({ hasText: 'COD-3' })).toContainText('faltan 2');
+  await expect(items.getByRole('row').filter({ hasText: 'COD-7' })).toContainText('Revisar artículo');
+  await document.getByRole('button', { name: 'Ampliar la tabla', exact: true }).click();
+  const large = page.getByRole('dialog', { name: 'ORD-0123 · Artículos solicitados', exact: true });
+  const grid = large.getByRole('region', { name: 'Artículos de la orden', exact: true });
   await expect(grid.getByRole('columnheader')).toHaveText(['Código / descripción', 'Solicitadas', 'Disponibles', 'SKU interno', 'Tu ID de inventario']);
-  await document.getByLabel('Buscar en los artículos', { exact: true }).fill('bomba');
+  await large.getByLabel('Buscar en los artículos', { exact: true }).fill('bomba');
   await expect(grid.getByRole('row')).toHaveCount(2);
   await expect(grid).toContainText('COD-5');
-  await document.getByLabel('Buscar en los artículos', { exact: true }).fill('');
-  await document.getByRole('group', { name: 'Mostrar artículos', exact: true }).getByRole('button', { name: 'Por revisar (2)', exact: true }).click();
+  await large.getByLabel('Buscar en los artículos', { exact: true }).fill('');
+  await large.getByRole('group', { name: 'Mostrar artículos', exact: true }).getByRole('button', { name: 'Por revisar (2)', exact: true }).click();
   await expect(grid.getByRole('row')).toHaveCount(3);
   await expect(grid).toContainText('Faltan 2 unidades');
   await expect(grid).toContainText('Revisar artículo');
@@ -194,7 +205,9 @@ test('a long order lists its items in a grid: searched, and narrowed to the ones
 
 test('a short grid’s column menu opens over the panel instead of being clipped by the grid', async ({ page }) => {
   const { document } = await panel(page, 'client', 'quoted', true);
-  const grid = document.getByRole('region', { name: 'Líneas de la cotización v1', exact: true });
+  await document.getByRole('button', { name: 'Ampliar la tabla', exact: true }).click();
+  const large = page.getByRole('dialog', { name: 'ORD-0123 · Cotización v1', exact: true });
+  const grid = large.getByRole('region', { name: 'Líneas de la cotización v1', exact: true });
   await grid.getByRole('columnheader', { name: 'Código / descripción' }).hover();
   await grid.locator('.ag-header-cell[col-id="item"] .ag-header-cell-menu-button').click();
   const menu = page.locator('.ag-menu');
@@ -204,7 +217,7 @@ test('a short grid’s column menu opens over the panel instead of being clipped
   expect(menuBox.y + menuBox.height).toBeGreaterThan(gridBox.y + gridBox.height);  // taller than the one-row grid, and whole
   await expect(menu.getByText('Elegir Columnas', { exact: true })).toHaveCount(0);  // columns cannot be hidden
   await expect(menu.getByText('Restablecer Columnas', { exact: true })).toBeVisible();
-  await page.keyboard.press('Escape');  // closes the menu, not the panel
+  await page.keyboard.press('Escape');  // closes the menu, not the dialog
   await expect(menu).toHaveCount(0);
   await expect(grid).toBeVisible();
   const headers = await grid.getByRole('columnheader').count();
@@ -217,9 +230,11 @@ test.describe('on a touch screen', () => {
   test('a sideways swipe on a grid’s header or rows moves its columns', async ({ page }) => {
     const many = Array.from({ length: 6 }, (_, index) => ({ ...line, id: `44444444-4444-4444-8444-${String(index).padStart(12, '0')}`, codigo: `COD-${index}`, sku: `SKU-${index}` }));
     const { document } = await panel(page, 'supplier', 'pending', false, many);
-    const grid = document.getByRole('region', { name: 'Artículos de la orden', exact: true });
+    await document.getByRole('button', { name: 'Ampliar la tabla', exact: true }).click();
+    await page.setViewportSize({ width: 620, height: 800 });  // the dialog narrower than the grid's columns
+    const grid = page.getByRole('dialog', { name: 'ORD-0123 · Artículos solicitados', exact: true }).getByRole('region', { name: 'Artículos de la orden', exact: true });
     const columns = grid.locator('.ag-center-cols-viewport');
-    expect(await columns.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);  // wider than the side panel
+    await expect.poll(() => columns.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
     const cdp = await page.context().newCDPSession(page);
     const swipe = async (box: { x: number; y: number; width: number; height: number }) => cdp.send('Input.synthesizeScrollGesture',
       { x: box.x + box.width / 2, y: box.y + box.height / 2, xDistance: -150, yDistance: 0, gestureSourceType: 'touch', speed: 800 });
@@ -265,6 +280,22 @@ test('after the handshake the supplier’s Decisiones offer one next step at a t
   await expect(decisions.getByRole('button')).toHaveCount(0);  // now the client's to confirm
   await expect(document.locator('.deal-outcome.delivered')).toContainText('Entregado · esperando al cliente');
   expect(actions.map(action => action.action)).toEqual(['process', 'ship', 'deliver']);
+});
+
+test('a change made elsewhere clears what the panel said about its own last step and closes an open confirmation', async ({ page }) => {
+  const { document, change } = await panel(page, 'supplier', 'handshaked', true, [line], agreed);
+  const decisions = document.getByRole('group', { name: 'Decisiones', exact: true });
+  await decisions.getByRole('button', { name: 'Marcar como procesando', exact: true }).click();
+  await document.getByRole('button', { name: 'Sí, marcar procesando', exact: true }).click();
+  const notice = document.getByRole('status').filter({ hasText: 'Orden marcada como Procesando.' });
+  await expect(notice).toBeVisible();
+  await decisions.getByRole('button', { name: 'Marcar en camino', exact: true }).click();
+  await expect(document.getByRole('button', { name: 'Sí, va en camino', exact: true })).toBeVisible();
+  await change({ status: 'in_transit', in_transit_at: stamp } as Partial<Deal>);  // a teammate sent it from another screen
+  await expect(document.locator('.deal-outcome.in_transit')).toContainText('En camino');
+  await expect(notice).toHaveCount(0);
+  await expect(document.getByRole('button', { name: 'Sí, va en camino', exact: true })).toHaveCount(0);
+  await expect(decisions.getByRole('button')).toHaveText(['Marcar como entregado']);
 });
 
 test('the client confirms Recibido from the panel’s Decisiones once the supplier marked Entregado', async ({ page }) => {

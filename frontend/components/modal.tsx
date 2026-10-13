@@ -12,6 +12,13 @@ export default function Modal({ title, children, onClose, wide = false, drawer =
   // Escape closes an open grid menu or popup editor first, never the dialog under it: the grid removes its popup during the keydown, so
   // whether one was open is noted on the way in (capture), before the dialog's cancel.
   const popupEscape = useRef(false);
+  // A press that started inside (a column dragged out of a grid, text selected past the edge) never closes it where it ends.
+  const pressedOutside = useRef(false);
+  const outside = (event: React.MouseEvent<HTMLDialogElement>) => {
+    if (event.target !== ref.current) return false;
+    const rect = ref.current.getBoundingClientRect();
+    return event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom;
+  };
   const closing = useRef(onClose); closing.current = onClose;
   useEffect(() => {
     const dialog = ref.current;
@@ -29,8 +36,18 @@ export default function Modal({ title, children, onClose, wide = false, drawer =
     return () => { mounted = false; dialog.removeEventListener('close', closed); dialog.close(); };
   }, []);
   return <dialog ref={ref} aria-labelledby={label} className={`modal ${wide ? 'wide' : ''} ${drawer ? 'drawer' : ''} ${className}`} {...dragEvents}
-    onKeyDownCapture={event => { popupEscape.current = event.key === 'Escape' && !!ref.current?.querySelector('.ag-popup'); }}
-    onCancel={event => { if (event.target !== event.currentTarget) return; event.preventDefault(); if (popupEscape.current) { popupEscape.current = false; return; } onClose(); }} onClick={event => { if (event.target === ref.current && performance.now() - opened.current > 400) { const rect = ref.current.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) onClose(); } }}>
+    onKeyDownCapture={event => {
+      const popups = event.key === 'Escape' ? [...ref.current?.querySelectorAll('.ag-popup') || []] : [];
+      popupEscape.current = popups.length > 0;
+      // In a dialog over another one (Ampliar in the conversations panel) the grid can miss its own Escape. When it had its chance and a
+      // lone menu is still open, a press outside it, which the grid always honours, closes it; stacked popups (a submenu, a filter's list)
+      // stay the grid's to close.
+      if (popups.length === 1) setTimeout(() => {
+        if (popups[0].isConnected) ref.current?.querySelector('.modal-header')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      }, 0);
+    }}
+    onCancel={event => { if (event.target !== event.currentTarget) return; event.preventDefault(); if (popupEscape.current) { popupEscape.current = false; return; } onClose(); }} onMouseDown={event => { pressedOutside.current = outside(event); }}
+    onClick={event => { if (pressedOutside.current && outside(event) && performance.now() - opened.current > 400) onClose(); pressedOutside.current = false; }}>
     <div className="modal-header"><h2 id={label}>{title}</h2><button className="icon-button" aria-label="Cerrar ventana" onClick={onClose}><X size={20}/></button></div>
     {children}
     <UpdateNotice/>

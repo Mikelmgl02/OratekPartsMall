@@ -150,25 +150,32 @@ test('supplier sees requested units, stock shortfalls and refreshed availability
   await expect(page).toHaveURL(`/proveedor/${supplierAccount}/ordenes/${requestId}`);
   await expect(page.getByRole('dialog')).toHaveCount(0);
   const dialog = requestDialog(page);
-  const first = dialog.getByRole('row').filter({ hasText: '58411-1R000-G' });
-  const second = dialog.getByRole('row').filter({ hasText: '58-1R0' });
-  await expect(first).toContainText('Reportadas: 10 · Reservadas: 2');
-  await expect(first).toContainText('Existencias suficientes');
-  await expect(second).toContainText('Faltan 2 unidades');
-  await expect(second.getByRole('gridcell').nth(1)).toHaveText('3');
-  expect(await dialog.locator('.supplier-request-lines').evaluate(element => element.scrollWidth > element.clientWidth)).toBe(false);
+  // The document's items, a plain table: the available units with whether they suffice and, when some are held, the reported and reserved.
+  const items = dialog.getByRole('table', { name: 'Artículos de la orden', exact: true });
+  const first = items.getByRole('row').filter({ hasText: '58411-1R000-G' });
+  const second = items.getByRole('row').filter({ hasText: '58-1R0' });
+  const available = (row: typeof first) => row.getByRole('cell').nth(2);
+  await expect(available(first)).toContainText('10 reportadas · 2 reservadas');
+  await expect(available(first)).toContainText('suficientes');
+  await expect(available(second)).toContainText('faltan 2');
+  await expect(second.getByRole('cell').nth(1)).toHaveText('3');
+  expect(await dialog.locator('.deal-items-frame').evaluate(element => element.scrollWidth > element.clientWidth)).toBe(false);
   await expect(dialog.getByRole('status')).toContainText('1 artículo requiere confirmar disponibilidad');
-  const show = dialog.getByRole('group', { name: 'Mostrar artículos', exact: true });
+  // Ampliar: the full grid, with the stock details and Por revisar.
+  await dialog.getByRole('button', { name: 'Ampliar la tabla', exact: true }).click();
+  const large = page.getByRole('dialog', { name: /SOL-PRUEBA-001 · Artículos solicitados/ });
+  const show = large.getByRole('group', { name: 'Mostrar artículos', exact: true });
+  await expect(large.getByRole('row').filter({ hasText: '58411-1R000-G' })).toContainText('Reportadas: 10 · Reservadas: 2');
   await show.getByRole('button', { name: 'Por revisar (1)', exact: true }).click();  // only the items whose stock needs confirming
-  await expect(first).toHaveCount(0);
-  await expect(second).toContainText('Faltan 2 unidades');
-  await show.getByRole('button', { name: 'Todos (2)', exact: true }).click();
+  await expect(large.getByRole('row').filter({ hasText: '58411-1R000-G' })).toHaveCount(0);
+  await expect(large.getByRole('row').filter({ hasText: '58-1R0' })).toContainText('Faltan 2 unidades');
+  await large.getByRole('button', { name: 'Cerrar ventana', exact: true }).click();
   await dialog.getByRole('button', { name: 'Actualizar existencias', exact: true }).click();
-  await expect(first).toContainText('Revisar artículo');
-  await expect(first).not.toContainText('Reportadas:');
-  await expect(second).toContainText('Reportadas: 0 · Reservadas: 2');
-  await expect(second).toContainText('Faltan 3 unidades');
-  await expect(second.getByRole('gridcell').nth(1)).toHaveText('3');
+  await expect(available(first)).toContainText('Revisar artículo');
+  await expect(available(first)).toContainText('confirma la equivalencia en Inventario');
+  await expect(available(second)).toContainText('0 reportadas · 2 reservadas');
+  await expect(available(second)).toContainText('faltan 3');
+  await expect(second.getByRole('cell').nth(1)).toHaveText('3');
   await expect(dialog.getByRole('status')).toContainText('2 artículos requieren confirmar disponibilidad');
   await expect(dialog.getByText('En revisión', { exact: true }).first()).toBeVisible();
   expect(reads).toBe(2);
@@ -237,10 +244,14 @@ test('ordinary supplier searches, filters and pages requests, sees each own item
   await expect(requests(page).getByText('SOL-PRUEBA-001', { exact: true })).toBeVisible();
   await requests(page).getByRole('link', { name: 'Ver solicitud SOL-PRUEBA-001', exact: true }).click();
   const dialog = requestDialog(page);
-  await expect(dialog.locator('.supplier-request-lines').getByText('58411-1R000-G', { exact: true })).toBeVisible();
-  await expect(dialog.locator('.supplier-request-lines').getByText('58-1R0', { exact: true })).toBeVisible();
-  await expect(dialog.getByText('supplier-row-lowercase', { exact: true })).toBeVisible();
-  await expect(dialog.getByText('00045', { exact: true })).toBeVisible();
+  await expect(dialog.locator('.deal-items').getByText('58411-1R000-G', { exact: true })).toBeVisible();
+  await expect(dialog.locator('.deal-items').getByText('58-1R0', { exact: true })).toBeVisible();
+  // The supplier's own inventory IDs are in Ampliar's full grid (the document keeps a plain table of the items).
+  await dialog.getByRole('button', { name: 'Ampliar la tabla', exact: true }).click();
+  const large = page.getByRole('dialog', { name: /Artículos solicitados/ });
+  await expect(large.getByText('supplier-row-lowercase', { exact: true })).toBeVisible();
+  await expect(large.getByText('00045', { exact: true })).toBeVisible();
+  await large.getByRole('button', { name: 'Cerrar ventana', exact: true }).click();
   await expect(dialog).toContainText('TALLER CENTRAL');
   await expect(dialog).toContainText('RETIRAR EN SUCURSAL');
   expect(await dialog.innerText()).not.toMatch(/[$€]|\b(?:PAB|USD)\b/);
