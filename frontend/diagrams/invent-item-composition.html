@@ -6,158 +6,352 @@
 <title>Invent Item Composition</title>
 <style>
   body { margin: 0; padding: 24px; font-family: system-ui, sans-serif; background: #fff; color: #1a1a1a; }
-  h1 { font-size: 20px; margin: 0 0 16px; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  p { margin: 0 0 16px; color: #555; font-size: 14px; max-width: 1100px; }
+  a { color: #2b5fd9; }
   svg { width: 100%; height: auto; border: 1px dashed #ccc; }
 </style>
 </head>
 <body>
 <h1>Invent Item Composition</h1>
-<svg viewBox="0 0 1200 1742" role="img" aria-label="Invent item composition diagram">
+<p>Master → references → supplier items: every supplier item hangs from the Reference of its own code and brand, and one reference can have many items. The SKU table merges into OEM lines; catalog cross-references stay as evidence; library numbers and new supplier products are unpublished lines.</p>
+<svg viewBox="0 0 1760 2764" role="img" aria-label="Proposed invent item composition diagram">
   <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
-  <polyline points="600,272 600,227 300,227 300,184" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
-  <text x="310" y="219" font-size="13" fill="#555" text-anchor="start">supplier</text>
-  <polyline points="423,407 135,407 135,698" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
-  <text x="145" y="399" font-size="13" fill="#555" text-anchor="start">brand</text>
-  <polyline points="600,760 600,848" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
-  <text x="610" y="784" font-size="13" fill="#555" text-anchor="start">oem_line  (many variants → 1 OEM line)</text>
-  <polyline points="302,1133 428,1133 428,937 438,937" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
-  <text x="420" y="1125" font-size="13" fill="#555" text-anchor="end">oem_line</text>
-  <text x="40" y="1172" font-size="12" fill="#888" text-anchor="start">many references → 1 OEM line; exactly one is_main</text>
-  <text x="40" y="1188" font-size="12" fill="#888" text-anchor="start">= main number + other OEM numbers (OEM)</text>
-  <text x="40" y="1204" font-size="12" fill="#888" text-anchor="start">+ aftermarket codes (aftermarket)</text>
-  <polyline points="762,1033 878,1033" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
-  <text x="820" y="1025" font-size="13" fill="#555" text-anchor="middle">subgrupo</text>
-  <polyline points="1020,1002 1020,1070" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
-  <text x="1030" y="1042" font-size="13" fill="#555" text-anchor="start">grupo</text>
-  <polyline points="1020,850 1020,782" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
-  <text x="1030" y="815" font-size="13" fill="#555" text-anchor="start">technical_template</text>
-  <polyline points="1020,606 1020,674" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
-  <text x="1030" y="646" font-size="13" fill="#555" text-anchor="start">template  (many → 1)</text>
-  <polyline points="878,1269 820,1269 820,1063 762,1063" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
-  <text x="770" y="1081" font-size="12" fill="#888" text-anchor="start">built from</text>
-  <text x="880" y="1400" font-size="12" fill="#1f8fb3" text-anchor="start">results = OEM lines with storefront = yes</text>
-  <polyline points="600,1472 600,1076" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
-  <text x="610" y="1432" font-size="13" fill="#555" text-anchor="start">oem_line  (many values → 1 OEM line)</text>
-  <polyline points="762,1583 1180,1583 1180,494.0 1162,494.0" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
-  <text x="1172" y="1575" font-size="13" fill="#555" text-anchor="end">field  (a field of the subgrupo's template)</text>
-  <text x="440" y="1694" font-size="12" fill="#888" text-anchor="start">unique: oem_line + field  ·  allowed fields = template of the OEM line's subgrupo</text>
-  <rect x="170" y="30" width="260" height="152" rx="10" fill="#fff4e5" stroke="#d9822b" stroke-width="2"/>
-  <text x="300.0" y="60" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Supplier (Account)</text>
-  <line x1="170" y1="74" x2="430" y2="74" stroke="#d9822b"/>
-  <text x="190" y="98" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">id</text>
-  <text x="190" y="122" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">name</text>
-  <text x="190" y="146" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">active</text>
-  <text x="190" y="170" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">roles</text>
-  <rect x="425" y="272" width="350" height="488" rx="10" fill="#eef4ff" stroke="#2b5fd9" stroke-width="2"/>
-  <text x="600.0" y="302" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Invent Item = Variant</text>
-  <line x1="425" y1="316" x2="775" y2="316" stroke="#2b5fd9"/>
-  <text x="445" y="340" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">supplier  → FK</text>
-  <text x="445" y="364" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">supplier_invent_id</text>
-  <text x="445" y="388" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">codigo</text>
-  <text x="445" y="412" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">brand  → Brand</text>
-  <text x="445" y="436" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">description</text>
-  <text x="445" y="460" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">material</text>
-  <text x="445" y="484" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">origen</text>
-  <text x="445" y="508" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">calidad: original | OES | alternativo</text>
-  <text x="445" y="532" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">condicion: nuevo | remanufacturado</text>
-  <text x="445" y="556" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">garantia</text>
-  <text x="445" y="580" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">unidades_por_empaque</text>
-  <text x="445" y="604" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">oem_line  → FK</text>
-  <text x="445" y="628" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">matching_status</text>
-  <text x="445" y="652" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">source</text>
-  <text x="445" y="676" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">reported_quantity</text>
-  <text x="445" y="700" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">reserved_quantity</text>
-  <text x="445" y="724" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">available_quantity</text>
-  <text x="445" y="748" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">updated_at</text>
-  <rect x="40" y="700" width="330" height="176" rx="10" fill="#f3edff" stroke="#7b4fd9" stroke-width="2" stroke-dasharray="6 4"/>
-  <text x="205.0" y="730" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Brand</text>
-  <text x="358" y="718" text-anchor="end" font-size="11" font-weight="600" fill="#7b4fd9">NEW</text>
-  <line x1="40" y1="744" x2="370" y2="744" stroke="#7b4fd9"/>
-  <text x="60" y="768" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">id</text>
-  <text x="60" y="792" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">nombre</text>
-  <text x="60" y="816" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">aliases  (TOY, TOYO, TOYOTA…)</text>
-  <text x="60" y="840" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">tipo: vehículo | repuesto</text>
-  <text x="60" y="864" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">used by Variant, OEM line, Reference</text>
-  <rect x="440" y="850" width="320" height="224" rx="10" fill="#fff8e1" stroke="#b8860b" stroke-width="2" stroke-dasharray="6 4"/>
-  <text x="600.0" y="880" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">OEM line</text>
-  <text x="748" y="868" text-anchor="end" font-size="11" font-weight="600" fill="#b8860b">NEW</text>
-  <line x1="440" y1="894" x2="760" y2="894" stroke="#b8860b"/>
-  <text x="460" y="918" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">id</text>
-  <text x="460" y="942" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">codigo  (= main reference, read-only)</text>
-  <text x="460" y="966" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">brand  → Brand</text>
-  <text x="460" y="990" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">description</text>
-  <text x="460" y="1014" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">tipo: OEM | AFTERMARKET | UNKNOWN</text>
-  <text x="460" y="1038" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">subgrupo  → FK</text>
-  <text x="460" y="1062" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">storefront  (published: yes / no)</text>
-  <rect x="40" y="926" width="260" height="224" rx="10" fill="#fdecef" stroke="#c93a5a" stroke-width="2" stroke-dasharray="6 4"/>
-  <text x="170.0" y="956" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Reference</text>
-  <text x="288" y="944" text-anchor="end" font-size="11" font-weight="600" fill="#c93a5a">NEW</text>
-  <line x1="40" y1="970" x2="300" y2="970" stroke="#c93a5a"/>
-  <text x="60" y="994" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">id</text>
-  <text x="60" y="1018" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">codigo</text>
-  <text x="60" y="1042" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">description</text>
-  <text x="60" y="1066" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">brand  → Brand</text>
-  <text x="60" y="1090" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">tipo: OEM | aftermarket</text>
-  <text x="60" y="1114" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">is_main</text>
-  <text x="60" y="1138" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">oem_line  → FK  (required)</text>
-  <rect x="880" y="850" width="280" height="152" rx="10" fill="#eaf7f0" stroke="#2f9e6b" stroke-width="2" stroke-dasharray="6 4"/>
-  <text x="1020.0" y="880" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Subgrupo</text>
-  <text x="1148" y="868" text-anchor="end" font-size="11" font-weight="600" fill="#2f9e6b">NEW</text>
-  <line x1="880" y1="894" x2="1160" y2="894" stroke="#2f9e6b"/>
-  <text x="900" y="918" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">id</text>
-  <text x="900" y="942" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">nombre</text>
-  <text x="900" y="966" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">grupo  → FK</text>
-  <text x="900" y="990" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">technical_template  → FK</text>
-  <rect x="880" y="1072" width="280" height="104" rx="10" fill="#eaf7f0" stroke="#2f9e6b" stroke-width="2" stroke-dasharray="6 4"/>
-  <text x="1020.0" y="1102" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Grupo</text>
-  <text x="1148" y="1090" text-anchor="end" font-size="11" font-weight="600" fill="#2f9e6b">NEW</text>
-  <line x1="880" y1="1116" x2="1160" y2="1116" stroke="#2f9e6b"/>
-  <text x="900" y="1140" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">id</text>
-  <text x="900" y="1164" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">nombre</text>
-  <rect x="880" y="676" width="280" height="104" rx="10" fill="#eef1f4" stroke="#5b6b7b" stroke-width="2"/>
-  <text x="1020.0" y="706" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Technical Template</text>
-  <line x1="880" y1="720" x2="1160" y2="720" stroke="#5b6b7b"/>
-  <text x="900" y="744" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">id</text>
-  <text x="900" y="768" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">nombre</text>
-  <rect x="880" y="382" width="280" height="224" rx="10" fill="#eef1f4" stroke="#5b6b7b" stroke-width="2"/>
-  <text x="1020.0" y="412" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Technical Field</text>
-  <line x1="880" y1="426" x2="1160" y2="426" stroke="#5b6b7b"/>
-  <text x="900" y="450" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">id</text>
-  <text x="900" y="474" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">template  → FK</text>
-  <text x="900" y="498" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">nombre</text>
-  <text x="900" y="522" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">tipo: number | text | choice</text>
-  <text x="900" y="546" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">unit</text>
-  <text x="900" y="570" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">required</text>
-  <text x="900" y="594" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">position</text>
-  <rect x="880" y="1206" width="280" height="176" rx="10" fill="#e8f6fb" stroke="#1f8fb3" stroke-width="2" stroke-dasharray="6 4"/>
-  <text x="1020.0" y="1236" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Search Document</text>
-  <text x="1148" y="1224" text-anchor="end" font-size="11" font-weight="600" fill="#1f8fb3">NEW</text>
-  <line x1="880" y1="1250" x2="1160" y2="1250" stroke="#1f8fb3"/>
-  <text x="900" y="1274" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">oem_line  → 1:1</text>
-  <text x="900" y="1298" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">codes: references + variants</text>
-  <text x="900" y="1322" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">text: descriptions, grupos</text>
-  <text x="900" y="1346" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">      subgrupos, brands</text>
-  <text x="900" y="1370" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">filters: brand, calidad, stock</text>
-  <rect x="440" y="1472" width="320" height="200" rx="10" fill="#eef1f4" stroke="#5b6b7b" stroke-width="2" stroke-dasharray="6 4"/>
-  <text x="600.0" y="1502" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">OEM Tech Data</text>
-  <text x="748" y="1490" text-anchor="end" font-size="11" font-weight="600" fill="#5b6b7b">NEW</text>
-  <line x1="440" y1="1516" x2="760" y2="1516" stroke="#5b6b7b"/>
-  <text x="460" y="1540" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">id</text>
-  <text x="460" y="1564" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">oem_line  → FK</text>
-  <text x="460" y="1588" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">field  → FK</text>
-  <text x="460" y="1612" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">value</text>
-  <text x="460" y="1636" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">unit</text>
-  <text x="460" y="1660" font-size="14" font-family="ui-monospace, monospace" fill="#1a1a1a">source</text>
-  <path d="M200,278 L420,278 L420,292 L423,302 L420,312 L420,328 L200,328 Z" fill="#fff3a8" stroke="#c9a400" stroke-width="1.5"/>
-  <text x="310" y="298" text-anchor="middle" font-size="13" font-style="italic" font-weight="600" fill="#6b5600">Invoice item</text>
-  <text x="310" y="316" text-anchor="middle" font-size="12" font-style="italic" fill="#6b5600">what is sold, stocked and priced</text>
-  <path d="M180,340 L420,340 L420,354 L423,364 L420,374 L420,390 L180,390 Z" fill="#fff3a8" stroke="#c9a400" stroke-width="1.5"/>
-  <text x="300" y="360" text-anchor="middle" font-size="13" font-style="italic" font-weight="600" fill="#6b5600">Variant wins on field data</text>
-  <text x="300" y="378" text-anchor="middle" font-size="12" font-style="italic" fill="#6b5600">OEM line = container + technical data</text>
-  <path d="M770,794 L1000,794 L1000,842 L790,842 L756,856 L776,842 L770,842 Z" fill="#fff3a8" stroke="#c9a400" stroke-width="1.5"/>
-  <text x="885" y="814" text-anchor="middle" font-size="13" font-style="italic" font-weight="600" fill="#6b5600">Master part</text>
-  <text x="885" y="832" text-anchor="middle" font-size="12" font-style="italic" fill="#6b5600">preparation until storefront = yes</text>
-  <text x="40" y="1728" font-size="12" fill="#888" text-anchor="start">Dashed box = proposed (not in the model yet). Arrows point from the FK holder to its parent. Chain: Variant (invoice item) → OEM line (container + technical data). Where both have a value, the variant's wins.</text>
+<rect x="470" y="40" width="360" height="424" rx="10" fill="#fff8e1" stroke="#b8860b" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="650.0" y="70" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">OEM line = Master part</text>
+<text x="818" y="58" text-anchor="end" font-size="11" font-weight="600" fill="#b8860b">REPLACES</text>
+<text x="650.0" y="85" text-anchor="middle" font-size="11" fill="#b8860b">Part (SKU) + SkuProposal + OEMReference</text>
+<line x1="470" y1="92" x2="830" y2="92" stroke="#b8860b"/>
+<text x="490" y="116" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">id</text>
+<text x="490" y="140" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">codigo  (stored; frozen when merged)</text>
+<text x="490" y="164" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">brand  (of its main Reference)</text>
+<text x="490" y="188" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">description</text>
+<text x="490" y="212" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">tipo: OEM | AFTERMARKET | UNKNOWN</text>
+<text x="490" y="236" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">subgrupo  → FK  (optional)</text>
+<text x="490" y="260" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">estado: referencia | preparación |</text>
+<text x="490" y="284" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">        publicada | rechazada | retirada</text>
+<text x="490" y="308" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">storefront  (= estado publicada)</text>
+<text x="490" y="332" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">origen: catálogo | biblioteca | proveedor</text>
+<text x="490" y="356" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">merged_into  → OEM line  (unificada)</text>
+<text x="490" y="380" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">motivo · nota · decidido por/en</text>
+<text x="490" y="404" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">version</text>
+<text x="490" y="428" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">aplicaciones_texto  (from the library)</text>
+<text x="490" y="452" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">field_sources · created · updated</text>
+<rect x="470" y="520" width="360" height="376" rx="10" fill="#fdecef" stroke="#c93a5a" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="650.0" y="550" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Reference</text>
+<text x="818" y="538" text-anchor="end" font-size="11" font-weight="600" fill="#c93a5a">REPLACES</text>
+<text x="650.0" y="565" text-anchor="middle" font-size="11" fill="#c93a5a">PartCode + OEM numbers + SupplierCodeMapping</text>
+<line x1="470" y1="572" x2="830" y2="572" stroke="#c93a5a"/>
+<text x="490" y="596" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">id</text>
+<text x="490" y="620" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">oem_line  → FK  (required)</text>
+<text x="490" y="644" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">codigo · printed forms</text>
+<text x="490" y="668" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">clave  (compact if OEM-like, else printed)</text>
+<text x="490" y="692" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">brand  → Brand  (optional)</text>
+<text x="490" y="716" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">tipo: OEM | aftermarket | interno | otro</text>
+<text x="490" y="740" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">supplier  → FK  (only for interno codes)</text>
+<text x="490" y="764" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">is_main  (one per live line)</text>
+<text x="490" y="788" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">estado: verificado | declarado |</text>
+<text x="490" y="812" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">        inferido | en disputa | retirada</text>
+<text x="490" y="836" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">reemplazado_por  → Reference</text>
+<text x="490" y="860" font-size="13" fill="#555">one live line per clave + brand (+ supplier)</text>
+<text x="490" y="884" font-size="13" fill="#555">a code with no brand reserves it for every brand</text>
+<rect x="470" y="960" width="360" height="400" rx="10" fill="#eef4ff" stroke="#2b5fd9" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="650.0" y="990" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Variant = Supplier item</text>
+<text x="818" y="978" text-anchor="end" font-size="11" font-weight="600" fill="#2b5fd9">RESHAPED</text>
+<text x="650.0" y="1005" text-anchor="middle" font-size="11" fill="#2b5fd9">was SupplierItem: hangs from a Reference, not the line</text>
+<line x1="470" y1="1012" x2="830" y2="1012" stroke="#2b5fd9"/>
+<text x="490" y="1036" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">supplier  → FK</text>
+<text x="490" y="1060" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">supplier_invent_id</text>
+<text x="490" y="1084" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">reference  → FK  (created with it)</text>
+<text x="490" y="1108" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">codigo · marca  (as sent)</text>
+<text x="490" y="1132" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">codigo_pendiente  (new code, in review)</text>
+<text x="490" y="1156" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">description</text>
+<text x="490" y="1180" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">material · origen</text>
+<text x="490" y="1204" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">calidad: original | OES | alternativo</text>
+<text x="490" y="1228" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">condicion: nuevo | remanufacturado</text>
+<text x="490" y="1252" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">garantia · unidades_por_empaque</text>
+<text x="490" y="1276" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">matching_status: pending|matched|review</text>
+<text x="490" y="1300" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">source: upload | apiag</text>
+<text x="490" y="1324" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">reported · reserved · available</text>
+<text x="490" y="1348" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">field_sources · updated_at</text>
+<rect x="40" y="520" width="360" height="184" rx="10" fill="#f3edff" stroke="#7b4fd9" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="220.0" y="550" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Brand</text>
+<text x="388" y="538" text-anchor="end" font-size="11" font-weight="600" fill="#7b4fd9">NEW</text>
+<text x="220.0" y="565" text-anchor="middle" font-size="11" fill="#7b4fd9">used by Reference and Catalog Equivalence</text>
+<line x1="40" y1="572" x2="400" y2="572" stroke="#7b4fd9"/>
+<text x="60" y="596" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">id</text>
+<text x="60" y="620" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">nombre  (unique)</text>
+<text x="60" y="644" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">alias: TOY · TOYOTA · KAIYI MOTORS…</text>
+<text x="60" y="668" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">tipo: vehículo | repuesto</text>
+<text x="60" y="692" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">familia  → Brand  (KAIYI → CHERY)</text>
+<rect x="40" y="760" width="360" height="232" rx="10" fill="#fdecef" stroke="#c93a5a" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="220.0" y="790" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Catalog Equivalence</text>
+<text x="388" y="778" text-anchor="end" font-size="11" font-weight="600" fill="#c93a5a">KEPT</text>
+<text x="220.0" y="805" text-anchor="middle" font-size="11" fill="#c93a5a">was OEMCrossReference</text>
+<line x1="40" y1="812" x2="400" y2="812" stroke="#c93a5a"/>
+<text x="60" y="836" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">reference  → FK  (an OEM number)</text>
+<text x="60" y="860" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">brand  → Brand</text>
+<text x="60" y="884" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">codigo · codigo_compacto</text>
+<text x="60" y="908" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">citations  (catalog, page)</text>
+<text x="60" y="932" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">retirada</text>
+<text x="60" y="956" font-size="13" fill="#555">unique (reference, brand, code): many-to-many</text>
+<text x="60" y="980" font-size="13" fill="#555">evidence for matching, never identity</text>
+<rect x="40" y="1080" width="360" height="152" rx="10" fill="#fff4e5" stroke="#d9822b" stroke-width="2"/>
+<text x="220.0" y="1110" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Supplier (Account)</text>
+<text x="388" y="1098" text-anchor="end" font-size="11" font-weight="600" fill="#d9822b">KEPT</text>
+<line x1="40" y1="1124" x2="400" y2="1124" stroke="#d9822b"/>
+<text x="60" y="1148" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">id</text>
+<text x="60" y="1172" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">name</text>
+<text x="60" y="1196" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">active</text>
+<text x="60" y="1220" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">roles</text>
+<rect x="40" y="1290" width="360" height="232" rx="10" fill="#f1f5fb" stroke="#4a6fa5" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="220.0" y="1320" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Matching Case</text>
+<text x="388" y="1308" text-anchor="end" font-size="11" font-weight="600" fill="#4a6fa5">KEPT</text>
+<text x="220.0" y="1335" text-anchor="middle" font-size="11" fill="#4a6fa5">new references, code changes, spec conflicts, duplicates</text>
+<line x1="40" y1="1342" x2="400" y2="1342" stroke="#4a6fa5"/>
+<text x="60" y="1366" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">kind: reference | code change |</text>
+<text x="60" y="1390" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">      variant | line</text>
+<text x="60" y="1414" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">reference · variant  → FK  (optional)</text>
+<text x="60" y="1438" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">new code · brand  (code change, declared)</text>
+<text x="60" y="1462" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">candidates  (lines)</text>
+<text x="60" y="1486" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">reason</text>
+<text x="60" y="1510" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">status: review | dismissed | applied</text>
+<rect x="900" y="40" width="360" height="176" rx="10" fill="#e8f6fb" stroke="#1f8fb3" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="1080.0" y="70" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Search Document</text>
+<text x="1248" y="58" text-anchor="end" font-size="11" font-weight="600" fill="#1f8fb3">NEW</text>
+<line x1="900" y1="84" x2="1260" y2="84" stroke="#1f8fb3"/>
+<text x="920" y="108" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">oem_line  → 1:1</text>
+<text x="920" y="132" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">codes: references (variants share them)</text>
+<text x="920" y="156" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">text: descriptions · grupo · subgrupo</text>
+<text x="920" y="180" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">filters: brand · calidad · stock</text>
+<text x="920" y="204" font-size="13" fill="#555">only publicada lines that are not merged</text>
+<rect x="900" y="250" width="360" height="160" rx="10" fill="#eef1f4" stroke="#5b6b7b" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="1080.0" y="280" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Line Image</text>
+<text x="1248" y="268" text-anchor="end" font-size="11" font-weight="600" fill="#5b6b7b">RENAMED</text>
+<text x="1080.0" y="295" text-anchor="middle" font-size="11" fill="#5b6b7b">was PartImage</text>
+<line x1="900" y1="302" x2="1260" y2="302" stroke="#5b6b7b"/>
+<text x="920" y="326" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">id</text>
+<text x="920" y="350" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">oem_line  → FK</text>
+<text x="920" y="374" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">file  (CDN)</text>
+<text x="920" y="398" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">position</text>
+<rect x="900" y="620" width="360" height="184" rx="10" fill="#fdecef" stroke="#c93a5a" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="1080.0" y="650" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Reference Source</text>
+<text x="1248" y="638" text-anchor="end" font-size="11" font-weight="600" fill="#c93a5a">KEPT</text>
+<text x="1080.0" y="665" text-anchor="middle" font-size="11" fill="#c93a5a">was OEMReferenceSource</text>
+<line x1="900" y1="672" x2="1260" y2="672" stroke="#c93a5a"/>
+<text x="920" y="696" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">reference  → FK</text>
+<text x="920" y="720" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">kind: biblioteca · proveedor · admin ·</text>
+<text x="920" y="744" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">      IA · buscador OEM</text>
+<text x="920" y="768" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">citation  (catalog + page)</text>
+<text x="920" y="792" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">detail · created_by</text>
+<rect x="1330" y="40" width="360" height="224" rx="10" fill="#eef1f4" stroke="#5b6b7b" stroke-width="2"/>
+<text x="1510.0" y="70" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Technical Field</text>
+<text x="1678" y="58" text-anchor="end" font-size="11" font-weight="600" fill="#5b6b7b">KEPT</text>
+<line x1="1330" y1="84" x2="1690" y2="84" stroke="#5b6b7b"/>
+<text x="1350" y="108" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">id</text>
+<text x="1350" y="132" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">template  → FK</text>
+<text x="1350" y="156" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">nombre</text>
+<text x="1350" y="180" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">tipo: number | text | choice</text>
+<text x="1350" y="204" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">unit</text>
+<text x="1350" y="228" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">required</text>
+<text x="1350" y="252" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">position</text>
+<rect x="1330" y="320" width="360" height="104" rx="10" fill="#eef1f4" stroke="#5b6b7b" stroke-width="2"/>
+<text x="1510.0" y="350" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Technical Template</text>
+<text x="1678" y="338" text-anchor="end" font-size="11" font-weight="600" fill="#5b6b7b">KEPT</text>
+<line x1="1330" y1="364" x2="1690" y2="364" stroke="#5b6b7b"/>
+<text x="1350" y="388" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">id</text>
+<text x="1350" y="412" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">nombre</text>
+<rect x="1330" y="470" width="360" height="160" rx="10" fill="#eaf7f0" stroke="#2f9e6b" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="1510.0" y="500" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Subgrupo</text>
+<text x="1678" y="488" text-anchor="end" font-size="11" font-weight="600" fill="#2f9e6b">NEW</text>
+<text x="1510.0" y="515" text-anchor="middle" font-size="11" fill="#2f9e6b">from PartType</text>
+<line x1="1330" y1="522" x2="1690" y2="522" stroke="#2f9e6b"/>
+<text x="1350" y="546" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">id</text>
+<text x="1350" y="570" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">nombre</text>
+<text x="1350" y="594" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">grupo  → FK</text>
+<text x="1350" y="618" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">technical_template  → FK  (1:1)</text>
+<rect x="1330" y="680" width="360" height="104" rx="10" fill="#eaf7f0" stroke="#2f9e6b" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="1510.0" y="710" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Grupo</text>
+<text x="1678" y="698" text-anchor="end" font-size="11" font-weight="600" fill="#2f9e6b">NEW</text>
+<line x1="1330" y1="724" x2="1690" y2="724" stroke="#2f9e6b"/>
+<text x="1350" y="748" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">id</text>
+<text x="1350" y="772" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">nombre</text>
+<rect x="1330" y="830" width="360" height="232" rx="10" fill="#eef1f4" stroke="#5b6b7b" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="1510.0" y="860" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">OEM Tech Data</text>
+<text x="1678" y="848" text-anchor="end" font-size="11" font-weight="600" fill="#5b6b7b">RENAMED</text>
+<text x="1510.0" y="875" text-anchor="middle" font-size="11" fill="#5b6b7b">was PartSpecification</text>
+<line x1="1330" y1="882" x2="1690" y2="882" stroke="#5b6b7b"/>
+<text x="1350" y="906" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">id</text>
+<text x="1350" y="930" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">oem_line  → FK</text>
+<text x="1350" y="954" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">field  → FK</text>
+<text x="1350" y="978" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">value · unit</text>
+<text x="1350" y="1002" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">source</text>
+<text x="1350" y="1026" font-size="13" fill="#555">unique: oem_line + field</text>
+<text x="1350" y="1050" font-size="13" fill="#555">fields = template of the line&#x27;s subgrupo</text>
+<rect x="1330" y="1110" width="360" height="184" rx="10" fill="#eefaf8" stroke="#2a9d8f" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="1510.0" y="1140" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Line Application</text>
+<text x="1678" y="1128" text-anchor="end" font-size="11" font-weight="600" fill="#2a9d8f">RENAMED</text>
+<text x="1510.0" y="1155" text-anchor="middle" font-size="11" fill="#2a9d8f">was ItemApplication</text>
+<line x1="1330" y1="1162" x2="1690" y2="1162" stroke="#2a9d8f"/>
+<text x="1350" y="1186" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">id</text>
+<text x="1350" y="1210" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">oem_line  → FK</text>
+<text x="1350" y="1234" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">application  → Vehicle</text>
+<text x="1350" y="1258" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">position · notes</text>
+<text x="1350" y="1282" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">source · verified</text>
+<rect x="1330" y="1340" width="360" height="184" rx="10" fill="#eefaf8" stroke="#2a9d8f" stroke-width="2"/>
+<text x="1510.0" y="1370" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Vehicle</text>
+<text x="1678" y="1358" text-anchor="end" font-size="11" font-weight="600" fill="#2a9d8f">KEPT</text>
+<text x="1510.0" y="1385" text-anchor="middle" font-size="11" fill="#2a9d8f">was Application</text>
+<line x1="1330" y1="1392" x2="1690" y2="1392" stroke="#2a9d8f"/>
+<text x="1350" y="1416" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">id</text>
+<text x="1350" y="1440" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">make · model · generation</text>
+<text x="1350" y="1464" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">years</text>
+<text x="1350" y="1488" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">engine · trim</text>
+<text x="1350" y="1512" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">transmission · market</text>
+<polyline points="650,520 650,464" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="660" y="510" font-size="13" fill="#555" text-anchor="start">oem_line  (many references → 1 line)</text>
+<polyline points="650,960 650,896" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="660" y="932" font-size="13" fill="#555" text-anchor="start">reference  (many variants → 1 reference)</text>
+<polyline points="470,600 400,600" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="435" y="592" font-size="13" fill="#555" text-anchor="middle">brand</text>
+<polyline points="220,760 220,704" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="230" y="738" font-size="13" fill="#555" text-anchor="start">brand</text>
+<polyline points="400,840 470,840" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="435" y="832" font-size="13" fill="#555" text-anchor="middle">reference</text>
+<text x="435" y="858" font-size="11" fill="#888" text-anchor="middle" font-weight="400">OEM number</text>
+<polyline points="470,1130 400,1130" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="435" y="1122" font-size="13" fill="#555" text-anchor="middle">supplier</text>
+<polyline points="400,1320 470,1320" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="435" y="1312" font-size="12" fill="#888" text-anchor="middle">subject</text>
+<polyline points="900,100 830,100" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="865" y="92" font-size="13" fill="#555" text-anchor="middle">1:1</text>
+<polyline points="900,300 830,300" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="865" y="292" font-size="12" fill="#888" text-anchor="middle">oem_line</text>
+<polyline points="900,700 830,700" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="865" y="692" font-size="12" fill="#888" text-anchor="middle">reference</text>
+<polyline points="830,420 1300,420 1300,540 1330,540" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="1080" y="438" font-size="13" fill="#555" text-anchor="middle">subgrupo</text>
+<polyline points="1510,470 1510,424" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="1520" y="452" font-size="13" fill="#555" text-anchor="start">technical_template</text>
+<polyline points="1510,264 1510,320" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="1520" y="298" font-size="13" fill="#555" text-anchor="start">template  (many → 1)</text>
+<polyline points="1510,630 1510,680" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="1520" y="662" font-size="13" fill="#555" text-anchor="start">grupo</text>
+<polyline points="1330,880 1285,880 1285,452 830,452" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="1280" y="560" font-size="12" fill="#888" text-anchor="end">oem_line</text>
+<polyline points="1690,880 1715,880 1715,150 1690,150" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="1708" y="290" font-size="13" fill="#555" text-anchor="end">field</text>
+<polyline points="1330,1160 1270,1160 1270,480 780,480 780,464" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="1262" y="1000" font-size="12" fill="#888" text-anchor="end">oem_line</text>
+<polyline points="1510,1294 1510,1340" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="1520" y="1324" font-size="13" fill="#555" text-anchor="start">vehicle</text>
+<text x="40" y="1520" font-size="12" fill="#888" text-anchor="start" font-weight="400">Self-references: Brand.familia → Brand · OEM line.merged_into → OEM line · Reference.reemplazado_por → Reference</text>
+<rect x="40" y="1580" width="360" height="232" rx="10" fill="#ffffff" stroke="#8a94a0" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="220.0" y="1610" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Hangs from the Variant</text>
+<text x="388" y="1598" text-anchor="end" font-size="11" font-weight="600" fill="#8a94a0">KEPT</text>
+<text x="220.0" y="1625" text-anchor="middle" font-size="11" fill="#8a94a0">already on SupplierItem</text>
+<line x1="40" y1="1632" x2="400" y2="1632" stroke="#8a94a0"/>
+<text x="60" y="1656" font-size="13" fill="#555">stock ledger (Libro de movimientos)</text>
+<text x="60" y="1680" font-size="13" fill="#555">stock per sucursal</text>
+<text x="60" y="1704" font-size="13" fill="#555">prices and price history</text>
+<text x="60" y="1728" font-size="13" fill="#555">pricing rules</text>
+<text x="60" y="1752" font-size="13" fill="#555">reservations</text>
+<text x="60" y="1776" font-size="13" fill="#555">loads: Excel · apiag pulls</text>
+<text x="60" y="1800" font-size="13" fill="#555">matching cases (spec conflicts)</text>
+<rect x="470" y="1580" width="360" height="280" rx="10" fill="#ffffff" stroke="#8a94a0" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="650.0" y="1610" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Hangs from the OEM line</text>
+<text x="818" y="1598" text-anchor="end" font-size="11" font-weight="600" fill="#8a94a0">MOVES</text>
+<text x="650.0" y="1625" text-anchor="middle" font-size="11" fill="#8a94a0">today on Part</text>
+<line x1="470" y1="1632" x2="830" y2="1632" stroke="#8a94a0"/>
+<text x="490" y="1656" font-size="13" fill="#555">favorites</text>
+<text x="490" y="1680" font-size="13" fill="#555">cesta lines (+ variant)</text>
+<text x="490" y="1704" font-size="13" fill="#555">order and quotation lines (+ variant)</text>
+<text x="490" y="1728" font-size="13" fill="#555">usage statistics</text>
+<text x="490" y="1752" font-size="13" fill="#555">merge / split history (Separar SKU)</text>
+<text x="490" y="1776" font-size="13" fill="#555">identity changes</text>
+<text x="490" y="1800" font-size="13" fill="#555">Revisión IA verdicts (by version)</text>
+<text x="490" y="1824" font-size="13" fill="#555">OEM finder cases: which Reference is_main</text>
+<text x="490" y="1848" font-size="13" fill="#555">AI catalog suggestions · import issues</text>
+<rect x="900" y="1580" width="360" height="320" rx="10" fill="#fff1f1" stroke="#b23b3b" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="1080.0" y="1610" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Goes away or renamed</text>
+<text x="1248" y="1598" text-anchor="end" font-size="11" font-weight="600" fill="#b23b3b">MAP</text>
+<line x1="900" y1="1624" x2="1260" y2="1624" stroke="#b23b3b"/>
+<text x="920" y="1648" font-size="13" fill="#555">Part (SKU)  →  OEM line</text>
+<text x="920" y="1672" font-size="13" fill="#555">SkuProposal pending  →  line in preparación</text>
+<text x="920" y="1696" font-size="13" fill="#555">OEMReference  →  line (referencia) + main Ref</text>
+<text x="920" y="1720" font-size="13" fill="#555">PartCode · PartOEMLink  →  Reference</text>
+<text x="920" y="1744" font-size="13" fill="#555">SupplierCodeMapping  →  Source / interno Ref</text>
+<text x="920" y="1768" font-size="13" fill="#555">SupplierItem.references  →  review cases</text>
+<text x="920" y="1792" font-size="13" fill="#555">OEMCrossReference  →  Catalog Equivalence</text>
+<text x="920" y="1816" font-size="13" fill="#555">OEMReferenceSource  →  Reference Source</text>
+<text x="920" y="1840" font-size="13" fill="#555">PartType + text  →  Subgrupo / Grupo</text>
+<text x="920" y="1864" font-size="13" fill="#555">Alternate (legacy)  →  removed</text>
+<text x="920" y="1888" font-size="13" fill="#555">prefer_oem renames  →  is_main</text>
+<rect x="1330" y="1580" width="360" height="416" rx="10" fill="#fbfbf6" stroke="#c9a400" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="1510.0" y="1610" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Migration</text>
+<text x="1678" y="1598" text-anchor="end" font-size="11" font-weight="600" fill="#c9a400">PLAN</text>
+<line x1="1330" y1="1624" x2="1690" y2="1624" stroke="#c9a400"/>
+<text x="1350" y="1648" font-size="13" fill="#555">every SKU stays its own line; main = SKU</text>
+<text x="1350" y="1672" font-size="13" fill="#555">main brand: library maker if the SKU is</text>
+<text x="1350" y="1696" font-size="13" fill="#555">  one library number, else its TAG brand</text>
+<text x="1350" y="1720" font-size="13" fill="#555">other OEM numbers: non-main, to Revisión OEM</text>
+<text x="1350" y="1744" font-size="13" fill="#555">an OEM number on 2+ SKUs: only the SKU</text>
+<text x="1350" y="1768" font-size="13" fill="#555">  whose code it is; the rest: duplicate case</text>
+<text x="1350" y="1792" font-size="13" fill="#555">each supplier item gets the Reference of</text>
+<text x="1350" y="1816" font-size="13" fill="#555">  its code + brand (shared by equal ones)</text>
+<text x="1350" y="1840" font-size="13" fill="#555">fix spec_conflict first (LH/RH, SET n PCS)</text>
+<text x="1350" y="1864" font-size="13" fill="#555">compact-duplicate SKUs merge only with the</text>
+<text x="1350" y="1888" font-size="13" fill="#555">  same noun and no conflict (70 of 78)</text>
+<text x="1350" y="1912" font-size="13" fill="#555">TAG-suffix SKUs merge only when reviewed</text>
+<text x="1350" y="1936" font-size="13" fill="#555">declared references → review cases</text>
+<text x="1350" y="1960" font-size="13" fill="#555">approved / resolved proposals = history</text>
+<text x="1350" y="1984" font-size="13" fill="#555">library part types → Subgrupo; seed familias</text>
+<rect x="40" y="2036" width="1650" height="678" rx="10" fill="#fbfbf6" stroke="#c9a400" stroke-width="1.5"/>
+<text x="60" y="2066" font-size="16" fill="#6b5600" text-anchor="start" font-weight="600">How it works</text>
+<rect x="60" y="2084" width="254" height="40" rx="20" fill="#eef4ff" stroke="#2b5fd9" stroke-width="1.5"/>
+<text x="187.0" y="2109" text-anchor="middle" font-size="12" fill="#1a1a1a">Variant comes in</text>
+<polyline points="316,2104 336,2104" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="338" y="2084" width="254" height="40" rx="20" fill="#fdecef" stroke="#c93a5a" stroke-width="1.5"/>
+<text x="465.0" y="2109" text-anchor="middle" font-size="12" fill="#1a1a1a">its Reference (code + brand)</text>
+<polyline points="594,2104 614,2104" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="616" y="2084" width="254" height="40" rx="20" fill="#fff8e1" stroke="#b8860b" stroke-width="1.5"/>
+<text x="743.0" y="2109" text-anchor="middle" font-size="12" fill="#1a1a1a">exists: hang from it (its line)</text>
+<polyline points="872,2104 892,2104" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="894" y="2084" width="254" height="40" rx="20" fill="#f1f5fb" stroke="#4a6fa5" stroke-width="1.5"/>
+<text x="1021.0" y="2109" text-anchor="middle" font-size="12" fill="#1a1a1a">new: find its line (TAG, equiv.)</text>
+<polyline points="1150,2104 1170,2104" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="1172" y="2084" width="254" height="40" rx="20" fill="#fff8e1" stroke="#b8860b" stroke-width="1.5"/>
+<text x="1299.0" y="2109" text-anchor="middle" font-size="12" fill="#1a1a1a">none: new line (preparación)</text>
+<polyline points="1428,2104 1448,2104" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="1450" y="2084" width="254" height="40" rx="20" fill="#eaf7f0" stroke="#2f9e6b" stroke-width="1.5"/>
+<text x="1577.0" y="2109" text-anchor="middle" font-size="12" fill="#1a1a1a">Revisión IA → publish</text>
+<text x="60" y="2158" font-size="13" fill="#333" text-anchor="start" font-weight="400">1. A variant always hangs from a Reference: its own code + brand. The key is the compact code when the code looks like an OEM number (8+ characters, 3+ digits), otherwise the</text>
+<text x="78" y="2176" font-size="13" fill="#333" text-anchor="start" font-weight="400">code as printed, so EC-01 and EC01 stay apart. If that Reference exists, the variant joins it (one reference, many variants) and so reaches its line. That is all of exact</text>
+<text x="78" y="2194" font-size="13" fill="#333" text-anchor="start" font-weight="400">matching.</text>
+<text x="60" y="2220" font-size="13" fill="#333" text-anchor="start" font-weight="400">2. Brand: the exact brand first, then the same code with no brand, then brands of the same familia (KAIYI ↔ CHERY, LEXUS ↔ TOYOTA). A variant without a brand joins the one</text>
+<text x="78" y="2238" font-size="13" fill="#333" text-anchor="start" font-weight="400">live Reference of its code, whatever its brand; if the code reaches two lines it opens a review case, never a second brandless Reference. Aliases (TOY = TOYOTA) resolve on</text>
+<text x="78" y="2256" font-size="13" fill="#333" text-anchor="start" font-weight="400">the way in.</text>
+<text x="60" y="2282" font-size="13" fill="#333" text-anchor="start" font-weight="400">3. A new Reference looks for its line. Trailing suffix-table TAGs are stripped one by one while each is auto-eligible (brand, NP, G, JP, RAZ…; never lifecycle):</text>
+<text x="78" y="2300" font-size="13" fill="#333" text-anchor="start" font-weight="400">21421-2B000-K-NP keeps its full code as its Reference and hangs on line 21421-2B000. A catalog equivalence reaching one line works too. Any other suffix, a contained code or</text>
+<text x="78" y="2318" font-size="13" fill="#333" text-anchor="start" font-weight="400">several lines: a review case.</text>
+<text x="60" y="2344" font-size="13" fill="#333" text-anchor="start" font-weight="400">4. No line found → a new OEM line in preparación with this Reference as main. Description matches stay as possible duplicates for Revisión IA; Vincular moves the reference,</text>
+<text x="78" y="2362" font-size="13" fill="#333" text-anchor="start" font-weight="400">with its variants, onto the chosen line.</text>
+<text x="60" y="2388" font-size="13" fill="#333" text-anchor="start" font-weight="400">5. A variant whose description contradicts its reference&#x27;s line (side, size, application) opens a review case and stays out of the line&#x27;s stock until it is resolved. Separar</text>
+<text x="78" y="2406" font-size="13" fill="#333" text-anchor="start" font-weight="400">referencia gives it its own Reference (interno, scoped to its supplier) on another line or a new one. Merchandise, tools and a supplier&#x27;s own codes are interno references too.</text>
+<text x="60" y="2432" font-size="13" fill="#333" text-anchor="start" font-weight="400">5b. A supplier that changes a variant&#x27;s codigo does not move it: the variant stays on its current Reference and the new code waits as a code change in review. Approved: it</text>
+<text x="78" y="2450" font-size="13" fill="#333" text-anchor="start" font-weight="400">becomes a Reference (on that line, or the one the code belongs to) and the variant moves to it. Other codes a supplier declares for an item go the same way: proposed</text>
+<text x="78" y="2468" font-size="13" fill="#333" text-anchor="start" font-weight="400">References in review, never stored on the variant.</text>
+<text x="60" y="2494" font-size="13" fill="#333" text-anchor="start" font-weight="400">6. Productos nuevos = lines in preparación with variants. Publishing turns storefront on. A rejected line (rechazada, with motivo) keeps its references, so the same code</text>
+<text x="78" y="2512" font-size="13" fill="#333" text-anchor="start" font-weight="400">joins it again instead of being proposed again.</text>
+<text x="60" y="2538" font-size="13" fill="#333" text-anchor="start" font-weight="400">7. OEM library numbers with no product = lines in referencia, one per number and Brand familia. They stay out of the queue; when a variant joins one of their references, the</text>
+<text x="78" y="2556" font-size="13" fill="#333" text-anchor="start" font-weight="400">line moves to preparación.</text>
+<text x="60" y="2582" font-size="13" fill="#333" text-anchor="start" font-weight="400">8. A code belongs to one live line. A number that already reaches two lines is never merged automatically: it stays on the line whose own code it is, and a possible-duplicate</text>
+<text x="78" y="2600" font-size="13" fill="#333" text-anchor="start" font-weight="400">case lists the others.</text>
+<text x="60" y="2626" font-size="13" fill="#333" text-anchor="start" font-weight="400">9. Merging moves references (each with its variants), images and favorites; the merged line keeps its codigo, becomes unificada (merged_into) and leaves search. Lines kept</text>
+<text x="78" y="2644" font-size="13" fill="#333" text-anchor="start" font-weight="400">apart with Separar SKU never merge on their own.</text>
+<text x="60" y="2670" font-size="13" fill="#333" text-anchor="start" font-weight="400">10. The variant wins on its own data (calidad, condición, garantía, empaque, price, stock); the OEM line holds what is shared (description, subgrupo, tech data, applications,</text>
+<text x="78" y="2688" font-size="13" fill="#333" text-anchor="start" font-weight="400">images).</text>
+  <text x="40" y="2750" font-size="12" fill="#888">Dashed box = new or reshaped; solid = kept as is. Arrows point from the FK holder to its parent. Chain: OEM line ← Reference ← Variant. A variant reaches its line only through its reference.</text>
 </svg>
 </body>
 </html>
