@@ -35,6 +35,8 @@ class SupplierPricingSettings(models.Model):
     over_stock_policy = models.CharField(max_length=10, choices=POLICY_CHOICES, default='confirm')
     accept_shortfall_policy = models.CharField(max_length=10, choices=SHORTFALL_POLICY_CHOICES, default='block')
     prefill_quantity = models.CharField(max_length=10, choices=PREFILL_QUANTITY_CHOICES, default='requested')
+    # Days a sent quotation holds its units while the client decides (mall.stock_reservations.hold); then they are free again.
+    quote_hold_days = models.PositiveSmallIntegerField(default=3)
     assistant_enabled = models.BooleanField(default=False)
     version = models.PositiveIntegerField(default=1)
     updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name='+')
@@ -49,6 +51,7 @@ class SupplierPricingSettings(models.Model):
             models.CheckConstraint(condition=Q(over_stock_policy__in=choice_values(POLICY_CHOICES)), name='valid_pricing_over_stock_policy'),
             models.CheckConstraint(condition=Q(accept_shortfall_policy__in=choice_values(SHORTFALL_POLICY_CHOICES)), name='valid_pricing_shortfall_policy'),
             models.CheckConstraint(condition=Q(prefill_quantity__in=choice_values(PREFILL_QUANTITY_CHOICES)), name='valid_pricing_prefill_quantity'),
+            models.CheckConstraint(condition=Q(quote_hold_days__gte=1, quote_hold_days__lte=30), name='valid_pricing_quote_hold_days'),
         ]
 
 

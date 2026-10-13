@@ -163,14 +163,17 @@ class DealQuotationLine(models.Model):
 
 
 class StockReservation(models.Model):
-    """Units a confirmed deal holds on a supplier item (mall.stock_reservations): they leave the item's available stock at the handshake
-    and stay held until the supplier's own count includes the sale, a stock upload the supplier marks as already discounting it. A reported
-    shortfall takes the missing units out of `quantity` (the units still held); a cancellation releases what is left."""
+    """Units a quotation line holds on a supplier item (mall.stock_reservations): they leave the item's available stock when the supplier
+    sends the quotation, so its other quotations see what is left. Until the client confirms, the hold lasts until `expires_at` (the
+    supplier's quote_hold_days) or the next version, which replaces it; once confirmed it has no expiry and stays held until the supplier's
+    own count includes the sale, a stock upload the supplier marks as already discounting it. A reported shortfall takes the missing units out
+    of `quantity` (the units still held); a rejection or cancellation releases what is left."""
     STATUSES = [('open', 'Reservada'), ('settled', 'Descontada por el proveedor'), ('released', 'Liberada')]
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     item = models.ForeignKey('mall.SupplierItem', on_delete=models.PROTECT, related_name='reservations')
     order = models.ForeignKey(SupplierRequest, on_delete=models.PROTECT, related_name='reservations')
-    quotation_line = models.OneToOneField(DealQuotationLine, on_delete=models.PROTECT, related_name='reservation')
+    # A line holds once at a time: a hold that lapsed stays released, and the client's later confirmation reserves the line anew.
+    quotation_line = models.ForeignKey(DealQuotationLine, on_delete=models.PROTECT, related_name='reservations')
     quantity = models.PositiveIntegerField()
     status = models.CharField(max_length=10, choices=STATUSES, default='open', db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -178,11 +181,13 @@ class StockReservation(models.Model):
     settled_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     settled_reference = models.CharField(max_length=120, blank=True, default='')
     released_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True, db_index=True)  # a quotation's hold, until the client confirms
 
     class Meta:
         ordering = ['created_at', 'id']
         constraints = [models.CheckConstraint(condition=~Q(status='open') | Q(quantity__gte=1), name='stock_reservation_open_holds_units'),
-                       models.CheckConstraint(condition=Q(status__in=['open', 'settled', 'released']), name='stock_reservation_valid_status')]
+                       models.CheckConstraint(condition=Q(status__in=['open', 'settled', 'released']), name='stock_reservation_valid_status'),
+                       models.UniqueConstraint(fields=['quotation_line'], condition=Q(status='open'), name='stock_reservation_one_open_per_line')]
 
 
 class DealShortfall(models.Model):

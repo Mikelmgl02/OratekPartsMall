@@ -35,7 +35,7 @@ from .request_views import RequestConflict, WholeRequestQuantity
 from .views import PERMISSION_RANK, membership_for
 
 SETTINGS_FIELDS = ('default_currency', 'usd_pab_parity', 'config_min_permission', 'publish_min_permission', 'over_request_policy',
-                   'over_stock_policy', 'accept_shortfall_policy', 'prefill_quantity', 'assistant_enabled')
+                   'over_stock_policy', 'accept_shortfall_policy', 'prefill_quantity', 'quote_hold_days', 'assistant_enabled')
 
 
 class PricingSettingsFields(serializers.Serializer):
@@ -47,6 +47,7 @@ class PricingSettingsFields(serializers.Serializer):
     over_stock_policy = serializers.ChoiceField(choices=choice_values(POLICY_CHOICES))
     accept_shortfall_policy = serializers.ChoiceField(choices=choice_values(SHORTFALL_POLICY_CHOICES))
     prefill_quantity = serializers.ChoiceField(choices=choice_values(PREFILL_QUANTITY_CHOICES))
+    quote_hold_days = serializers.IntegerField(min_value=1, max_value=30, help_text='Días que una cotización enviada reserva sus unidades.')
     assistant_enabled = serializers.BooleanField()
 
 

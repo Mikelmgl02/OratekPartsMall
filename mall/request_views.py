@@ -164,22 +164,23 @@ def request_detail(row):
 
 
 def own_reservations(row):
-    """{order line id: units this deal still holds} once it was confirmed (its own reservation is not a shortfall of its own lines)."""
-    if not row.handshaked_at:
-        return {}
+    """{order line id: units this order still holds}: its sent quotation's hold, or the confirmed deal's (its own reservation is not a
+    shortfall of its own lines)."""
     from .request_models import StockReservation
     return dict(StockReservation.objects.filter(order=row, status='open').values_list('quotation_line__order_line_id', 'quantity'))
 
 
 def request_line_stock(line, supplier_id, *, confirmed=False, held=0):
-    """Current supplier-only stock, provided the captured item still matches. After the handshake the deal's own units are reported apart
-    (`held`) and there is no shortfall to confirm: a missing unit is reported with the deal's shortfall."""
+    """Current supplier-only stock, provided the captured item still matches. The units the order itself holds (its sent quotation's, or
+    the confirmed deal's) are reported apart (`held`) and count for its own shortfall; after the handshake there is no shortfall to confirm:
+    a missing unit is reported with the deal's shortfall."""
+    from .stock_reservations import available_for
     item = line.supplier_item
     if not line_item_identity_ok(line, supplier_id):
         return None
     return {'reported_quantity': item.reported_quantity, 'reserved_quantity': item.reserved_quantity,
             'available_quantity': item.available_quantity, 'held_for_deal': held,
-            'shortfall': 0 if confirmed else max(0, line.quantity - item.available_quantity),
+            'shortfall': 0 if confirmed else max(0, line.quantity - available_for(item, held)),
             'updated_at': item.updated_at.isoformat()}
 
 

@@ -5,11 +5,12 @@ import { Account, ApiError, type MembershipPermission, request } from '@/lib/typ
 import type { PricingSettings, PricingSettingsUpdate, PricingSettingsValues } from '@/lib/pricing-types';
 
 const fields = ['default_currency', 'usd_pab_parity', 'config_min_permission', 'publish_min_permission', 'over_request_policy', 'over_stock_policy',
-  'accept_shortfall_policy', 'prefill_quantity', 'assistant_enabled'] as const;
+  'accept_shortfall_policy', 'prefill_quantity', 'quote_hold_days', 'assistant_enabled'] as const;
 type Field = typeof fields[number];
 const ownerOnly = new Set<Field>(['config_min_permission', 'publish_min_permission', 'assistant_enabled']);
 const permissionOptions: [MembershipPermission, string][] = [['staff', 'Cualquier miembro de tu equipo'], ['manager', 'Administradores y propietario'], ['owner', 'Solo el propietario']];
 const policyOptions = [['confirm', 'Pedir confirmación'], ['block', 'Bloquear']] as const;
+const holdDays = [1, 2, 3, 5, 7, 10, 14, 30];
 const failure = (error: unknown, fallback: string) => error instanceof TypeError ? 'Se perdió la conexión. Tus cambios siguen en pantalla; vuelve a guardarlos.' : error instanceof Error ? error.message : fallback;
 const date = (value: string) => new Date(value).toLocaleString('es-PA', { timeZone: 'America/Panama', dateStyle: 'medium', timeStyle: 'short' });
 const valuesFrom = (settings: PricingSettings) => Object.fromEntries(fields.map(key => [key, settings[key]])) as PricingSettingsValues;
@@ -98,6 +99,9 @@ export default function PricingSettingsPanel({ account }: { account: Account }) 
         <label>Si el cliente confirma y faltan existencias<select value={form.accept_shortfall_policy} disabled={locked('accept_shortfall_policy')} onChange={event => set('accept_shortfall_policy', event.target.value as PricingSettingsValues['accept_shortfall_policy'])}>
           <option value="block">Bloquear la confirmación</option><option value="allow">Permitir y avisarme</option></select>
           <small>Solo cuentan las unidades que bajaron desde que enviaste la cotización.</small></label>
+        <label>Reservar las unidades de cada cotización enviada<select value={form.quote_hold_days ?? 3} disabled={locked('quote_hold_days')} onChange={event => set('quote_hold_days', Number(event.target.value))}>
+          {[...new Set([...holdDays, form.quote_hold_days ?? 3])].sort((a, b) => a - b).map(days => <option key={days} value={days}>{days === 1 ? '1 día' : `${days} días`}</option>)}</select>
+          <small>Al enviarla, sus unidades dejan de estar disponibles para tus otras cotizaciones mientras el cliente decide. Si vence sin respuesta, vuelven a tu inventario y, si el cliente la confirma después, se revisan las existencias.</small></label>
       </fieldset>
       <fieldset>
         <legend><Bot size={15}/>Asistente de IA</legend>

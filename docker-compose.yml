@@ -155,6 +155,28 @@ services:
       start_period: 60s
     restart: unless-stopped
 
+  quote-holds:
+    # Frees the stock of sent quotations whose hold lapsed while the client decided (mall.stock_reservations.expire_due).
+    image: ${COMPOSE_PROJECT_NAME:-partsmall}-app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "mall.quote_holds_runner"]
+    environment: *api_environment
+    volumes:
+      - .:/app
+    depends_on:
+      app:
+        condition: service_healthy
+        restart: true  # long-running: recreated with app, so it never runs code older than the migrated database
+    healthcheck:
+      test: ["CMD", "python", "-m", "mall.quote_holds_runner", "--healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
   redis:
     image: redis:7-alpine
     # Only the inbox's websocket nudges go through it: nothing to keep across restarts.

@@ -37,7 +37,10 @@ TITLES = {
     'request_adjustment': '{who} solicitó un ajuste', 'return_quote': '{who} devolvió la cotización v{revision} para confirmar',
     'accept': '{who} confirmó el acuerdo', 'deliver': '{who} marcó la orden como entregada', 'report_shortfall': '{who} reportó un faltante',
     'accept_shortfall': '{who} aceptó el faltante', 'cancel': '{who} canceló el acuerdo', 'reject': '{who} rechazó la orden',
+    'hold_expired': 'Venció la reserva de la cotización v{revision}',
 }
+# Kept in the order's Actividad only: no bell, push, email or WhatsApp notice (a lapsed hold is a fact, not anyone's decision).
+QUIET_EVENTS = ('hold_expired',)
 
 
 def iso(value):
@@ -139,7 +142,7 @@ def group_data(group, count=0):
 
 
 def notifications(user):
-    return DealEvent.objects.filter(order__in=my_deals(user).values('pk')).exclude(account__in=member_accounts(user))
+    return DealEvent.objects.filter(order__in=my_deals(user).values('pk')).exclude(account__in=member_accounts(user)).exclude(kind__in=QUIET_EVENTS)
 
 
 def own_side(row):

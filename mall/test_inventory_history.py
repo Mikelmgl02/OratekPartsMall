@@ -26,7 +26,7 @@ def borrow(source, *names):
 class QuotationLedgerTests(APITestCase):
     """A confirmed quotation moves the supplier's stock through its reservations; the ledger shows each movement with its order."""
     locals().update(borrow(reservation_tests.StockReservationTests, 'setUp', 'account', 'item', 'url', 'payload', 'submit', 'stock_snapshot', 'order',
-                           'review', 'action', 'drafted', 'quote', 'headers', 'file', 'handshake', 'counts', 'upload', 'job_url', 'commit'))
+                           'review', 'action', 'drafted', 'quote', 'headers', 'file', 'handshake', 'counts', 'upload', 'job_url', 'commit', 'sent'))
 
     def ledger(self, query='', management=False):
         base = f'/api/v1/management/accounts/{self.supplier_a.pk}/ledger/' if management else f'/api/v1/accounts/{self.supplier_a.pk}/ledger/'
@@ -63,12 +63,15 @@ class QuotationLedgerTests(APITestCase):
 
 
     def test_movements_name_the_client_not_its_buyer_and_superusers_see_usernames(self):
-        self.handshake()
+        order, quotation = self.sent()
+        self.client.force_authenticate(self.buyer)
+        self.assertEqual(self.action(order, 'reject', quotation_id=quotation['id'], reason_code='not_needed', reason='').status_code, 200)
         self.client.force_authenticate(self.seller_a)
-        reserve = self.ledger('?kind=reserve').json()['results'][0]
-        self.assertEqual(reserve['actor'], reserve['order']['client_name'])  # the buyer who accepted, as their client account
+        reserve, release = self.ledger('?kind=reserve').json()['results'][0], self.ledger('?kind=release').json()['results'][0]
+        self.assertEqual(reserve['actor'], self.seller_a.username)  # the member who sent the quotation, which holds its units
+        self.assertEqual(release['actor'], release['order']['client_name'])  # the buyer who rejected it, as their client account
         self.client.force_authenticate(User.objects.create_superuser('ledger-root2', 'ledger-root2@example.invalid', 'Example938!'))
-        self.assertEqual(self.ledger('?kind=reserve', management=True).json()['results'][0]['actor'], self.buyer.username)
+        self.assertEqual(self.ledger('?kind=release', management=True).json()['results'][0]['actor'], self.buyer.username)
 
     def test_date_and_item_filters_and_their_errors(self):
         self.handshake()

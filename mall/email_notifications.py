@@ -21,7 +21,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .deal_attachments import describe
-from .inbox import cursor_for, event_title
+from .inbox import QUIET_EVENTS, cursor_for, event_title
 from .inbox_models import ConversationRead, InboxCursor
 from .models import DealEvent, User
 from . import push
@@ -129,7 +129,7 @@ def message_saved(sender, instance, created=False, raw=False, **kwargs):
 
 
 def event_saved(sender, instance, created=False, raw=False, **kwargs):
-    if not created or raw or not email_enabled():
+    if not created or raw or not email_enabled() or instance.kind in QUIET_EVENTS:
         return
     event, order = instance, instance.order
 

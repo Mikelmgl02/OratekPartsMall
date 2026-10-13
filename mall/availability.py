@@ -15,23 +15,25 @@ def line_item_identity_ok(line, supplier_id):
 
 
 def check_lines(lines_with_qty, *, lock=False):
-    """Single entry point: [(order_line, quantity)] -> [{order_line_id, quantity, identity_ok, available, reported, reserved, updated_at}].
+    """Single entry point: [(order_line, quantity)] -> [{order_line_id, quantity, identity_ok, available, reported, reserved, held, updated_at}].
 
-    `available` is None when the identity guard fails. v1 reads without a lock; lock=True re-reads the items with
-    select_for_update in pk order and is reserved for the stock reservation step.
+    `available` is None when the identity guard fails; otherwise it counts the units the line's own order already holds (its sent
+    quotation's hold, `held`), which the item's available stock leaves out for everyone else. v1 reads without a lock; lock=True re-reads
+    the items with select_for_update in pk order and is reserved for the stock reservation step.
     """
+    from .stock_reservations import available_for, held_units
     pairs = list(lines_with_qty)
     if lock:
         items = {item.pk: item for item in SupplierItem.objects.select_for_update().filter(
             pk__in={line.supplier_item_id for line, _ in pairs}).order_by('pk')}
         for line, _ in pairs:
             line.supplier_item = items[line.supplier_item_id]
-    result = []
+    result, own = [], held_units(line.pk for line, _ in pairs)
     for line, quantity in pairs:
-        item, ok = line.supplier_item, line_item_identity_ok(line, line.request.supplier_id)
+        item, ok, held = line.supplier_item, line_item_identity_ok(line, line.request.supplier_id), own.get(line.pk, 0)
         result.append({'order_line_id': line.pk, 'quantity': quantity, 'identity_ok': ok,
-                       'available': item.available_quantity if ok else None, 'reported': item.reported_quantity if ok else None,
-                       'reserved': item.reserved_quantity if ok else None, 'updated_at': item.updated_at if ok else None})
+                       'available': available_for(item, held) if ok else None, 'reported': item.reported_quantity if ok else None,
+                       'reserved': item.reserved_quantity if ok else None, 'held': held, 'updated_at': item.updated_at if ok else None})
     return result
 
 

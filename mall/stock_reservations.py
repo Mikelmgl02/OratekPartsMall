@@ -1,7 +1,10 @@
-"""Stock held by confirmed deals. At the handshake each confirmed quotation line reserves its units on the supplier item, so they leave
-its available stock (what quotations check and customers see) while the supplier's reported count stays as the supplier sent it.
-A stock upload then asks the supplier, for every confirmed order still holding units of an uploaded item, whether the new count already
-discounts it: if it does, its reservation is settled (the count includes the sale); if not, it keeps holding the units.
+"""Stock held by quotations and confirmed deals. When the supplier sends a quotation, each line with units reserves them on the supplier
+item, so they leave its available stock (what the supplier's other quotations check and customers see) while the supplier's reported count
+stays as the supplier sent it. The hold lasts the supplier's quote_hold_days while the client decides: a new version replaces it, a
+rejection releases it, and once it lapses (expire_due) the units are free again; the client's confirmation keeps it, without expiry, or
+reserves again what had lapsed. A stock upload then asks the supplier, for every confirmed order still holding units of an uploaded item,
+whether the new count already discounts it: if it does, its reservation is settled (the count includes the sale); if not, it keeps holding
+the units. Quotations not yet confirmed are never asked: nothing was sold yet.
 
 Every reservation's units enter the ledger once (a reserve entry) and leave it through entries that point to it and name its order: a
 settle (the supplier's count includes the sale), a shortfall (units the supplier never had leave the count and the reservation together, so
@@ -41,31 +44,57 @@ def held_by(order, lines=None):
     return items, held
 
 
-def reserve_confirmed(order, quotation, actor):
-    """Reserve the units of every confirmed line with units; returns the reservations made."""
+def hold(order, quotation, actor, *, expires_at=None):
+    """The order's stock follows `quotation`, its current revision: what another revision held is released (a new version replaces it),
+    its lines with units keep their open reservation and the ones without one reserve now, every line offered in full (a line confirmed
+    above stock holds what was promised). expires_at: until when a quotation the client has not confirmed holds its units; None once
+    confirmed. Returns (units reserved now, units held in all)."""
     lines = list(quotation.lines.select_related('order_line').filter(quantity__gt=0).order_by('pk'))
-    if not lines:
-        return []
+    current = StockReservation.objects.filter(order=order, status='open')
+    item_ids = sorted({line.order_line.supplier_item_id for line in lines} | set(current.values_list('item_id', flat=True)))
+    if not item_ids:
+        return 0, 0
     share_accounts(order)
-    items = {item.pk: item for item in SupplierItem.objects.select_for_update().filter(
-        pk__in=sorted({line.order_line.supplier_item_id for line in lines})).order_by('pk')}
-    made = []
+    items = {item.pk: item for item in SupplierItem.objects.select_for_update().filter(pk__in=item_ids).order_by('pk')}
+    held = list(StockReservation.objects.select_for_update(of=('self',)).filter(pk__in=current.values('pk')).order_by('created_at', 'pk'))
+    offered = {line.pk for line in lines}
+    for reservation in held:
+        if reservation.quotation_line_id not in offered:
+            release(items[reservation.item_id], reservation, actor, f'{order.reference} · v{quotation.revision} la reemplaza')
+    kept = [reservation for reservation in held if reservation.quotation_line_id in offered]
+    StockReservation.objects.filter(pk__in=[reservation.pk for reservation in kept]).update(expires_at=expires_at)
+    reserved, label = 0, f'{order.reference} · cotización v{quotation.revision}' if expires_at else order.reference
     for line in lines:
+        if any(reservation.quotation_line_id == line.pk for reservation in kept):
+            continue
         item = items[line.order_line.supplier_item_id]
         item.reserved_quantity += line.quantity
         item.save(update_fields=['reserved_quantity', 'updated_at'])
-        reservation = StockReservation.objects.create(item=item, order=order, quotation_line=line, quantity=line.quantity)
-        made.append(reservation)
+        reservation = StockReservation.objects.create(item=item, order=order, quotation_line=line, quantity=line.quantity, expires_at=expires_at)
         StockEntry.objects.create(item=item, reservation=reservation, kind='reserve', quantity=line.quantity, direction='credit',
                                   balance_type='reservation', reserved_delta=line.quantity, reserved_direction='credit',
-                                  reported_after=item.reported_quantity, reserved_after=item.reserved_quantity, actor=actor, reference=order.reference)
-    return made
+                                  reported_after=item.reported_quantity, reserved_after=item.reserved_quantity, actor=actor, reference=label[:120])
+        reserved += line.quantity
+    return reserved, reserved + sum(reservation.quantity for reservation in kept)
+
+
+def held_units(order_lines):
+    """{order line id: units its order's open reservations hold}: an order's own hold is part of what it can count on, so its stock
+    checks add it back to the item's available units."""
+    return dict(StockReservation.objects.filter(status='open', quotation_line__order_line__in=list(order_lines)).values_list(
+        'quotation_line__order_line_id', 'quantity'))
+
+
+def available_for(item, held=0):
+    """The item's available units for an order that already holds `held` of them."""
+    return max(0, item.reported_quantity - (item.reserved_quantity - held))
 
 
 def open_reservations(items):
-    """{item id: [open reservations with their order]} for these supplier items."""
+    """{item id: [open reservations with their order]} of confirmed deals for these supplier items (a quotation's hold is not a sale)."""
     held = {}
-    for reservation in StockReservation.objects.filter(item__in=list(items), status='open').select_related('order').order_by('created_at', 'pk'):
+    for reservation in StockReservation.objects.filter(item__in=list(items), status='open', order__handshaked_at__isnull=False).select_related(
+            'order').order_by('created_at', 'pk'):
         held.setdefault(reservation.item_id, []).append(reservation)
     return held
 
@@ -143,22 +172,51 @@ def settle_synced(order, actor):
     return sum(settle(items[item_id], reservations, actor, 'entregado · apiag-cloud') for item_id, reservations in sorted(by_item.items(), key=lambda pair: str(pair[0])))
 
 
-def release_deal(order, actor):
-    """A cancelled deal frees the units it still held (they exist, so they are available again). Returns the units released."""
+def release(item, reservation, actor, reference):
+    """Frees what a reservation still holds (the units exist, so they are available again); the item and the reservation are locked."""
+    if item.reserved_quantity < reservation.quantity:
+        raise LedgerMismatch(f'Las reservas de {item.codigo} ({item.supplier_invent_id}) no cuadran: el artículo reserva {item.reserved_quantity} '
+                             f'unidades y {reference} retiene {reservation.quantity}. No se guardó nada; avisa al administrador.')
+    item.reserved_quantity -= reservation.quantity
+    StockEntry.objects.create(item=item, reservation=reservation, kind='release', quantity=reservation.quantity, direction='debit',
+                              balance_type='reservation', reserved_delta=reservation.quantity, reserved_direction='debit',
+                              reported_after=item.reported_quantity, reserved_after=item.reserved_quantity, actor=actor, reference=reference[:120])
+    item.save(update_fields=['reserved_quantity', 'updated_at'])
+    reservation.status, reservation.released_at = 'released', timezone.now()
+    reservation.save(update_fields=['status', 'released_at'])
+    return reservation.quantity
+
+
+def release_deal(order, actor, why='cancelado'):
+    """A rejected order or a cancelled deal frees the units it still held. Returns the units released."""
     items, held = held_by(order)
-    released = 0
-    for reservation in held:
-        item = items[reservation.item_id]
-        if item.reserved_quantity < reservation.quantity:
-            raise LedgerMismatch(f'Las reservas de {item.codigo} ({item.supplier_invent_id}) no cuadran: el artículo reserva {item.reserved_quantity} '
-                                 f'unidades y el pedido {order.reference} retiene {reservation.quantity}. No se guardó nada; avisa al administrador.')
-        item.reserved_quantity -= reservation.quantity
-        StockEntry.objects.create(item=item, reservation=reservation, kind='release', quantity=reservation.quantity, direction='debit',
-                                  balance_type='reservation', reserved_delta=reservation.quantity, reserved_direction='debit',
-                                  reported_after=item.reported_quantity, reserved_after=item.reserved_quantity, actor=actor,
-                                  reference=f'{order.reference} · cancelado')
-        item.save(update_fields=['reserved_quantity', 'updated_at'])
-        released += reservation.quantity
-        reservation.status, reservation.released_at = 'released', timezone.now()
-        reservation.save(update_fields=['status', 'released_at'])
-    return released
+    return sum(release(items[reservation.item_id], reservation, actor, f'{order.reference} · {why}') for reservation in held)
+
+
+def expire_due(now=None):
+    """Quotations whose hold lapsed while the client decided: their units are free again (the quotation stays; a later confirmation checks
+    the stock and reserves again). Each order in its own transaction, in the lock order (the order row first). Returns the orders released."""
+    from django.db import transaction
+    from .models import DealEvent, SupplierRequest
+    now = now or timezone.now()
+    due = list(StockReservation.objects.filter(status='open', expires_at__lte=now, order__handshaked_at__isnull=True)
+               .values_list('order_id', flat=True).distinct().order_by('order_id'))
+    expired = 0
+    for order_id in due:
+        with transaction.atomic():
+            order = SupplierRequest.objects.select_for_update(of=('self',)).get(pk=order_id)
+            if order.handshaked_at:
+                continue  # confirmed meanwhile: the hold is the deal's now
+            items, held = held_by(order)
+            held = [reservation for reservation in held if reservation.expires_at and reservation.expires_at <= now]
+            if not held:
+                continue
+            quotation = held[0].quotation_line.quotation
+            # No one decided it: the ledger names who sent the quotation, and the event acts for no account (it reads MotionPartes).
+            actor, revision = quotation.published_by, quotation.revision
+            units = sum(release(items[reservation.item_id], reservation, actor, f'{order.reference} · cotización v{revision} vencida') for reservation in held)
+            DealEvent.objects.create(order=order, account=None, actor=actor, kind='hold_expired', quotation=quotation,
+                                     description=f'VENCIÓ LA RESERVA DE LA COTIZACIÓN V{revision}: {units} {"UNIDAD VUELVE" if units == 1 else "UNIDADES VUELVEN"} '
+                                                 'A ESTAR DISPONIBLES. SI EL CLIENTE LA CONFIRMA, SE REVISAN LAS EXISTENCIAS.')
+            expired += 1
+    return expired

@@ -2,6 +2,7 @@
 import hashlib
 import json
 from collections import Counter
+from datetime import timedelta
 from decimal import Decimal
 
 from django.conf import settings
@@ -26,7 +27,7 @@ from .quote_assistant_models import QuoteAssistantRun
 from .quote_draft_models import DealQuotationAudit, DealQuotationDraft, DealQuotationLineAudit
 from .quote_drafts import stock_by_line
 from .deal_lifecycle import accept_shortfall, cancel, deliver, lifecycle_data, reject, report_shortfall
-from .stock_reservations import reserve_confirmed
+from .stock_reservations import hold
 from .request_models import (SupplierRequest, DealQuotation, DealQuotationLine, DealEvent,
                              DealMessage, DealCommand, DealShortfall)
 from .request_views import (RequestConflict, WholeRequestQuantity, request_detail_queryset,
@@ -53,6 +54,20 @@ def iso(value):
     return value.isoformat() if value else None
 
 
+def stock_hold(row, quotation):
+    """While the client decides on the sent quotation (mall.stock_reservations.hold): its units held until when ('held'), or the hold
+    that lapsed ('lapsed'; a confirmation then checks the stock again). None otherwise."""
+    if row.handshaked_at or row.status not in ('quoted', 'adjustment') or not quotation:
+        return None
+    reservations = list(row.reservations.filter(quotation_line__quotation_id=quotation['id']).values_list('status', 'quantity', 'expires_at'))
+    held = [entry for entry in reservations if entry[0] == 'open']
+    shown = held or reservations
+    if not shown:
+        return None
+    until = [expires for _, _, expires in shown if expires]
+    return {'state': 'held' if held else 'lapsed', 'units': sum(quantity for _, quantity, _ in shown), 'until': iso(min(until)) if until else None}
+
+
 def deal_data(row):
     quotes = row.quotations.prefetch_related('lines__order_line').order_by('revision')
     quotations = [{'id': str(quote.pk), 'revision': quote.revision, 'currency': quote.currency,
@@ -68,6 +83,7 @@ def deal_data(row):
     return {'client': {'id': str(row.client_id), 'name': row.client_name},
             'supplier': {'id': str(row.supplier_id), 'name': row.supplier_name},
             'quotations': quotations, 'quotation': quotations[-1] if quotations else None, **lifecycle_data(row),
+            'stock_hold': stock_hold(row, quotations[-1] if quotations else None),
             'events': [{'id': event.pk, 'kind': event.kind, 'description': event.description,
                         # An administrator's decision acts for no account.
                         'account_name': event.account.name if event.account else 'MOTIONPARTES',
@@ -232,6 +248,16 @@ def publish_permission(account, user, denied=PUBLISH_DENIED):
     return permission, settings_row
 
 
+def held_note(row, quotation, actor, now, settings_row):
+    """A sent quotation holds its units for the supplier's quote_hold_days (mall.stock_reservations.hold); its event says until when."""
+    until = now + timedelta(days=settings_row.quote_hold_days)
+    _, held = hold(row, quotation, actor, expires_at=until)
+    if not held:
+        return ''
+    return (f' RESERVA {held} {"UNIDAD" if held == 1 else "UNIDADES"} DEL INVENTARIO DEL PROVEEDOR HASTA EL '
+            f'{timezone.localtime(until).strftime("%d/%m/%Y %H:%M")}.')
+
+
 class DealActions(APIView):
     @extend_schema(request=DealActionSerializer, responses=OpenApiTypes.OBJECT,
                    description='Decisiones del acuerdo. Después del acuerdo: deliver y report_shortfall (proveedor; shortfall con order_line_id y '
@@ -305,7 +331,8 @@ class DealActions(APIView):
                 order_line_id=line['order_line_id'], quantity=line['quantity'], unit_price=line['unit_price']) for line in data['lines']])
             write_quote_audit(latest, prior, request, account, draft, context, permission)
             row.status = 'quoted'
-            description = f'COTIZACIÓN V{latest.revision} CONFIRMADA POR EL PROVEEDOR Y ENVIADA AL CLIENTE.'
+            description = f'COTIZACIÓN V{latest.revision} CONFIRMADA POR EL PROVEEDOR Y ENVIADA AL CLIENTE.' + held_note(
+                row, latest, request.user, now, settings_row)
             # The published revision consumes the draft (and any row prepared on an older revision).
             DealQuotationDraft.objects.filter(order=row).delete()
         elif action == 'accept':
@@ -330,10 +357,11 @@ class DealActions(APIView):
             row.status = 'handshaked'
             row.handshaked_at = now
             DealQuotationDraft.objects.filter(order=row).delete()
-            # The agreed units leave the supplier's available stock now (mall.stock_reservations); the order row is already locked.
-            held = sum(reservation.quantity for reservation in reserve_confirmed(row, latest, request.user))
+            # The quotation's hold becomes the deal's, without expiry; what had lapsed is reserved again (mall.stock_reservations). The
+            # order row is already locked.
+            _, held = hold(row, latest, request.user)
             description = 'AMBAS PARTES CONFIRMARON LA COTIZACIÓN. ACUERDO CERRADO · HANDSHAKED.' + (
-                f' SE RESERVARON {held} {"UNIDAD" if held == 1 else "UNIDADES"} DEL INVENTARIO DEL PROVEEDOR.' if held else '')
+                f' EL ACUERDO RESERVA {held} {"UNIDAD" if held == 1 else "UNIDADES"} DEL INVENTARIO DEL PROVEEDOR.' if held else '')
         elif action == 'request_adjustment':
             if row.status != 'quoted':
                 raise RequestConflict('Solo puedes pedir un ajuste de una cotización pendiente de confirmación.')
@@ -358,7 +386,7 @@ class DealActions(APIView):
             if check and check['short']:
                 raise RequestConflict(RETURN_SHORTFALL_DETAIL)
             row.status = 'quoted'
-            description = data['reason'] or 'EL PROVEEDOR DEVOLVIÓ LA MISMA COTIZACIÓN PARA CONFIRMACIÓN.'
+            description = (data['reason'] or 'EL PROVEEDOR DEVOLVIÓ LA MISMA COTIZACIÓN PARA CONFIRMACIÓN.') + held_note(row, latest, request.user, now, settings_row)
             DealQuotationDraft.objects.filter(order=row).delete()
             # The discarded draft took the applied assistant proposals with it; a later adjustment of this revision starts over.
             QuoteAssistantRun.objects.filter(order=row, base_quotation=latest).update(decisions={})

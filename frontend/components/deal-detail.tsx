@@ -299,7 +299,15 @@ function DealDocument({ deal, supplier, folded, price, busy, stockWarnings, onRe
       <button type="button" className="button soft small deal-document-expand" aria-label="Ampliar la tabla" title="Ver la tabla en grande, con todas sus columnas"
         onClick={event => { event.preventDefault(); event.stopPropagation(); setExpanded(true); }}><Maximize2 size={14}/><span>Ampliar</span></button></div></div>;
   const notes = deal.notes && <div className="deal-terms"><h4>Notas del cliente</h4><p>{deal.notes}</p></div>;
+  // A sent quotation holds its units while the client decides (mall.stock_reservations.hold).
+  const hold = deal.stock_hold, held = hold && `${hold.units} ${hold.units === 1 ? 'unidad' : 'unidades'}`;
+  const holdNote = hold && <p className={`deal-hold ${hold.state}`} role="note" aria-label="Reserva de existencias"><LockKeyhole size={14}/><span>{hold.state === 'held'
+    ? supplier ? `Esta cotización reserva ${held} de tu inventario${hold.until ? ` hasta el ${date(hold.until)}` : ''}: tus otras cotizaciones no las cuentan.`
+      : `${deal.supplier.name} reserva estas ${held} para ti. Confírmala${hold.until ? ` antes del ${date(hold.until)}` : ''} para asegurarlas.`
+    : supplier ? `La reserva venció${hold.until ? ` el ${date(hold.until)}` : ''}: sus ${held} volvieron a tu inventario. Si el cliente confirma, se revisan tus existencias.`
+      : `La reserva de existencias venció${hold.until ? ` el ${date(hold.until)}` : ''}: si confirmas, se revisa que el proveedor aún tenga las unidades.`}</span></p>;
   const body = <>
+    {holdNote}
     {supplier && open && <div className="deal-document-stock">
       <div className="supplier-request-stock-heading"><div><h4>Existencias de tu inventario</h4><p>Disponibles = reportadas menos reservadas. Confirma las unidades que puedes suministrar.</p></div><button type="button" className="button soft small" disabled={busy} onClick={onRefresh}><RefreshCw size={15}/>Actualizar existencias</button></div>
       {stockWarnings > 0 && <div className="notice supplier-request-stock-warning" role="status">{stockWarnings} {stockWarnings === 1 ? 'artículo requiere' : 'artículos requieren'} confirmar disponibilidad. La orden conserva todas las unidades pedidas.</div>}

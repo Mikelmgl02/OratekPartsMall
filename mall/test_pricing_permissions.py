@@ -48,7 +48,7 @@ class PricingPermissionTests(APITestCase):
                 self.assertEqual(response.data, {
                     'default_currency': 'USD', 'usd_pab_parity': True, 'config_min_permission': 'staff', 'publish_min_permission': 'staff',
                     'over_request_policy': 'confirm', 'over_stock_policy': 'confirm', 'accept_shortfall_policy': 'block',
-                    'prefill_quantity': 'requested', 'assistant_enabled': False, 'version': 1, 'updated_at': None, 'updated_by': None,
+                    'prefill_quantity': 'requested', 'quote_hold_days': 3, 'assistant_enabled': False, 'version': 1, 'updated_at': None, 'updated_by': None,
                     'permission': permission, 'can_configure': True, 'can_manage_permissions': permission == 'owner'})
         self.assertFalse(SupplierPricingSettings.objects.exists())
         self.assertFalse(PricingAuditEvent.objects.exists())

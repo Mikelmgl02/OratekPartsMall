@@ -166,7 +166,8 @@ class QuoteDraftTests(APITestCase):
         lines = [{'order_line_id': str(line.pk), 'quantity': line.quantity, 'unit_price': '11.00'} for line in order.lines.all()]
         revised = self.action(order, 'quote', lines=lines, draft_version=self.drafted(order, lines))
         self.assertEqual((revised.status_code, revised.data['status'], revised.data['quotation']['revision']), (200, 'quoted', 2))
-        self.assertEqual(DealEvent.objects.filter(order=order).latest('id').description, 'COTIZACIÓN V2 CONFIRMADA POR EL PROVEEDOR Y ENVIADA AL CLIENTE.')
+        self.assertRegex(DealEvent.objects.filter(order=order).latest('id').description,
+                         r'^COTIZACIÓN V2 CONFIRMADA POR EL PROVEEDOR Y ENVIADA AL CLIENTE\. RESERVA 5 UNIDADES DEL INVENTARIO DEL PROVEEDOR HASTA EL \d\d/\d\d/\d{4} \d\d:\d\d\.$')
         self.client.force_authenticate(self.buyer)
         self.assertEqual(self.action(order, 'accept', quotation_id=first['id']).status_code, 409)  # the version the client saw is gone
         self.assertEqual(self.action(order, 'accept', quotation_id=revised.data['quotation']['id']).status_code, 200)

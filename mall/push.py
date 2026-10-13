@@ -19,7 +19,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .deal_attachments import describe
-from .inbox import event_title, snippet
+from .inbox import QUIET_EVENTS, event_title, snippet
 from .inbox_models import PushSubscription
 from .models import Account, Membership
 
@@ -96,7 +96,7 @@ def message_saved(sender, instance, created=False, raw=False, **kwargs):
 
 
 def event_saved(sender, instance, created=False, raw=False, **kwargs):
-    if created and not raw and push_enabled():
+    if created and not raw and push_enabled() and instance.kind not in QUIET_EVENTS:
         notify_later(instance.order, instance.account_id, instance.actor_id, lambda: (event_title(instance), f'Orden {instance.order.reference}'))
 
 

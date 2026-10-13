@@ -18,10 +18,10 @@ const line: SupplierRequestLine = { id: lineId, part_id: '66666666-6666-4666-866
   supplier_invent_id: 'ID-1', sku: '58411-1R000', name: 'TAMBOR', codigo: '58411-1R000-G', brand: 'KSM', description: 'TAMBOR', quantity: 5,
   stock: { reported_quantity: 9, reserved_quantity: 0, available_quantity: 9, shortfall: 0, updated_at: stamp } };
 
-async function panel(page: Page, side: 'client' | 'supplier', status: Deal['status'], quoted: boolean, lines: SupplierRequestLine[] = [line]) {
+async function panel(page: Page, side: 'client' | 'supplier', status: Deal['status'], quoted: boolean, lines: SupplierRequestLine[] = [line], extra: Partial<Deal> = {}) {
   const account = side === 'client' ? { ...client, roles: ['client_business'], capabilities: ['client'] } : { ...supplier, roles: ['supplier_retail'], capabilities: ['supplier'] };
   let deal = { id: orderId, reference: 'ORD-0123', client, supplier, status, version: 3, created_at: stamp, reviewed_at: stamp, handshaked_at: null,
-    line_count: lines.length, unit_count: 5, notes: '', quotation: quoted ? quote : null, quotations: quoted ? [quote] : [], events: [], lines, can_decide: true } as unknown as Deal;
+    line_count: lines.length, unit_count: 5, notes: '', quotation: quoted ? quote : null, quotations: quoted ? [quote] : [], events: [], lines, can_decide: true, ...extra } as unknown as Deal;
   const actions: Record<string, unknown>[] = [], reviews: string[] = [];
   const counterpart = side === 'client' ? supplier : client;
   await page.route('**/api/**', route => route.fulfill({ json: empty }));
@@ -64,6 +64,17 @@ test('a client confirms or asks to adjust a quotation from the panel, next to th
   await document.getByRole('button', { name: 'Enviar ajuste', exact: true }).click();
   await expect.poll(() => actions.at(-1)).toMatchObject({ action: 'request_adjustment', quotation_id: quote.id, reason: 'SOLO 3 UNIDADES' });
   await expect(decisions.getByRole('button', { name: 'Confirmar', exact: true })).toHaveCount(0);  // now with the supplier
+});
+
+test('a sent quotation says until when it holds its units, and when the hold lapsed', async ({ page }) => {
+  const held = { stock_hold: { state: 'held' as const, units: 5, until: '2026-10-15T15:00:00Z' } };
+  const { document } = await panel(page, 'client', 'quoted', true, [line], held);
+  await expect(document.getByRole('note', { name: 'Reserva de existencias', exact: true })).toHaveText(
+    'REPUESTOS CENTRAL reserva estas 5 unidades para ti. Confírmala antes del 10/15/2026, 10:00 a. m. para asegurarlas.');
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
+  const lapsed = await panel(page, 'supplier', 'quoted', true, [line], { stock_hold: { state: 'lapsed', units: 5, until: '2026-10-15T15:00:00Z' } });
+  await expect(lapsed.document.getByRole('note', { name: 'Reserva de existencias', exact: true })).toHaveText(
+    'La reserva venció el 10/15/2026, 10:00 a. m.: sus 5 unidades volvieron a tu inventario. Si el cliente confirma, se revisan tus existencias.');
 });
 
 test('a client confirms the quotation in two steps from the panel', async ({ page }) => {

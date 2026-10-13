@@ -1235,6 +1235,9 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .deal-document-modal-summary { display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:8px 16px; margin:0 0 12px; color:var(--muted); font-size:13px; }
 .deal-document-modal-summary strong { color:var(--ink); font-size:20px; }
 .deal-document-modal .deal-terms { padding:14px 2px 0; }
+.deal-hold { display:flex; align-items:flex-start; gap:8px; margin:0; padding:10px 18px; border-bottom:1px solid var(--line); background:#eef6f0; color:#256b45; font-size:12.5px; line-height:1.5; }
+.deal-hold>svg { flex:0 0 auto; margin-top:2px; }
+.deal-hold.lapsed { background:#fdf5e7; color:#8a5a12; }
 .deal-line-short { color:#a1442f; font-weight:600; }
 .admin-grid-muted { color:var(--muted); }
 .deal-quote-editor { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; padding: 18px; background: #f6f7f3; border: 1px solid var(--line); border-radius: 14px; }

@@ -35,6 +35,8 @@ export type Deal = (ClientRequestDetail | SupplierRequestDetail) & {
   agreement?: DealAgreement | null; shortfalls?: DealShortfall[]; delivered_at?: string | null; cancellation?: DealCancellation | null;
   // stock_reserved: the handshake reserved stock; can_decide (supplier reads only): this member may take the supplier's decisions.
   stock_reserved?: boolean; can_decide?: boolean;
+  // While the client decides on the sent quotation: its units held until when, or the hold that lapsed (a confirmation checks stock again).
+  stock_hold?: { state: 'held' | 'lapsed'; units: number; until: string | null } | null;
 };
 export type QuotePayload = {
   currency: 'USD' | 'PAB'; terms: string; lines: { order_line_id: string; quantity: number; unit_price: string }[];

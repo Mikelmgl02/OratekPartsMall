@@ -8,10 +8,16 @@ from rest_framework.test import APITestCase
 
 from . import test_deals as deal_tests
 from . import test_supplier_import as import_tests
+from datetime import timedelta
+
+from django.utils import timezone
+
 from .check_stock_ledger import check, main, render
-from .models import StockEntry, SupplierItem
+from .models import DealEvent, StockEntry, SupplierItem
+from .pricing_models import SupplierPricingSettings
 from .request_models import StockReservation
 from .services import ingest_inventory
+from .stock_reservations import expire_due
 
 
 class StockReservationTests(APITestCase):
@@ -73,14 +79,96 @@ class StockReservationTests(APITestCase):
         entry = StockEntry.objects.get(kind='reserve')
         self.assertEqual((entry.item_id, entry.quantity, entry.direction, entry.balance_type, entry.reserved_delta, entry.reserved_direction,
                           entry.reported_after, entry.reserved_after, entry.reference, entry.actor, entry.reservation),
-                         (self.item_a.pk, 3, 'credit', 'reservation', 3, 'credit', 10, 5, order.reference, self.buyer, reservation))
-        self.assertIn('SE RESERVARON 3 UNIDADES DEL INVENTARIO DEL PROVEEDOR.', order.events.last().description)
+                         (self.item_a.pk, 3, 'credit', 'reservation', 3, 'credit', 10, 5, f'{order.reference} · cotización v1', self.seller_a, reservation))
+        self.assertIsNone(reservation.expires_at)  # held since the quotation was sent; confirmed, it no longer lapses
+        self.assertIn('EL ACUERDO RESERVA 3 UNIDADES DEL INVENTARIO DEL PROVEEDOR.', order.events.last().description)
         # An API feed has nobody to ask: the reservations keep holding their units against the new count.
         ingest_inventory(supplier=self.supplier_a, actor=self.seller_a, data={'update_id': 'feed-1', 'supplier_invent_id': 'A-001',
                                                                              'codigo': '58411-1R000-G', 'brand': 'KSM', 'description': 'TAMBOR A-001',
                                                                              'source': 'upload', 'quantity': 6})
         self.assertEqual(self.counts(self.item_a), (6, 5, 1))
         self.assertEqual(StockReservation.objects.get().status, 'open')
+
+    def sent(self, quantities=None, order=None):
+        """The supplier sends a quotation for 3 of A-001 and 2 of A-002 (or the given quantities) -> (order, quotation)."""
+        self.client.force_authenticate(self.buyer)
+        if order is None:
+            order = self.order()
+            self.review(order)
+        quantities = quantities or {}
+        lines = [{'order_line_id': str(line.pk), 'quantity': quantities.get(line.supplier_item_id, line.quantity), 'unit_price': '12.35'}
+                 for line in order.lines.all()]
+        self.client.force_authenticate(self.seller_a)
+        # A new version of a sent quotation goes through its draft, as the supplier's editor sends it.
+        response = self.action(order, 'quote', lines=lines, draft_version=self.drafted(order, lines)) if order.status == 'quoted' else self.quote(order, lines)
+        self.assertEqual(response.status_code, 200, response.data)
+        order.refresh_from_db()
+        return order, response.data['quotation']
+
+    def test_a_sent_quotation_holds_its_units_until_a_new_version_replaces_it_and_the_hold_lapses(self):
+        SupplierItem.objects.filter(pk=self.item_a.pk).update(reserved_quantity=0)  # the fixture's 2 units were never recorded
+        SupplierPricingSettings.objects.create(supplier=self.supplier_a, quote_hold_days=2)
+        order, first = self.sent()
+        # Sent, its units leave the available stock the supplier's other quotations see, for the supplier's 2 days.
+        self.assertEqual((self.counts(self.item_a), self.counts(self.item_a2)), ((10, 3, 7), (10, 2, 8)))
+        holds = StockReservation.objects.filter(order=order, status='open')
+        self.assertEqual(sorted(holds.values_list('quantity', flat=True)), [2, 3])
+        self.assertTrue(all(timedelta(days=2) - timedelta(minutes=1) < hold.expires_at - timezone.now() <= timedelta(days=2) for hold in holds))
+        self.assertRegex(order.events.last().description, r'RESERVA 5 UNIDADES DEL INVENTARIO DEL PROVEEDOR HASTA EL \d\d/\d\d/\d{4} \d\d:\d\d\.$')
+        self.client.force_authenticate(self.seller_a)
+        lines = {line['codigo']: line['stock'] for line in self.client.get(f'{self.url(self.supplier_a)}{order.pk}/').data['lines']}
+        # Its own units count for it: nothing to confirm, and they show apart.
+        self.assertEqual((lines['58411-1R000-G']['available_quantity'], lines['58411-1R000-G']['held_for_deal'], lines['58411-1R000-G']['shortfall']), (7, 3, 0))
+        # Another order sees only what is left; the draft of a new version of this one counts its own hold.
+        self.client.force_authenticate(self.buyer)
+        other = self.order()
+        self.review(other)
+        self.client.force_authenticate(self.seller_a)
+        draft = lambda row: {line['codigo']: line['stock']['available_quantity'] for line in self.client.get(
+            f'/api/v1/accounts/{self.supplier_a.pk}/requests/{row.pk}/draft/').data['draft']['lines']}
+        self.assertEqual(draft(other), {'58411-1R000-G': 7, '58411-1R000-KSM': 8})
+        self.assertEqual(draft(order), {'58411-1R000-G': 10, '58411-1R000-KSM': 10})
+
+        order, second = self.sent({self.item_a.pk: 1}, order=order)  # v2 offers only 1 of A-001
+        self.assertEqual((self.counts(self.item_a), self.counts(self.item_a2)), ((10, 1, 9), (10, 2, 8)))
+        self.assertEqual(set(StockEntry.objects.filter(kind='release').values_list('reference', flat=True)), {f'{order.reference} · v2 la reemplaza'})
+        self.assertEqual(StockReservation.objects.filter(order=order, status='open', quotation_line__quotation_id=second['id']).count(), 2)
+        self.assertEqual(check()['problems'], {})
+
+        self.assertEqual(expire_due(), 0)  # nothing due yet
+        StockReservation.objects.filter(order=order, status='open').update(expires_at=timezone.now() - timedelta(minutes=1))
+        self.assertEqual(expire_due(), 1)
+        self.assertEqual((self.counts(self.item_a), self.counts(self.item_a2)), ((10, 0, 10), (10, 0, 10)))
+        expired = DealEvent.objects.get(order=order, kind='hold_expired')
+        self.assertEqual((expired.account, str(expired.quotation_id)), (None, second['id']))
+        self.assertIn('VENCIÓ LA RESERVA DE LA COTIZACIÓN V2: 3 UNIDADES VUELVEN A ESTAR DISPONIBLES.', expired.description)
+        self.client.force_authenticate(self.buyer)
+        self.assertNotIn('hold_expired', [row['kind'] for row in self.client.get('/api/v1/inbox/notifications/').data['results']])  # Actividad only
+        order.refresh_from_db()
+        self.assertEqual(order.status, 'quoted')  # the quotation stays
+        self.assertEqual(check()['problems'], {})
+
+        # Confirmed after the hold lapsed: the stock is checked again and the deal reserves what it agreed, without expiry.
+        accepted = self.action(order, 'accept', quotation_id=second['id'])
+        self.assertEqual(accepted.status_code, 200, accepted.data)
+        self.assertEqual((self.counts(self.item_a), self.counts(self.item_a2)), ((10, 1, 9), (10, 2, 8)))
+        self.assertFalse(StockReservation.objects.filter(order=order, status='open', expires_at__isnull=False).exists())
+        self.assertEqual(expire_due(), 0)
+        self.assertEqual(check()['problems'], {})
+
+    def test_a_rejected_order_frees_its_quotation_and_an_upload_never_asks_about_quotations(self):
+        SupplierItem.objects.filter(pk=self.item_a.pk).update(reserved_quantity=0)
+        order, quotation = self.sent()
+        job = self.upload(a1=9, a2=10)
+        self.assertEqual(job['reservations'], [])  # nothing was sold yet: the file's count cannot discount it
+        self.assertEqual(self.commit(job).status_code, 200)
+        self.assertEqual(self.counts(self.item_a), (9, 3, 6))  # still held
+        self.client.force_authenticate(self.buyer)
+        rejected = self.action(order, 'reject', quotation_id=quotation['id'], reason_code='price_too_high', reason='')
+        self.assertEqual(rejected.status_code, 200, rejected.data)
+        self.assertEqual((self.counts(self.item_a), self.counts(self.item_a2)), ((9, 0, 9), (10, 0, 10)))
+        self.assertFalse(StockReservation.objects.filter(order=order, status='open').exists())
+        self.assertEqual(check()['problems'], {})
 
     def test_the_upload_asks_order_by_order_and_settles_only_what_the_file_discounts(self):
         first, second = self.handshake(), self.handshake()

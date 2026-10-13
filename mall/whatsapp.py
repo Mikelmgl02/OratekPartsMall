@@ -40,7 +40,7 @@ from rest_framework.views import APIView
 from .deal_attachments import describe
 from . import push
 from .email_notifications import ACTIVE
-from .inbox import cursor_for, event_title
+from .inbox import QUIET_EVENTS, cursor_for, event_title
 from . import login_hints
 from .inbox_models import AccountWhatsApp, ConversationRead, InboxCursor, WhatsAppMessage
 from .models import DealEvent, DealMessage
@@ -251,7 +251,7 @@ def message_saved(sender, instance, created=False, raw=False, **kwargs):
 
 
 def event_saved(sender, instance, created=False, raw=False, **kwargs):
-    if not created or raw or not whatsapp_enabled():
+    if not created or raw or not whatsapp_enabled() or instance.kind in QUIET_EVENTS:
         return
     event, order = instance, instance.order
 

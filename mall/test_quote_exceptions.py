@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest import skipUnless
 
 from django.db import connection
+from django.db.models import Sum
 from django.test import override_settings
 from rest_framework.test import APITestCase, APITransactionTestCase
 
@@ -15,7 +16,7 @@ from .models import SupplierItem
 from .pricing_models import PricingAuditEvent, SupplierPricingSettings
 from .quotation_exceptions import identity_context
 from .quote_draft_models import DealQuotationAudit, DealQuotationLineAudit
-from .request_models import DealCommand, DealEvent, DealQuotation, SupplierRequest
+from .request_models import DealCommand, DealEvent, DealQuotation, StockReservation, SupplierRequest
 
 
 class QuoteExceptionTests(APITestCase):
@@ -292,8 +293,9 @@ class QuoteExceptionTests(APITestCase):
         before = counts()
         accepted = self.accept(order, quotation)
         self.assertEqual((accepted.status_code, accepted.data['status']), (200, 'handshaked'))
-        # Accepting with a shortfall still reserves what was agreed; the reported counts stay as the supplier sent them.
-        self.assertEqual(counts(), {self.item_a.pk: (3, before[self.item_a.pk][1] + 3), self.item_a2.pk: (before[self.item_a2.pk][0], before[self.item_a2.pk][1] + 2)})
+        # Accepting with a shortfall keeps what the sent quotation held for the deal; the reported counts stay as the supplier sent them.
+        self.assertEqual(counts(), before)
+        self.assertEqual(StockReservation.objects.filter(order=order, status='open', expires_at__isnull=True).aggregate(units=Sum('quantity'))['units'], 5)
         audit = DealQuotationAudit.objects.get(quotation_id=quotation['id'])
         self.assertEqual(audit.accept_check['result'], 'accepted_with_shortfall')
         self.assertEqual(PricingAuditEvent.objects.filter(kind='accept_with_shortfall', order=order).count(), 1)

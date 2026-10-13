@@ -85,7 +85,9 @@ export type QuotationTrace = { available: false } | {
 // "Precios › Configuración": the supplier's private settings. Permission fields and the assistant change only by the owner; writes send only changed fields.
 export type SupplierPolicy = 'confirm' | 'block';
 export type PricingSettingsValues = { default_currency: Currency; usd_pab_parity: boolean; config_min_permission: MembershipPermission; publish_min_permission: MembershipPermission;
-  over_request_policy: SupplierPolicy; over_stock_policy: SupplierPolicy; accept_shortfall_policy: 'block' | 'allow'; prefill_quantity: 'requested' | 'available'; assistant_enabled: boolean };
+  over_request_policy: SupplierPolicy; over_stock_policy: SupplierPolicy; accept_shortfall_policy: 'block' | 'allow'; prefill_quantity: 'requested' | 'available';
+  // Days a sent quotation holds its units while the client decides (1–30).
+  quote_hold_days: number; assistant_enabled: boolean };
 export type PricingSettings = PricingSettingsValues & { version: number; updated_at: string | null; updated_by: { name: string } | null; permission: MembershipPermission;
   can_configure: boolean; can_manage_permissions: boolean };
 export type PricingSettingsUpdate = Partial<PricingSettingsValues> & { expected_version: number };
