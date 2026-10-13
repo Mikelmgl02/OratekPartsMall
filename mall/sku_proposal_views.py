@@ -1,7 +1,7 @@
 """Productos nuevos (superusers): the proposed new catalog SKUs of mall.sku_proposals, with their supplier items."""
 import uuid
 
-from django.db.models import Count, F, IntegerField, OuterRef, Q, Subquery, Sum, Value
+from django.db.models import Count, F, IntegerField, Max, OuterRef, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce, Greatest
 from django.shortcuts import get_object_or_404
 from drf_spectacular.types import OpenApiTypes
@@ -113,7 +113,11 @@ class ProposalSummary(APIView):
     @extend_schema(operation_id='v1_management_catalog_proposals_summary', responses=OpenApiTypes.OBJECT)
     def get(self, request):
         counts = dict(SkuProposal.objects.values_list('status').annotate(total=Count('pk')))
-        return Response({state: counts.get(state, 0) for state, _ in SkuProposal.STATUSES})
+        summary = {state: counts.get(state, 0) for state, _ in SkuProposal.STATUSES}
+        # When a pending proposal was last created, reopened or changed: the storefront reminder, once closed, shows again only after
+        # this moves (frontend/components/new-products-snackbar.tsx).
+        summary['pending_changed_at'] = SkuProposal.objects.filter(status='pending').aggregate(at=Max('updated_at'))['at']
+        return Response(summary)
 
 
 class ActionSerializer(serializers.Serializer):

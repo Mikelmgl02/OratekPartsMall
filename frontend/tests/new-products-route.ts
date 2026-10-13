@@ -4,6 +4,6 @@ import type { Route } from '@playwright/test';
 // that count as zero instead of listing it among the unexpected routes.
 export function noNewProducts(route: Route) {
   if (new URL(route.request().url()).pathname !== '/api/management/catalog/proposals/summary') return false;
-  void route.fulfill({ json: { pending: 0, approved: 0, linked: 0, rejected: 0, resolved: 0 } });
+  void route.fulfill({ json: { pending: 0, approved: 0, linked: 0, rejected: 0, resolved: 0, pending_changed_at: null } });
   return true;
 }

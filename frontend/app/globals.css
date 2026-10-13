@@ -2682,3 +2682,11 @@ body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-s
 .own-catalog-notice { margin:20px 0 12px; }
 .own-catalog-notice > svg { flex-shrink:0; }
 @media (max-width:640px) { .own-catalog-notice { flex-wrap:wrap; } .own-catalog-notice > div { flex:1 1 calc(100% - 32px); min-width:0; } .own-catalog-notice button { margin-left:32px; } }
+/* Administrators: the Productos nuevos reminder on the storefront, bottom left, under the transient toasts and every dialog. */
+.admin-snackbar { position:fixed; left:20px; bottom:20px; z-index:19; display:flex; align-items:center; gap:12px; max-width:min(420px,calc(100vw - 40px)); padding:12px 10px 12px 16px; border-radius:10px; background:#263324; color:#f0f7e9; box-shadow:0 10px 35px #12220e33; font-size:12px; line-height:1.5; }
+.admin-snackbar>svg { color:#cbeba5; flex-shrink:0; }
+.admin-snackbar>span { min-width:0; }
+.admin-snackbar a { color:#cbeba5; font-weight:700; text-decoration:underline; white-space:nowrap; }
+.admin-snackbar button { color:#d0ddc5; display:grid; place-items:center; width:28px; height:28px; border-radius:6px; flex-shrink:0; }
+.admin-snackbar button:hover { background:#ffffff14; }
+@media (max-width:640px) { .admin-snackbar { left:12px; right:12px; bottom:12px; max-width:none; } }

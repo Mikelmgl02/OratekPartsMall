@@ -150,6 +150,27 @@ class SkuProposalTests(APITestCase):
         self.assertEqual(propose()['resolved'], 1)
         self.assertEqual(self.proposal('A-1').status, 'resolved')
 
+    def test_the_summary_dates_the_newest_pending_change_for_the_storefront_reminder(self):
+        url = '/api/v1/management/catalog/proposals/summary/'
+        self.assertIsNone(self.client.get(url).json()['pending_changed_at'])
+        self.item(self.dealer, '10', 'A-1', 'KAIYI', 'PIEZA A')
+        self.item(self.dealer, '11', 'B-1', 'KAIYI', 'PIEZA B')
+        proposals_stage()
+        first, second = self.proposal('A-1'), self.proposal('B-1')
+        SkuProposal.objects.filter(pk=first.pk).update(updated_at=timezone.now() - timedelta(hours=2))
+        SkuProposal.objects.filter(pk=second.pk).update(updated_at=timezone.now() - timedelta(hours=1))
+        second.refresh_from_db()
+        self.assertEqual(self.client.get(url).json()['pending_changed_at'].replace('Z', '+00:00'), second.updated_at.isoformat())
+        # Reviewing the newest leaves the older one's date: no new arrival, so a closed reminder stays closed.
+        reject(second.pk, self.root, second.version, 'duplicate', '')
+        first.refresh_from_db()
+        self.assertEqual(self.client.get(url).json()['pending_changed_at'].replace('Z', '+00:00'), first.updated_at.isoformat())
+        reject(first.pk, self.root, first.version, 'duplicate', '')
+        self.assertIsNone(self.client.get(url).json()['pending_changed_at'])
+        member = User.objects.create_user('summary-member', 'summary-member@example.com', 'SecureMember938!')
+        self.client.force_authenticate(member)
+        self.assertEqual(self.client.get(url).status_code, 403)
+
     def test_the_admin_api_lists_counts_and_approves_in_bulk(self):
         self.item(self.dealer, '10', 'A-1', 'KAIYI', 'PIEZA A', reported_quantity=3)
         self.item(self.dealer, '11', 'B-1', 'KAIYI', 'PIEZA B')
@@ -165,8 +186,10 @@ class SkuProposalTests(APITestCase):
         rows = [{'id': row['id'], 'version': row['version']} for row in listing['results'] if row['sku'] in ('A-1', 'B-1')]
         result = self.client.post('/api/v1/management/catalog/proposals/bulk/', {'action': 'approve', 'proposals': rows + [{'id': rows[0]['id'], 'version': 1}]}, format='json').json()
         self.assertEqual((result['approved'], [entry['ok'] for entry in result['results']]), (2, [True, True, False]))
-        self.assertEqual(self.client.get('/api/v1/management/catalog/proposals/summary/').json(),
-                         {'pending': 1, 'approved': 2, 'linked': 0, 'rejected': 0, 'resolved': 0})
+        summary = self.client.get('/api/v1/management/catalog/proposals/summary/').json()
+        changed = summary.pop('pending_changed_at')
+        self.assertEqual(summary, {'pending': 1, 'approved': 2, 'linked': 0, 'rejected': 0, 'resolved': 0})
+        self.assertEqual(changed.replace('Z', '+00:00'), self.proposal('C-1').updated_at.isoformat())
         detail = self.client.get(f'/api/v1/management/catalog/proposals/{rows[0]["id"]}/').json()
         self.assertEqual((detail['status'], detail['part']['sku']), ('approved', 'A-1'))
         member = User.objects.create_user('staff', 'staff@example.com', 'SecureStaff938!', is_staff=True)
