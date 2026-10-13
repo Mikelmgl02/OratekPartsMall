@@ -165,7 +165,7 @@ test('a short grid’s column menu opens over the panel instead of being clipped
 });
 
 test.describe('on a touch screen', () => {
-  test.use({ hasTouch: true });
+  test.use({ hasTouch: true, viewport: { width: 1100, height: 800 } });  // a column narrower than the grid
   test('a sideways swipe on a grid’s header or rows moves its columns', async ({ page }) => {
     const many = Array.from({ length: 6 }, (_, index) => ({ ...line, id: `44444444-4444-4444-8444-${String(index).padStart(12, '0')}`, codigo: `COD-${index}`, sku: `SKU-${index}` }));
     const { document } = await panel(page, 'supplier', 'pending', false, many);

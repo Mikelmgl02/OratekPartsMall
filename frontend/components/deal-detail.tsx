@@ -1,7 +1,7 @@
 'use client';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { ArrowDown, Bot, Check, FileText, FileWarning, Handshake, History, LoaderCircle, LockKeyhole, MessageSquare, Paperclip, Pencil, RefreshCw, Send, UserRoundCog, X } from 'lucide-react';
+import { ArrowDown, Bot, Check, FileText, FileWarning, Handshake, History, LoaderCircle, LockKeyhole, Maximize2, MessageSquare, Paperclip, Pencil, RefreshCw, Send, UserRoundCog, X } from 'lucide-react';
 import Modal from './modal';
 import { percent } from './price-explanation';
 import DealStatusBadge from './deal-status';
@@ -207,7 +207,7 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
             <button type="button" className="button text small" onClick={() => setProfileOpen(true)}><Pencil size={13}/>{pairProfile.exists ? 'Editar perfil' : 'Configurar cliente'}</button></p>
           {pairProfile.internal_notes && <small title="Solo tu equipo ve estas notas">Notas internas: {pairProfile.internal_notes}</small>}
         </div>}
-        <ol className={`deal-progress ${deal.status === 'cancelled' ? 'cancelled' : ''}`} aria-label="Seguimiento del acuerdo">{['Enviada', 'En revisión', 'Cotización', 'Acuerdo', 'Entregado'].map((label, index) => <li key={label} className={index <= activeStep ? 'reached' : ''} aria-current={index === activeStep ? 'step' : undefined}><span>{index < activeStep ? <Check size={12}/> : index + 1}</span>{label}</li>)}</ol>
+        {!embedded && <ol className={`deal-progress ${deal.status === 'cancelled' ? 'cancelled' : ''}`} aria-label="Seguimiento del acuerdo">{['Enviada', 'En revisión', 'Cotización', 'Acuerdo', 'Entregado'].map((label, index) => <li key={label} className={index <= activeStep ? 'reached' : ''} aria-current={index === activeStep ? 'step' : undefined}><span>{index < activeStep ? <Check size={12}/> : index + 1}</span>{label}</li>)}</ol>}
         <div className={`deal-state-note ${deal.status}`}><LockKeyhole size={16}/><p>{supplier && deal.status === 'quoted' ? `Enviaste la cotización v${deal.quotation?.revision ?? 1}. Mientras el cliente no la confirme, puedes editarla y enviarle una nueva versión.` : stateDescription[deal.status]}{(() => {
           const when = deal.status === 'delivered' ? deal.delivered_at : deal.status === 'cancelled' ? deal.cancellation?.cancelled_at : deal.handshaked_at;
           return when ? <strong> {date(when)}</strong> : null;
@@ -235,7 +235,6 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
         ] as const).filter(([value]) => !(embedded && value === 'chat')).map(([value, label, Icon]) => <button type="button" key={value} className={tab === value ? 'selected' : ''} aria-pressed={tab === value} title={value === 'quote' && hasDraft ? 'Hay un borrador de cotización guardado' : undefined} onClick={() => setTab(value)}><Icon size={15}/>{label}{value === 'quote' && hasDraft && <span className="deal-tab-dot" aria-hidden="true"/>}</button>)}</nav>
         {notice && <div className="notice success" role="status">{notice}</div>}
         <div ref={quoteTab} className="deal-quote-tab" hidden={tab !== 'quote'}>
-          {deal.notes && <section className="supplier-request-notes"><h4>Notas del cliente</h4><p>{deal.notes}</p></section>}
           <DealDocument deal={deal} supplier={supplier} folded={editorMounted} price={priced ? suggestedPrice : undefined} busy={busy} stockWarnings={stockWarnings} onRefresh={() => void load()}/>
           {!embedded && supplier && ['reviewed', 'adjustment'].includes(deal.status) && !editorMounted && <button type="button" className="button primary" onClick={startPricing}>Preparar cotización<FileText size={16}/></button>}
           {supplier && deal.quotation && <QuoteTrace key={deal.quotation.id} path={`${base}/requests/${orderId}/quotations/${deal.quotation.id}/trace`} currency={deal.quotation.currency}/>}
@@ -290,11 +289,16 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
 function DealDocument({ deal, supplier, folded, price, busy, stockWarnings, onRefresh }: { deal: Deal; supplier: boolean; folded: boolean;
   price?: (line: Deal['lines'][number]) => React.ReactNode; busy: boolean; stockWarnings: number; onRefresh: () => void }) {
   const quote = deal.quotation;
+  // Ampliar: the items, the document's main part, in a dialog as large as the screen, with every column.
+  const [expanded, setExpanded] = useState(false);
   const open = openOrder.includes(deal.status);
   const counts = `${deal.line_count} ${deal.line_count === 1 ? 'artículo' : 'artículos'} · ${deal.unit_count.toLocaleString('es-PA')} ${deal.unit_count === 1 ? 'unidad solicitada' : 'unidades solicitadas'}`;
   const heading = <div className="deal-quote-heading"><div><h3>{quote ? `Cotización v${quote.revision}` : 'Artículos solicitados'}</h3>
     <small>{counts} · {quote ? `Confirmada por el proveedor · ${date(quote.supplier_confirmed_at)}` : supplier ? 'Por cotizar' : 'Sin cotizar'}</small></div>
-    {quote && <strong>{money(quote.total, quote.currency)}</strong>}</div>;
+    <div className="deal-document-figures">{quote && <strong>{money(quote.total, quote.currency)}</strong>}
+      <button type="button" className="button soft small deal-document-expand" aria-label="Ampliar la tabla" title="Ver la tabla en grande, con todas sus columnas"
+        onClick={event => { event.preventDefault(); event.stopPropagation(); setExpanded(true); }}><Maximize2 size={14}/><span>Ampliar</span></button></div></div>;
+  const notes = deal.notes && <div className="deal-terms"><h4>Notas del cliente</h4><p>{deal.notes}</p></div>;
   const body = <>
     {supplier && open && <div className="deal-document-stock">
       <div className="supplier-request-stock-heading"><div><h4>Existencias de tu inventario</h4><p>Disponibles = reportadas menos reservadas. Confirma las unidades que puedes suministrar.</p></div><button type="button" className="button soft small" disabled={busy} onClick={onRefresh}><RefreshCw size={15}/>Actualizar existencias</button></div>
@@ -303,9 +307,16 @@ function DealDocument({ deal, supplier, folded, price, busy, stockWarnings, onRe
     <DealLinesGrid lines={deal.lines} supplier={supplier} price={price} quote={quote}/>
     {!quote && !supplier && <p className="deal-document-hint">El proveedor preparará tu cotización: aquí verás lo que ofrece de cada artículo, sus precios y condiciones.</p>}
     {quote?.terms && <div className="deal-terms"><h4>Condiciones</h4><p>{quote.terms}</p></div>}
+    {notes}
   </>;
   return <section className="deal-quote deal-document" aria-label={quote ? `Cotización vigente v${quote.revision}` : 'Artículos solicitados'}>
     {folded ? <details className="deal-document-fold"><summary title="Ver el documento">{heading}</summary>{body}</details> : <>{heading}{body}</>}
+    {expanded && <Modal wide title={`${deal.reference} · ${quote ? `Cotización v${quote.revision}` : 'Artículos solicitados'}`} className="deal-document-modal" onClose={() => setExpanded(false)}>
+      <p className="deal-document-modal-summary"><span>{counts}</span>{quote && <strong>{money(quote.total, quote.currency)}</strong>}</p>
+      <DealLinesGrid lines={deal.lines} supplier={supplier} price={price} quote={quote} maxRows={40}/>
+      {quote?.terms && <div className="deal-terms"><h4>Condiciones</h4><p>{quote.terms}</p></div>}
+      {notes}
+    </Modal>}
   </section>;
 }
 

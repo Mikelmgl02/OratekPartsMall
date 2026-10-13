@@ -106,6 +106,7 @@ test('a notification opens the panel on its deal: the quotation beside the chat,
   expect(calls.find(call => call.url === 'messages')?.body).toMatchObject({ body: 'Perfecto, el lunes\nGracias' });  // as typed
   await expect(composer).toHaveValue('');
   await expect(composer).toBeFocused();  // ready for the next message
+  await panel.getByRole('button', { name: 'Mostrar conversaciones', exact: true }).click();  // folded while the document shows
   await panel.getByRole('button', { name: /^AUTOPARTES DEL ISTMO/ }).click();
   await expect(panel.getByRole('region', { name: 'Conversación con AUTOPARTES DEL ISTMO', exact: true })).toBeVisible();
   await panel.getByRole('button', { name: 'No leídas', exact: true }).click();
@@ -272,10 +273,18 @@ test('like a desktop chat app: the Cotizaciones table on the right opens each do
   await row.getByRole('cell').nth(1).click();  // the whole row opens its document in the table's place
   await expect(panel.getByRole('region', { name: 'Cotización vigente v2', exact: true })).toBeVisible();  // on its quotation
   await expect(table).toBeHidden();
-  // One document: each item asked for with what the quotation offers of it; in the narrow column, the amount with "2 × USD 86.50" under it.
+  // One document: each item asked for with what the quotation offers of it. The column widens for it, so its prices fit without scrolling.
+  await expect.poll(async () => Math.round((await side.boundingBox())!.width)).toBeGreaterThan(540);
   const lines = panel.getByRole('region', { name: 'Líneas de la cotización v2', exact: true });
-  await expect(lines.getByRole('columnheader')).toHaveText(['Código / descripción', 'Solicitadas', 'Importe']);
-  await expect(lines.getByRole('row').filter({ hasText: '58411-1R000-G' })).toContainText('2 × USD 86.50');
+  await expect(lines.getByRole('columnheader')).toHaveText(['Código / descripción', 'Solicitadas', 'Ofrecidas', 'Precio', 'Importe']);
+  await expect(lines.getByRole('row').filter({ hasText: '58411-1R000-G' })).toContainText('USD 86.50');
+  expect(await lines.locator('.ag-center-cols-viewport').evaluate(element => element.scrollWidth > element.clientWidth)).toBe(false);
+  await panel.getByRole('button', { name: 'Ampliar la tabla', exact: true }).click();  // every column, as large as the screen
+  const large = page.getByRole('dialog', { name: 'ORD-0123 · Cotización v2', exact: true });
+  await expect(large.getByRole('columnheader')).toHaveText(['Código / descripción', 'Solicitadas', 'Ofrecidas', 'Precio unitario', 'Importe', 'SKU interno']);
+  await large.getByRole('button', { name: 'Cerrar ventana', exact: true }).click();
+  await expect(large).toHaveCount(0);
+  await expect(panel).toBeVisible();
   const tabs = panel.getByRole('navigation', { name: 'Secciones del acuerdo', exact: true });
   await expect(tabs.getByRole('button')).toHaveText(['Cotización', 'Actividad']);
   await tabs.getByRole('button', { name: 'Actividad', exact: true }).click();
@@ -437,6 +446,7 @@ test('someone who buys and sells sees Compras and Ventas apart; the choice is re
   await panel.getByRole('button', { name: 'Cerrar ventana', exact: true }).click();
   await page.getByRole('button', { name: 'Notificaciones, 2 nuevas', exact: true }).click();
   await page.getByRole('region', { name: 'Notificaciones', exact: true }).getByRole('button', { name: /GRUPO RAZOR PARTS publicó la cotización v2/ }).click();
+  await panel.getByRole('button', { name: 'Mostrar conversaciones', exact: true }).click();  // folded while the order's document shows
   await expect(switcher.getByRole('button', { name: /^Compras/ })).toHaveAttribute('aria-pressed', 'true');  // the purchase it opened
   await expect(list.getByRole('button', { name: /^GRUPO RAZOR PARTS/ })).toHaveAttribute('aria-current', 'true');
 });

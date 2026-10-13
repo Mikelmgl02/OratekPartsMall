@@ -24,6 +24,7 @@ type Layout = { list: number; side: number; listOpen: boolean; sideOpen: boolean
 const LAYOUT_KEY = 'motionpartes:inbox:layout';
 const DEFAULT_LAYOUT: Layout = { list: 300, side: 540, listOpen: true, sideOpen: true };
 const LIST_MIN = 220, LIST_MAX = 440, SIDE_MIN = 340, CHAT_MIN = 360, STEP = 24;
+const CHAT_BESIDE = 460;  // what a document open on the right leaves the chat, so its composer still fits
 const wide = () => window.matchMedia('(min-width: 901px)').matches;
 const clamp = (value: number, min: number, max: number) => Math.round(Math.min(Math.max(value, min), Math.max(min, max)));
 
@@ -84,8 +85,10 @@ export default function ConversationsPanel({ initial, onClose, onShowing }: { in
     initial?.draft ? { text: initial.draft, id: Date.now(), note: 'Escribe tu pregunta y envíala: le llega al proveedor en su conversación contigo.' } : null);
   const [layout, setLayout] = useState<Layout>(savedLayout);
   const box = useRef<HTMLDivElement>(null);
-  // Setting prices widens the order's panel for a while; the layout the person chose comes back afterwards.
-  const beforePricing = useRef<Layout | null>(null);
+  // A document open on the right widens its column for a while (its items are what matters there), folding the conversations list (its
+  // button shows it again); setting prices widens it the same way. The layout the person chose comes back afterwards, and is never saved
+  // meanwhile.
+  const beforeWide = useRef<Layout | null>(null);
   // With the list hidden, hovering its button shows it floating over the chat (as in a desktop app). It hides a moment after the pointer
   // leaves both, unless the person is typing in it; choosing a conversation or Escape hides it too, and pressing the button docks it.
   const header = useRef<HTMLElement>(null);
@@ -123,7 +126,7 @@ export default function ConversationsPanel({ initial, onClose, onShowing }: { in
   }, []);
   useEffect(() => { onShowing(selected?.threadId ?? selected?.orderId ?? null); }, [selected, onShowing]);
   useEffect(() => {
-    if (beforePricing.current || !wide()) return;
+    if (beforeWide.current || !wide()) return;
     try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); } catch { /* the layout lasts this visit */ }
   }, [layout]);
   function choose(target: InboxTarget) {
@@ -161,28 +164,33 @@ export default function ConversationsPanel({ initial, onClose, onShowing }: { in
     };
   }
   const [pricing, setPricing] = useState(false);
-  const pricingChanged = useCallback((pricing: boolean) => {
+  const widen = useCallback((mode: 'document' | 'pricing' | null) => {
     if (!wide()) return;
     setLayout(current => {
-      if (pricing && !beforePricing.current) {
-        beforePricing.current = current;
-        const room = (box.current?.getBoundingClientRect().width ?? 1200) - CHAT_MIN;
-        return { ...current, listOpen: false, sideOpen: true, side: clamp(Math.max(current.side, room * 0.62), SIDE_MIN, room) };
-      }
-      if (!pricing && beforePricing.current) {
-        const restore = beforePricing.current; beforePricing.current = null;
+      if (!mode) {
+        if (!beforeWide.current) return current;
+        const restore = beforeWide.current; beforeWide.current = null;
         return { ...current, listOpen: restore.listOpen, side: restore.side };
       }
-      return current;
+      const chosen = beforeWide.current ?? current;
+      beforeWide.current = chosen;
+      const room = widthOf() - 9;
+      const side = mode === 'pricing' ? Math.max(chosen.side, (room - CHAT_MIN) * 0.62) : room - CHAT_BESIDE;
+      return { ...current, listOpen: false, sideOpen: true, side: clamp(Math.max(chosen.side, side), SIDE_MIN, room - CHAT_MIN) };
     });
-  }, []);
-  // Setting prices widens the column only while the document shows (not the table over it).
-  useEffect(() => { pricingChanged(pricing && docOpen); }, [pricing, docOpen, pricingChanged]);
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+  // Only while the document shows (not the table over it).
+  const reading = docOpen && !!selected?.orderId && doc === selected.orderId;
+  useEffect(() => { widen(reading ? pricing ? 'pricing' : 'document' : null); }, [reading, pricing, widen]);
   const separator = (which: 'list' | 'side', label: string) => <div className="inbox-resizer" role="separator" aria-orientation="vertical" aria-label={label} tabIndex={0}
     aria-valuenow={layout[which]} aria-valuemin={which === 'list' ? LIST_MIN : SIDE_MIN} onPointerDown={drag(which)} onKeyDown={nudge(which)}
     onDoubleClick={() => setLayout(current => ({ ...current, [which]: DEFAULT_LAYOUT[which] }))}/>;
   const listToggle = <button type="button" className="icon-button inbox-list-toggle" aria-pressed={layout.listOpen} aria-label={layout.listOpen ? 'Ocultar conversaciones' : 'Mostrar conversaciones'}
-    title={layout.listOpen ? 'Ocultar conversaciones' : 'Mostrar conversaciones'} onClick={() => { unpeek(); setLayout(current => ({ ...current, listOpen: !current.listOpen })); }}
+    title={layout.listOpen ? 'Ocultar conversaciones' : 'Mostrar conversaciones'} onClick={() => { unpeek(); setLayout(current => {
+      // Docked beside a widened document, the list takes its room from the document, never from the chat.
+      const listOpen = !current.listOpen, most = widthOf() - CHAT_MIN - 18 - (listOpen ? current.list : 0);
+      return { ...current, listOpen, side: clamp(Math.min(current.side, most), SIDE_MIN, Math.max(SIDE_MIN, most)) };
+    }); }}
     onPointerEnter={event => { if (event.pointerType === 'mouse' && !layout.listOpen) peek(true); }} onPointerLeave={() => { if (!layout.listOpen) peek(false); }}><PanelLeft size={18}/></button>;
 
   // A conversation with orders has the table; one without (a question from the catalog) is only its chat.

@@ -1225,6 +1225,16 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .deal-document-fold>summary::-webkit-details-marker { display:none; }
 .deal-document-fold>summary h3::after { content:'Ver documento'; margin-left:10px; padding:2px 8px; border-radius:999px; background:#fff; color:#5d6a61; font-family:'DM Sans',Arial,sans-serif; font-size:11px; font-weight:600; vertical-align:middle; }
 .deal-document-fold[open]>summary h3::after { content:'Ocultar'; }
+.deal-document-figures { display:flex; align-items:center; gap:12px; flex-shrink:0; }
+.deal-document-figures>strong { font-size:22px; white-space:nowrap; }
+.deal-document-expand { gap:6px; }
+@container (max-width:460px) { .deal-document-expand>span { display:none; } .deal-document-figures>strong { font-size:19px; } }
+/* Ampliar: the document's items in a dialog as large as the screen. */
+.modal.deal-document-modal { width:min(1400px,calc(100vw - 32px)); max-width:none; }
+.deal-document-modal .deal-lines-grid { margin-top:4px; }
+.deal-document-modal-summary { display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:8px 16px; margin:0 0 12px; color:var(--muted); font-size:13px; }
+.deal-document-modal-summary strong { color:var(--ink); font-size:20px; }
+.deal-document-modal .deal-terms { padding:14px 2px 0; }
 .deal-line-short { color:#a1442f; font-weight:600; }
 .admin-grid-muted { color:var(--muted); }
 .deal-quote-editor { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; padding: 18px; background: #f6f7f3; border: 1px solid var(--line); border-radius: 14px; }
