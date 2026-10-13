@@ -43,7 +43,7 @@ test('a client asks a supplier about a part before ordering: the conversation op
   expect(started).toEqual([{ supplier_id: supplier.id }]);
   const conversation = page.getByRole('dialog', { name: 'Conversaciones', exact: true }).getByRole('region', { name: `Conversación con ${supplier.name}`, exact: true });
   await expect(conversation).toContainText('Consulta, sin órdenes');
-  await expect(conversation.getByRole('group', { name: 'Secciones de la orden', exact: true })).toHaveCount(0);  // no order to show yet
+  await expect(conversation.getByRole('button', { name: 'Cotizaciones', exact: true })).toHaveCount(0);  // no order to show yet
   await expect(conversation.getByRole('button', { name: /^Solo esta orden/ })).toHaveCount(0);
   const composer = conversation.getByLabel('Mensaje del acuerdo', { exact: true });
   await expect(composer).toHaveValue('Hola, consulta sobre 58411-1R000-G (KSM) · SKU 58411-1R000: ');

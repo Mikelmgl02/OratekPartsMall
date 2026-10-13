@@ -20,6 +20,11 @@ class ThreadTests(ChatStorage, APITestCase):
     url = deal_tests.DealWorkflowTests.url
     payload = deal_tests.DealWorkflowTests.payload
     submit = deal_tests.DealWorkflowTests.submit
+    order = deal_tests.DealWorkflowTests.order
+    review = deal_tests.DealWorkflowTests.review
+    action = deal_tests.DealWorkflowTests.action
+    drafted = deal_tests.DealWorkflowTests.drafted
+    quote = deal_tests.DealWorkflowTests.quote
 
     def setUp(self):
         deal_tests.DealWorkflowTests.setUp(self)
@@ -98,3 +103,20 @@ class ThreadTests(ChatStorage, APITestCase):
         self.assertEqual((opened.status_code, b''.join(opened.streaming_content)), (200, PNG))
         self.client.force_authenticate(self.seller_b)
         self.assertEqual(self.client.get(f'/api/v1/accounts/{self.supplier_b.pk}/threads/{thread_id}/attachments/{photo["id"]}/').status_code, 404)
+
+    def test_both_sides_list_the_conversations_orders_with_their_current_quotation(self):
+        quoted = self.order()
+        self.review(quoted)
+        self.assertEqual(self.quote(quoted).status_code, 200)
+        self.client.force_authenticate(self.buyer)
+        later = SupplierRequest.objects.get(pk=self.submit(self.payload([(self.item_a, 1)])).data['requests'][0]['id'])
+        self.assertEqual(later.thread_id, quoted.thread_id)
+        path = lambda account: f'/api/v1/accounts/{account.pk}/threads/{quoted.thread_id}/orders/'
+        rows = self.client.get(path(self.client_account)).data['results']
+        self.assertEqual([(row['reference'], row['status'], row['line_count'], row['unit_count'], row['quotation_revision'], row['quotation_total'])
+                          for row in rows], [(later.reference, 'pending', 1, 1, None, None), (quoted.reference, 'quoted', 2, 5, 1, '61.75')])
+        self.assertNotIn('draft_state', rows[1])  # never the supplier's private badges
+        self.client.force_authenticate(self.seller_a)
+        self.assertEqual([row['id'] for row in self.client.get(path(self.supplier_a)).data['results']], [str(later.pk), str(quoted.pk)])
+        self.client.force_authenticate(self.seller_b)
+        self.assertEqual(self.client.get(path(self.supplier_b)).status_code, 404)

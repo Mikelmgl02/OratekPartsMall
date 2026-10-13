@@ -159,6 +159,7 @@ urlpatterns = [
     path('api/v1/accounts/<uuid:account_id>/deals/<uuid:pk>/attachments/<int:attachment_id>/', deal_attachments.DealAttachmentFile.as_view()),
     path('api/v1/accounts/<uuid:account_id>/threads/', threads.Threads.as_view()),
     path('api/v1/accounts/<uuid:account_id>/threads/<uuid:thread_id>/messages/', threads.ThreadMessages.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/threads/<uuid:thread_id>/orders/', threads.ThreadOrders.as_view()),
     path('api/v1/accounts/<uuid:account_id>/threads/<uuid:thread_id>/attachments/<int:attachment_id>/', deal_attachments.DealAttachmentFile.as_view()),
     path('api/v1/accounts/<uuid:account_id>/threads/<uuid:thread_id>/attachments/<int:attachment_id>/retry/', deal_attachments.DealAttachmentRetry.as_view()),
     path('api/v1/accounts/<uuid:account_id>/deals/<uuid:pk>/attachments/<int:attachment_id>/retry/', deal_attachments.DealAttachmentRetry.as_view()),

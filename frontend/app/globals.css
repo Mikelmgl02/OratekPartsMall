@@ -2441,15 +2441,45 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .inbox-conversation-title span { color:var(--muted); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .inbox-back { display:none; }
 .inbox-list-toggle[aria-pressed="true"] { color:var(--green-dark); }
-/* The order's sections, toggled from the header's top-right corner. */
-.inbox-sections { display:flex; gap:2px; padding:3px; border-radius:9px; background:#eef2e8; }
-.inbox-sections button { display:flex; align-items:center; gap:6px; padding:6px 10px; border-radius:7px; font-size:12px; color:#5f6c55; white-space:nowrap; }
-.inbox-sections button:hover { color:var(--ink); }
-.inbox-sections button[aria-pressed="true"] { background:#fff; color:var(--ink); font-weight:600; box-shadow:0 1px 3px #19221b1a; }
+/* The conversation's Cotizaciones (conversation-documents.tsx), shown or hidden from the header's top-right corner: a table of its orders,
+   and the document opened from it in the same column. */
+.inbox-docs-toggle[aria-pressed="true"] { background:#232b26; color:#fff; }
 .inbox-open-order { white-space:nowrap; }
 .inbox-conversation-body { flex:1; min-height:0; display:flex; }
-.inbox-side { flex:0 0 var(--inbox-side,540px); min-width:0; min-height:0; overflow-y:auto; padding:14px 16px; background:#fcfdfa; }
-.inbox-side[hidden] { display:none; }
+.inbox-side { flex:0 0 var(--inbox-side,540px); min-width:0; min-height:0; overflow-y:auto; padding:14px 16px; background:#fcfdfa; container-type:inline-size; }
+.inbox-side[hidden],.inbox-docs[hidden],.inbox-doc[hidden] { display:none; }
+.inbox-docs { display:grid; gap:10px; }
+.inbox-docs-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px 10px; }
+.inbox-docs-head h3 { font-size:15px; }
+.inbox-docs-head p { flex-basis:100%; color:var(--muted); font-size:12px; }
+.inbox-docs-filter { display:flex; gap:2px; padding:3px; border-radius:9px; background:#eef2e8; }
+.inbox-docs-filter button { padding:4px 10px; border-radius:7px; font-size:11.5px; color:#5f6c55; white-space:nowrap; }
+.inbox-docs-filter button:hover { color:var(--ink); }
+.inbox-docs-filter button[aria-pressed="true"] { background:#fff; color:var(--ink); font-weight:600; box-shadow:0 1px 3px #19221b1a; }
+.inbox-docs-loading { display:grid; gap:8px; }
+.inbox-docs-empty { padding:18px 2px; color:var(--muted); font-size:13px; line-height:1.55; }
+.inbox-docs-table { width:100%; border-collapse:collapse; font-size:13px; }
+.inbox-docs-table th { padding:7px 8px; border-bottom:1px solid var(--line); background:transparent; color:var(--muted); font-size:10px; font-weight:600; letter-spacing:.6px; text-align:left; white-space:nowrap; }
+.inbox-docs-table td { padding:10px 8px; border-bottom:1px solid #eef1ea; color:var(--ink); font-size:13px; vertical-align:top; white-space:normal; }
+.inbox-docs-table tbody tr { cursor:pointer; transition:background .12s; }
+.inbox-docs-table tbody tr:hover { background:#f3f7ee; }
+.inbox-docs-table tbody tr.current { background:#eef5e2; box-shadow:inset 3px 0 0 #6f9a3c; }
+.inbox-docs-table tbody tr.empty { cursor:default; background:none; }
+.inbox-docs-table tbody tr.empty td { padding:16px 8px; color:var(--muted); text-align:center; }
+.inbox-docs-table .num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.inbox-docs-table small { display:block; margin-top:2px; color:var(--muted); font-size:11px; font-weight:400; }
+.inbox-doc-open { padding:0; color:var(--ink); font-weight:600; text-align:left; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.inbox-doc-open:hover { text-decoration:underline; }
+.inbox-docs-table td>span.inbox-doc-status { display:inline-flex; align-items:center; gap:7px; max-width:none; margin:0; color:#3d463f; font-size:12.5px; white-space:nowrap; }
+.inbox-doc-status>.inbox-row-dot { display:inline-block; }
+@container (max-width:420px) { .inbox-docs-table .items { display:none; } }
+.inbox-doc { display:grid; gap:12px; }
+.inbox-doc-bar { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.inbox-doc-back { gap:5px; }
+.inbox-doc-title { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; padding-bottom:12px; border-bottom:1px solid var(--line); }
+.inbox-doc-title>h3 { font-size:16px; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+button.deal-chat-order { border:0; cursor:pointer; font-family:inherit; }
+button.deal-chat-order:hover { background:#d5e9da; color:#1d5a39; }
 .inbox-resizer { flex:0 0 9px; position:relative; cursor:col-resize; touch-action:none; outline:none; }
 .inbox-resizer::after { content:''; position:absolute; top:12px; bottom:12px; left:4px; width:1px; background:var(--line); transition:background .15s, width .15s, left .15s; }
 .inbox-resizer:hover::after,.inbox-resizer:focus-visible::after { left:3px; width:3px; border-radius:3px; background:#a9c27f; }
@@ -2468,8 +2498,6 @@ body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-s
  .inbox-modal.has-selection .inbox-list,.inbox-modal:not(.has-selection) .inbox-conversation { display:none; }
  .inbox-back { display:grid; }
  .inbox-conversation-header { flex-wrap:wrap; }
- .inbox-sections { order:5; flex-basis:100%; }
- .inbox-sections button { flex:1; justify-content:center; }
  .inbox-open-order>span { display:none; }
  .inbox-conversation-body.side-open .inbox-chat { display:none; }
  .inbox-side { flex:1 1 auto; }
@@ -2625,6 +2653,5 @@ body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-s
 .deal-chat-tag { flex:0 0 auto; background:#e1efe5; border-color:#c4dccb; color:#256b45; }
 .deal-chat-tag.general { background:#fff; border-style:dashed; color:#5d6a61; }
 .deal-chat-send>.deal-chat-tag { margin-right:4px; }
-.inbox-order-picker { max-width:100%; padding:1px 4px; border:1px solid var(--line); border-radius:6px; background:#fff; color:inherit; font:inherit; font-size:12px; }
 /* Preguntar al proveedor (part-detail.tsx): a quiet link under the supplier's name. */
 .supplier-ask { display:inline-flex; align-items:center; gap:5px; margin-top:4px; padding:0; }

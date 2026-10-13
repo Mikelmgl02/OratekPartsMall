@@ -1,34 +1,36 @@
 'use client';
 import { type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, ArrowUpRight, FileText, Handshake, History, MessagesSquare, PanelLeft } from 'lucide-react';
-import { dealStatusLabels } from '@/lib/deal-types';
+import { ArrowLeft, ArrowUpRight, FileText, MessagesSquare, PanelLeft } from 'lucide-react';
 import Modal from './modal';
 import ConversationList, { mostRecent } from './conversation-list';
-import DealDetail, { DealChat, type DealTab } from './deal-detail';
+import ConversationDocuments, { type ConversationDocument } from './conversation-documents';
+import DealDetail, { DealChat } from './deal-detail';
+import DealStatusBadge from './deal-status';
 import { type Account, type Page, request } from '@/lib/types';
 import { InboxConversation, InboxTarget, targetOf } from '@/lib/inbox';
+import { onDealNudge } from '@/lib/realtime';
 
 // The chat and the deal detail need only the account's id (and its side) to talk to the account-scoped deal API.
 const accountOf = (target: InboxTarget): Account => ({ id: target.account.id, name: target.account.name, roles: [], capabilities: [target.side] });
 
 // Laid out like a desktop chat app: the conversations on the left (one per client and supplier, grouped, conversation-list.tsx), the
-// conversation's chat in the middle (all its orders, linear), and one of its orders, chosen in the header, with its sections (Cotización,
-// Artículos, Actividad) toggled from the header's top-right corner into a panel on the right; what is written goes about that order. Both side columns are resizable (drag
-// or arrow keys on the dividers) and the list can be hidden; the layout is remembered in this browser. On a phone the list, the chat
-// and a section take turns.
+// conversation's chat in the middle (all its orders, linear), and on the right its Cotizaciones: a table of its orders
+// (conversation-documents.tsx), where choosing one opens its document (items, quotation, activity) in its place until Cotizaciones
+// brings the table back. What is written goes about the order last opened (or the one in progress), as the composer says. Both side
+// columns are resizable (drag or arrow keys on the dividers), the list and the table can be hidden, and the layout is remembered in this
+// browser. On a phone the list, the chat and the table take turns.
 type Layout = { list: number; side: number; listOpen: boolean; sideOpen: boolean };
 const LAYOUT_KEY = 'motionpartes:inbox:layout';
 const DEFAULT_LAYOUT: Layout = { list: 300, side: 540, listOpen: true, sideOpen: true };
 const LIST_MIN = 220, LIST_MAX = 440, SIDE_MIN = 340, CHAT_MIN = 360, STEP = 24;
-const SECTIONS: [Exclude<DealTab, 'chat'>, string, typeof FileText][] = [['quote', 'Cotización', Handshake], ['order', 'Artículos', FileText], ['history', 'Actividad', History]];
 const wide = () => window.matchMedia('(min-width: 901px)').matches;
 const clamp = (value: number, min: number, max: number) => Math.round(Math.min(Math.max(value, min), Math.max(min, max)));
 
 function savedLayout(): Layout {
   let saved: Partial<Layout> = {};
   try { saved = JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}'); } catch { /* the default layout */ }
-  // On a phone the list and the chat take turns, and a section opens over the chat from the header.
+  // On a phone the list and the chat take turns, and the table opens over the chat from the header.
   return { ...DEFAULT_LAYOUT, ...saved, ...(wide() ? {} : { listOpen: true, sideOpen: false }) };
 }
 
@@ -51,12 +53,36 @@ export default function ConversationsPanel({ initial, onClose, onShowing }: { in
     }).catch(() => {});
     return () => { current = false; };
   }, [conversationKey]);
+  // The conversation's orders for the table, read again when one of them changes (the websocket's nudge) and every half minute.
+  const [docs, setDocs] = useState<ConversationDocument[] | null>(null);
+  const [docsFailed, setDocsFailed] = useState(false);
+  const docsPath = selected?.threadId ? `/api/market/accounts/${selected.account.id}/threads/${selected.threadId}/orders` : null;
+  const docsRequest = useRef(0);
+  const loadDocs = useCallback(async () => {
+    if (!docsPath) return;
+    const ticket = ++docsRequest.current;
+    try {
+      const data = await request<{ results: ConversationDocument[] }>(docsPath);
+      if (ticket === docsRequest.current) { setDocs(data.results); setDocsFailed(false); }
+    } catch { if (ticket === docsRequest.current) setDocsFailed(true); }
+  }, [docsPath]);
+  useEffect(() => {
+    setDocs(null); setDocsFailed(false);
+    if (!docsPath || !selected?.threadId) return;
+    void loadDocs();
+    const timer = setInterval(() => { if (document.visibilityState === 'visible') void loadDocs(); }, 30000);
+    const off = onDealNudge(selected.threadId, ['event'], () => void loadDocs());
+    return () => { clearInterval(timer); off(); docsRequest.current++; };
+  }, [docsPath, loadDocs]);  // eslint-disable-line react-hooks/exhaustive-deps
+  // doc: the order whose document the right column opened (kept mounted under the table, so an open editor keeps its state); docOpen: it
+  // shows instead of the table. A notice about one order opens on its document; a conversation chosen in the list, on its table.
+  const [doc, setDoc] = useState<string | null>(initial?.orderId && !initial.draft ? initial.orderId : null);
+  const [docOpen, setDocOpen] = useState(!!initial?.orderId && !initial.draft);
   const [dealOpen, setDealOpen] = useState(false);
   // A question the quote assistant suggests lands in the panel's chat composer (never sent by itself).
   const [chatInsert, setChatInsert] = useState<{ text: string; id: number; note?: string } | null>(
     initial?.draft ? { text: initial.draft, id: Date.now(), note: 'Escribe tu pregunta y envíala: le llega al proveedor en su conversación contigo.' } : null);
   const [layout, setLayout] = useState<Layout>(savedLayout);
-  const [section, setSection] = useState<DealTab>('order');
   const box = useRef<HTMLDivElement>(null);
   // Setting prices widens the order's panel for a while; the layout the person chose comes back afterwards.
   const beforePricing = useRef<Layout | null>(null);
@@ -101,15 +127,15 @@ export default function ConversationsPanel({ initial, onClose, onShowing }: { in
     try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); } catch { /* the layout lasts this visit */ }
   }, [layout]);
   function choose(target: InboxTarget) {
-    setSelected(target); setSection('order');  // the deal shows its quotation instead once it loads one
+    setSelected(target); setDoc(null); setDocOpen(false);
     unpeek();
     if (!wide()) setLayout(current => ({ ...current, sideOpen: false }));
   }
-  // A section button opens its section, switches to it, or (pressed again) closes the panel.
-  function toggleSection(value: DealTab) {
-    const open = layout.sideOpen && section === value;
-    setSection(value);
-    setLayout(current => ({ ...current, sideOpen: !open }));
+  // A row of the table (or an order's chip in the chat) opens its document; the chat then writes about it.
+  function openDoc(order: { id: string; reference: string }) {
+    setSelected(target => target && { ...target, orderId: order.id, reference: order.reference });
+    setDoc(order.id); setDocOpen(true);
+    setLayout(current => current.sideOpen ? current : { ...current, sideOpen: true });
   }
   const widthOf = () => box.current?.getBoundingClientRect().width ?? 1200;
   function limits(which: 'list' | 'side', current = layout) {
@@ -134,6 +160,7 @@ export default function ConversationsPanel({ initial, onClose, onShowing }: { in
       setLayout(current => { const [min, max] = limits(which, current); return { ...current, [which]: clamp(current[which] + (grow ? STEP : -STEP), min, max) }; });
     };
   }
+  const [pricing, setPricing] = useState(false);
   const pricingChanged = useCallback((pricing: boolean) => {
     if (!wide()) return;
     setLayout(current => {
@@ -149,12 +176,21 @@ export default function ConversationsPanel({ initial, onClose, onShowing }: { in
       return current;
     });
   }, []);
+  // Setting prices widens the column only while the document shows (not the table over it).
+  useEffect(() => { pricingChanged(pricing && docOpen); }, [pricing, docOpen, pricingChanged]);
   const separator = (which: 'list' | 'side', label: string) => <div className="inbox-resizer" role="separator" aria-orientation="vertical" aria-label={label} tabIndex={0}
     aria-valuenow={layout[which]} aria-valuemin={which === 'list' ? LIST_MIN : SIDE_MIN} onPointerDown={drag(which)} onKeyDown={nudge(which)}
     onDoubleClick={() => setLayout(current => ({ ...current, [which]: DEFAULT_LAYOUT[which] }))}/>;
   const listToggle = <button type="button" className="icon-button inbox-list-toggle" aria-pressed={layout.listOpen} aria-label={layout.listOpen ? 'Ocultar conversaciones' : 'Mostrar conversaciones'}
     title={layout.listOpen ? 'Ocultar conversaciones' : 'Mostrar conversaciones'} onClick={() => { unpeek(); setLayout(current => ({ ...current, listOpen: !current.listOpen })); }}
     onPointerEnter={event => { if (event.pointerType === 'mouse' && !layout.listOpen) peek(true); }} onPointerLeave={() => { if (!layout.listOpen) peek(false); }}><PanelLeft size={18}/></button>;
+
+  // A conversation with orders has the table; one without (a question from the catalog) is only its chat.
+  const hasOrders = !!selected?.orderId;
+  const sideShown = hasOrders && layout.sideOpen;
+  const count = docs?.length ?? thread?.order_count ?? 0;
+  const opened = docs?.find(item => item.id === selected?.orderId);
+  const toggleSide = () => setLayout(current => ({ ...current, sideOpen: !current.sideOpen }));
 
   return <Modal title="Conversaciones" className={`inbox-modal${selected ? ' has-selection' : ''}`} onClose={onClose}>
     <div ref={box} className={`inbox-layout${layout.listOpen ? '' : ' list-closed'}`} style={{ '--inbox-list': `${layout.list}px`, '--inbox-side': `${layout.side}px` } as React.CSSProperties}>
@@ -166,32 +202,35 @@ export default function ConversationsPanel({ initial, onClose, onShowing }: { in
         <header ref={header} className="inbox-conversation-header">
           <button type="button" className="icon-button inbox-back" aria-label="Volver a conversaciones" onClick={() => setSelected(null)}><ArrowLeft size={18}/></button>
           {listToggle}
-          <div className="inbox-conversation-title"><strong>{selected.counterpart.name}</strong><span>{selected.side === 'supplier' ? 'Tu cliente' : 'Tu proveedor'} · {!selected.orderId ? 'Consulta, sin órdenes' :
-            thread?.orders && thread.orders.length > 1
-              ? <select className="inbox-order-picker" aria-label="Orden" value={selected.orderId} onChange={event => {
-                  const order = thread.orders!.find(item => item.id === event.target.value);
-                  if (order) setSelected(target => target && { ...target, orderId: order.id, reference: order.reference });
-                }}>{thread.orders.map(order => <option key={order.id} value={order.id}>{order.reference} · {dealStatusLabels[order.status]}</option>)}</select>
-              : selected.reference}</span></div>
-          {selected.orderId && <><div className="inbox-sections" role="group" aria-label="Secciones de la orden">
-            {SECTIONS.map(([value, label, Icon]) => <button type="button" key={value} aria-pressed={layout.sideOpen && section === value} title={label} onClick={() => toggleSection(value)}><Icon size={15}/><span>{label}</span></button>)}
-          </div>
-          {selected.side === 'supplier'
-            ? <Link className="button soft small inbox-open-order" href={`/proveedor/${selected.account.id}/ordenes/${selected.orderId}`} onClick={onClose} title="Abrir orden"><ArrowUpRight size={15}/><span>Abrir orden</span></Link>
-            : <button type="button" className="button soft small inbox-open-order" onClick={() => setDealOpen(true)} title="Abrir orden"><ArrowUpRight size={15}/><span>Abrir orden</span></button>}</>}
+          <div className="inbox-conversation-title"><strong>{selected.counterpart.name}</strong><span>{selected.side === 'supplier' ? 'Tu cliente' : 'Tu proveedor'} · {!hasOrders
+            ? 'Consulta, sin órdenes' : `${count || 1} ${count === 1 || !count ? 'orden' : 'órdenes'}`}</span></div>
+          {hasOrders && <button type="button" className="button soft small inbox-docs-toggle" aria-pressed={layout.sideOpen} onClick={toggleSide}
+            title={layout.sideOpen ? 'Ocultar las cotizaciones' : 'Ver las cotizaciones de esta conversación'}><FileText size={15}/><span>Cotizaciones</span></button>}
         </header>
-        <div className={`inbox-conversation-body${layout.sideOpen && selected.orderId ? ' side-open' : ''}`}>
+        <div className={`inbox-conversation-body${sideShown ? ' side-open' : ''}`}>
           <div className="inbox-chat"><DealChat key={selected.threadId ?? selected.orderId} account={accountOf(selected)} orderId={selected.orderId || undefined} thread={selected.threadId}
-            reference={selected.reference} active supplier={selected.side === 'supplier'} insert={chatInsert} startGeneral={!!initial?.draft && initial.threadId === selected.threadId} compact/></div>
-          {layout.sideOpen && selected.orderId && separator('side', 'Ajustar el ancho de la orden')}
-          {/* Kept mounted while closed: an open editor, a half-written adjustment or a confirmation keeps its state. */}
-          {selected.orderId && <div className="inbox-side" hidden={!layout.sideOpen}>
-            <DealDetail key={selected.orderId} embedded account={accountOf(selected)} orderId={selected.orderId} reference={selected.reference} side={selected.side}
-              tab={section} onTab={setSection} onPricing={pricingChanged}
-              onCopyToChat={text => { setChatInsert({ text, id: Date.now() }); if (!wide()) setLayout(current => ({ ...current, sideOpen: false })); }}/>
+            reference={selected.reference} active supplier={selected.side === 'supplier'} insert={chatInsert} startGeneral={!!initial?.draft && initial.threadId === selected.threadId}
+            onOrder={hasOrders ? openDoc : undefined} compact/></div>
+          {sideShown && separator('side', 'Ajustar el ancho de las cotizaciones')}
+          {hasOrders && <div className="inbox-side" hidden={!layout.sideOpen}>
+            <ConversationDocuments docs={docs} failed={docsFailed} current={selected.orderId} supplier={selected.side === 'supplier'} counterpart={selected.counterpart.name}
+              hidden={docOpen && doc === selected.orderId} onOpen={openDoc} onRetry={() => void loadDocs()}/>
+            {/* Kept mounted under the table: an open editor, a half-written adjustment or a confirmation keeps its state. */}
+            {doc === selected.orderId && <div className="inbox-doc" hidden={!docOpen}>
+              <div className="inbox-doc-bar">
+                <button type="button" className="button text small inbox-doc-back" onClick={() => setDocOpen(false)} aria-label="Volver a las cotizaciones" title="Volver a la tabla de cotizaciones"><ArrowLeft size={15}/>Cotizaciones</button>
+                {selected.side === 'supplier'
+                  ? <Link className="button soft small inbox-open-order" href={`/proveedor/${selected.account.id}/ordenes/${selected.orderId}`} onClick={onClose} title="Abrir orden"><ArrowUpRight size={15}/><span>Abrir orden</span></Link>
+                  : <button type="button" className="button soft small inbox-open-order" onClick={() => setDealOpen(true)} title="Abrir orden"><ArrowUpRight size={15}/><span>Abrir orden</span></button>}
+              </div>
+              <div className="inbox-doc-title"><h3>{selected.reference}</h3>{opened && <DealStatusBadge status={opened.status}/>}</div>
+              <DealDetail key={selected.orderId} embedded account={accountOf(selected)} orderId={selected.orderId} reference={selected.reference} side={selected.side}
+                onChanged={() => void loadDocs()} onPricing={setPricing}
+                onCopyToChat={text => { setChatInsert({ text, id: Date.now() }); if (!wide()) setLayout(current => ({ ...current, sideOpen: false })); }}/>
+            </div>}
           </div>}
         </div>
-      </section> : <section className="inbox-conversation inbox-placeholder">{!layout.listOpen && listToggle}<MessagesSquare size={30}/><p>Elige una conversación para ver su chat y su orden.</p></section>}
+      </section> : <section className="inbox-conversation inbox-placeholder">{!layout.listOpen && listToggle}<MessagesSquare size={30}/><p>Elige una conversación para ver su chat y sus cotizaciones.</p></section>}
     </div>
     {dealOpen && selected && <DealDetail account={accountOf(selected)} orderId={selected.orderId} reference={selected.reference} side="client" onClose={() => setDealOpen(false)}/>}
   </Modal>;

@@ -361,8 +361,9 @@ function ChatFiles({ base, files, retrying, onRetry }: { base: string; files: De
 // The conversation with the other party (one per client and supplier, mall/inbox.py): every order's messages in one line, each with its
 // order's chip. What is written here goes about this order (orderId, its reference) unless it is switched to General (startGeneral: a
 // question from the catalog); Solo esta orden keeps this order's messages. Without an order (thread: a conversation before any order) it
-// is the conversation's chat, in general. insert puts a draft in the composer, with a note saying where it came from.
-export function DealChat({ account, orderId, thread, reference, active, supplier, insert, startGeneral = false, compact = false }: { account: Account; orderId?: string; thread?: string; reference?: string; active: boolean; supplier: boolean; insert: { text: string; id: number; note?: string } | null; startGeneral?: boolean; compact?: boolean }) {
+// is the conversation's chat, in general. insert puts a draft in the composer, with a note saying where it came from. onOrder (the
+// conversations panel): an order's chip opens that order's document.
+export function DealChat({ account, orderId, thread, reference, active, supplier, insert, startGeneral = false, compact = false, onOrder }: { account: Account; orderId?: string; thread?: string; reference?: string; active: boolean; supplier: boolean; insert: { text: string; id: number; note?: string } | null; startGeneral?: boolean; compact?: boolean; onOrder?: (order: { id: string; reference: string }) => void }) {
   const base = orderId ? `/api/market/accounts/${account.id}/deals/${orderId}` : `/api/market/accounts/${account.id}/threads/${thread}`;
   const path = `${base}/messages`;
   const filesPath = `${base}/attachments`;
@@ -535,7 +536,9 @@ export function DealChat({ account, orderId, thread, reference, active, supplier
     {orderId && <div className="deal-chat-tools"><button type="button" className={`deal-chat-filter${solo ? ' on' : ''}`} aria-pressed={solo} onClick={() => setSolo(value => !value)}
       title={solo ? 'Ver toda la conversación' : 'Ver solo los mensajes de esta orden'}>Solo esta orden{reference ? ` · ${shortReference(reference)}` : ''}</button></div>}
     <div ref={log} className="deal-chat-messages" role="log" aria-label="Mensajes del acuerdo" aria-live="polite" onScroll={scrolled}>{!ready && !error ? <p>Cargando mensajes…</p> : !messages.length ? <p className="deal-chat-empty">Inicia la conversación sobre esta orden.</p> : messages.map(message => <article key={message.id} className={message.account_id === account.id ? 'own' : ''}><header><strong>{message.account_name}</strong><span>{message.actor_name} · {date(message.created_at)}{message.channel === 'whatsapp' && <em className="deal-chat-whatsapp"> · vía WhatsApp</em>}</span>{message.order_reference
-        ? <span className={`deal-chat-order${message.order_id === orderId ? ' current' : ''}`} title={`Sobre la orden ${message.order_reference}`}>{shortReference(message.order_reference)}</span>
+        ? onOrder && message.order_id ? <button type="button" className={`deal-chat-order${message.order_id === orderId ? ' current' : ''}`} title={`Sobre la orden ${message.order_reference}: toca para abrirla`}
+            aria-label={`Abrir la orden ${message.order_reference}`} onClick={() => onOrder({ id: message.order_id!, reference: message.order_reference! })}>{shortReference(message.order_reference)}</button>
+          : <span className={`deal-chat-order${message.order_id === orderId ? ' current' : ''}`} title={`Sobre la orden ${message.order_reference}`}>{shortReference(message.order_reference)}</span>
         : <span className="deal-chat-order general" title="Sobre la relación, sin orden">General</span>}</header>{message.body && <p>{message.body}</p>}{!!message.attachments?.length && <ChatFiles base={filesPath} files={message.attachments} retrying={retrying} onRetry={id => void retry(id)}/>}</article>)}</div>
     {newBelow && <button type="button" className="deal-chat-new" onClick={toLatest}><ArrowDown size={14}/>Mensajes nuevos</button>}
     <form onSubmit={event => { event.preventDefault(); void send(); }}><label>Mensaje<textarea ref={composer} aria-label="Mensaje del acuerdo" required={!files.length} maxLength={4000} readOnly={sending} value={body} onChange={event => { setBody(event.target.value); setCopied(''); }} onKeyDown={composerKey} onPaste={pasted} placeholder={files.length ? 'Agrega un mensaje (opcional)…' : 'Escribe a la otra parte…'}/></label>

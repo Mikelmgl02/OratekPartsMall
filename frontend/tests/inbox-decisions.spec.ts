@@ -3,7 +3,7 @@ import type { Deal, Quotation } from '../lib/deal-types';
 import type { SupplierRequestLine } from '../lib/request-types';
 import { mockQuoteDrafts } from './quote-draft-mock';
 
-// The conversations panel's side panel is the deal itself, embedded next to the chat, with its decisions above the section the header toggles pick.
+// The conversations panel's right column: its Cotizaciones table opens the deal itself, embedded next to the chat, with its decisions above its sections.
 const clientId = '11111111-1111-4111-8111-111111111111';
 const supplierId = '22222222-2222-4222-8222-222222222222';
 const orderId = '33333333-3333-4333-8333-333333333333';
@@ -34,6 +34,8 @@ async function panel(page: Page, side: 'client' | 'supplier', status: Deal['stat
     account: { id: account.id, name: account.name }, counterpart, unread: 0, activity: stamp, last_message: null }] } }));
   await page.route(/\/deals\/[^/]+\/messages(\?.*)?$/, route => route.fulfill({ json: { results: [], cursor: 0, has_more: false, has_earlier: false } }));
   await page.route(new RegExp(`/(requests|sent-requests)/${orderId}$`), route => route.fulfill({ json: deal }));
+  await page.route(/\/threads\/[^/]+\/orders$/, route => route.fulfill({ json: { results: [{ id: orderId, reference: 'ORD-0123', status: deal.status, created_at: stamp, reviewed_at: stamp,
+    line_count: lines.length, unit_count: 5, quotation_revision: quoted ? 1 : null, quotation_total: quoted ? quote.total : null, quotation_currency: 'USD' }] } }));
   await page.route(new RegExp(`/requests/${orderId}/review$`), route => { reviews.push(route.request().method()); deal = { ...deal, status: 'reviewed', version: deal.version + 1 }; return route.fulfill({ json: deal }); });
   await page.route(new RegExp(`/deals/${orderId}/actions$`), route => {
     const payload = route.request().postDataJSON(); actions.push(payload);
@@ -45,6 +47,7 @@ async function panel(page: Page, side: 'client' | 'supplier', status: Deal['stat
   await page.goto('/');
   await page.getByRole('button', { name: 'Mensajes', exact: true }).click();
   const conversations = page.getByRole('dialog', { name: 'Conversaciones', exact: true });
+  await conversations.getByRole('table', { name: `Cotizaciones con ${counterpart.name}`, exact: true }).getByRole('button', { name: 'Abrir ORD-0123', exact: true }).click();
   const document = conversations.getByRole('region', { name: 'Documento de la orden', exact: true });
   await expect(document).toBeVisible();
   return { document, conversations, actions, reviews, drafts };
@@ -104,7 +107,7 @@ test('a supplier sets prices in the panel: viewing never opens the order, Fijar 
   expect(reviews).toEqual([]);  // looking at it in the panel does not lock the client's items
   await document.getByRole('button', { name: 'Fijar precios', exact: true }).click();
   await expect.poll(() => reviews).toEqual(['POST']);
-  await expect(page.getByRole('group', { name: 'Secciones de la orden', exact: true }).getByRole('button', { name: 'Cotización', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(document.getByRole('navigation', { name: 'Secciones del acuerdo', exact: true }).getByRole('button', { name: 'Cotización', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(document.locator('.quotation-grid[aria-label="Artículos de la cotización"]')).toBeVisible();
   await expect(document.getByRole('button', { name: /Confirmar y enviar cotización/ })).toBeVisible();
 });

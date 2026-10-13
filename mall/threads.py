@@ -4,9 +4,11 @@ marks, pins) is in mall.inbox; an order's chat (mall.deal_views.DealMessages) is
 
 POST accounts/<client>/threads/ {supplier_id}: the conversation of this client account with that supplier, made the first time (a client
 account; an active supplier, never the account itself). GET/POST accounts/<account>/threads/<id>/messages/: its chat, as an order's
-(order=<id> keeps that order's messages; a message goes about order_id when given, one of its orders, or else in general)."""
+(order=<id> keeps that order's messages; a message goes about order_id when given, one of its orders, or else in general).
+GET accounts/<account>/threads/<id>/orders/: its orders with their current quotation, latest first (the panel's Cotizaciones table)."""
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Count, Q, Sum
+from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
@@ -17,6 +19,7 @@ from rest_framework.views import APIView
 
 from .deal_views import MessageSerializer, chat_page, chat_post
 from .models import Account, DealThread, SupplierRequest
+from .request_views import lifecycle_fields, quote_summary_fields, request_summary
 from .views import account_for
 
 
@@ -77,3 +80,13 @@ class ThreadMessages(APIView):
         order_id = tag.validated_data.get('order_id')
         order = get_object_or_404(SupplierRequest, pk=order_id, thread=thread) if order_id else None
         return chat_post(request, account, thread, order)
+
+
+class ThreadOrders(APIView):
+    @extend_schema(responses=OpenApiTypes.OBJECT, description='Las órdenes de la conversación, la más reciente primero, cada una con su '
+                   'cotización vigente (revisión, total y moneda): la tabla de cotizaciones del panel de conversaciones.')
+    def get(self, request, account_id, thread_id):
+        _, thread = thread_participant(request.user, account_id, thread_id)
+        rows = SupplierRequest.objects.filter(thread=thread).annotate(line_count=Count('lines'), unit_count=Coalesce(Sum('lines__quantity'), 0),
+                                                                       **quote_summary_fields(), **lifecycle_fields()).order_by('-created_at', 'id')
+        return Response({'results': [request_summary(row) for row in rows]})

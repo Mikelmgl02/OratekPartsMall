@@ -34,6 +34,10 @@ const messages = [
   { id: 12, message_id: 'c', body: 'SÍ, PODEMOS ENTREGAR EL LUNES ANTES DE LAS 12.', account_id: sup.id, account_name: sup.name, actor_name: 'Carlos Ruiz', created_at: iso(2) },
 ];
 
+// A conversation's orders as its Cotizaciones table lists them (threads/<id>/orders).
+const docOf = (item: { id: string; reference: string; status: string }) => ({ id: item.id, reference: item.reference, status: item.status, created_at: iso(300), updated_at: iso(5),
+  reviewed_at: null, line_count: 3, unit_count: 7, quotation_revision: item.status === 'quoted' ? 2 : null, quotation_total: item.status === 'quoted' ? '612.40' : null, quotation_currency: 'USD' });
+
 type Summary = { unread_messages: number; unread_conversations: number; unseen_notifications: number; latest_message: unknown; latest_notification: unknown };
 
 async function mockInbox(page: Page, summary: { current: Summary }) {
@@ -52,6 +56,10 @@ async function mockInbox(page: Page, summary: { current: Summary }) {
   await page.route(/\/api\/market\/inbox\/notifications(\?.*)?$/, route => route.fulfill({ json: { results: notifications, has_more: false } }));
   await page.route(/\/api\/market\/inbox\/(notifications\/seen|conversations\/.*\/read)$/, route => { calls.push({ method: 'POST', url: new URL(route.request().url()).pathname, body: route.request().postDataJSON() }); return route.fulfill({ json: {} }); });
   await page.route(/\/sent-requests\/[^/?]+$/, route => route.fulfill({ json: deal }));
+  await page.route(/\/threads\/[^/]+\/orders$/, route => {
+    const id = new URL(route.request().url()).pathname.split('/').at(-2);
+    return route.fulfill({ json: { results: (conversations.find(row => row.id === id)?.orders ?? []).map(docOf) } });
+  });
   await page.route(/\/deals\/[^/]+\/messages(\?.*)?$/, route => {
     if (route.request().method() === 'POST') { const body = route.request().postDataJSON(); calls.push({ method: 'POST', url: 'messages', body }); return route.fulfill({ json: { id: 13, message_id: body.message_id, body: body.body, account_id: acct.id, account_name: acct.name, actor_name: 'Francisco', created_at: new Date().toISOString() } }); }
     return route.fulfill({ json: { results: route.request().url().includes('after=') ? [] : messages, cursor: 12, has_more: false, has_earlier: false, assistant_notice: false } });
@@ -131,11 +139,15 @@ test('mobile: the list, the chat and the document take turns in a full-screen pa
   await panel.getByRole('button', { name: /^GRUPO RAZOR PARTS/ }).click();
   await expect(panel.getByRole('complementary', { name: 'Tus conversaciones', exact: true })).toBeHidden();
   await expect(panel.getByRole('log', { name: 'Mensajes del acuerdo', exact: true })).toBeVisible();
-  const sections = panel.getByRole('group', { name: 'Secciones de la orden', exact: true });
-  await sections.getByRole('button', { name: 'Cotización', exact: true }).click();  // a section takes the chat's place
-  await expect(panel.getByRole('region', { name: 'Cotización vigente v2', exact: true })).toBeVisible();
+  const toggle = panel.getByRole('button', { name: 'Cotizaciones', exact: true });
+  await toggle.click();  // the table takes the chat's place
+  await expect(panel.getByRole('table', { name: 'Cotizaciones con GRUPO RAZOR PARTS', exact: true })).toBeVisible();
   await expect(panel.getByRole('log', { name: 'Mensajes del acuerdo', exact: true })).toBeHidden();
-  await sections.getByRole('button', { name: 'Cotización', exact: true }).click();  // pressed again: back to the chat
+  await panel.getByRole('button', { name: 'Abrir ORD-0123', exact: true }).click();  // a row opens its document
+  await expect(panel.getByRole('region', { name: 'Cotización vigente v2', exact: true })).toBeVisible();
+  await panel.getByRole('button', { name: 'Volver a las cotizaciones', exact: true }).click();
+  await expect(panel.getByRole('table', { name: 'Cotizaciones con GRUPO RAZOR PARTS', exact: true })).toBeVisible();
+  await toggle.click();  // pressed again: back to the chat
   await expect(panel.getByRole('log', { name: 'Mensajes del acuerdo', exact: true })).toBeVisible();
   const box = await panel.boundingBox();
   expect(box!.width).toBeGreaterThanOrEqual(389);
@@ -243,27 +255,37 @@ test('WhatsApp notices need the number, an explicit consent and the code sent th
   await expect(whatsapp.getByLabel('Tu número de WhatsApp')).toHaveValue('+50761234567');
 });
 
-test('like a desktop chat app: sections toggle a right panel, the side columns resize and the layout is remembered', async ({ page }) => {
+test('like a desktop chat app: the Cotizaciones table on the right opens each document, the side columns resize and the layout is remembered', async ({ page }) => {
   await mockInbox(page, { current: pending() });
   await page.goto('/');
   await page.getByRole('button', { name: 'Mensajes, 3 sin leer', exact: true }).click();
   const panel = page.getByRole('dialog', { name: 'Conversaciones', exact: true });
-  const sections = panel.getByRole('group', { name: 'Secciones de la orden', exact: true });
+  const docsToggle = panel.getByRole('button', { name: 'Cotizaciones', exact: true });
   const side = panel.locator('.inbox-side');
   const chat = panel.getByRole('log', { name: 'Mensajes del acuerdo', exact: true });
-  await expect(panel.getByRole('region', { name: 'Cotización vigente v2', exact: true })).toBeVisible();  // the quotation opens on the right
-  await expect(sections.getByRole('button', { name: 'Cotización', exact: true })).toHaveAttribute('aria-pressed', 'true');
-  await sections.getByRole('button', { name: 'Actividad', exact: true }).click();
-  await expect(sections.getByRole('button', { name: 'Actividad', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  const table = panel.getByRole('table', { name: 'Cotizaciones con GRUPO RAZOR PARTS', exact: true });
+  await expect(docsToggle).toHaveAttribute('aria-pressed', 'true');
+  await expect(table.getByRole('columnheader')).toHaveText(['Documento', 'Estado', 'Artículos', 'Total']);
+  const row = table.getByRole('row').filter({ hasText: 'ORD-0123' });
+  await expect(row).toHaveAttribute('aria-current', 'true');  // the order the chat writes about
+  for (const text of ['Cotizada', '3', '7 u.', '612.40', 'v2']) await expect(row).toContainText(text);
+  await row.getByRole('cell').nth(1).click();  // the whole row opens its document in the table's place
+  await expect(panel.getByRole('region', { name: 'Cotización vigente v2', exact: true })).toBeVisible();  // on its quotation
+  await expect(table).toBeHidden();
+  const tabs = panel.getByRole('navigation', { name: 'Secciones del acuerdo', exact: true });
+  await tabs.getByRole('button', { name: 'Artículos', exact: true }).click();
+  await expect(panel.getByRole('region', { name: 'Artículos de la orden', exact: true })).toBeVisible();
   await expect(panel.getByRole('region', { name: 'Cotización vigente v2', exact: true })).toBeHidden();
-  await sections.getByRole('button', { name: 'Actividad', exact: true }).click();  // pressed again: the panel closes, the chat stays
+  await panel.getByRole('button', { name: 'Volver a las cotizaciones', exact: true }).click();
+  await expect(table).toBeVisible();
+  await docsToggle.click();  // pressed again: the column hides, the chat stays
   await expect(side).toBeHidden();
   await expect(chat).toBeVisible();
-  await sections.getByRole('button', { name: 'Cotización', exact: true }).click();
+  await docsToggle.click();
   const width = async () => Math.round((await side.boundingBox())!.width);
   const before = await width();
-  await panel.getByRole('separator', { name: 'Ajustar el ancho de la orden', exact: true }).focus();
-  for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowLeft');  // the order's panel grows to the left
+  await panel.getByRole('separator', { name: 'Ajustar el ancho de las cotizaciones', exact: true }).focus();
+  for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowLeft');  // the column grows to the left
   await expect.poll(width).toBe(before + 72);
   const list = panel.getByRole('complementary', { name: 'Tus conversaciones', exact: true });
   const listBefore = Math.round((await list.boundingBox())!.width);
@@ -613,6 +635,7 @@ test('one conversation per supplier: its orders’ messages in one chat with the
   await page.route(/\/api\/market\/inbox\/conversations(\?.*)?$/, route => route.fulfill({ json: { count: 1, next: null, previous: null, results: [both] } }));
   const second = { ...deal, id: order2, reference: 'ORD-0119', status: 'reviewed', quotation: null, quotations: [] };
   await page.route(new RegExp(`/sent-requests/${order2}$`), route => route.fulfill({ json: second }));
+  await page.route(/\/threads\/[^/]+\/orders$/, route => route.fulfill({ json: { results: both.orders.map(docOf) } }));
   const chat = [
     { id: 40, message_id: 'x1', body: '¿ENVÍAN EL TAMBOR HOY?', account_id: acct.id, account_name: acct.name, actor_name: 'Francisco', created_at: iso(30), order_id: order, order_reference: 'ORD-0123' },
     { id: 41, message_id: 'x2', body: 'EL DISCO LLEGA EL LUNES.', account_id: sup.id, account_name: sup.name, actor_name: 'Carlos Ruiz', created_at: iso(20), order_id: order2, order_reference: 'ORD-0119' },
@@ -639,8 +662,9 @@ test('one conversation per supplier: its orders’ messages in one chat with the
   await expect(log.getByRole('article').nth(0)).toContainText('ORD-0123');
   await expect(log.getByRole('article').nth(1)).toContainText('ORD-0119');
   await expect(log.getByRole('article').nth(2)).toContainText('General');
-  const picker = conversation.getByLabel('Orden', { exact: true });
-  await expect(picker).toHaveValue(order);
+  const table = conversation.getByRole('table', { name: 'Cotizaciones con GRUPO RAZOR PARTS', exact: true });
+  await expect(table.getByRole('row')).toHaveCount(3);  // its two orders under the heading
+  await expect(table.getByRole('row').filter({ hasText: 'ORD-0123' })).toHaveAttribute('aria-current', 'true');  // the one in progress, written about
   await expect(conversation.getByRole('button', { name: 'Escribes sobre ORD-0123. Cambiar a general', exact: true })).toBeVisible();
 
   await conversation.getByRole('button', { name: /^Solo esta orden/ }).click();  // this order's messages
@@ -649,7 +673,8 @@ test('one conversation per supplier: its orders’ messages in one chat with the
   await conversation.getByRole('button', { name: /^Solo esta orden/ }).click();
   await expect(log.getByRole('article')).toHaveCount(3);
 
-  await picker.selectOption(order2);  // the other order: its document beside the chat, and what is written goes about it
+  await table.getByRole('button', { name: 'Abrir ORD-0119', exact: true }).click();  // the other order: its document beside the chat, and what is written goes about it
+  await expect(conversation.locator('.inbox-doc-title')).toContainText('ORD-0119');
   await expect(conversation.getByRole('button', { name: 'Escribes sobre ORD-0119. Cambiar a general', exact: true })).toBeVisible();
   await expect(log.getByRole('article')).toHaveCount(3);  // the same conversation
   const composer = conversation.getByLabel('Mensaje del acuerdo', { exact: true });
@@ -661,4 +686,7 @@ test('one conversation per supplier: its orders’ messages in one chat with the
   await composer.press('Enter');
   await expect.poll(() => posted.at(-1)).toMatchObject({ body: 'Saludos a todos', general: true });
   await expect(log.getByRole('article').last()).toContainText('General');
+  await log.getByRole('button', { name: 'Abrir la orden ORD-0123', exact: true }).click();  // an order's chip in the chat opens its document
+  await expect(conversation.locator('.inbox-doc-title')).toContainText('ORD-0123');
+  await expect(conversation.getByRole('region', { name: 'Cotización vigente v2', exact: true })).toBeVisible();
 });
