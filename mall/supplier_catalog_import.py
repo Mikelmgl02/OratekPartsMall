@@ -24,7 +24,7 @@ SKU are not copied onto it as company alternos (alternos step 2c); a SKU matched
 only an item whose codes no number can carry (no OEM number printed, or only shared or assembly ones) still writes them on the SKU.
 These rows are derived from the
 extracts and the importer only adds to them: after changing these rules, empty OEMCrossReference and the catalog links and re-run
-every extract.
+every extract. A corrected extract of one catalog replaces what the old one filed with mall.supplier_catalog_replace.
 """
 import argparse
 import json
@@ -505,7 +505,8 @@ class CatalogImport:
             template.save(update_fields=['revision', 'updated_at'])
             rc['template_fields_added'] += 1
 
-    def write_links(self, apply):
+    def write_links(self, apply, codes=True):
+        """codes=False only collects the catalog links (mall.supplier_catalog_replace): no alternos, measurements or subgrupos."""
         from django.db import transaction
         from .models import Part
         self.catalog_links = defaultdict(set)  # (pid, (manufacturer, number)) -> citations, written by write_catalog_links
@@ -519,6 +520,8 @@ class CatalogImport:
                 if not part.active or part.merged_into_id:
                     continue
                 carried = self.link_numbers(pid, n, item, cite)
+                if not codes:
+                    continue
                 if carried:  # the item's codes reach the SKU through those numbers: no copy on the SKU
                     self.report['counts']['codes_carried_by_numbers'] += 1
                 elif not self.clean.get((pid, n)):
