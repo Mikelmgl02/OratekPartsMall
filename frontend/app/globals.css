@@ -2768,3 +2768,17 @@ body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-s
 @media (max-width:760px) { .review-ai-tiles { grid-template-columns:repeat(2,minmax(0,1fr)); } .review-ai-actions .fine-print { margin-left:0; flex-basis:100%; } }
 .review-ai-chips .oem { background:#f4efe2; color:#8a6d33; }
 .review-ai-oem-note { padding:8px 10px; border-radius:8px; background:#fffaf0; color:#8a6d33; }
+
+/* Diagramas (app/diagramas, dev only): the team's model diagrams, a list beside the chosen one. */
+.diagrams-page { display:flex; flex-wrap:wrap; height:100dvh; overflow:auto; background:var(--paper); }
+.diagrams-list { flex:1 1 240px; max-width:300px; display:flex; flex-direction:column; gap:12px; padding:24px; box-sizing:border-box; border-right:1px solid var(--line); }
+.diagrams-list h1 { font-size:22px; }
+.diagrams-list p { color:var(--muted); font-size:13px; line-height:1.5; }
+.diagrams-list ul { list-style:none; margin:0; padding:0; display:grid; gap:2px; }
+.diagrams-list li a { display:block; padding:8px 10px; border-radius:8px; font-size:14px; }
+.diagrams-list li a:hover { background:#eef2e8; }
+.diagrams-list li a[aria-current="page"] { background:#fff; font-weight:700; box-shadow:0 1px 4px #19221b14, inset 0 0 0 1px #d5e1c4; }
+.diagrams-list>.button { align-self:flex-start; margin-top:auto; }
+.diagrams-view { flex:999 1 560px; min-width:0; display:flex; padding:16px; box-sizing:border-box; }
+.diagrams-view iframe { flex:1; min-height:calc(100dvh - 32px); border:1px solid var(--line); border-radius:12px; background:#fff; }
+@media (max-width:700px) { .diagrams-list { max-width:none; border-right:0; border-bottom:1px solid var(--line); } }

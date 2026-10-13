@@ -225,6 +225,7 @@ services:
     environment:
       API_INTERNAL_URL: http://app:8000
       COOKIE_SECURE: ${COOKIE_SECURE:-0}
+      MOTIONPARTES_DEV_TOOLS: ${MOTIONPARTES_DEV_TOOLS:-0}  # 1: dev-only pages such as /diagramas
     depends_on:
       app:
         condition: service_healthy

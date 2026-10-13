@@ -4,6 +4,8 @@ const deployment = process.env.NEXT_DEPLOYMENT_ID || '';
 const config: NextConfig = {
   output: 'standalone',
   poweredByHeader: false,
+  // Diagramas (dev only) reads its files at request time: the standalone server needs them beside it.
+  outputFileTracingIncludes: { '/diagramas': ['./diagrams/**/*'] },
   ...(deployment ? { deploymentId: deployment } : {}),
   env: { NEXT_PUBLIC_DEPLOYMENT_ID: deployment },
   async headers() {
