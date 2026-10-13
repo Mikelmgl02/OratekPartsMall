@@ -296,9 +296,9 @@ test('manual balance retries reuse the update ID while edited payloads receive a
 });
 
 // Confirmed deals reserved units of FE-ONE: 3 for one order, 2 for another. The file's count is 3.
-const orders: { id: string; reference: string; client_name: string; quantity: number; confirmed_at: string; delivered_at: string | null }[] = [
-  { id: '66666666-6666-4666-8666-666666666661', reference: 'ORD-20261008-AAAA1111', client_name: 'TALLER CENTRAL', quantity: 3, confirmed_at: '2026-10-08T15:00:00Z', delivered_at: null },
-  { id: '66666666-6666-4666-8666-666666666662', reference: 'ORD-20261009-BBBB2222', client_name: 'TALLER NORTE', quantity: 2, confirmed_at: '2026-10-09T15:00:00Z', delivered_at: null },
+const orders: { id: string; reference: string; client_name: string; quantity: number; confirmed_at: string; in_transit_at: string | null; delivered_at: string | null }[] = [
+  { id: '66666666-6666-4666-8666-666666666661', reference: 'ORD-20261008-AAAA1111', client_name: 'TALLER CENTRAL', quantity: 3, confirmed_at: '2026-10-08T15:00:00Z', in_transit_at: null, delivered_at: null },
+  { id: '66666666-6666-4666-8666-666666666662', reference: 'ORD-20261009-BBBB2222', client_name: 'TALLER NORTE', quantity: 2, confirmed_at: '2026-10-09T15:00:00Z', in_transit_at: null, delivered_at: null },
 ];
 function reservedJob() {
   const job = importJob({ rejectedRows: 0 });
@@ -373,6 +373,20 @@ test('a delivered order starts answered "Ya lo descuenta" and the supplier can s
     await expect(dialog.getByRole('heading', { name: 'Importación completada', exact: true })).toBeVisible();
     expect(bodies).toEqual([{ batch_index: 0, decisions: { [orders[0].id]: 'gross', [orders[1].id]: 'gross' } }]);
   } finally { orders[1].delivered_at = null; }
+});
+
+test('an order on its way (En camino) also starts answered "Ya lo descuenta"', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  orders[0].in_transit_at = '2026-10-09T13:00:00Z';
+  try {
+    const { dialog, notice } = await reservedImport(page);
+    const day = await page.evaluate(() => new Date('2026-10-09T13:00:00Z').toLocaleDateString('es-PA', { dateStyle: 'medium', timeZone: 'America/Panama' }));
+    await expect(notice).toContainText(`TALLER CENTRAL · 3 unidades · confirmado el `);
+    await expect(notice).toContainText(` · en camino el ${day}`);
+    await expect(notice.getByRole('group', question('ORD-20261008-AAAA1111')).getByLabel('Ya lo descuenta')).toBeChecked();
+    await expect(notice.getByRole('group', question('ORD-20261009-BBBB2222')).getByLabel('Ya lo descuenta')).not.toBeChecked();
+    await expect(dialog.getByRole('button', { name: 'Responde por 1 pedido confirmado para importar', exact: true })).toBeDisabled();
+  } finally { orders[0].in_transit_at = null; }
 });
 
 test('on a phone one answer can cover every confirmed order, and the heads-up stays inside the dialog', async ({ page }) => {

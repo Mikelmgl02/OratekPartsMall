@@ -15,7 +15,8 @@ async function mock(page: Page, enabled: boolean) {
   await page.route('**/api/**', route => route.fulfill({ json: empty }));
   await page.route('**/api/session', route => route.fulfill({ json: { authenticated: true, user: { id: 1, username: 'FRANCISCO', first_name: 'Francisco', last_name: '', is_superuser: false }, accounts: { count: 1, next: null, previous: null, results: [acct] } } }));
   await page.route('**/api/market/wishlist/state', route => route.fulfill({ json: { part_ids: [], count: 0 } }));
-  await page.route(/\/api\/market\/inbox$/, route => route.fulfill({ json: { unread_messages: 1, unread_conversations: 1, unseen_notifications: 0, latest_message: null, latest_notification: null } }));
+  await page.route(/\/api\/market\/inbox$/, route => route.fulfill({ json: { unread_messages: 1, unread_conversations: 1, unseen_notifications: 0, latest_message: null, latest_notification: null,
+    awaiting_receipt: { count: 0, latest_at: null, orders: [] } } }));
   await page.route(/\/api\/market\/inbox\/notifications(\?.*)?$/, route => route.fulfill({ json: { results: [], has_more: false } }));
   await page.route(/\/api\/market\/inbox\/conversations(\?.*)?$/, route => {
     posts.push({ path: new URL(route.request().url()).search, body: null });

@@ -21,7 +21,11 @@ export type InboxSummary = {
   unread_messages: number; unread_conversations: number; unseen_notifications: number;
   latest_message: (InboxMessage & { thread_id?: string; order_id: string; reference: string; side: InboxSide; account: InboxParty; counterpart: InboxParty }) | null;
   latest_notification: InboxNotification | null;
+  // Orders the supplier marked Entregado that wait for the person's Recibido, across their client accounts (mall/inbox.py awaiting_receipt):
+  // how many, the newest Entregado (it brings a closed reminder back) and the three oldest. Optional: older servers do not send it.
+  awaiting_receipt?: { count: number; latest_at: string | null; orders: InboxReceiptOrder[] };
 };
+export type InboxReceiptOrder = { id: string; thread_id: string; reference: string; delivered_at: string; account: InboxParty; counterpart: InboxParty };
 // What the panel needs to open a conversation (threadId) on one of its orders (orderId: its document, and the tag of what is written)
 // without loading the conversation list first.
 // draft: a message prefilled in the composer, in general (Preguntar al proveedor, from the catalog). orderId '' : a conversation without orders.

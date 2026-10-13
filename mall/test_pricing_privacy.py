@@ -31,12 +31,14 @@ from .serializers import SupplierItemSerializer
 
 SUMMARY_KEYS = {'id', 'reference', 'status', 'version', 'created_at', 'updated_at', 'handshaked_at', 'reviewed_at', 'line_count',
                 'unit_count', 'quotation_revision', 'quoted_unit_count', 'quotation_total', 'quotation_currency',
-                'shortfall_pending', 'delivered_at', 'cancelled_at', 'cancelled_side', 'agreed_unit_count'}
+                'shortfall_pending', 'processing_at', 'in_transit_at', 'delivered_at', 'received_at', 'cancelled_at', 'cancelled_side',
+                'agreed_unit_count'}
 SENT_SUMMARY_KEYS = SUMMARY_KEYS | {'supplier', 'submission_id'}
-# After the handshake both parties see the agreement after accepted shortfalls, the shortfalls, the delivery and the cancellation.
+# After the handshake both parties see the agreement after accepted shortfalls, the shortfalls, each step's date (Procesando, En camino, the
+# supplier's Entregado, the client's Recibido) and the cancellation; never who took a step.
 # stock_hold: until when the sent quotation holds its own offered units (mall.deal_views.stock_hold), never the supplier's stock.
-DEAL_KEYS = {'client', 'supplier', 'quotations', 'quotation', 'events', 'agreement', 'shortfalls', 'delivered_at', 'cancellation', 'stock_reserved',
-             'stock_hold'}
+DEAL_KEYS = {'client', 'supplier', 'quotations', 'quotation', 'events', 'agreement', 'shortfalls', 'processing_at', 'in_transit_at', 'delivered_at',
+             'received_at', 'cancellation', 'stock_reserved', 'stock_hold'}
 QUOTATION_KEYS = {'id', 'revision', 'currency', 'terms', 'total', 'created_at', 'supplier_confirmed_at', 'client_confirmed_at', 'lines'}
 QUOTATION_LINE_KEYS = {'order_line_id', 'codigo', 'sku', 'description', 'quantity', 'unit_price', 'total'}
 EVENT_KEYS = {'id', 'kind', 'description', 'account_name', 'actor_name', 'created_at', 'quotation_id'}
@@ -312,6 +314,14 @@ class PricingPrivacyTests(APITestCase):
         responses['POST accept'] = self.action(order, 'accept', quotation_id=quote['id'])
         responses['POST requests'] = self.submit(self.payload([(self.item_a, 1), (self.item_b, 1)]))
         self.assertEqual((responses['POST accept'].status_code, responses['POST requests'].status_code), (200, 200))
+        # Marked delivered, the order waits for the client's Recibido: the inbox's reminder names it without a price either.
+        self.client.force_authenticate(self.seller_a)
+        for step in ('process', 'deliver'):
+            self.assertEqual(self.action(order, step, account=self.supplier_a, quotation_id=quote['id']).status_code, 200)
+        self.client.force_authenticate(self.buyer)
+        responses['GET inbox (por recibir)'] = waiting = self.client.get('/api/v1/inbox/')
+        self.assertEqual(waiting.data['awaiting_receipt']['orders'][0]['reference'], order.reference)
+        self.assertNotIn('13.00', waiting.content.decode())
         self.assert_no_markers('cliente A', responses)
         buyer_b = User.objects.create_user('privacy-buyer-b', 'privacy-buyer-b@example.invalid', 'Request938!')
         client_b = self.account('CLIENTE B', 'client_walkin', buyer_b)
@@ -349,7 +359,7 @@ class PricingPrivacyTests(APITestCase):
         order = SupplierRequest.objects.get(pk=receipt.data['requests'][0]['id'])
         self.review(order)
         quoted = self.quote(order)
-        self.assertEqual(set(quoted.data), SUMMARY_KEYS | DEAL_KEYS | {'notes', 'lines'})
+        self.assertEqual(set(quoted.data), SUMMARY_KEYS | DEAL_KEYS | {'notes', 'lines', 'stock_units'})  # stock_units: supplier payloads only
         self.assertEqual({key for line in quoted.data['lines'] for key in line}, SUPPLIER_LINE_KEYS)
         self.client.force_authenticate(self.seller_a)
         listed = self.client.get(self.url(self.supplier_a)).data['results'][0]
@@ -371,7 +381,10 @@ class PricingPrivacyTests(APITestCase):
             self.assertEqual({key for line in payload['quotation']['lines'] for key in line}, QUOTATION_LINE_KEYS)
             self.assertEqual({key for event in payload['events'] for key in event}, EVENT_KEYS)
             self.assertEqual((set(payload['client']), set(payload['supplier'])), ({'id', 'name'}, {'id', 'name'}))
-        self.assertEqual(set(DealCommand.objects.get(account=self.supplier_a).result), SUMMARY_KEYS | DEAL_KEYS | {'notes', 'lines'})
+        self.assertEqual(set(DealCommand.objects.get(account=self.supplier_a).result), SUMMARY_KEYS | DEAL_KEYS | {'notes', 'lines', 'stock_units'})
+        # Who took each step stays on the server: no *_by field reaches either party.
+        for payload in [quoted.data, listed, sent, detail, accepted]:
+            self.assertEqual([key for key in payload if key.endswith('_by')], [])
         state = self.client.get(f'{base}/catalog/{self.part.pk}/request-state/').data
         self.assertEqual((set(state), set(state['items'][0])), ({'part_id', 'totals', 'items'}, {
             'supplier_item_id', 'supplier_id', 'codigo', 'brand', 'sent_quantity', 'pending_quantity', 'reviewed_quantity',

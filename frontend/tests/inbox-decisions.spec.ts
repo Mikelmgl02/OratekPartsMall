@@ -40,8 +40,11 @@ async function panel(page: Page, side: 'client' | 'supplier', status: Deal['stat
   await page.route(new RegExp(`/requests/${orderId}/review$`), route => { reviews.push(route.request().method()); deal = { ...deal, status: 'reviewed', version: deal.version + 1 }; return route.fulfill({ json: deal }); });
   await page.route(new RegExp(`/deals/${orderId}/actions$`), route => {
     const payload = route.request().postDataJSON(); actions.push(payload);
-    const status = ({ accept: 'handshaked', request_adjustment: 'adjustment', reject: 'cancelled' } as Record<string, Deal['status']>)[payload.action];
-    deal = { ...deal, status, version: deal.version + 1 };
+    const status = ({ accept: 'handshaked', request_adjustment: 'adjustment', reject: 'cancelled', process: 'processing', ship: 'in_transit', deliver: 'delivered',
+      receive: 'received' } as Record<string, Deal['status']>)[payload.action];
+    // The order's progress after the handshake carries the date of each step.
+    const stamped = ({ processing: 'processing_at', in_transit: 'in_transit_at', delivered: 'delivered_at', received: 'received_at' } as Record<string, string>)[status];
+    deal = { ...deal, status, version: deal.version + 1, ...(stamped ? { [stamped]: stamp } : {}) };
     return route.fulfill({ json: deal });
   });
   const drafts = side === 'supplier' ? await mockQuoteDrafts(page, () => deal) : null;
@@ -227,4 +230,56 @@ test.describe('on a touch screen', () => {
     await swipe((await grid.getByRole('row').nth(1).boundingBox())!);
     await expect.poll(left).toBeGreaterThan(afterHeader);  // and the rows
   });
+});
+
+// After the handshake the Decisiones offer only the order's next step, and the step's confirmation opens in the document (whose own step
+// buttons stay out of the panel, so each name is there once).
+const agreed = { handshaked_at: stamp, quotation: { ...quote, client_confirmed_at: stamp }, quotations: [{ ...quote, client_confirmed_at: stamp }],
+  agreement: { quotation_id: quote.id, units: 5, total: '61.75', lines: [{ order_line_id: lineId, codigo: '58411-1R000-G', description: 'TAMBOR', agreed: 5, missing: 0,
+    pending_missing: 0, final: 5, unit_price: '12.35', total: '61.75' }] } } as Partial<Deal>;
+
+test('after the handshake the supplier’s Decisiones offer one next step at a time, with no duplicate names', async ({ page }) => {
+  const { document, actions } = await panel(page, 'supplier', 'handshaked', true, [line], agreed);
+  const decisions = document.getByRole('group', { name: 'Decisiones', exact: true });
+  const once = async (names: string[]) => {
+    await expect(decisions.getByRole('button')).toHaveText(names);
+    for (const name of names) await expect(document.getByRole('button', { name, exact: true })).toHaveCount(1);
+  };
+  await once(['Marcar como procesando']);
+  await expect(document.getByRole('button', { name: 'Marcar como entregado', exact: true })).toHaveCount(0);  // Procesando first
+  await decisions.getByRole('button', { name: 'Marcar como procesando', exact: true }).click();
+  await expect(document.locator('.deal-confirmation')).toContainText('¿Marcar la orden como Procesando?');
+  await document.getByRole('button', { name: 'Sí, marcar procesando', exact: true }).click();
+  await expect.poll(() => actions.at(-1)).toMatchObject({ action: 'process', quotation_id: quote.id, expected_version: 3 });
+  await expect(document.getByRole('status').filter({ hasText: 'Orden marcada como Procesando.' })).toBeVisible();
+  await once(['Marcar en camino', 'Marcar como entregado']);
+  await expect(decisions.getByRole('button', { name: 'Marcar en camino', exact: true })).toHaveClass(/primary/);
+  await decisions.getByRole('button', { name: 'Marcar en camino', exact: true }).click();
+  await document.getByRole('button', { name: 'Sí, va en camino', exact: true }).click();
+  await expect.poll(() => actions.at(-1)).toMatchObject({ action: 'ship', expected_version: 4 });
+  await once(['Marcar como entregado']);
+  await expect(document.getByRole('button', { name: 'Cancelar acuerdo', exact: true })).toHaveCount(0);
+  await decisions.getByRole('button', { name: 'Marcar como entregado', exact: true }).click();
+  await document.getByRole('button', { name: 'Sí, marcar entregado', exact: true }).click();
+  await expect.poll(() => actions.at(-1)).toMatchObject({ action: 'deliver', expected_version: 5 });
+  await expect(decisions.getByRole('button')).toHaveCount(0);  // now the client's to confirm
+  await expect(document.locator('.deal-outcome.delivered')).toContainText('Entregado · esperando al cliente');
+  expect(actions.map(action => action.action)).toEqual(['process', 'ship', 'deliver']);
+});
+
+test('the client confirms Recibido from the panel’s Decisiones once the supplier marked Entregado', async ({ page }) => {
+  const { document, actions } = await panel(page, 'client', 'delivered', true, [line], { ...agreed, processing_at: stamp, delivered_at: stamp });
+  const decisions = document.getByRole('group', { name: 'Decisiones', exact: true });
+  await expect(decisions.getByRole('button')).toHaveText(['Confirmar recibido']);
+  await expect(document.getByRole('button', { name: 'Confirmar recibido', exact: true })).toHaveCount(1);  // not in the Entregado card too
+  await expect(document.locator('.deal-outcome.delivered')).toContainText('Entregado · falta tu confirmación');
+  await decisions.getByRole('button', { name: 'Confirmar recibido', exact: true }).click();
+  await expect(document.locator('.deal-confirmation')).toContainText('¿Confirmas que recibiste la orden ORD-0123?');
+  await expect(document.locator('.deal-confirmation')).toContainText('Recibiste 5 unidades de REPUESTOS CENTRAL.');
+  expect(actions).toEqual([]);
+  await document.getByRole('button', { name: 'Sí, la recibí', exact: true }).click();
+  await expect.poll(() => actions.at(-1)).toMatchObject({ action: 'receive', quotation_id: quote.id });
+  await expect(document.getByRole('status').filter({ hasText: 'Confirmaste que recibiste la orden. ¡Gracias!' })).toBeVisible();
+  await expect(decisions.getByRole('button')).toHaveCount(0);
+  await expect(document.locator('.deal-outcome.received')).toContainText('Recibido');
 });

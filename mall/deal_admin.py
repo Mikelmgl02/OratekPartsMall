@@ -1,5 +1,6 @@
-"""Acuerdos, for Oratek superusers: confirmed deals with their lifecycle (delivery, shortfalls, cancellations) to settle disputes, and the
-administrator's cancellation (side 'admin', which never counts against the supplier). Never a price, total, currency or term (decision D5):
+"""Acuerdos, for Oratek superusers: confirmed deals with their lifecycle (Procesando, En camino, Entregado, Recibido, shortfalls,
+cancellations) to settle disputes, and the administrator's cancellation (side 'admin', which never counts against the supplier) of any
+agreement the client has not received yet, also after dispatch. Never a price, total, currency or term (decision D5):
 the lines show units only, and the timeline leaves out the parties' own words (adjustment requests and returns) and the conversation.
 """
 from django.db import transaction
@@ -19,7 +20,7 @@ from .request_models import DealEvent, DealShortfall, SupplierRequest, SupplierR
 from .request_views import RequestFilters, lifecycle_fields, status_filter
 
 # Event kinds whose description is written by the system; the others carry the parties' own words and show only their label.
-SYSTEM_EVENTS = {'review_started', 'quote', 'accept', 'deliver', 'report_shortfall', 'accept_shortfall', 'cancel'}
+SYSTEM_EVENTS = {'review_started', 'quote', 'accept', 'process', 'ship', 'deliver', 'receive', 'report_shortfall', 'accept_shortfall', 'cancel'}
 EVENT_LABELS = {'request_adjustment': 'EL CLIENTE PIDIÓ UN AJUSTE.', 'return_quote': 'EL PROVEEDOR DEVOLVIÓ LA COTIZACIÓN.'}
 
 
@@ -41,7 +42,8 @@ def iso(value):
 def summary(row):
     return {'id': str(row.pk), 'reference': row.reference, 'status': row.status, 'version': row.version,
             'client': {'id': str(row.client_id), 'name': row.client_name}, 'supplier': {'id': str(row.supplier_id), 'name': row.supplier_name},
-            'created_at': iso(row.created_at), 'handshaked_at': iso(row.handshaked_at), 'delivered_at': iso(row.delivered_at),
+            'created_at': iso(row.created_at), 'handshaked_at': iso(row.handshaked_at), 'processing_at': iso(row.processing_at),
+            'in_transit_at': iso(row.in_transit_at), 'delivered_at': iso(row.delivered_at), 'received_at': iso(row.received_at),
             'cancelled_at': iso(row.cancelled_at), 'cancelled_side': row.cancelled_side or None,
             'cancel_reason_label': CANCEL_REASONS.get(row.cancel_reason) if row.cancel_reason else None,
             'line_count': row.line_count, 'unit_count': row.unit_count, 'shortfall_count': row.shortfall_count,
@@ -81,7 +83,9 @@ class DealAdminList(APIView):
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_deals_list', responses=OpenApiTypes.OBJECT,
-                   parameters=[OpenApiParameter('status', OpenApiTypes.STR, description='Un estado, o agreements para todos los acuerdos confirmados.'),
+                   parameters=[OpenApiParameter('status', OpenApiTypes.STR, description='Un estado, o un grupo: agreements (todos los acuerdos '
+                                                'confirmados), active_agreements (confirmados, sin el Entregado del proveedor) u '
+                                                'open_agreements (confirmados y sin cerrar, también los que esperan el recibido del cliente).'),
                                OpenApiParameter('search', OpenApiTypes.STR, description='Referencia, cliente o proveedor.'),
                                OpenApiParameter('page', OpenApiTypes.INT)],
                    description='Acuerdos de todas las cuentas para resolver disputas: estados, fechas y unidades, sin precios.')
@@ -110,8 +114,9 @@ class DealAdminCancel(APIView):
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_deals_cancel', request=AdminCancelSerializer, responses=OpenApiTypes.OBJECT,
-                   description='MotionPartes cancela un acuerdo confirmado sin entregar (disputa): libera las unidades reservadas; no cuenta '
-                               'contra el proveedor. 409 si cambió (expected_version) o ya no está abierto.')
+                   description='MotionPartes cancela un acuerdo abierto que el cliente aún no recibió (disputa), también después del envío: '
+                               'libera las unidades que aún reserva (lo descontado por apiag-cloud al Entregado no cambia); no cuenta contra el '
+                               'proveedor. 409 si cambió (expected_version) o ya está cerrado (recibido o cancelado).')
     @transaction.atomic
     def post(self, request, pk):
         from .request_views import RequestConflict

@@ -1,9 +1,11 @@
+import json
 import uuid
 
 from rest_framework.test import APITestCase
 
+from .inbox import awaiting_receipt
 from .inbox_models import InboxCursor
-from .models import Membership
+from .models import DealEvent, Membership
 from .request_models import DealMessage, SupplierRequest
 from . import test_deals as deal_tests
 
@@ -16,6 +18,9 @@ class InboxTests(APITestCase):
     payload = deal_tests.DealWorkflowTests.payload
     submit = deal_tests.DealWorkflowTests.submit
     review = deal_tests.DealWorkflowTests.review
+    action = deal_tests.DealWorkflowTests.action
+    drafted = deal_tests.DealWorkflowTests.drafted
+    quote = deal_tests.DealWorkflowTests.quote
 
     def order(self):
         self.client.force_authenticate(self.buyer)
@@ -38,11 +43,39 @@ class InboxTests(APITestCase):
         self.client.force_authenticate(user)
         return self.client.post(f'/api/v1/inbox/{path}', payload, format='json')
 
+    def confirmed(self, order, account=None):
+        """The reviewed order quoted by PROVEEDOR A and confirmed by its client: the quotation's id."""
+        self.client.force_authenticate(self.seller_a)
+        quotation = self.quote(order).data['quotation']['id']
+        self.client.force_authenticate(self.buyer)
+        self.assertEqual(self.action(order, 'accept', account=account or self.client_account, quotation_id=quotation).status_code, 200)
+        return quotation
+
+    def step(self, order, action, quotation, account=None):
+        """One step of the order's progress: the supplier's (PROVEEDOR A), or the client's Recibido."""
+        self.client.force_authenticate(self.buyer if action == 'receive' else self.seller_a)
+        account = account or (self.client_account if action == 'receive' else self.supplier_a)
+        response = self.action(order, action, account=account, quotation_id=quotation)
+        self.assertEqual(response.status_code, 200, response.data)
+        return response
+
+    def delivered(self, account):
+        """An order of `account` (a client account of the buyer) that PROVEEDOR A marked delivered."""
+        self.client.force_authenticate(self.buyer)
+        order = SupplierRequest.objects.get(pk=self.submit(self.payload([(self.item_a, 1)]), account=account).data['requests'][0]['id'])
+        self.review(order)
+        quotation = self.confirmed(order, account)
+        for action in ('process', 'deliver'):
+            self.step(order, action, quotation)
+        order.refresh_from_db()
+        return order, quotation
+
     def test_history_from_before_the_first_poll_is_not_new_and_own_messages_never_are(self):
         order = self.order()
         self.say(self.buyer, self.client_account, order, 'mensaje antiguo')
         self.assertEqual(self.inbox(self.seller_a), {'unread_messages': 0, 'unread_conversations': 0, 'unseen_notifications': 0,
-                                                     'latest_message': None, 'latest_notification': None})
+                                                     'latest_message': None, 'latest_notification': None,
+                                                     'awaiting_receipt': {'count': 0, 'latest_at': None, 'orders': []}})
         self.inbox(self.buyer)
         latest = self.say(self.buyer, self.client_account, order, '¿Pueden entregar el lunes?')
         summary = self.inbox(self.seller_a)
@@ -168,6 +201,21 @@ class InboxTests(APITestCase):
         self.assertEqual(self.mark(self.buyer, 'notifications/seen/', {'last_event_id': 0}).data['seen_event_id'], row['id'])  # never back
         self.assertEqual(self.inbox(self.buyer, 'notifications/', before=row['id'])['results'], [])
 
+        # The order's progress: the supplier's steps reach the client, the client's Recibido the supplier; never the one who acted.
+        quotation = self.confirmed(order)
+        for action, actor, other, side, title in [
+                ('process', self.seller_a, self.buyer, 'client', 'PROVEEDOR A está procesando tu orden'),
+                ('ship', self.seller_a, self.buyer, 'client', 'PROVEEDOR A envió tu orden: va en camino'),
+                ('deliver', self.seller_a, self.buyer, 'client', 'Confirma que recibiste tu orden: PROVEEDOR A la marcó como entregada'),
+                ('receive', self.buyer, self.seller_a, 'supplier', 'CLIENTE ORIGINAL confirmó que recibió la orden')]:
+            self.step(order, action, quotation)
+            latest = self.inbox(other)['latest_notification']
+            self.assertEqual((latest['kind'], latest['title'], latest['side']), (action, title, side))
+            self.assertNotIn(action, [row['kind'] for row in self.inbox(actor, 'notifications/')['results']])
+        # Read later, an Entregado the client already answered no longer asks to confirm it.
+        entregado = next(row for row in self.inbox(self.buyer, 'notifications/')['results'] if row['kind'] == 'deliver')
+        self.assertEqual(entregado['title'], 'PROVEEDOR A marcó la orden como entregada')
+
     def test_people_outside_the_deal_see_nothing_and_cannot_mark_it(self):
         order = self.order()
         self.say(self.buyer, self.client_account, order, 'privado')
@@ -218,3 +266,41 @@ class InboxTests(APITestCase):
         self.assertEqual(self.inbox(self.seller_a)['unread_messages'], 0)  # read from either order, the conversation is read
         self.assertEqual(len(self.inbox(self.buyer, 'conversations/', search=second.reference)['results']), 1)
         self.assertEqual(self.inbox(self.buyer, 'conversations/', order=str(second.pk))['results'][0]['id'], str(first.thread_id))
+        # An order the supplier marked delivered is still open (it waits for the client) and the conversation opens on it; received, it closes.
+        quotation = self.confirmed(first)
+        for action in ('process', 'deliver'):
+            self.step(first, action, quotation)
+        [row] = self.inbox(self.buyer, 'conversations/')['results']
+        self.assertEqual((row['open_orders'], row['order_id'], row['status']), (2, str(first.pk), 'delivered'))
+        self.step(first, 'receive', quotation)
+        [row] = self.inbox(self.buyer, 'conversations/')['results']
+        self.assertEqual((row['open_orders'], row['order_id'], row['status']), (1, str(second.pk), 'pending'))
+
+    def test_awaiting_receipt_lists_delivered_orders_for_client_members(self):
+        other = self.account('OTRO CLIENTE', 'client_business', self.buyer)
+        first, _ = self.delivered(self.client_account)
+        second, quotation = self.delivered(other)
+        third, _ = self.delivered(self.client_account)
+        summary = self.inbox(self.buyer)['awaiting_receipt']
+        latest = SupplierRequest.objects.filter(pk__in=[first.pk, second.pk, third.pk]).latest('delivered_at')
+        self.assertEqual((summary['count'], summary['latest_at']), (3, latest.delivered_at.isoformat()))
+        self.assertEqual([(row['reference'], row['account']['name']) for row in summary['orders']],  # the oldest Entregado first
+                         [(first.reference, 'CLIENTE ORIGINAL'), (second.reference, 'OTRO CLIENTE'), (third.reference, 'CLIENTE ORIGINAL')])
+        self.assertEqual(summary['orders'][1], {'id': str(second.pk), 'thread_id': str(second.thread_id), 'reference': second.reference,
+                                                'delivered_at': second.delivered_at.isoformat(), 'account': {'id': str(other.pk), 'name': 'OTRO CLIENTE'},
+                                                'counterpart': {'id': str(self.supplier_a.pk), 'name': 'PROVEEDOR A'}})
+        self.assertNotIn('12.35', json.dumps(summary))  # no prices
+        # Seeing the notifications does not clear it: only the client's Recibido does.
+        self.mark(self.buyer, 'notifications/seen/', {'last_event_id': DealEvent.objects.latest('id').pk})
+        self.assertEqual(self.inbox(self.buyer)['awaiting_receipt']['count'], 3)
+        self.step(second, 'receive', quotation, account=other)
+        self.assertEqual([row['reference'] for row in self.inbox(self.buyer)['awaiting_receipt']['orders']], [first.reference, third.reference])
+        # Asked of the client's people only: the supplier's get nothing, unless they also belong to the client account.
+        self.assertEqual(self.inbox(self.seller_a)['awaiting_receipt'], {'count': 0, 'latest_at': None, 'orders': []})
+        Membership.objects.create(user=self.seller_a, account=self.client_account)
+        self.assertEqual([row['reference'] for row in self.inbox(self.seller_a)['awaiting_receipt']['orders']], [first.reference, third.reference])
+        # Two queries however many orders wait.
+        with self.assertNumQueries(2):
+            awaiting_receipt(self.seller_a)
+        with self.assertNumQueries(2):
+            awaiting_receipt(self.buyer)

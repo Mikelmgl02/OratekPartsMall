@@ -1,6 +1,7 @@
 """The person's deal inbox, across every account they belong to: their conversations, one per client and supplier pair (DealThread: one
-linear chat with all their orders, each message tagged with its order when it has one), with unread counts, and notifications of what the
-other party did on their orders. Read by polling, nudged by the websocket (realtime.py); nothing here changes a deal.
+linear chat with all their orders, each message tagged with its order when it has one), with unread counts, notifications of what the
+other party did on their orders, and the orders waiting for their Recibido as a client (the reminder's data). Read by polling, nudged by the
+websocket (realtime.py); nothing here changes a deal.
 
 A person takes part in a conversation through a membership of its client account (with the client capability) or of its supplier account
 (with the supplier capability), the rule of deal_views.participant. Unread messages are the ones someone else wrote after the person's read
@@ -24,19 +25,24 @@ from rest_framework.views import APIView
 from .deal_attachments import describe
 from .inbox_models import ConversationRead, InboxCursor, InboxGroup
 from .models import Account, DealEvent, DealMessage, DealThread, SupplierRequest
+from .request_models import CLOSED_STATUSES
 
 NOTIFICATION_PAGE = 30
 GROUP_LIMIT = 30
 ACTIVITY_WRITE = timedelta(minutes=1)
 ORDERS_LISTED = 12  # a conversation's orders listed with it, latest first
-CLOSED = ('delivered', 'cancelled')
+CLOSED = CLOSED_STATUSES  # an order the supplier marked delivered is still open: it waits for the client's Recibido
+RECEIPT_LISTED = 3  # orders waiting for the client's Recibido listed in the summary, oldest Entregado first
 SNIPPET = 140
 TITLES = {
     'order_sent': '{who} te envió una orden', 'order_appended': '{who} agregó artículos a la orden',
     'review_started': '{who} empezó a revisar tu orden', 'quote': '{who} publicó la cotización v{revision}',
     'request_adjustment': '{who} solicitó un ajuste', 'return_quote': '{who} devolvió la cotización v{revision} para confirmar',
-    'accept': '{who} confirmó el acuerdo', 'deliver': '{who} marcó la orden como entregada', 'report_shortfall': '{who} reportó un faltante',
-    'accept_shortfall': '{who} aceptó el faltante', 'cancel': '{who} canceló el acuerdo', 'reject': '{who} rechazó la orden',
+    'accept': '{who} confirmó el acuerdo', 'process': '{who} está procesando tu orden', 'ship': '{who} envió tu orden: va en camino',
+    # The call to action first: WhatsApp cuts the title at 120 characters.
+    'deliver': 'Confirma que recibiste tu orden: {who} la marcó como entregada', 'receive': '{who} confirmó que recibió la orden',
+    'report_shortfall': '{who} reportó un faltante', 'accept_shortfall': '{who} aceptó el faltante', 'cancel': '{who} canceló el acuerdo',
+    'reject': '{who} rechazó la orden',
     'hold_expired': 'Venció la reserva de la cotización v{revision}',
 }
 # Kept in the order's Actividad only: no bell, push, email or WhatsApp notice (a lapsed hold is a fact, not anyone's decision).
@@ -181,11 +187,14 @@ def focus(orders):
     return max(open_orders, key=lambda order: order.updated_at) if open_orders else (orders[0] if orders else None)
 
 
-def event_title(event):
+def event_title(event, status=None):
+    """status: the order's status now, when the title is read later (the bell): an Entregado the client already answered, or an order
+    that closed otherwise, no longer asks to confirm Recibido."""
     revision = event.quotation.revision if event.quotation_id else ''
     # An administrator's decision (a dispute cancellation) acts for no account.
     who = event.account.name if event.account else 'MotionPartes'
-    return TITLES.get(event.kind, '{who} actualizó la orden').format(who=who, revision=revision)
+    title = '{who} marcó la orden como entregada' if event.kind == 'deliver' and status not in (None, 'delivered') else TITLES.get(event.kind, '{who} actualizó la orden')
+    return title.format(who=who, revision=revision)
 
 
 def snippet(body):
@@ -194,7 +203,7 @@ def snippet(body):
 
 def notification_data(event, deal, cursor):
     mine, counterpart = own_side(deal)
-    return {'id': event.pk, 'kind': event.kind, 'title': event_title(event), 'description': event.description, 'order_id': str(deal.pk),
+    return {'id': event.pk, 'kind': event.kind, 'title': event_title(event, deal.status), 'description': event.description, 'order_id': str(deal.pk),
             'thread_id': str(deal.thread_id), 'reference': deal.reference, 'status': deal.status, 'side': deal.side, 'account': mine,
             'counterpart': counterpart, 'created_at': iso(event.created_at), 'unseen': event.pk > cursor.seen_event_id}
 
@@ -206,9 +215,25 @@ def event_rows(user, events, limit):
     return [(event, sides[event.order_id]) for event in events if event.order_id in sides]
 
 
+def awaiting_receipt(user):
+    """The orders the supplier marked delivered that wait for the person's Recibido, in every client account they belong to: how many,
+    the latest Entregado (a newer one brings back a snoozed reminder) and the oldest few. Read through client membership, never my_deals'
+    side, which names someone in both accounts as the supplier. Nothing is written and nothing completes on its own."""
+    rows = SupplierRequest.objects.filter(client__in=member_accounts(user, 'client'), status='delivered')
+    totals = rows.aggregate(count=Count('pk'), latest=Max('delivered_at'))
+    orders = rows.order_by('delivered_at', 'id').only('id', 'thread_id', 'reference', 'delivered_at', 'client_id', 'client_name', 'supplier_id',
+                                                      'supplier_name')[:RECEIPT_LISTED] if totals['count'] else []
+    return {'count': totals['count'], 'latest_at': iso(totals['latest']),
+            'orders': [{'id': str(order.pk), 'thread_id': str(order.thread_id), 'reference': order.reference, 'delivered_at': iso(order.delivered_at),
+                        'account': {'id': str(order.client_id), 'name': order.client_name},
+                        'counterpart': {'id': str(order.supplier_id), 'name': order.supplier_name}} for order in orders]}
+
+
 class InboxSummary(APIView):
     @extend_schema(responses=OpenApiTypes.OBJECT, description='Lo que la persona tiene pendiente en su bandeja: mensajes sin leer (y en '
-                   'cuántas conversaciones), notificaciones sin ver, y el mensaje y la notificación más recientes para avisar de ellos.')
+                   'cuántas conversaciones), notificaciones sin ver, el mensaje y la notificación más recientes para avisar de ellos, y '
+                   'awaiting_receipt: las órdenes que el proveedor marcó como entregadas y esperan su recibido como cliente (count, '
+                   f'latest_at, el Entregado más reciente, y las {RECEIPT_LISTED} más antiguas en orders, sin precios).')
     def get(self, request):
         user, cursor = request.user, cursor_for(request.user)
         now = timezone.now()
@@ -228,7 +253,8 @@ class InboxSummary(APIView):
                        'reference': shown.reference if shown else '', 'account': mine, 'counterpart': counterpart, 'side': thread.side}
         return Response({'unread_messages': totals['messages'], 'unread_conversations': totals['conversations'],
                          'unseen_notifications': unseen.count(), 'latest_message': message,
-                         'latest_notification': notification_data(*latest_event[0], cursor) if latest_event else None})
+                         'latest_notification': notification_data(*latest_event[0], cursor) if latest_event else None,
+                         'awaiting_receipt': awaiting_receipt(user)})
 
 
 class InboxConversations(generics.GenericAPIView):

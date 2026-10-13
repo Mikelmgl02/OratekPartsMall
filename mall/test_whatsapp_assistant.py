@@ -1,4 +1,5 @@
 import json
+import re
 import uuid
 from datetime import timedelta
 from unittest.mock import patch
@@ -16,6 +17,7 @@ from .request_models import DealMessage, SupplierRequest
 from .test_deal_attachments import ChatStorage
 from . import test_whatsapp as whatsapp_tests
 from . import test_deals as deal_tests
+from . import login_hints
 
 FakeMeta = whatsapp_tests.FakeMeta
 ASSISTANT = {**whatsapp_tests.CLOUD, 'WHATSAPP_ASSISTANT_MONTHLY_USD': 10, 'GEMINI_API_KEY': 'clave-de-prueba'}
@@ -215,6 +217,25 @@ class WhatsAppAssistantTests(ChatStorage, APITestCase):
             response = self.submit(self.payload([(self.item_a, 2), (self.item_b, 1)]))
         first, second = (SupplierRequest.objects.get(pk=row['id']) for row in response.data['requests'])
         return (first, second) if first.supplier == self.supplier_a else (second, first)
+
+    def test_the_orders_list_shows_their_progress_and_where_to_confirm_a_delivered_one(self, urlopen):
+        meta = urlopen.side_effect = FakeMeta()
+        order_a, order_b = self.orders()
+        now = timezone.now()
+        SupplierRequest.objects.filter(pk=order_a.pk).update(status='processing', handshaked_at=now, processing_at=now)
+        SupplierRequest.objects.filter(pk=order_b.pk).update(status='delivered', handshaked_at=now, processing_at=now, delivered_at=now)
+        self.opt_in(self.buyer, NUMBER)
+        self.decisions.append({'accion': 'pedidos'})
+        self.writes('¿ya llegó mi pedido?')
+        [listed] = meta.sent()
+        body = listed['text']['body']
+        self.assertIn(f'{order_a.reference} · PROVEEDOR A · Procesando', body)
+        self.assertIn(f'{order_b.reference} · PROVEEDOR B · Entregado · por recibir', body)
+        link = re.search(rf'Confirma en MotionPartes que recibiste {order_b.reference}: https://motionpartes\.example\.invalid/\?conversacion=(\S+)', body)
+        deal, hint = link.group(1).split('~')
+        self.assertEqual((deal, login_hints.username(hint)), (str(order_b.pk), self.buyer.username))  # the order, signed in as its reader
+        self.assertNotIn(f'que recibiste {order_a.reference}', body)
+        self.assertEqual(SupplierRequest.objects.get(pk=order_b.pk).status, 'delivered')  # read-only: the assistant never confirms it
 
     def test_messages_continue_an_order_conversation_and_a_message_for_its_supplier_is_passed_on(self, urlopen):
         meta = urlopen.side_effect = FakeMeta()

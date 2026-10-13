@@ -172,6 +172,9 @@ class StockReservationTests(APITestCase):
 
     def test_the_upload_asks_order_by_order_and_settles_only_what_the_file_discounts(self):
         first, second = self.handshake(), self.handshake()
+        self.client.force_authenticate(self.seller_a)
+        for step in ('process', 'ship'):  # the second already left the supplier: the panel suggests "Ya lo descuenta" for it
+            self.assertEqual(self.action(second, step, account=self.supplier_a, quotation_id=str(second.quotations.get().pk)).status_code, 200)
         self.assertEqual((self.counts(self.item_a), self.counts(self.item_a2)), ((10, 8, 2), (10, 4, 6)))
         job = self.upload(a1=7, a2=10)
         rows = {entry['supplier_invent_id']: entry for entry in job['reservations']}
@@ -180,7 +183,8 @@ class StockReservationTests(APITestCase):
         self.assertEqual([(order['reference'], order['client_name'], order['quantity']) for order in rows['A-001']['orders']],
                          [(first.reference, 'CLIENTE ORIGINAL', 3), (second.reference, 'CLIENTE ORIGINAL', 3)])
         self.assertEqual({row['supplier_invent_id']: row['reserved'] for row in job['preview']}, {'A-001': 6, 'A-002': 4})
-        self.assertEqual({order['delivered_at'] for entry in job['reservations'] for order in entry['orders']}, {None})
+        self.assertEqual({(order['reference'], order['delivered_at'], bool(order['in_transit_at'])) for entry in job['reservations'] for order in entry['orders']},
+                         {(first.reference, None, False), (second.reference, None, True)})
         self.assertEqual(job['summary']['reserved_rows'], 2)
         ids = {(key, order['reference']): order['id'] for key, entry in rows.items() for order in entry['orders']}
 

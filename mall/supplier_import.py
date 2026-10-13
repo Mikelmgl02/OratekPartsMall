@@ -243,7 +243,9 @@ def stock_plan(supplier, rows, *, lock=False):
                                  'reserved': reserved, 'reserved_quantity': item.reserved_quantity,
                                  'orders': [{'id': str(reservation.pk), 'reference': reservation.order.reference, 'client_name': reservation.order.client_name,
                                              'quantity': reservation.quantity, 'confirmed_at': reservation.created_at.isoformat(),
-                                             # A delivered order most likely left the file's count already: the panel suggests "Ya lo descuenta".
+                                             # An order already sent (En camino) or delivered most likely left the file's count already: the
+                                             # panel suggests "Ya lo descuenta".
+                                             'in_transit_at': reservation.order.in_transit_at.isoformat() if reservation.order.in_transit_at else None,
                                              'delivered_at': reservation.order.delivered_at.isoformat() if reservation.order.delivered_at else None}
                                             for reservation in orders]})
         if status != 'matched':

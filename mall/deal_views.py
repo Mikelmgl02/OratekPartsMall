@@ -26,7 +26,7 @@ from .quote_assistant import applied_runs
 from .quote_assistant_models import QuoteAssistantRun
 from .quote_draft_models import DealQuotationAudit, DealQuotationDraft, DealQuotationLineAudit
 from .quote_drafts import stock_by_line
-from .deal_lifecycle import accept_shortfall, cancel, deliver, lifecycle_data, reject, report_shortfall
+from .deal_lifecycle import accept_shortfall, cancel, deliver, lifecycle_data, process, receive, reject, report_shortfall, ship
 from .stock_reservations import hold
 from .request_models import (SupplierRequest, DealQuotation, DealQuotationLine, DealEvent,
                              DealMessage, DealCommand, DealShortfall)
@@ -41,11 +41,11 @@ ACCEPT_SHORTFALL_DETAIL = ('El proveedor debe confirmar la disponibilidad de alg
                            'Solicita un ajuste para que el proveedor prepare una versión actualizada.')
 DRAFT_REQUIRED = 'Prepara la cotización en el borrador y envía la versión guardada: las cotizaciones se publican solo desde el borrador revisado.'
 PUBLISH_DENIED = 'Tu permiso en la cuenta no permite publicar cotizaciones. Solicita la aprobación de un administrador de tu cuenta.'
-DECIDE_DENIED = ('Tu permiso en la cuenta no permite decidir sobre acuerdos confirmados (entregas, faltantes o cancelaciones). '
-                 'Solicita la aprobación de un administrador de tu cuenta.')
-# Who takes each decision; cancel belongs to either party (mall.deal_lifecycle).
-SUPPLIER_ACTIONS = {'quote', 'return_quote', 'deliver', 'report_shortfall'}
-CLIENT_ACTIONS = {'accept', 'request_adjustment', 'accept_shortfall', 'reject'}
+DECIDE_DENIED = ('Tu permiso en la cuenta no permite decidir sobre acuerdos confirmados (avance de la orden, entregas, faltantes o '
+                 'cancelaciones). Solicita la aprobación de un administrador de tu cuenta.')
+# Who takes each decision; cancel belongs to either party (mall.deal_lifecycle). An action in neither set is refused.
+SUPPLIER_ACTIONS = {'quote', 'return_quote', 'process', 'ship', 'deliver', 'report_shortfall'}
+CLIENT_ACTIONS = {'accept', 'request_adjustment', 'accept_shortfall', 'reject', 'receive'}
 SETTINGS_SNAPSHOT = ('version', 'over_stock_policy', 'over_request_policy', 'accept_shortfall_policy', 'publish_min_permission', 'prefill_quantity',
                      'usd_pab_parity')
 
@@ -127,8 +127,8 @@ class ShortfallLine(serializers.Serializer):
 class DealActionSerializer(serializers.Serializer):
     operation_id = serializers.UUIDField()
     expected_version = serializers.IntegerField(min_value=1)
-    action = serializers.ChoiceField(choices=['quote', 'accept', 'request_adjustment', 'return_quote', 'deliver', 'report_shortfall',
-                                              'accept_shortfall', 'cancel', 'reject'])
+    action = serializers.ChoiceField(choices=['quote', 'accept', 'request_adjustment', 'return_quote', 'process', 'ship', 'deliver',
+                                              'receive', 'report_shortfall', 'accept_shortfall', 'cancel', 'reject'])
     quotation_id = serializers.UUIDField(required=False)
     currency = serializers.ChoiceField(choices=['USD', 'PAB'], default='USD')
     terms = serializers.CharField(required=False, default='', allow_blank=True, max_length=5000)
@@ -260,12 +260,16 @@ def held_note(row, quotation, actor, now, settings_row):
 
 class DealActions(APIView):
     @extend_schema(request=DealActionSerializer, responses=OpenApiTypes.OBJECT,
-                   description='Decisiones del acuerdo. Después del acuerdo: deliver y report_shortfall (proveedor; shortfall con order_line_id y '
-                               'missing por artículo y reason_code), accept_shortfall (cliente) y cancel (cualquiera de las partes, reason_code y nota '
-                               'opcional en reason; side si la cuenta es ambas partes). Las decisiones del proveedor (quote, return_quote, deliver, '
-                               'report_shortfall y su cancel) exigen el permiso mínimo para publicar del proveedor (403 antes de comprobar '
-                               'la versión). quote se publica desde el borrador guardado: draft_version y el contenido deben coincidir con él (409 si falta '
-                               'o no coincide). Repetir un operation_id de la misma cuenta con el mismo contenido devuelve el resultado guardado.')
+                   description='Decisiones del acuerdo. Después del acuerdo el proveedor marca el avance: process (Procesando, desde el acuerdo '
+                               'confirmado), ship (En camino, desde Procesando) y deliver (Entregado, desde Procesando o En camino); el cliente cierra '
+                               'la orden con receive (Recibido, solo después del Entregado del proveedor). Mientras el proveedor tiene la mercancía '
+                               '(acuerdo confirmado o Procesando): report_shortfall (proveedor; shortfall con order_line_id y missing por artículo y '
+                               'reason_code), accept_shortfall (cliente) y cancel (cualquiera de las partes, reason_code y nota opcional en reason; side '
+                               'si la cuenta es ambas partes); desde En camino solo MotionPartes cancela. Las decisiones del proveedor (quote, '
+                               'return_quote, process, ship, deliver, report_shortfall y su cancel) exigen el permiso mínimo para publicar del proveedor '
+                               '(403 antes de comprobar la versión); receive no tiene ese requisito. quote se publica desde el borrador guardado: '
+                               'draft_version y el contenido deben coincidir con él (409 si falta o no coincide). Repetir un operation_id de la misma '
+                               'cuenta con el mismo contenido devuelve el resultado guardado.')
     @transaction.atomic
     def post(self, request, account_id, pk):
         account, row = participant(request.user, account_id, pk, lock=True)
@@ -288,7 +292,7 @@ class DealActions(APIView):
                 raise ValidationError('Indica si cancelas como cliente o como proveedor.')
             side = data.get('side') if len(sides) > 1 else next(iter(sides), None)
         else:
-            side = 'supplier' if action in SUPPLIER_ACTIONS else 'client'
+            side = 'supplier' if action in SUPPLIER_ACTIONS else 'client' if action in CLIENT_ACTIONS else None
         if side not in sides:
             raise PermissionDenied('Esta decisión corresponde a la otra parte del acuerdo.')
         supplier_action = side == 'supplier'
@@ -373,8 +377,14 @@ class DealActions(APIView):
             description, extra_fields = report_shortfall(row, latest, request.user, data['shortfall'], data['reason_code'], data['reason'])
         elif action == 'accept_shortfall':
             description, extra_fields = accept_shortfall(row, request.user)
+        elif action == 'process':
+            description, extra_fields = process(row, request.user)
+        elif action == 'ship':
+            description, extra_fields = ship(row, request.user)
         elif action == 'deliver':
             description, extra_fields = deliver(row, request.user)
+        elif action == 'receive':
+            description, extra_fields = receive(row, request.user)
         elif action == 'cancel':
             description, extra_fields = cancel(row, side, request.user, data['reason_code'], data['reason'])
         elif action == 'reject':

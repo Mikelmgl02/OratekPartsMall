@@ -32,6 +32,7 @@ async function fixture(page: Page) {
       stock: { reported_quantity: 5, reserved_quantity: 0, available_quantity: 5, shortfall: 0, updated_at: stamp } }] };
   const messages: DealMessage[] = [];
   const actions: Record<string, unknown>[] = [];
+  const statuses: string[] = [];  // the status filter each list read asked for
   let reviews = 0;
   // When set, the server refuses accepts because stock the supplier relied on dropped after the quote.
   let blockAccept = false;
@@ -46,8 +47,12 @@ async function fixture(page: Page) {
   await page.route(/\/api\/market\/accounts\/[^/]+\/inventory(?:\?.*)?$/, route => route.fulfill({json:empty}));
   await page.route(/\/api\/market\/accounts\/[^/]+\/(sent-requests|requests)(?:\?.*)?$/, route => {
     const status = new URL(route.request().url()).searchParams.get('status');
+    statuses.push(status ?? '');
     const supplierList = new URL(route.request().url()).pathname.includes('/requests');
-    const results = !status || status === order.status || (status === 'agreements' && order.handshaked_at) ? [{...order, quoted_unit_count: order.quotation?.lines.reduce((sum,line) => sum + line.quantity, 0),
+    // The groups of mall request_views.STATUS_GROUPS: every confirmed order, those before the supplier's Entregado, those not closed.
+    const groups: Record<string, boolean> = { agreements: !!order.handshaked_at, active_agreements: ['handshaked', 'processing', 'in_transit'].includes(order.status),
+      open_agreements: ['handshaked', 'processing', 'in_transit', 'delivered'].includes(order.status) };
+    const results = !status || status === order.status || groups[status] ? [{...order, quoted_unit_count: order.quotation?.lines.reduce((sum,line) => sum + line.quantity, 0),
       ...(supplierList ? {draft_state: null, availability_alert: blockAccept ? 'blocked' : null} : {})}] : [];
     return route.fulfill({json:{...empty, count:results.length, results}});
   });
@@ -100,9 +105,9 @@ async function fixture(page: Page) {
       description:payload.reason || payload.action.toUpperCase(), account_name:'CUENTA', actor_name:'EMPLEADO', created_at:stamp, quotation_id:order.quotation?.id || null}]};
     return route.fulfill({json:order});
   });
-  return {getOrder:() => order, setStatus:(status:DealStatus) => {order = {...order, status, version:order.version + 1};},
+  return {getOrder:() => order, setStatus:(status:DealStatus, changes:Partial<Deal> = {}) => {order = {...order, ...changes, status, version:order.version + 1} as Deal;},
     setLines:(lines:Deal['lines']) => {order = {...order, lines, line_count:lines.length, unit_count:lines.reduce((sum,line) => sum + line.quantity, 0)} as Deal;},
-    actions, messages, drafts, reviews:() => reviews, unexpected, gridWarnings, blockAccept:(value:boolean) => { blockAccept = value; }};
+    actions, statuses, messages, drafts, reviews:() => reviews, unexpected, gridWarnings, blockAccept:(value:boolean) => { blockAccept = value; }};
 }
 async function asSupplier(page: Page) {
   await backToRequests(page);
@@ -196,6 +201,17 @@ for (const mobile of [false, true]) test(`${mobile ? 'mobile' : 'desktop'}: priv
   await page.goto('/?vista=compras');
   await expect(page.getByRole('main', {name:'Historial de compras', exact:true})).toContainText('ORD-PRUEBA-001');
   await expect(page.getByRole('article')).toContainText('3unidades acordadas');
+  // Once the supplier marks Procesando the agreement is still the one both confirmed, and the client's lists find it in progress.
+  state.setStatus('processing', {processing_at:stamp});
+  await page.goto('/?vista=solicitudes');
+  await page.getByRole('group', {name:'Estado de solicitudes enviadas', exact:true}).getByRole('button', {name:'En curso', exact:true}).click();
+  await expect.poll(() => state.statuses.at(-1)).toBe('active_agreements');  // before the supplier's Entregado; Por recibir lists those
+  await expect(page.getByRole('article', {name:/ORD-PRUEBA-001/})).toContainText('Procesando');
+  await page.getByRole('button', {name:'Ver enviada ORD-PRUEBA-001', exact:true}).click();
+  await quoteTab(page);
+  await expect(dialog(page).getByText('HANDSHAKED · Acuerdo confirmado', {exact:true})).toBeVisible();
+  await expect(dialog(page).locator('.deal-state-note')).toContainText('El proveedor está preparando tu orden.');
+  await dialog(page).getByRole('button', {name:'Cerrar ventana', exact:true}).click();
   expect(state.messages).toHaveLength(2);
   expect(state.actions.map(value => value.action)).toEqual(['quote','request_adjustment','quote','accept']);
   expect(state.actions[0]).toMatchObject({draft_version:1, lines:[{order_line_id:lineId, quantity:5, unit_price:'12.50'}]});

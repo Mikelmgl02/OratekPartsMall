@@ -494,6 +494,32 @@ test('the supplier list marks orders with a saved draft or a pending approval re
   expect(unexpected).toEqual([]);
 });
 
+test('the supplier filters its orders by each step after the handshake, and an Entregado waits for the client', async ({ page }) => {
+  const unexpected = await mockSession(page);
+  const asked: string[] = [];
+  const delivered = { ...summary(requestId, 'SOL-ENTREGADA-001', 'TALLER CENTRAL'), status: 'delivered', handshaked_at: '2026-10-02T14:00:00Z',
+    processing_at: '2026-10-02T15:00:00Z', delivered_at: '2026-10-03T10:00:00Z', draft_state: null, availability_alert: null };
+  await page.route(new RegExp(`${root}(?:\\?.*)?$`), route => {
+    const status = new URL(route.request().url()).searchParams.get('status') ?? '';
+    asked.push(status);
+    const rows = !status || status === 'delivered' ? [delivered] : [];
+    return route.fulfill({ json: { ...emptyPage, count: rows.length, results: rows } });
+  });
+  await openSupplier(page);
+  const chips = requests(page).getByRole('group', { name: 'Estado de las solicitudes', exact: true }).getByRole('button');
+  await expect(chips).toHaveText(['Todas', 'Pendientes', 'En revisión', 'Por confirmar', 'Ajustes', 'Por procesar', 'Procesando', 'En camino',
+    'Esperando recibido', 'Recibidos', 'Cancelados']);
+  const row = requestRows(page).filter({ hasText: 'SOL-ENTREGADA-001' });
+  await expect(row).toContainText('Esperando recibido del cliente');  // its alert until the client's Recibido
+  for (const [label, value] of [['Por procesar', 'handshaked'], ['Procesando', 'processing'], ['En camino', 'in_transit'], ['Esperando recibido', 'delivered'],
+    ['Recibidos', 'received']] as const) {
+    await chips.filter({ hasText: new RegExp(`^${label}$`) }).click();
+    await expect.poll(() => asked.at(-1)).toBe(value);
+  }
+  await expect(row).toHaveCount(0);  // listed under Esperando recibido, not under Recibidos
+  expect(unexpected).toEqual([]);
+});
+
 test('an account that both buys and sells never orders from itself: its own items never enter the cesta, and its offers are marked', async ({ page }) => {
   const both: Account = { id: supplierAccount, name: 'REPUESTOS CENTRAL', roles: ['supplier_retail', 'client_business'], capabilities: ['supplier', 'client'] };
   const unexpected = await mockSession(page, [both]);

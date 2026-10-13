@@ -1,10 +1,22 @@
 import type { ClientRequestDetail, SupplierRequestDetail } from './request-types';
-export type DealStatus = 'pending' | 'reviewed' | 'quoted' | 'adjustment' | 'handshaked' | 'delivered' | 'cancelled';
+// In lifecycle order (mall SupplierRequest.STATUS_CHOICES). After the handshake the supplier marks Procesando, En camino (skipped when the
+// client picks it up) and Entregado; only then can the client mark Recibido, which closes the order. Nothing completes on its own.
+export type DealStatus = 'pending' | 'reviewed' | 'quoted' | 'adjustment' | 'handshaked' | 'processing' | 'in_transit' | 'delivered' | 'received' | 'cancelled';
 export const dealStatusLabels: Record<DealStatus, string> = {
-  pending: 'Enviada · por revisar', reviewed: 'En revisión', quoted: 'Cotizada · por confirmar',
-  adjustment: 'Ajuste solicitado', handshaked: 'Acuerdo confirmado', delivered: 'Entregado', cancelled: 'Cancelado',
+  pending: 'Enviada · por revisar', reviewed: 'En revisión', quoted: 'Cotizada · por confirmar', adjustment: 'Ajuste solicitado',
+  handshaked: 'Acuerdo confirmado', processing: 'Procesando', in_transit: 'En camino', delivered: 'Entregado · por recibir', received: 'Recibido', cancelled: 'Cancelado',
 };
-// After the handshake: the agreement after the shortfalls the client accepted, the shortfalls, the delivery and a cancellation.
+// The same groups as mall.request_models: GOODS_HELD still allows a shortfall or a party's cancellation; ACTIVE_AGREEMENT is confirmed and
+// before the supplier's Entregado; OPEN_AGREEMENT is confirmed and not closed (a delivered order waits for the client's Recibido).
+export const PRE_HANDSHAKE: DealStatus[] = ['pending', 'reviewed', 'quoted', 'adjustment'];
+export const GOODS_HELD: DealStatus[] = ['handshaked', 'processing'];
+export const ACTIVE_AGREEMENT: DealStatus[] = ['handshaked', 'processing', 'in_transit'];
+export const OPEN_AGREEMENT: DealStatus[] = [...ACTIVE_AGREEMENT, 'delivered'];
+export const CLOSED_STATUSES: DealStatus[] = ['received', 'cancelled'];
+export const AFTER_HANDSHAKE: DealStatus[] = [...OPEN_AGREEMENT, 'received', 'cancelled'];
+// A delivered order, as each side reads it in a list: the supplier waits, the client has something to do.
+export const receiptHint = (supplier: boolean) => supplier ? 'Esperando recibido del cliente' : 'Confirma que la recibiste';
+// After the handshake: the agreement after the shortfalls the client accepted, the shortfalls, the order's progress and a cancellation.
 export type DealAgreementLine = { order_line_id: string; codigo: string; description: string; agreed: number; missing: number; pending_missing: number; final: number; unit_price: string; total: string };
 export type DealAgreement = { quotation_id: string; units: number; total: string; lines: DealAgreementLine[] };
 export type DealShortfallReason = 'no_stock' | 'damaged' | 'other';
@@ -33,8 +45,13 @@ export type Deal = (ClientRequestDetail | SupplierRequestDetail) & {
   version: number; client: { id: string; name: string }; supplier: { id: string; name: string };
   quotations: Quotation[]; quotation: Quotation | null; events: DealEvent[]; handshaked_at: string | null;
   agreement?: DealAgreement | null; shortfalls?: DealShortfall[]; delivered_at?: string | null; cancellation?: DealCancellation | null;
+  // When the supplier marked Procesando and En camino, and the client Recibido (optional: replayed results and older payloads lack them).
+  processing_at?: string | null; in_transit_at?: string | null; received_at?: string | null;
   // stock_reserved: the handshake reserved stock; can_decide (supplier reads only): this member may take the supplier's decisions.
   stock_reserved?: boolean; can_decide?: boolean;
+  // Supplier payloads only, after the handshake: units the deal still holds, those its count already discounted, and those a cancellation
+  // after dispatch gave back (mall/request_views.py stock_units).
+  stock_units?: { held: number; settled: number; released_after_dispatch: number } | null;
   // While the client decides on the sent quotation: its units held until when, or the hold that lapsed (a confirmation checks stock again).
   stock_hold?: { state: 'held' | 'lapsed'; units: number; until: string | null } | null;
 };

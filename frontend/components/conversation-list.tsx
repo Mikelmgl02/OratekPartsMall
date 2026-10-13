@@ -3,12 +3,13 @@ import { type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent 
 import { Check, ChevronDown, ChevronRight, Ellipsis, Folder, FolderMinus, FolderPlus, LoaderCircle, Pencil, Pin, PinOff, Search, Trash2 } from 'lucide-react';
 import type { Page } from '@/lib/types';
 import { request } from '@/lib/types';
-import { dealStatusLabels } from '@/lib/deal-types';
+import { type DealStatus, dealStatusLabels, receiptHint } from '@/lib/deal-types';
 import { INBOX_EVENT, type InboxConversation, type InboxGroup, type InboxSide, type InboxSides, type InboxTarget, ago, sameConversation, shortReference, targetOf } from '@/lib/inbox';
 
 // The conversations column of the panel, organized like a desktop app's sidebar: Fijadas on top, then the person's own groups (made with
 // Nuevo grupo, collapsible), then Sin grupo. Each conversation (one per client and supplier) is a single line: a status dot (its current
-// order's), the other party, its order (or how many are in progress) and its unread count (the rest in its tooltip). Its ⋯ menu pins it or moves it to a group; on a desktop it can also be dragged onto one.
+// order's, ringed when a delivered order waits for the person's Recibido), the other party, its order (or how many are in progress) and its
+// unread count (the rest in its tooltip). Its ⋯ menu pins it or moves it to a group; on a desktop it can also be dragged onto one.
 // Pins and groups live on the server (mall/inbox.py), so every device lists them alike; which groups are folded is kept on this device.
 // Someone who both buys and sells gets Ambas · Compras · Ventas on top (their choice kept on this device), and in Ambas each line says
 // which side it is; people on one side never see either.
@@ -169,20 +170,22 @@ export default function ConversationList({ hidden, floatTop = null, onPeek, sele
   const severalAccounts = new Set(rows?.map(row => row.account.id)).size > 1;
 
   function line(row: InboxConversation) {
-    const status = dealStatusLabels[row.status];
+    // A delivered order says who it waits for: the client's Recibido.
+    const label = (value: DealStatus) => value === 'delivered' ? `${dealStatusLabels[value]} · ${receiptHint(row.side === 'supplier')}` : dealStatusLabels[value];
+    const status = label(row.status);
     const as = severalAccounts ? `${row.side === 'supplier' ? 'Como proveedor' : 'Como cliente'} · ${row.account.name}` : '';
     const last = row.last_message ? `${row.last_message.mine ? 'Tú' : row.last_message.actor_name}: ${row.last_message.body}` : 'Sin mensajes todavía';
     const open = menu?.kind === 'row' && menu.id === row.id;
     const current = sameConversation(selected, row);
     // One order: its reference; several: how many are in progress (all of them in the tooltip).
     const orders = row.order_count === 0 ? 'Consulta' : (row.order_count ?? 1) > 1 ? `${row.open_orders || row.order_count} ${(row.open_orders || row.order_count) === 1 ? 'orden' : 'órdenes'}` : shortReference(row.reference);
-    const listed = row.orders?.length ? row.orders.map(order => `${order.reference} · ${dealStatusLabels[order.status]}`).join('\n') : row.order_count === 0 ? 'Consulta, sin órdenes todavía' : `${row.reference} · ${status}`;
+    const listed = row.orders?.length ? row.orders.map(order => `${order.reference} · ${label(order.status)}`).join('\n') : row.order_count === 0 ? 'Consulta, sin órdenes todavía' : `${row.reference} · ${status}`;
     return <li key={row.id} className={`inbox-row${current ? ' current' : ''}${dragging === row.id ? ' dragging' : ''}${open ? ' menu-open' : ''}`} draggable
       onDragStart={event => { event.dataTransfer.setData('text/plain', row.counterpart.name); event.dataTransfer.effectAllowed = 'move'; setDragging(row.id); setMenu(null); }}
       onDragEnd={() => { setDragging(null); setOver(null); }}>
       <button type="button" className={`inbox-row-open${row.unread ? ' unread' : ''}`} aria-current={current ? 'true' : undefined}
         title={[row.counterpart.name, listed, ago(row.activity), as, last].filter(Boolean).join('\n')} onClick={() => onChoose(current && selected ? selected : targetOf(row))}>
-        <span className={`inbox-row-dot ${row.status}`} aria-hidden="true"/>
+        <span className={`inbox-row-dot ${row.status}${row.side === 'client' && row.status === 'delivered' ? ' act' : ''}`} aria-hidden="true"/>
         <span className="inbox-row-name">{row.counterpart.name}</span>
         {twoSided && side === 'all' && <span className={`inbox-row-side ${row.side}`}>{row.side === 'supplier' ? 'Venta' : 'Compra'}</span>}
         <span className="inbox-row-ref">{orders}</span>

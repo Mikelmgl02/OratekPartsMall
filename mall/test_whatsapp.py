@@ -178,6 +178,33 @@ class WhatsAppTests(APITestCase):
         row = WhatsAppMessage.objects.get(user=self.buyer)
         self.assertEqual((row.status, row.wamid, row.kind, row.order_id), ('accepted', 'wamid.UNO', 'review_started', order.pk))
 
+    def test_the_orders_progress_reaches_the_party_that_did_not_act_unless_its_kind_is_skipped(self, urlopen):
+        from django.db import transaction
+        from .models import DealEvent
+        urlopen.side_effect = lambda request, timeout=None: Reply({'messages': [{'id': 'wamid.PASO'}]})
+        order = self.order()
+        self.opt_in(self.buyer, '+507 6111 1111')
+        self.opt_in(self.seller_a, '+507 6222 2222')
+        self.sent(urlopen)
+
+        def event(kind, account, actor):
+            with self.captureOnCommitCallbacks(execute=True), transaction.atomic():  # as the deal action writes it
+                DealEvent.objects.create(order=order, account=account, actor=actor, kind=kind, description=kind.upper())
+            return self.sent(urlopen)
+        for kind, account, actor, number, user, title in [
+                ('process', self.supplier_a, self.seller_a, '50761111111', self.buyer, 'PROVEEDOR A está procesando tu orden'),
+                ('ship', self.supplier_a, self.seller_a, '50761111111', self.buyer, 'PROVEEDOR A envió tu orden: va en camino'),
+                ('deliver', self.supplier_a, self.seller_a, '50761111111', self.buyer, 'Confirma que recibiste tu orden: PROVEEDOR A la marcó como entregada'),
+                ('receive', self.client_account, self.buyer, '50762222222', self.seller_a, 'CLIENTE ORIGINAL confirmó que recibió la orden')]:
+            [payload] = event(kind, account, actor)
+            self.assertEqual((payload['to'], payload['template']['name']), (number, 'motionpartes_novedad_orden'))
+            self.assertEqual([item['text'] for item in payload['template']['components'][0]['parameters']], [order.reference, title])
+            self.assertEqual(WhatsAppMessage.objects.filter(user=user).latest('id').kind, kind)
+        # A kind the owner leaves out of WhatsApp (each template costs) still reaches the bell, push and email.
+        with patch('mall.whatsapp.WHATSAPP_SKIP', ('process',)):
+            self.assertEqual(event('process', self.supplier_a, self.seller_a), [])
+            self.assertEqual(len(event('ship', self.supplier_a, self.seller_a)), 1)
+
     def test_a_message_reaches_people_away_from_the_app_once_per_conversation_until_the_cooldown(self, urlopen):
         urlopen.side_effect = lambda request, timeout=None: Reply({'messages': [{'id': 'wamid.MSG'}]})
         order = self.order()

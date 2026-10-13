@@ -109,6 +109,22 @@ class EmailNotificationTests(APITestCase):
         self.assertEqual(email['subject'], f'CLIENTE ORIGINAL solicitó un ajuste · {order.reference}')
         self.assertIn('MENOS UNIDADES', email['text'])
 
+    def test_the_suppliers_entregado_asks_the_client_to_confirm_and_the_recibido_reaches_the_supplier(self, urlopen):
+        order = self.order()
+        self.sent(urlopen)
+        with self.captureOnCommitCallbacks(execute=True), transaction.atomic():  # as the deliver action writes it
+            DealEvent.objects.create(order=order, account=self.supplier_a, actor=self.seller_a, kind='deliver', description='ENTREGADA')
+        [email] = self.sent(urlopen)
+        title = 'Confirma que recibiste tu orden: PROVEEDOR A la marcó como entregada'
+        self.assertEqual((email['to'], email['subject']), ([self.buyer.email], f'{title} · {order.reference}'))
+        self.assertIn('>Confirmar recibido</a>', email['html'])  # the same link to the conversation, named for what the client does there
+        self.assertIn('Confirmar recibido: https://motionpartes.example.invalid/?conversacion=', email['text'])
+        with self.captureOnCommitCallbacks(execute=True), transaction.atomic():
+            DealEvent.objects.create(order=order, account=self.client_account, actor=self.buyer, kind='receive', description='RECIBIDA')
+        [email] = self.sent(urlopen)
+        self.assertEqual((email['to'], email['subject']), ([self.seller_a.email], f'CLIENTE ORIGINAL confirmó que recibió la orden · {order.reference}'))
+        self.assertIn('>Ver la orden</a>', email['html'])
+
     def test_nothing_is_sent_without_resend(self, urlopen):
         with override_settings(RESEND_API_KEY=''):
             self.order()

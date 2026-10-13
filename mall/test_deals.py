@@ -184,6 +184,24 @@ class DealWorkflowTests(APITestCase):
         SupplierRequestLine.objects.filter(request=order).update(part=old, sku=old.sku)
         self.assertEqual(self.request_state(), (totals, items))
 
+    def test_request_state_counts_agreed_units_under_handshaked_until_the_suppliers_entregado(self):
+        order = self.order(); self.review(order)
+        quote = self.quote(order).data['quotation']
+        self.client.force_authenticate(self.buyer)
+        self.assertEqual(self.action(order, 'accept', quotation_id=quote['id']).status_code, 200)
+        keys = set(self.request_state()[0])
+        # Procesando and En camino are still agreed; from the supplier's Entregado on (waiting for Recibido or received) they are delivered.
+        for action, status, quantities in [(None, 'handshaked', (5, 0)), ('process', 'processing', (5, 0)), ('ship', 'in_transit', (5, 0)),
+                                           ('deliver', 'delivered', (0, 5)), ('receive', 'received', (0, 5))]:
+            with self.subTest(status):
+                if action:
+                    supplier = action != 'receive'
+                    self.client.force_authenticate(self.seller_a if supplier else self.buyer)
+                    done = self.action(order, action, account=self.supplier_a if supplier else self.client_account, quotation_id=quote['id'])
+                    self.assertEqual(done.data['status'], status)
+                totals, _ = self.request_state()
+                self.assertEqual((set(totals), totals['handshaked_quantity'], totals['delivered_quantity']), (keys, *quantities))
+
     def test_request_state_reports_zero_agreed_units_for_lines_quoted_as_unavailable(self):
         other = Part.objects.create(sku='99999-OTRO', name='OTRO REPUESTO')
         other_item = self.item(self.supplier_a, self.seller_a, 'A-OTRO', '99999-OTRO', 5)

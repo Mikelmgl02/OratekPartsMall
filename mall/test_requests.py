@@ -4,6 +4,7 @@ from decimal import Decimal
 from unittest import skipUnless
 
 from django.db import close_old_connections, connection
+from django.utils import timezone
 from rest_framework.test import APIClient, APITestCase, APITransactionTestCase
 
 from .models import Account, InventoryUpdate, Membership, Part, PartCode, Role, StockEntry, SupplierItem, User
@@ -441,6 +442,29 @@ class SupplierRequestWorkflowTests(APITestCase):
         self.assertEqual(units('unit_count'), [1, 3])
         self.assertEqual(units('-unit_count'), [3, 1])
         self.assertEqual(units('password'), [1, 3])  # unknown names are ignored
+
+    def test_supplier_request_list_sorts_statuses_in_lifecycle_order_and_filters_status_groups(self):
+        now = timezone.now()
+        stamps = {'pending': {}, 'reviewed': {}, 'handshaked': {'handshaked_at': now}, 'processing': {'handshaked_at': now, 'processing_at': now},
+                  'in_transit': {'handshaked_at': now, 'processing_at': now, 'in_transit_at': now},
+                  'delivered': {'handshaked_at': now, 'processing_at': now, 'delivered_at': now},
+                  'received': {'handshaked_at': now, 'delivered_at': now, 'received_at': now},
+                  'cancelled': {'handshaked_at': now, 'cancelled_at': now, 'cancelled_side': 'client', 'cancel_reason': 'not_needed'}}
+        for status in ['received', 'handshaked', 'cancelled', 'in_transit', 'reviewed', 'delivered', 'processing', 'pending']:  # pending last
+            self.assertEqual(self.submit(self.payload([(self.item_a, 1)])).status_code, 200)
+            SupplierRequest.objects.filter(status='pending').update(status=status, **stamps[status])
+        self.client.force_authenticate(self.seller_a)
+        listed = lambda **params: [row['status'] for row in self.client.get(self.url(self.supplier_a), params).data['results']]
+        self.assertEqual(listed(ordering='status'), list(stamps))  # lifecycle order, not alphabetical
+        self.assertEqual(listed(ordering='-status'), list(reversed(stamps)))
+        groups = {'processing': {'processing'}, 'in_transit': {'in_transit'}, 'received': {'received'},
+                  'active_agreements': {'handshaked', 'processing', 'in_transit'}, 'open_agreements': {'handshaked', 'processing', 'in_transit', 'delivered'},
+                  'agreements': {'handshaked', 'processing', 'in_transit', 'delivered', 'received', 'cancelled'}}
+        for path, user in [(self.url(self.supplier_a), self.seller_a), (f'/api/v1/accounts/{self.client_account.pk}/sent-requests/', self.buyer)]:
+            self.client.force_authenticate(user)
+            for status, expected in groups.items():
+                self.assertEqual({row['status'] for row in self.client.get(path, {'status': status}).data['results']}, expected, (path, status))
+            self.assertEqual(self.client.get(path, {'status': 'closed'}).status_code, 400)
 
     def test_supplier_request_list_paginates_without_exposing_other_supplier_requests(self):
         for _ in range(51):

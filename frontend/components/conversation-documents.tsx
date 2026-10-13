@@ -1,7 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { RefreshCw } from 'lucide-react';
-import { type DealStatus, dealStatusLabels } from '@/lib/deal-types';
+import { CLOSED_STATUSES, type DealStatus, dealStatusLabels, receiptHint } from '@/lib/deal-types';
 import type { SupplierRequestSummary } from '@/lib/request-types';
 
 // One of the conversation's orders, as the Cotizaciones table lists it (GET accounts/<id>/threads/<id>/orders, mall/threads.py).
@@ -9,8 +9,9 @@ export type ConversationDocument = Omit<SupplierRequestSummary, 'client'>;
 
 // Short enough for a narrow column; the whole status is in the cell's tooltip.
 const SHORT: Record<DealStatus, string> = { pending: 'Enviada', reviewed: 'En revisión', quoted: 'Cotizada', adjustment: 'Ajuste',
-  handshaked: 'Acuerdo', delivered: 'Entregada', cancelled: 'Cancelada' };
-const CLOSED: DealStatus[] = ['delivered', 'cancelled'];
+  handshaked: 'Acuerdo', processing: 'Procesando', in_transit: 'En camino', delivered: 'Entregada', received: 'Recibida', cancelled: 'Cancelada' };
+// An order the supplier marked Entregado is still in progress: it waits for the client's Recibido.
+const CLOSED = CLOSED_STATUSES;
 const FILTERS = [['all', 'Todas'], ['open', 'En curso'], ['closed', 'Cerradas']] as const;
 type Filter = typeof FILTERS[number][0];
 const day = (value: string) => new Date(value).toLocaleDateString('es-PA', { timeZone: 'America/Panama', day: 'numeric', month: 'short', year: 'numeric' });
@@ -40,7 +41,8 @@ export default function ConversationDocuments({ docs, failed, current, supplier,
         <thead><tr><th scope="col">Documento</th><th scope="col">Estado</th><th scope="col" className="num items">Artículos</th><th scope="col" className="num">Total</th></tr></thead>
         <tbody>{shown.length ? shown.map(doc => <tr key={doc.id} className={doc.id === current ? 'current' : undefined} aria-current={doc.id === current ? 'true' : undefined} onClick={() => onOpen(doc)}>
           <td><button type="button" className="inbox-doc-open" aria-label={`Abrir ${doc.reference}`} onClick={event => { event.stopPropagation(); onOpen(doc); }}>{doc.reference}</button><small>{day(doc.created_at)}</small></td>
-          <td><span className="inbox-doc-status" title={dealStatusLabels[doc.status]}><i className={`inbox-row-dot ${doc.status}`} aria-hidden="true"/>{SHORT[doc.status]}</span>
+          <td><span className="inbox-doc-status" title={dealStatusLabels[doc.status]}><i className={`inbox-row-dot ${doc.status}${!supplier && doc.status === 'delivered' ? ' act' : ''}`} aria-hidden="true"/>{SHORT[doc.status]}</span>
+            {doc.status === 'delivered' && <small>{receiptHint(supplier)}</small>}
             {doc.shortfall_pending && <small>Faltante por decidir</small>}</td>
           <td className="num items">{doc.line_count}<small>{doc.unit_count.toLocaleString('es-PA')} u.</small></td>
           <td className="num">{doc.quotation_total ? <>{money(doc.quotation_total, doc.quotation_currency || 'USD')}<small>v{doc.quotation_revision}</small></> : <small>Sin cotizar</small>}</td>

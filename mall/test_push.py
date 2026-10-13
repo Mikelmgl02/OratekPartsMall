@@ -94,6 +94,23 @@ class PushTests(APITestCase):
         self.assertEqual(list(PushSubscription.objects.values_list('endpoint', flat=True)), [subscription('cliente')['endpoint']])
 
     @patch('pywebpush.webpush')
+    def test_the_orders_progress_pushes_to_the_party_that_did_not_act(self, sent):
+        from django.db import transaction
+        from .models import DealEvent
+        order = self.order()
+        self.subscribe(self.buyer, 'cliente')
+        self.subscribe(self.seller_a, 'proveedor')
+        for kind, account, actor, endpoint, title in [
+                ('process', self.supplier_a, self.seller_a, 'cliente', 'PROVEEDOR A está procesando tu orden'),
+                ('ship', self.supplier_a, self.seller_a, 'cliente', 'PROVEEDOR A envió tu orden: va en camino'),
+                ('deliver', self.supplier_a, self.seller_a, 'cliente', 'Confirma que recibiste tu orden: PROVEEDOR A la marcó como entregada'),
+                ('receive', self.client_account, self.buyer, 'proveedor', 'CLIENTE ORIGINAL confirmó que recibió la orden')]:
+            with self.captureOnCommitCallbacks(execute=True), transaction.atomic():
+                DealEvent.objects.create(order=order, account=account, actor=actor, kind=kind, description=kind.upper())
+            self.assertEqual([(name, data['title'], data['body']) for name, data in self.pushed(sent)], [(endpoint, title, f'Orden {order.reference}')])
+            sent.reset_mock()
+
+    @patch('pywebpush.webpush')
     def test_nothing_is_pushed_without_keys(self, sent):
         order = self.order()
         self.subscribe(self.seller_a, 'proveedor')

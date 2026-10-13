@@ -1,19 +1,19 @@
 'use client';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { ArrowDown, Bot, Check, FileText, FileWarning, Handshake, History, LoaderCircle, LockKeyhole, Maximize2, MessageSquare, PackageSearch, Paperclip, Pencil, RefreshCw, Send, TriangleAlert, UserRoundCog, X } from 'lucide-react';
+import { ArrowDown, Bot, Check, FileText, FileWarning, Handshake, History, LoaderCircle, LockKeyhole, Maximize2, MessageSquare, Minus, PackageSearch, Paperclip, Pencil, RefreshCw, Send, TriangleAlert, UserRoundCog, X } from 'lucide-react';
 import Modal from './modal';
 import { percent } from './price-explanation';
 import DealStatusBadge from './deal-status';
-import DealAfterHandshake from './deal-after-handshake';
+import DealAfterHandshake, { type AfterMode, stepIcons, stepLabels, supplierSteps } from './deal-after-handshake';
 import ReorderMissing from './reorder-missing';
 import { UppercaseTextarea } from './uppercase-field';
 import { Account, ApiError, request } from '@/lib/types';
 import type { SupplierRequestLine } from '@/lib/request-types';
-import type { Deal, DealAttachment, DealMessage, Quotation } from '@/lib/deal-types';
+import { AFTER_HANDSHAKE, PRE_HANDSHAKE, type Deal, type DealAttachment, type DealMessage, type DealStatus, type Quotation } from '@/lib/deal-types';
 import type { QuotationTrace, QuoteDraft, QuoteDraftEnvelope, QuoteDraftLine } from '@/lib/pricing-types';
 import { supplierPricingHref, supplierSectionHref } from '@/lib/supplier-navigation';
-import { markConversationRead, shortReference } from '@/lib/inbox';
+import { inboxChanged, markConversationRead, shortReference } from '@/lib/inbox';
 import { onDealNudge, realtimeLive } from '@/lib/realtime';
 
 const QuoteEditor = dynamic(() => import('./quotation-editor'), { ssr: false, loading: () => <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando editor de cotización…</div> });
@@ -25,24 +25,44 @@ const ClientPricingProfile = dynamic(() => import('./client-pricing-profile'), {
 const date = (value: string) => new Date(value).toLocaleString('es-PA', { timeZone: 'America/Panama', dateStyle: 'medium', timeStyle: 'short' });
 const money = (value: string | number, currency = 'USD') => new Intl.NumberFormat('es-PA', { style: 'currency', currency }).format(Number(value));
 const failure = (error: unknown) => error instanceof TypeError ? 'Se perdió la conexión. Puedes reintentar sin duplicar la operación.' : error instanceof Error ? error.message : 'No se pudo actualizar el acuerdo.';
-const stateDescription = {
+// The state note: after the handshake it tells each side what comes next (the supplier marks the progress, the client confirms Recibido).
+const stateDescriptions: Record<DealStatus, string | [string, string]> = {
   pending: 'Puedes agregar artículos enviando otra cesta a este proveedor. Al abrir la orden, el proveedor la bloqueará para revisión.',
   reviewed: 'Los artículos de esta orden están bloqueados. El proveedor está preparando la cotización.',
   quoted: 'La cotización está bloqueada. El cliente debe confirmarla o solicitar un ajuste.',
   adjustment: 'El cliente solicitó un ajuste. El proveedor puede enviar una nueva versión o devolver la misma cotización.',
-  handshaked: 'Ambas partes confirmaron la cotización. El acuerdo está cerrado y sus condiciones quedan guardadas.',
-  delivered: 'El proveedor entregó el acuerdo. Sus condiciones quedan guardadas.',
+  handshaked: ['Ambas partes confirmaron la cotización. Márcala como Procesando cuando empieces a prepararla.', 'Ambas partes confirmaron la cotización. El proveedor te avisará cuando empiece a prepararla.'],
+  processing: ['Estás preparando la orden. Márcala En camino cuando salga, o como entregada si el cliente la retira.', 'El proveedor está preparando tu orden.'],
+  in_transit: ['La orden va en camino. Márcala como entregada cuando llegue.', 'Tu orden va en camino.'],
+  delivered: ['Marcaste la orden como entregada. Falta que el cliente confirme que la recibió.', 'El proveedor marcó tu orden como entregada. Confirma que la recibiste cuando la tengas.'],
+  received: 'Orden entregada y recibida. Sus condiciones quedan guardadas.',
   cancelled: 'El acuerdo se canceló. Sus condiciones y su actividad quedan guardadas.',
 };
+const stateDescription = (status: DealStatus, supplier: boolean) => { const text = stateDescriptions[status] ?? ''; return Array.isArray(text) ? text[supplier ? 0 : 1] : text; };
 const actionNotices: Record<string, string> = {
-  accept: 'Acuerdo confirmado por ambas partes · HANDSHAKED.', request_adjustment: 'Ajuste enviado al proveedor.', deliver: 'Acuerdo marcado como entregado.',
+  accept: 'Acuerdo confirmado por ambas partes · HANDSHAKED.', request_adjustment: 'Ajuste enviado al proveedor.',
+  process: 'Orden marcada como Procesando. Avisamos al cliente.', ship: 'Orden marcada En camino. Avisamos al cliente.',
+  deliver: 'Orden marcada como entregada. Falta que el cliente confirme que la recibió.', receive: 'Confirmaste que recibiste la orden. ¡Gracias!',
   report_shortfall: 'Faltante reportado. El cliente debe aceptar el acuerdo reducido o cancelarlo.', accept_shortfall: 'Aceptaste el acuerdo reducido.',
   cancel: 'Acuerdo cancelado.', reject: 'Rechazaste la orden.',
 };
+// Seguimiento: Procesando and En camino stay unchecked ("omitido") when the order went past them without them: a pickup skips En camino,
+// and orders delivered before these steps existed skip both. A cancelled order stops at the last step its dates reached.
+const PROGRESS = ['Enviada', 'En revisión', 'Cotización', 'Acuerdo', 'Procesando', 'En camino', 'Entregado'];
+const progressSteps: Partial<Record<DealStatus, number>> = { pending: 0, reviewed: 1, quoted: 2, adjustment: 2, handshaked: 3, processing: 4, in_transit: 5, delivered: 6, received: 6 };
+function progressStep(deal: Deal) {
+  if (deal.status !== 'cancelled') return progressSteps[deal.status] ?? 0;
+  return deal.delivered_at ? 6 : deal.in_transit_at ? 5 : deal.processing_at ? 4 : deal.handshaked_at ? 3 : deal.quotation ? 2 : 0;
+}
+// The state note's date: when the order reached its current status.
+function stateDate(deal: Deal) {
+  return ({ processing: deal.processing_at, in_transit: deal.in_transit_at, delivered: deal.delivered_at, received: deal.received_at,
+    cancelled: deal.cancellation?.cancelled_at } as Partial<Record<DealStatus, string | null | undefined>>)[deal.status] ?? deal.handshaked_at;
+}
 // Rechazar (the client ends an open order) offers the reasons that fit a buyer turning an order down; the note can say more.
 const rejectReasons: [string, string][] = [['price_too_high', 'El precio es muy alto'], ['not_needed', 'Ya no lo necesito'],
   ['found_elsewhere', 'Lo conseguí con otro proveedor'], ['delay', 'La respuesta tarda demasiado'], ['other', 'Otro motivo']];
-const openOrder = ['pending', 'reviewed', 'quoted', 'adjustment'];
+const openOrder = PRE_HANDSHAKE;
 
 // embedded: the document opened from the conversations panel's Cotizaciones, next to its chat. There it shows no chat of its own (the
 // assistant's questions go to the panel's), never opens the order for review by itself, and puts the decisions above its sections.
@@ -93,6 +113,9 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   const [chatInsert, setChatInsert] = useState<{ text: string; id: number } | null>(null);
   // The supplier detail says whether this member may take the supplier's decisions; action results (replayable) never carry it.
   const [canDecide, setCanDecide] = useState(true);
+  // The open confirmation after the handshake (Procesando, En camino, Entregado, Recibido, a shortfall, a cancellation): held here so the
+  // panel's Decisiones can open it; it closes when an action goes through or the deal changes.
+  const [afterMode, setAfterMode] = useState<AfterMode>('');
   const draftPath = `${base}/requests/${orderId}/draft`;
   const acceptDetail = useCallback((value: Deal) => {
     if (!mounted.current) return;
@@ -101,7 +124,7 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
     latestVersion.current = value.version;
     if (typeof value.can_decide === 'boolean') setCanDecide(value.can_decide);
     setDeal(value);
-    if (changed) { setConfirming(false); setSuggestAdjust(false); onChangedRef.current?.(); }
+    if (changed) { setConfirming(false); setSuggestAdjust(false); setAfterMode(''); onChangedRef.current?.(); }
   }, []);
   const load = useCallback(async (open = false) => {
     try {
@@ -150,10 +173,11 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
       const result = await request<Deal>(actionPath, { method: 'POST', body: JSON.stringify({ ...payload, operation_id: retry.current.id }) });
       if (!mounted.current) return true;
       retry.current = null; acceptDetail(result); setAdjusting(false); setReason(''); setConfirming(false); setSuggestAdjust(false);
-      setRejecting(false); setRejectCode(''); setRejectNote(''); setRevising(false); setEditing(false);
+      setRejecting(false); setRejectCode(''); setRejectNote(''); setRevising(false); setEditing(false); setAfterMode('');
       setTab('quote');
       setNotice(actionNotices[action] || 'Cotización confirmada por el proveedor y enviada al cliente.');
       onChangedRef.current?.();
+      inboxChanged();  // the summary (the Recibido reminder, the bell) at once, not only when the websocket's nudge arrives
       return true;
     } catch (caught) {
       if (!mounted.current) return false;
@@ -185,8 +209,7 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   }
   const suggestions = useMemo(() => new Map((priced?.lines || []).map(line => [line.order_line_id, line])), [priced]);
   const suggestedPrice = useCallback((line: Deal['lines'][number]) => priced ? <SuggestedPrice line={suggestions.get(line.id)} currency={priced.currency}/> : null, [priced, suggestions]);
-  const activeStep = !deal ? 0 : deal.status === 'pending' ? 0 : deal.status === 'reviewed' ? 1 : deal.status === 'delivered' ? 4
-    : ['handshaked', 'cancelled'].includes(deal.status) ? 3 : 2;
+  const activeStep = deal ? progressStep(deal) : 0;
   const pendingShortfall = deal?.shortfalls?.find(item => item.status === 'pending');
   const startPricing = () => { setEditing(true); setTab('quote'); };
   const reviseButton = <button type="button" className="button primary small" disabled={busy} onClick={() => {
@@ -194,6 +217,12 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
     // The editor opens under the sent version: bring it up (its loading placeholder first, while the draft loads).
     setTimeout(() => quoteTab.current?.querySelector('.deal-quote-editor, .quotation-grid-loading')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 120);
   }}><Pencil size={15}/>Editar cotización</button>;
+  // The panel's Decisiones open a step's confirmation in the document and bring it up.
+  const openStep = (next: AfterMode) => {
+    setTab('quote'); setAfterMode(next); setConfirming(false); setAdjusting(false); setRejecting(false);
+    setTimeout(() => quoteTab.current?.querySelector('.deal-after .deal-confirmation')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 120);
+  };
+  const steps = deal && supplier && canDecide ? supplierSteps(deal) : [];
   const rejectButton = <button type="button" className="button soft danger small" disabled={busy} aria-expanded={rejecting} onClick={() => { setRejecting(value => !value); setConfirming(false); setAdjusting(false); }}>Rechazar</button>;
   const content = <>
     <div className="deal-detail">
@@ -208,9 +237,16 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
             <button type="button" className="button text small" onClick={() => setProfileOpen(true)}><Pencil size={13}/>{pairProfile.exists ? 'Editar perfil' : 'Configurar cliente'}</button></p>
           {pairProfile.internal_notes && <small title="Solo tu equipo ve estas notas">Notas internas: {pairProfile.internal_notes}</small>}
         </div>}
-        {!embedded && <ol className={`deal-progress ${deal.status === 'cancelled' ? 'cancelled' : ''}`} aria-label="Seguimiento del acuerdo">{['Enviada', 'En revisión', 'Cotización', 'Acuerdo', 'Entregado'].map((label, index) => <li key={label} className={index <= activeStep ? 'reached' : ''} aria-current={index === activeStep ? 'step' : undefined}><span>{index < activeStep ? <Check size={12}/> : index + 1}</span>{label}</li>)}</ol>}
-        <div className={`deal-state-note ${deal.status}`}><LockKeyhole size={16}/><p>{supplier && deal.status === 'quoted' ? `Enviaste la cotización v${deal.quotation?.revision ?? 1}. Mientras el cliente no la confirme, puedes editarla y enviarle una nueva versión.` : stateDescription[deal.status]}{(() => {
-          const when = deal.status === 'delivered' ? deal.delivered_at : deal.status === 'cancelled' ? deal.cancellation?.cancelled_at : deal.handshaked_at;
+        {!embedded && <ol className={`deal-progress ${deal.status === 'cancelled' ? 'cancelled' : ''}`} aria-label="Seguimiento del acuerdo">{PROGRESS.map((label, index) => {
+          const skipped = index < activeStep && ((index === 4 && !deal.processing_at) || (index === 5 && !deal.in_transit_at));
+          const receipt = index === 6 && (deal.status === 'delivered' ? 'por recibir' : deal.status === 'received' ? 'recibido' : '');
+          return <li key={label} className={[index <= activeStep && 'reached', skipped && 'skipped'].filter(Boolean).join(' ')} aria-current={index === activeStep ? 'step' : undefined}>
+            <span>{skipped ? <Minus size={12}/> : index < activeStep || (index === 6 && deal.status === 'received') ? <Check size={12}/> : index + 1}</span>
+            <span className="deal-progress-text">{label}{skipped && <span className="sr-only">, omitido</span>}
+              {receipt && <><small className={deal.status === 'received' ? 'done' : undefined} aria-hidden="true">{receipt}</small><span className="sr-only">, {receipt}</span></>}</span></li>;
+        })}</ol>}
+        <div className={`deal-state-note ${deal.status}`}><LockKeyhole size={16}/><p>{supplier && deal.status === 'quoted' ? `Enviaste la cotización v${deal.quotation?.revision ?? 1}. Mientras el cliente no la confirme, puedes editarla y enviarle una nueva versión.` : stateDescription(deal.status, supplier)}{(() => {
+          const when = stateDate(deal);
           return when ? <strong> {date(when)}</strong> : null;
         })()}</p></div>
         {embedded && <div className="deal-quick-actions" role="group" aria-label="Decisiones">
@@ -222,6 +258,9 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
             <button type="button" className="button soft small" disabled={busy} onClick={() => { setTab('quote'); setAdjusting(value => !value); setConfirming(false); setRejecting(false); }}>Solicitar ajuste</button>
           </>}
           {!supplier && openOrder.includes(deal.status) && rejectButton}
+          {/* After the handshake, only the next step: the supplier's progress, or the client's Recibido once the supplier marked Entregado. */}
+          {[...steps, ...(!supplier && deal.status === 'delivered' ? ['receive' as const] : [])].map((step, index) => { const Icon = stepIcons[step];
+            return <button key={step} type="button" className={`button ${index === 0 ? 'primary' : 'soft'} small`} disabled={busy} onClick={() => openStep(step)}><Icon size={15}/>{stepLabels[step]}</button>; })}
         </div>}
         {rejecting && !supplier && openOrder.includes(deal.status) && <form className="deal-reject" aria-label="Rechazar la orden" onSubmit={event => { event.preventDefault(); void act('reject', { quotation_id: deal.quotation?.id, reason_code: rejectCode, reason: rejectNote }); }}>
           <p><strong>¿Rechazar la orden {deal.reference}?</strong> Se cerrará sin acuerdo y {deal.supplier.name} recibirá el motivo.</p>
@@ -257,15 +296,16 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
             {suggestAdjust && !confirming && <small id="deal-adjust-hint" className="deal-adjust-hint">Pide al proveedor una nueva versión con las unidades que puede confirmar.</small>}
             {adjusting && <form className="deal-adjustment" onSubmit={event => { event.preventDefault(); void act('request_adjustment', { quotation_id: deal.quotation!.id, reason }); }}><label>¿Qué necesitas ajustar?<UppercaseTextarea required maxLength={4000} value={reason} disabled={busy} onChange={event => setReason(event.target.value)} placeholder="INDICA LAS CANTIDADES O CONDICIONES QUE NECESITAS CAMBIAR…"/></label><button type="submit" className="button primary" disabled={busy || !reason.trim()}>{busy ? <LoaderCircle size={15} className="spin"/> : <Send size={15}/>}Enviar ajuste</button></form>}
           </div>}
-          {['handshaked', 'delivered'].includes(deal.status) && <div className="deal-handshake"><Handshake size={25}/><div><strong>HANDSHAKED · Acuerdo confirmado</strong><p>Confirmación del proveedor: {deal.quotation && date(deal.quotation.supplier_confirmed_at)}</p><p>Confirmación del cliente: {deal.quotation?.client_confirmed_at && date(deal.quotation.client_confirmed_at)}</p></div></div>}
-          {['handshaked', 'delivered', 'cancelled'].includes(deal.status) && <DealAfterHandshake key={deal.version} deal={deal} supplier={supplier} busy={busy} act={act}
-            canDecide={!supplier || canDecide} inventoryHref={supplier ? supplierSectionHref(account.id, 'inventory') : undefined}/>}
+          {['handshaked', 'processing', 'in_transit', 'delivered', 'received'].includes(deal.status) && <div className="deal-handshake"><Handshake size={25}/><div><strong>HANDSHAKED · Acuerdo confirmado</strong><p>Confirmación del proveedor: {deal.quotation && date(deal.quotation.supplier_confirmed_at)}</p><p>Confirmación del cliente: {deal.quotation?.client_confirmed_at && date(deal.quotation.client_confirmed_at)}</p></div></div>}
+          {AFTER_HANDSHAKE.includes(deal.status) && <DealAfterHandshake key={deal.version} deal={deal} supplier={supplier} busy={busy} act={act}
+            canDecide={!supplier || canDecide} inventoryHref={supplier ? supplierSectionHref(account.id, 'inventory') : undefined}
+            mode={afterMode} onMode={setAfterMode} stepButtons={!embedded}/>}
           {(deal.quotations?.length || 0) > 1 && <details className="deal-quote-history"><summary>Versiones anteriores ({deal.quotations.length - 1})</summary>{deal.quotations.slice(0, -1).map(quote => <QuoteView key={quote.id} quote={quote} historical/>)}</details>}
         </div>
         {/* Keep conversation mounted so refreshes and draft messages survive tab changes. */}
         {!embedded && <div hidden={tab !== 'chat'}><DealChat account={account} orderId={orderId} reference={deal?.reference || reference} active={tab === 'chat'} supplier={supplier} insert={chatInsert}/></div>}
         {tab === 'history' && <ol className="deal-events">{deal.events?.length ? deal.events.map(event => <li key={event.id}><span>{date(event.created_at)} · {event.account_name} · {event.actor_name}</span><p>{event.description}</p></li>) : <li>Esta orden se creó antes de habilitar el registro de actividad.</li>}</ol>}
-        <div className="deal-footer"><small>Orden {deal.reference} · La entrega se coordina con el proveedor.</small><button type="button" className="button soft small" disabled={busy} onClick={() => { setError(''); void load(); }}><RefreshCw size={14}/>Actualizar</button></div>
+        <div className="deal-footer"><small>Orden {deal.reference} · {supplier ? 'Marca Procesando, En camino y Entregado; el cliente confirma que la recibió.' : 'El proveedor marca el avance; tú confirmas que la recibiste.'}</small><button type="button" className="button soft small" disabled={busy} onClick={() => { setError(''); void load(); }}><RefreshCw size={14}/>Actualizar</button></div>
       </>}
     </div>
   </>;

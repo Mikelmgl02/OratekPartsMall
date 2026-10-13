@@ -78,7 +78,7 @@ test('search uses alternate codes and removal failures keep the saved item for r
   await expect(page.locator('.wishlist-page .part-card')).toHaveCount(1);
   state.failDelete();
   await page.getByRole('button', {name:'Quitar 58411-1R000 de favoritos', exact:true}).click();
-  await expect(page.getByRole('status')).toContainText('No se pudo quitar');
+  await expect(page.getByRole('status').filter({ hasText: 'No se pudo quitar' })).toBeVisible();  // the Recibido reminder's live region is a status too
   await expect(page.locator('.wishlist-page .part-card')).toHaveCount(1);
   state.recover();
   await page.getByRole('button', {name:'Quitar 58411-1R000 de favoritos', exact:true}).click();

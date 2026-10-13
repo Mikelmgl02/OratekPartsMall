@@ -2,10 +2,11 @@
 import Link from 'next/link';
 import type { ColDef } from 'ag-grid-community';
 import type { CustomCellRendererProps } from 'ag-grid-react';
-import { ArrowUpRight, ClipboardCheck, FilePen, History, TriangleAlert } from 'lucide-react';
+import { ArrowUpRight, BadgeCheck, ClipboardCheck, FilePen, History, TriangleAlert } from 'lucide-react';
 import DealStatusBadge from './deal-status';
 import type { StockItem } from '@/lib/types';
 import type { SupplierRequestListItem } from '@/lib/request-types';
+import { receiptHint } from '@/lib/deal-types';
 import { supplierOrderHref, supplierRequestsHref } from '@/lib/supplier-navigation';
 
 const number = (value: number | null | undefined) => (value ?? 0).toLocaleString('es-PA');
@@ -57,21 +58,24 @@ function ReferenceCell({ data }: RequestCell) {
 function AlertsCell({ data }: RequestCell) {
   if (!data) return null;
   const draft = data.draft_state ? draftStates[data.draft_state] : null;
-  if (!draft && !data.availability_alert && !data.shortfall_pending) return <span className="admin-grid-muted">—</span>;
+  const awaiting = data.status === 'delivered';  // marked Entregado: the client's Recibido closes it
+  if (!draft && !data.availability_alert && !data.shortfall_pending && !awaiting) return <span className="admin-grid-muted">—</span>;
   return <div className="admin-grid-chips supplier-request-flags">{draft && (() => { const [label, Icon] = draft; return <span className={`supplier-request-draft ${data.draft_state}`}><Icon size={13}/>{label}</span>; })()}
     {data.availability_alert && <span className={`supplier-request-alert ${data.availability_alert}`}><TriangleAlert size={13}/>{availabilityAlerts[data.availability_alert]}</span>}
-    {data.shortfall_pending && <span className="supplier-request-alert shortfall"><TriangleAlert size={13}/>Faltante: esperando al cliente</span>}</div>;
+    {data.shortfall_pending && <span className="supplier-request-alert shortfall"><TriangleAlert size={13}/>Faltante: esperando al cliente</span>}
+    {awaiting && <span className="supplier-request-alert receipt"><BadgeCheck size={13}/>{receiptHint(true)}</span>}</div>;
 }
 function OpenCell({ data, context }: RequestCell) {
   return data ? <div className="admin-grid-actions"><Link className="button soft small" aria-label={`Ver solicitud ${data.reference}`} href={supplierOrderHref(context.accountId, data.id)} prefetch={false}
     onNavigate={() => window.history.replaceState(window.history.state, '', supplierRequestsHref(context.accountId))}>Abrir orden<ArrowUpRight size={15}/></Link></div> : null;
 }
+// status sorts in the order's lifecycle (the server maps it to its status_rank).
 export const requestOrdering: Record<string, string> = { reference: 'created_at', status: 'status', client: 'client_name', lines: 'line_count', units: 'unit_count' };
 // No pinned columns here either: the requests spec reads each order as one grid row.
 export function requestColumns(): ColDef<SupplierRequestListItem>[] {
   return [
     { colId: 'reference', headerName: 'Orden / recibida', width: 185, cellRenderer: ReferenceCell },
-    { colId: 'status', headerName: 'Estado', width: 160, cellRenderer: ({ data }: RequestCell) => data ? <DealStatusBadge status={data.status}/> : null },
+    { colId: 'status', headerName: 'Estado', width: 190, cellRenderer: ({ data }: RequestCell) => data ? <DealStatusBadge status={data.status}/> : null },
     { colId: 'client', headerName: 'Cliente', valueGetter: ({ data }) => data?.client.name ?? '', flex: 1, minWidth: 170, cellClass: 'admin-grid-text strong' },
     { colId: 'lines', headerName: 'Artículos', field: 'line_count', valueFormatter: ({ value }) => number(value), width: 118, type: 'rightAligned', cellClass: right('admin-grid-number') },
     { colId: 'units', headerName: 'Unidades', field: 'unit_count', valueFormatter: ({ value }) => number(value), width: 100, type: 'rightAligned', cellClass: right() },

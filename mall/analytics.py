@@ -133,19 +133,22 @@ def quotation_kpis(start, now):
 def supplier_reliability(start, now):
     """Superusers only, never in `quotations` (decision D5): per supplier, the deals confirmed in the period and how many it failed, a
     shortfall reported after the handshake or a cancellation by the supplier. Client and MotionPartes cancellations are shown apart and do
-    not count against the supplier. Counts only: no prices, totals or clients."""
+    not count against the supplier. Entregados: the supplier marked them delivered (the client may not have confirmed yet); Recibidos: the
+    client confirmed them (deliveries closed by migration 0070, which no client confirmed, are left out). Counts only: no prices, totals or
+    clients."""
     from .request_models import DealShortfallLine
     deals = SupplierRequest.objects.filter(handshaked_at__gte=start, handshaked_at__lte=now)
     short = DealShortfallLine.objects.filter(shortfall__order_id=OuterRef('pk'))
     rows = deals.annotate(short=Exists(short)).values('supplier_id', 'supplier__name').annotate(
-        confirmed=Count('pk'), delivered=Count('pk', filter=Q(status='delivered')),
+        confirmed=Count('pk'), delivered=Count('pk', filter=Q(status__in=('delivered', 'received'))), received=Count('pk', filter=Q(status='received', received_by__isnull=False)),
         with_shortfall=Count('pk', filter=Q(short=True)), supplier_cancelled=Count('pk', filter=Q(cancelled_side='supplier')),
         failed=Count('pk', filter=Q(short=True) | Q(cancelled_side='supplier')),
         client_cancelled=Count('pk', filter=Q(cancelled_side='client')), admin_cancelled=Count('pk', filter=Q(cancelled_side='admin')))
     missing = dict(DealShortfallLine.objects.filter(shortfall__order__in=deals).values('shortfall__order__supplier_id').annotate(
         units=Sum('missing')).values_list('shortfall__order__supplier_id', 'units'))
     result = [{'id': str(row['supplier_id']), 'name': row['supplier__name'],
-               **{key: row[key] for key in ('confirmed', 'delivered', 'with_shortfall', 'supplier_cancelled', 'failed', 'client_cancelled', 'admin_cancelled')},
+               **{key: row[key] for key in ('confirmed', 'delivered', 'received', 'with_shortfall', 'supplier_cancelled', 'failed', 'client_cancelled',
+                                            'admin_cancelled')},
                'missing_units': missing.get(row['supplier_id'], 0), 'failure_rate': round(row['failed'] / row['confirmed'], 4)} for row in rows]
     return sorted(result, key=lambda row: (-row['failure_rate'], -row['confirmed'], row['name'], row['id']))
 

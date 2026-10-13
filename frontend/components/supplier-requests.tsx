@@ -6,14 +6,18 @@ import { UppercaseInput } from './uppercase-field';
 import ServerGrid from './server-grid';
 import { requestColumns, requestOrdering } from './supplier-grids';
 import { Account } from '@/lib/types';
-import { SupplierRequestListItem, SupplierRequestSummary } from '@/lib/request-types';
+import type { RequestStatusFilter, SupplierRequestListItem } from '@/lib/request-types';
 
-type StatusFilter = '' | SupplierRequestSummary['status'];
+// The supplier's filters, in the order's lifecycle: Por procesar is a confirmed agreement not started yet; Esperando recibido, an order it
+// marked Entregado that waits for the client.
+const filters: { value: RequestStatusFilter; label: string }[] = [{ value: '', label: 'Todas' }, { value: 'pending', label: 'Pendientes' }, { value: 'reviewed', label: 'En revisión' },
+  { value: 'quoted', label: 'Por confirmar' }, { value: 'adjustment', label: 'Ajustes' }, { value: 'handshaked', label: 'Por procesar' }, { value: 'processing', label: 'Procesando' },
+  { value: 'in_transit', label: 'En camino' }, { value: 'delivered', label: 'Esperando recibido' }, { value: 'received', label: 'Recibidos' }, { value: 'cancelled', label: 'Cancelados' }];
 
 export default function SupplierRequests({ account }: { account: Account }) {
   const [search, setSearch] = useState('');
   const [appliedSearch, setAppliedSearch] = useState('');
-  const [status, setStatus] = useState<StatusFilter>('');
+  const [status, setStatus] = useState<RequestStatusFilter>('');
   const [revision, setRevision] = useState(0);
   const [count, setCount] = useState<number | null>(null);
   useEffect(() => {
@@ -31,7 +35,7 @@ export default function SupplierRequests({ account }: { account: Account }) {
 
   return <section className="supplier-requests" aria-label="Solicitudes de clientes">
     <div className="supplier-requests-heading"><div><h2>Órdenes de tus clientes</h2><p>Gestiona órdenes, cotizaciones y acuerdos de {account.name}.</p></div><button type="button" className="button soft small" onClick={refresh}><RefreshCw size={15}/>Actualizar solicitudes</button></div>
-    <div className="supplier-requests-controls"><div className="supplier-requests-search"><Search size={19}/><UppercaseInput aria-label="Buscar solicitudes" value={search} maxLength={200} placeholder="CLIENTE, REFERENCIA O CÓDIGO…" onChange={event => setSearch(event.target.value)}/>{search && <button type="button" className="icon-button" aria-label="Limpiar búsqueda de solicitudes" onClick={() => setSearch('')}><X size={16}/></button>}</div><div className="supplier-request-filters" role="group" aria-label="Estado de las solicitudes">{([{ value: '', label: 'Todas' }, { value: 'pending', label: 'Pendientes' }, { value: 'reviewed', label: 'En revisión' }, { value: 'quoted', label: 'Por confirmar' }, { value: 'adjustment', label: 'Ajustes' }, { value: 'handshaked', label: 'Acuerdos' }, { value: 'delivered', label: 'Entregados' }, { value: 'cancelled', label: 'Cancelados' }] as const).map(filter => <button type="button" key={filter.value} aria-pressed={status === filter.value} className={status === filter.value ? 'selected' : ''} onClick={() => { setStatus(filter.value); }}>{filter.label}</button>)}</div></div>
+    <div className="supplier-requests-controls"><div className="supplier-requests-search"><Search size={19}/><UppercaseInput aria-label="Buscar solicitudes" value={search} maxLength={200} placeholder="CLIENTE, REFERENCIA O CÓDIGO…" onChange={event => setSearch(event.target.value)}/>{search && <button type="button" className="icon-button" aria-label="Limpiar búsqueda de solicitudes" onClick={() => setSearch('')}><X size={16}/></button>}</div><div className="supplier-request-filters" role="group" aria-label="Estado de las solicitudes">{filters.map(filter => <button type="button" key={filter.value} aria-pressed={status === filter.value} className={status === filter.value ? 'selected' : ''} onClick={() => { setStatus(filter.value); }}>{filter.label}</button>)}</div></div>
     <span className="inventory-count supplier-request-count" aria-live="polite">{count === null ? 'Cargando solicitudes…' : `${count.toLocaleString('es-PA')} ${count === 1 ? 'solicitud' : 'solicitudes'}`}</span>
     <ServerGrid<SupplierRequestListItem> storageKey={`supplier-requests`} label="Listado de solicitudes" path={`/api/market/accounts/${account.id}/requests`} params={params} columns={columns}
       rowId={row => row.id} ordering={requestOrdering} revision={revision} rowHeight={60} context={context} onCount={setCount} className="supplier-request-grid"

@@ -1181,20 +1181,34 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .supplier-request-status.quoted { background: #e6f0f9; color: #245d80; }
 .supplier-request-status.adjustment { background: #fff1d7; color: #906018; }
 .supplier-request-status.handshaked { background: #e4f2e8; color: #276244; }
-.supplier-request-status.delivered { background: #dcefe9; color: #1f5f4d; }
+.supplier-request-status.processing { background: #eef3df; color: #56701f; }
+.supplier-request-status.in_transit { background: #e3eef6; color: #22597c; }
+/* Entregado waits for the client's Recibido: amber until then, green once received. */
+.supplier-request-status.delivered { background: #fff4dc; color: #8a5a12; }
+.supplier-request-status.received { background: #dcefe9; color: #1f5f4d; }
 .supplier-request-status.cancelled { background: #f6e9e6; color: #9a4b3c; }
 .deal-detail { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; min-width: 0; }
 .deal-detail > *, .deal-quote-tab > *, .deal-quote-editor > * { min-width: 0; }
 .deal-modal .modal-header h2 { overflow-wrap: anywhere; }
-.deal-progress { display: grid; grid-template-columns: repeat(5, 1fr); padding: 0; margin: 0; list-style: none; gap: 8px; }
-.deal-progress li { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); border-bottom: 2px solid var(--line); padding: 10px 0; }
-.deal-progress li span { display: grid; place-items: center; flex: 0 0 22px; height: 22px; border-radius: 50%; background: var(--line); font-weight: 700; }
+.deal-progress { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); padding: 0; margin: 0; list-style: none; gap: 8px; }
+.deal-progress li { display: flex; align-items: center; gap: 8px; min-width: 0; overflow-wrap: break-word; font-size: 12px; color: var(--muted); border-bottom: 2px solid var(--line); padding: 10px 0; }
+.deal-progress li > span:first-child { display: grid; place-items: center; flex: 0 0 22px; width: 22px; height: 22px; border-radius: 50%; background: var(--line); font-weight: 700; }
 .deal-progress .reached { color: var(--ink); border-color: #45886a; }
-.deal-progress .reached span { background: #dceddd; color: #326343; }
+.deal-progress .reached > span:first-child { background: #dceddd; color: #326343; }
+/* A step the order went past without (En camino on a pickup, both steps on older orders): reached, but dashed and unchecked. */
+.deal-progress li.skipped { color: var(--muted); border-bottom-style: dashed; }
+.deal-progress li.skipped > span:first-child { background: #eef0ea; color: #8d9684; }
+.deal-progress-text { display: grid; min-width: 0; }
+.deal-progress-text small { font-size: 10px; line-height: 1.3; color: #8a5a12; }
+.deal-progress li.reached .deal-progress-text small.done { color: #1f5f4d; }
 .deal-state-note { display: flex; align-items: flex-start; gap: 10px; border-radius: 12px; padding: 14px; background: #f0f3ed; }
 .deal-state-note svg { flex-shrink: 0; margin-top: 2px; }
 .deal-state-note p { min-width: 0; overflow-wrap: anywhere; margin: 0; font-size: 13px; line-height: 1.6; }
 .deal-state-note.handshaked { background: #e4f2e8; color: #276244; }
+.deal-state-note.processing { background: #eef3df; color: #56701f; }
+.deal-state-note.in_transit { background: #e3eef6; color: #22597c; }
+.deal-state-note.delivered { background: #fff4dc; color: #7d5a1c; }
+.deal-state-note.received { background: #dcefe9; color: #1f5f4d; }
 .deal-tabs { display: flex; gap: 5px; border-bottom: 1px solid var(--line); overflow-x: auto; }
 .deal-tabs button { display: flex; align-items: center; gap: 7px; padding: 12px 14px; white-space: nowrap; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; }
 .deal-tabs .selected { border-color: #45886a; color: var(--ink); font-weight: 700; }
@@ -1283,12 +1297,23 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .deal-handshake p { font-size: 12px; margin: 8px 0 0; }
 /* After the handshake: delivery, shortfall and cancellation (deal-after-handshake.tsx, admin-deals.tsx). */
 .deal-progress.cancelled .reached { border-color: #c98a7c; }
+/* Seven steps leave a narrow column per label below ~860 px (a tablet, the client's modal): the circle goes above it, so words stay whole. */
+@media (max-width: 860px) { .deal-progress li { flex-direction: column; align-items: flex-start; gap: 5px; } }
 .deal-after { display: grid; gap: 14px; margin-top: 14px; min-width: 0; }
 .deal-outcome, .deal-shortfall-pending { display: flex; gap: 14px; border-radius: 14px; padding: 18px 20px; min-width: 0; overflow-wrap: anywhere; }
 .deal-outcome svg, .deal-shortfall-pending > svg { flex-shrink: 0; }
 .deal-outcome p, .deal-shortfall-pending p { font-size: 12px; margin: 6px 0 0; line-height: 1.6; }
 .deal-outcome.delivered { background: #dcefe9; color: #1f5f4d; }
 .deal-outcome.cancelled { background: #f6e9e6; color: #8a4436; }
+.deal-outcome.in_transit { background: #e3eef6; color: #22597c; }
+.deal-outcome.delivered.awaiting { background: #fff4dc; color: #7d5a1c; }
+.deal-outcome.received { background: #dcefe9; color: #1f5f4d; }
+.deal-outcome > div { min-width: 0; }
+.deal-outcome a { color: inherit; font-weight: 700; }
+/* The client's Confirmar recibido, inside the Entregado card, with the way out under it. */
+.deal-outcome .button { margin-top: 12px; }
+.deal-outcome small { display: block; margin-top: 8px; font-size: 11px; line-height: 1.5; opacity: .85; }
+.deal-after-note { margin: 0; padding: 10px 14px; border-radius: 10px; background: #f0f3ed; color: #5d6a61; font-size: 12px; line-height: 1.6; }
 .deal-shortfall-pending { background: #fff4df; color: #7d5a1c; }
 .deal-shortfall-pending ul { margin: 8px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.7; }
 .deal-shortfall-pending a { color: inherit; font-weight: 700; }
@@ -1313,6 +1338,7 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .button.danger { color: #9a4b3c; }
 .button.primary.danger { background: #b2563f; border-color: #b2563f; color: white; }
 .supplier-request-alert.shortfall { background: #fff4df; color: #8a6a24; }
+.supplier-request-alert.receipt { background: #fff4dc; color: #8a5a12; }
 .admin-deals { display: grid; gap: 16px; min-width: 0; }
 .admin-deals-table td small { display: block; font-size: 10px; color: var(--muted); margin-top: 3px; }
 .admin-deal-detail { display: grid; gap: 16px; min-width: 0; }
@@ -1345,7 +1371,7 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .deal-footer { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; border-top: 1px solid var(--line); padding-top: 14px; }
 .deal-footer small { color: var(--muted); font-size: 11px; }
 @media (max-width: 600px) {
-  .deal-progress { gap: 4px; }
+  .deal-progress { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
   .deal-progress li { flex-direction: column; align-items: flex-start; gap: 5px; font-size: 10px; }
   .deal-tabs button { padding: 10px 8px; font-size: 12px; gap: 4px; }
   .deal-quote-editor { padding: 12px; }
@@ -2459,15 +2485,20 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .inbox-row-ref { flex:0 0 auto; font-size:10.5px; color:#9aa391; font-variant-numeric:tabular-nums; }
 .inbox-row-open.unread .inbox-row-name { font-weight:700; color:var(--ink); }
 .inbox-row-unread { flex:0 0 auto; min-width:18px; height:18px; padding:0 5px; border-radius:9px; display:grid; place-items:center; background:#6f9a3c; color:#fff; font-size:10px; font-weight:700; }
-/* The status as a dot: a ring while the deal is open, filled once agreed or delivered, grey when cancelled. */
+/* The status as a dot: a ring while the deal is open, filled once agreed (amber while Entregado waits for Recibido), grey when cancelled. */
 .inbox-row-dot { flex:0 0 9px; width:9px; height:9px; border-radius:50%; border:1.6px solid currentColor; color:#a9b2a0; }
 .inbox-row-dot.pending { color:#c98f45; }
 .inbox-row-dot.reviewed { color:#7ea25b; }
 .inbox-row-dot.quoted { color:#3a79a8; }
 .inbox-row-dot.adjustment { color:#c4861d; }
 .inbox-row-dot.handshaked { color:#2f7a52; background:currentColor; }
-.inbox-row-dot.delivered { color:#1f5f4d; background:currentColor; }
+.inbox-row-dot.processing { color:#6f8f2f; background:currentColor; }
+.inbox-row-dot.in_transit { color:#2f6f8f; background:currentColor; }
+.inbox-row-dot.delivered { color:#c4861d; background:currentColor; }
+.inbox-row-dot.received { color:#1f5f4d; background:currentColor; }
 .inbox-row-dot.cancelled { color:#c2b5b0; }
+/* The client has something to do: confirm Recibido. */
+.inbox-row-dot.act { box-shadow:0 0 0 2px #fff, 0 0 0 3.5px #c4861d; }
 .inbox-menu-button { width:26px; height:26px; flex:0 0 26px; margin-right:4px; border-radius:6px; color:#6f7a68; opacity:0; }
 .inbox-menu-button:hover { background:#e4eadb; color:var(--ink); }
 .inbox-row:hover .inbox-menu-button,.inbox-group-head:hover .inbox-menu-button,.inbox-menu-button:focus-visible,.inbox-menu-button[aria-expanded="true"] { opacity:1; }
@@ -2711,14 +2742,27 @@ body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-s
 .own-catalog-notice { margin:20px 0 12px; }
 .own-catalog-notice > svg { flex-shrink:0; }
 @media (max-width:640px) { .own-catalog-notice { flex-wrap:wrap; } .own-catalog-notice > div { flex:1 1 calc(100% - 32px); min-width:0; } .own-catalog-notice button { margin-left:32px; } }
-/* Administrators: the Productos nuevos reminder on the storefront, bottom left, under the transient toasts and every dialog. */
-.admin-snackbar { position:fixed; left:20px; bottom:20px; z-index:19; display:flex; align-items:center; gap:12px; max-width:min(420px,calc(100vw - 40px)); padding:12px 10px 12px 16px; border-radius:10px; background:#263324; color:#f0f7e9; box-shadow:0 10px 35px #12220e33; font-size:12px; line-height:1.5; }
-.admin-snackbar>svg { color:#cbeba5; flex-shrink:0; }
-.admin-snackbar>span { min-width:0; }
-.admin-snackbar a { color:#cbeba5; font-weight:700; text-decoration:underline; white-space:nowrap; }
-.admin-snackbar button { color:#d0ddc5; display:grid; place-items:center; width:28px; height:28px; border-radius:6px; flex-shrink:0; }
-.admin-snackbar button:hover { background:#ffffff14; }
-@media (max-width:640px) { .admin-snackbar { left:12px; right:12px; bottom:12px; max-width:none; } }
+/* The storefront's reminders (marketplace.tsx), bottom left, under the transient toasts and every dialog: Productos nuevos (administrators)
+   above, the orders waiting for the person's Recibido below. On the level of the catalog's sticky controls but later in the page, so those
+   never cover them (the toast, later still, covers them). The stack lets clicks through between them; the snackbars space themselves, so an
+   empty live region takes no room. */
+.snackbar-stack { position:fixed; left:20px; bottom:20px; z-index:20; display:flex; flex-direction:column; max-width:min(420px,calc(100vw - 40px)); pointer-events:none; }
+.snackbar-stack > * { pointer-events:auto; }
+.admin-snackbar, .receipt-snackbar { display:flex; align-items:center; gap:12px; margin-top:8px; padding:12px 10px 12px 16px; border-radius:10px; background:#263324; color:#f0f7e9; box-shadow:0 10px 35px #12220e33; font-size:12px; line-height:1.5; }
+.admin-snackbar>svg, .receipt-snackbar>svg { color:#cbeba5; flex-shrink:0; }
+.admin-snackbar>span, .receipt-snackbar>span { min-width:0; }
+.admin-snackbar a, .receipt-snackbar a { color:#cbeba5; font-weight:700; text-decoration:underline; white-space:nowrap; }
+.admin-snackbar button, .receipt-snackbar-close { color:#d0ddc5; display:grid; place-items:center; width:28px; height:28px; border-radius:6px; flex-shrink:0; }
+.admin-snackbar button:hover, .receipt-snackbar-close:hover { background:#ffffff14; }
+/* The reminder's text beside its icon and close button, its actions under the text. */
+.receipt-snackbar { display:grid; grid-template-columns:auto minmax(0,1fr) auto; grid-template-areas:"icon text close" ". actions actions"; align-items:start; gap:8px 12px; }
+.receipt-snackbar>svg { grid-area:icon; margin-top:2px; }
+.receipt-snackbar-text { grid-area:text; overflow-wrap:anywhere; }
+.receipt-snackbar-close { grid-area:close; margin-top:-4px; }
+.receipt-snackbar-actions { grid-area:actions; display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; }
+.receipt-snackbar-confirm { padding:6px 12px; border-radius:7px; background:#cbeba5; color:#1f2d1c; font-weight:700; white-space:nowrap; }
+.receipt-snackbar-confirm:hover { background:#dbf3bf; }
+@media (max-width:640px) { .snackbar-stack { left:12px; right:12px; bottom:12px; max-width:none; } }
 /* Revisión IA of Productos nuevos: verdict pills, the report's tiles and cards, its batch card, and the grid and drawer additions. */
 .review-ai-pill { display:inline-block; padding:4px 7px; border-radius:5px; font-size:9px; font-weight:700; letter-spacing:.02em; white-space:nowrap; background:#f1ede0; color:#998451; }
 .review-ai-pill.good { background:#ecf4e3; color:#5f8a3c; }

@@ -52,6 +52,9 @@ REPLY_EVERY = timedelta(hours=12)
 OPT_OUT = {'BAJA', 'STOP', 'SALIR', 'CANCELAR', 'NO MAS', 'NO MÁS'}
 NUMBER = re.compile(r'^\+[1-9]\d{7,14}$')
 PROGRESS = ['queued', 'accepted', 'sent', 'delivered', 'read']  # a late webhook never moves a status back
+# Deal events that reach the bell, push and email but not WhatsApp, where each template notice costs (the owner decides whether Procesando
+# goes here).
+WHATSAPP_SKIP: tuple = ()
 
 
 def whatsapp_enabled():
@@ -251,7 +254,7 @@ def message_saved(sender, instance, created=False, raw=False, **kwargs):
 
 
 def event_saved(sender, instance, created=False, raw=False, **kwargs):
-    if not created or raw or not whatsapp_enabled() or instance.kind in QUIET_EVENTS:
+    if not created or raw or not whatsapp_enabled() or instance.kind in QUIET_EVENTS or instance.kind in WHATSAPP_SKIP:
         return
     event, order = instance, instance.order
 

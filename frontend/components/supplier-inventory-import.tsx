@@ -20,9 +20,9 @@ export default function SupplierInventoryImport({ account, onClose, onSaved }: {
 
   const progress = result?.progress;
   const reservations = result?.reservations ?? [];
-  // Until the supplier answers, a delivered order starts as "Ya lo descuenta": its units most likely left the count already.
+  // Until the supplier answers, an order it marked En camino or Entregado starts as "Ya lo descuenta": its units most likely left the count already.
   const suggested: ReservationDecisions = Object.fromEntries(reservations.filter(row => !row.applied).flatMap(row => row.orders)
-    .filter(order => order.delivered_at).map(order => [order.id, 'net' as const]));
+    .filter(order => order.delivered_at || order.in_transit_at).map(order => [order.id, 'net' as const]));
   const decisions = answers.job === result?.job_id ? answers.decisions : suggested;
   const undecided = undecidedOrders(reservations, decisions);
   const canImport = !!result?.valid && !!pendingJob && !!progress?.total_batches && !completed && !needsReview && !expired && !undecided;

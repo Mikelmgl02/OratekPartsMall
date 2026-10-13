@@ -24,9 +24,10 @@ import Wishlist from './wishlist';
 import { useWishlist } from '@/lib/use-wishlist';
 import { recoverSentDraft } from '@/lib/basket-submissions';
 import { trackUsage } from '@/lib/analytics';
-import type { RequestSubmissionResult } from '@/lib/request-types';
+import type { RequestStatusFilter, RequestSubmissionResult } from '@/lib/request-types';
 import SupplierWorkspace from './supplier-workspace';
 import NewProductsSnackbar from './new-products-snackbar';
+import ReceiptReminderSnackbar from './receipt-reminder-snackbar';
 import Modal from './modal';
 import { AppToolbar, usePageViewport } from './app-shell';
 import { Account, ApiError, BasketLine, CatalogFacet, CatalogFilters, CatalogPage, Offer, Page, Part, ServerBasket, SessionUser, request } from '@/lib/types';
@@ -66,6 +67,8 @@ export default function Catálogo() {
   const [wishlistOpen, setWishlistOpen] = useState(false);
   const [purchasesOpen, setPurchasesOpen] = useState(false);
   const [sentReceipt, setSentReceipt] = useState<{ accountId: string; receipt: RequestSubmissionResult } | null>(null);
+  // The filter Solicitudes opens on: ?estado=por-recibir (the Recibido reminder's Ver todas) opens Por recibir.
+  const [sentStatus, setSentStatus] = useState<RequestStatusFilter>('');
   const [detail, setDetail] = useState<Part | null>(null);
   const [search, setSearch] = useState('');
   const [appliedSearch, setAppliedSearch] = useState('');
@@ -178,7 +181,12 @@ export default function Catálogo() {
     };
   }, [authenticated, user?.id, user?.is_superuser, accountId]);
   useEffect(() => {
-    const restorePage = () => { const destination = new URL(window.location.href).searchParams.get('vista'); setBasketOpen(destination === 'cesta'); setSentOpen(destination === 'solicitudes'); setWishlistOpen(destination === 'favoritos'); setPurchasesOpen(destination === 'compras'); setView(destination === 'proveedor' ? 'inventory' : 'catalog'); setDetail(null); };
+    const restorePage = () => {
+      const params = new URL(window.location.href).searchParams, destination = params.get('vista');
+      setBasketOpen(destination === 'cesta'); setSentOpen(destination === 'solicitudes'); setWishlistOpen(destination === 'favoritos'); setPurchasesOpen(destination === 'compras');
+      setSentStatus(destination === 'solicitudes' && params.get('estado') === 'por-recibir' ? 'delivered' : '');
+      setView(destination === 'proveedor' ? 'inventory' : 'catalog'); setDetail(null);
+    };
     restorePage();
     window.addEventListener('popstate', restorePage);
     return () => window.removeEventListener('popstate', restorePage);
@@ -379,11 +387,11 @@ export default function Catálogo() {
   function setClientPage(destination: 'cesta' | 'solicitudes' | 'favoritos' | 'compras' | null, replace = false) {
     const url = new URL(window.location.href);
     if (destination) url.searchParams.set('vista', destination); else url.searchParams.delete('vista');
-    for (const key of ['seccion', 'cuenta', 'pestana', 'cliente']) url.searchParams.delete(key);
+    for (const key of ['seccion', 'cuenta', 'pestana', 'cliente', 'estado']) url.searchParams.delete(key);
     const next = `${url.pathname}${url.search}${url.hash}`;
     if (next !== `${window.location.pathname}${window.location.search}${window.location.hash}`) window.history[replace ? 'replaceState' : 'pushState'](window.history.state, '', next);
     setBasketOpen(destination === 'cesta'); setSentOpen(destination === 'solicitudes'); setWishlistOpen(destination === 'favoritos');
-    setPurchasesOpen(destination === 'compras');
+    setPurchasesOpen(destination === 'compras'); setSentStatus('');
     if (destination) { setDetail(null); viewport.current?.scrollTo({ top: 0, behavior: 'instant' }); }
   }
   function setBasketPage(open: boolean) { setClientPage(open ? 'cesta' : null); }
@@ -394,10 +402,10 @@ export default function Catálogo() {
   }
   function explore() { setBasketPage(false); setView('catalog'); setTimeout(() => { document.getElementById('catalog')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); searchRef.current?.focus({ preventScroll: true }); }, 20); }
   function selectAccount(id: string) {
-    setAccountId(id); setView('catalog'); setDetail(null); setPage(1);
+    setAccountId(id); setView('catalog'); setDetail(null); setPage(1); setSentStatus('');  // a filter from the URL went with it
     const url = new URL(window.location.href);
     if (url.searchParams.get('vista') === 'proveedor') url.searchParams.delete('vista');
-    for (const key of ['seccion', 'cuenta', 'pestana', 'cliente']) url.searchParams.delete(key);
+    for (const key of ['seccion', 'cuenta', 'pestana', 'cliente', 'estado']) url.searchParams.delete(key);
     window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
     try { if (user) localStorage.setItem(`motionpartes:active-account:${user.id}`, id); } catch { /* The active account remains usable for this visit. */ }
   }
@@ -446,7 +454,7 @@ export default function Catálogo() {
       </div></nav>
     </header>
     </AppToolbar>
-    {purchasesOpen ? <PurchaseHistory key={accountId} account={account} authenticated={authenticated} sessionReady={sessionReady} onCatalog={explore} onRequests={() => setClientPage('solicitudes')} onSignIn={() => openAuth()}/> : wishlistOpen ? <Wishlist key={user?.id || 'guest'} userId={user?.id} sessionReady={sessionReady} configured={accounts.length > 0} revision={wishlist.revision} pending={wishlist.pending} stateError={wishlist.error} onRefresh={() => { wishlist.refresh().catch(() => {}); }} onToggle={toggleFavorite} onOpen={openPart} onCatalog={explore} onSignIn={() => openAuth()}/> : sentOpen ? !sessionReady || loadedBasketKey !== basketKey ? <main className="section-container"><div className="loading" role="status"><LoaderCircle className="spin"/>Cargando tus solicitudes…</div></main> : <ClientRequests key={accountId} account={account} draftCount={currentBasket.length} onDraft={() => setBasketPage(true)} onCatalog={explore} receipt={sentReceipt?.accountId === accountId ? sentReceipt.receipt : undefined}/> : basketOpen ? !sessionReady || loadedBasketKey !== basketKey ? <main className="section-container"><div className="loading" role="status"><LoaderCircle className="spin"/>Cargando tu cesta…</div></main> : <Basket key={basketKey} lines={currentBasket} onChange={updateBasket} onClose={explore} preview={preview} account={account} synced={serverBasket} onSent={requestSent} onSentView={() => setClientPage('solicitudes')}/> : view === 'inventory' && canSupply && account ? <SupplierWorkspace key={account.id} account={account}/> : <main>
+    {purchasesOpen ? <PurchaseHistory key={accountId} account={account} authenticated={authenticated} sessionReady={sessionReady} onCatalog={explore} onRequests={() => setClientPage('solicitudes')} onSignIn={() => openAuth()}/> : wishlistOpen ? <Wishlist key={user?.id || 'guest'} userId={user?.id} sessionReady={sessionReady} configured={accounts.length > 0} revision={wishlist.revision} pending={wishlist.pending} stateError={wishlist.error} onRefresh={() => { wishlist.refresh().catch(() => {}); }} onToggle={toggleFavorite} onOpen={openPart} onCatalog={explore} onSignIn={() => openAuth()}/> : sentOpen ? !sessionReady || loadedBasketKey !== basketKey ? <main className="section-container"><div className="loading" role="status"><LoaderCircle className="spin"/>Cargando tus solicitudes…</div></main> : <ClientRequests key={accountId} account={account} draftCount={currentBasket.length} onDraft={() => setBasketPage(true)} onCatalog={explore} receipt={sentReceipt?.accountId === accountId ? sentReceipt.receipt : undefined} initialStatus={sentStatus}/> : basketOpen ? !sessionReady || loadedBasketKey !== basketKey ? <main className="section-container"><div className="loading" role="status"><LoaderCircle className="spin"/>Cargando tu cesta…</div></main> : <Basket key={basketKey} lines={currentBasket} onChange={updateBasket} onClose={explore} preview={preview} account={account} synced={serverBasket} onSent={requestSent} onSentView={() => setClientPage('solicitudes')}/> : view === 'inventory' && canSupply && account ? <SupplierWorkspace key={account.id} account={account}/> : <main>
       {!ownCatalog && <><section className="store-hero section-container">
         <div className="store-hero-banner">
           <div className="store-hero-copy"><span className="hero-kicker"><span className="live-dot"/>CONECTAMOS REPUESTOS Y PROVEEDORES</span><h1>El repuesto indicado.<br/>El proveedor <span>ideal.</span></h1><p>Encuentra los repuestos que necesitas. Conecta con proveedores que los tienen y recibe una cotización para ti.</p><div className="store-hero-actions"><button className="button dark" onClick={explore}>Explorar el catálogo<ArrowDown size={17}/></button><div className="hero-proof"><span><ShieldCheck size={16}/>Un catálogo compartido</span><span><LockKeyhole size={15}/>Cotizaciones privadas</span></div></div></div>
@@ -495,7 +503,11 @@ export default function Catálogo() {
     {authOpen && <AuthModal initialMode={authMode} initialUsername={authUsername} onClose={() => setAuthOpen(false)} onSuccess={async () => {applySearch(''); changeFilters(emptyFilters); setView('catalog'); await loadSession();}}/>}
     {detail && <PartDetail key={`${accountId}:${detail.id}`} part={detail} preview={preview} canQuote={canQuote} accountId={accountId} basketLines={currentBasket} onClose={() => setDetail(null)} onAdd={(offer, quantity) => addToBasket(detail, offer, quantity)} onAsk={serverBasket ? offer => void ask(detail, offer) : undefined} onBasket={() => setBasketPage(true)} saved={wishlist.ids.has(detail.id)} saving={wishlist.pending.has(detail.id)} onFavorite={() => toggleFavorite(detail)}/>}
     {helpOpen && <Modal title="Una forma más fácil de encontrar repuestos" onClose={() => setHelpOpen(false)}><div className="how-steps">{[{Icon: Search, title: 'Encuentra tu repuesto', text: 'Busca en el catálogo compartido por nombre, marca o código.'}, {Icon: Store, title: 'Elige tus proveedores', text: 'Consulta quién tiene existencias y agrega repuestos a tu cesta.'}, {Icon: LockKeyhole, title: 'Solicita una cotización privada', text: 'Cada proveedor cotizará sus propios repuestos. Los precios serán privados.'}, {Icon: Truck, title: 'Confirma tu acuerdo', text: 'Revisa la cotización, solicita ajustes si los necesitas y confirma las condiciones con el proveedor.'}].map(({Icon, title, text}, i) => <div key={title}><span className="round-icon"><Icon size={21}/></span><div><small>0{i+1}</small><h3>{title}</h3><p>{text}</p></div></div>)}</div><div className="notice">Envía tu cesta para crear órdenes por proveedor. El proveedor revisa y cotiza; tú confirmas o solicitas ajustes. Cuando ambas partes confirman, el acuerdo queda cerrado y aparece en tu historial.</div><p className="private-note">Estadísticas para mejorar el catálogo: al iniciar sesión registramos tus visitas, búsquedas, repuestos consultados y artículos agregados a la cesta. Solo los superusuarios pueden consultar estas estadísticas; no usamos rastreadores externos.</p></Modal>}
-    {authenticated && user?.is_superuser && <NewProductsSnackbar key={user.id} userId={user.id}/>}
+    {/* Reminders, bottom left, one above the other: Productos nuevos (administrators) and the orders waiting for the person's Recibido. */}
+    {authenticated && user && <div className="snackbar-stack">
+      {user.is_superuser && <NewProductsSnackbar key={user.id} userId={user.id}/>}
+      <ReceiptReminderSnackbar key={user.id} userId={user.id}/>
+    </div>}
     {notice && <div className="toast" role="status"><Check size={17}/>{notice}<button aria-label="Cerrar notificación" onClick={() => setNotice('')}><X size={14}/></button></div>}
   </>;
 }

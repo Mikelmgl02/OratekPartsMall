@@ -276,7 +276,7 @@ class QuoteControlTests(APITestCase):
         self.assertEqual(self.listed()[order.reference], 'review_requested')
         # Client payloads and the supplier detail gain no key.
         detail = self.client.get(f'{self.url(self.supplier_a)}{order.pk}/').data
-        self.assertEqual(set(detail), SUMMARY_KEYS | DEAL_KEYS | {'client', 'notes', 'lines', 'can_decide'})
+        self.assertEqual(set(detail), SUMMARY_KEYS | DEAL_KEYS | {'client', 'notes', 'lines', 'can_decide', 'stock_units'})
         self.client.force_authenticate(self.buyer)
         base = f'/api/v1/accounts/{self.client_account.pk}'
         self.assertEqual({key for row in self.client.get(f'{base}/sent-requests/').data['results'] for key in row}, SENT_SUMMARY_KEYS)

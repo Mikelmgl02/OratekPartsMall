@@ -4,7 +4,7 @@ import json
 import uuid
 
 from django.db import IntegrityError, transaction
-from django.db.models import Case, CharField, Count, Exists, Prefetch, Q, Sum, OuterRef, Subquery, Value, When
+from django.db.models import Case, CharField, Count, Exists, IntegerField, Prefetch, Q, Sum, OuterRef, Subquery, Value, When
 from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -19,7 +19,8 @@ from rest_framework.views import APIView
 from .availability import line_item_identity_ok
 from .models import Account, Part, SupplierItem
 from .quote_draft_models import DealQuotationDraft
-from .request_models import ClientRequestSubmission, SupplierRequest, SupplierRequestLine, RequestContribution, DealEvent, DealQuotation, DealQuotationLine
+from .request_models import (ACTIVE_AGREEMENT, OPEN_AGREEMENT, STATUS_ORDER, ClientRequestSubmission, SupplierRequest, SupplierRequestLine,
+                             RequestContribution, DealEvent, DealQuotation, DealQuotationLine)
 from .views import account_for
 
 
@@ -64,21 +65,28 @@ class RequestSubmission(serializers.Serializer):
         return value.strip().upper()
 
 
+# Status filters that name several statuses. agreements: every deal both parties confirmed, whatever happened after (open, received or
+# cancelled); active_agreements: confirmed and not yet marked delivered by the supplier; open_agreements: confirmed and not closed (a
+# delivered order waits for the client's Recibido).
+STATUS_GROUPS = {'agreements': Q(handshaked_at__isnull=False), 'active_agreements': Q(status__in=ACTIVE_AGREEMENT),
+                 'open_agreements': Q(status__in=OPEN_AGREEMENT)}
+
+
 class RequestFilters(serializers.Serializer):
     search = serializers.CharField(required=False, allow_blank=True, max_length=200)
-    # agreements: every deal both parties confirmed, whatever happened after (open, delivered or cancelled).
-    status = serializers.ChoiceField(required=False, choices=[*[value for value, _ in SupplierRequest.STATUS_CHOICES], 'agreements'])
+    status = serializers.ChoiceField(required=False, choices=[*STATUS_ORDER, *STATUS_GROUPS])
     ordering = serializers.CharField(required=False, allow_blank=True, max_length=200)
 
 
 def status_filter(rows, status):
     if not status:
         return rows
-    return rows.filter(handshaked_at__isnull=False) if status == 'agreements' else rows.filter(status=status)
+    return rows.filter(STATUS_GROUPS.get(status) or Q(status=status))
 
 
-# Grid sorting for the supplier's request list: whitelisted names, newest first and the primary key as the stable tail.
-REQUEST_SORT = {'created_at': 'created_at', 'reference': 'reference', 'status': 'status', 'client_name': 'client_name',
+# Grid sorting for the supplier's request list: whitelisted names, newest first and the primary key as the stable tail. Status sorts in
+# lifecycle order (status_rank), not alphabetically.
+REQUEST_SORT = {'created_at': 'created_at', 'reference': 'reference', 'status': 'status_rank', 'client_name': 'client_name',
                 'line_count': 'line_count', 'unit_count': 'unit_count'}
 
 
@@ -105,8 +113,10 @@ def lifecycle_fields():
 
 
 def request_queryset(supplier):
+    status_rank = Case(*[When(status=value, then=Value(index)) for index, value in enumerate(STATUS_ORDER)], output_field=IntegerField())
     return SupplierRequest.objects.filter(supplier=supplier).annotate(
-        line_count=Count('lines'), unit_count=Coalesce(Sum('lines__quantity'), 0), **quote_summary_fields(), **lifecycle_fields()).order_by('-created_at', 'id')
+        line_count=Count('lines'), unit_count=Coalesce(Sum('lines__quantity'), 0), status_rank=status_rank, **quote_summary_fields(),
+        **lifecycle_fields()).order_by('-created_at', 'id')
 
 
 def request_summary(row):
@@ -120,11 +130,14 @@ def request_summary(row):
             'quotation_revision': row.quotation_revision, 'quoted_unit_count': row.quoted_unit_count,
             'quotation_total': str(row.quotation_total) if row.quotation_total is not None else None,
             'quotation_currency': row.quotation_currency,
-            # After the handshake: a shortfall waiting for the client, the delivery, and who cancelled.
+            # After the handshake: a shortfall waiting for the client, each step's date, and who cancelled.
             'shortfall_pending': bool(getattr(row, 'shortfall_pending', False)),
             # Units the agreement keeps: the accepted revision less accepted shortfalls (None before the handshake).
             'agreed_unit_count': (row.quoted_unit_count or 0) - (getattr(row, 'missing_units', 0) or 0) if row.handshaked_at else None,
+            'processing_at': row.processing_at.isoformat() if row.processing_at else None,
+            'in_transit_at': row.in_transit_at.isoformat() if row.in_transit_at else None,
             'delivered_at': row.delivered_at.isoformat() if row.delivered_at else None,
+            'received_at': row.received_at.isoformat() if row.received_at else None,
             'cancelled_at': row.cancelled_at.isoformat() if row.cancelled_at else None,
             'cancelled_side': row.cancelled_side or None}
 
@@ -151,10 +164,22 @@ def supplier_request_summary(row):
             'availability_alert': getattr(row, 'availability_alert', None)}
 
 
+def stock_units(row):
+    """Supplier-only, after the handshake: the units the deal still holds, those the supplier's count already discounted (settled) and
+    those a cancellation after dispatch gave back, so its cards say what its stock did (mall.stock_reservations)."""
+    from .models import StockEntry
+    from .request_models import StockReservation
+    states = dict(StockReservation.objects.filter(order=row, status__in=['open', 'settled']).values('status').order_by()
+                  .annotate(units=Sum('quantity')).values_list('status', 'units'))
+    released = StockEntry.objects.filter(reservation__order=row, kind='release', reference=f'{row.reference} · cancelado tras el envío').aggregate(
+        units=Sum('quantity'))['units'] or 0
+    return {'held': states.get('open', 0), 'settled': states.get('settled', 0), 'released_after_dispatch': released}
+
+
 def request_detail(row):
     from .deal_views import deal_data
     held = own_reservations(row)
-    return {**request_summary(row), **deal_data(row), 'notes': row.notes,
+    return {**request_summary(row), **deal_data(row), 'notes': row.notes, 'stock_units': stock_units(row) if row.handshaked_at else None,
             'lines': [{'id': str(line.pk), 'supplier_item_id': str(line.supplier_item_id),
                        'supplier_invent_id': line.supplier_invent_id, 'part_id': str(line.part_id),
                        'sku': line.sku, 'name': line.name, 'codigo': line.codigo, 'brand': line.brand,
@@ -242,8 +267,9 @@ class ClientPartRequestState(APIView):
         client = account_for(request.user, account_id, 'client')
         part = get_object_or_404(Part, pk=part_id, active=True, merged_into__isnull=True)
         family = Part.objects.filter(Q(pk=part.pk) | Q(merged_into=part)).values('pk')
-        # A closed deal counts the units of the quotation the client accepted, which can differ from those requested (or be 0), less
-        # the shortfalls the client accepted; a cancelled deal counts nothing.
+        # A confirmed deal counts the units of the quotation the client accepted, which can differ from those requested (or be 0), less
+        # the shortfalls the client accepted: under handshaked until the supplier's Entregado (Procesando and En camino included), then
+        # under delivered (waiting for the client's Recibido or received); a cancelled deal counts nothing.
         from .request_models import DealShortfallLine
         agreed = DealQuotationLine.objects.filter(order_line=OuterRef('pk'), quotation__client_confirmed_at__isnull=False).order_by('-quotation__revision').values('quantity')[:1]
         short = DealShortfallLine.objects.filter(quotation_line__order_line=OuterRef('pk'), shortfall__status='accepted').values(
@@ -256,8 +282,8 @@ class ClientPartRequestState(APIView):
             'reviewed_quantity': Coalesce(Sum('quantity', filter=Q(request__status='reviewed')), 0),
             'quoted_quantity': Coalesce(Sum('quantity', filter=Q(request__status='quoted')), 0),
             'adjustment_quantity': Coalesce(Sum('quantity', filter=Q(request__status='adjustment')), 0),
-            'handshaked_quantity': Coalesce(Sum('agreed_quantity', filter=Q(request__status='handshaked')), 0),
-            'delivered_quantity': Coalesce(Sum('agreed_quantity', filter=Q(request__status='delivered')), 0),
+            'handshaked_quantity': Coalesce(Sum('agreed_quantity', filter=Q(request__status__in=ACTIVE_AGREEMENT)), 0),
+            'delivered_quantity': Coalesce(Sum('agreed_quantity', filter=Q(request__status__in=('delivered', 'received'))), 0),
         }
         totals = lines.aggregate(**quantities)
         items = lines.values('supplier_item_id', 'request__supplier_id', 'codigo', 'brand').annotate(**quantities).order_by(

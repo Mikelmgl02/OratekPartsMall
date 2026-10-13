@@ -92,8 +92,9 @@ export type SupplierImportReservation = {
   row: number; supplier_invent_id: string; codigo: string; description: string; current_quantity: number; uploaded_quantity: number;
   // reserved: the units these orders hold; reserved_quantity: everything the item holds before the import.
   reserved: number; reserved_quantity: number; applied?: boolean;
-  // delivered_at: the supplier marked the order delivered, so its count most likely discounts it already ("Ya lo descuenta" is suggested).
-  orders: { id: string; reference: string; client_name: string; quantity: number; confirmed_at: string; delivered_at?: string | null; decision?: SupplierImportDecision | '' }[];
+  // in_transit_at / delivered_at: the supplier marked the order En camino or Entregado, so its count most likely discounts it already
+  // ("Ya lo descuenta" is suggested).
+  orders: { id: string; reference: string; client_name: string; quantity: number; confirmed_at: string; in_transit_at?: string | null; delivered_at?: string | null; decision?: SupplierImportDecision | '' }[];
 };
 export type SupplierInventoryImportRow = {
   references?: { brand: string; code: string }[];

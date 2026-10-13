@@ -58,6 +58,16 @@ class QuotationLedgerTests(APITestCase):
         self.assertEqual(self.ledger('', management=True).status_code, 403)   # a supplier member is not a superuser
         self.client.force_authenticate(self.buyer)
         self.assertEqual(self.ledger().status_code, 404)                       # not a member of the supplier
+        # Each movement names its order's state as both parties see it: Recibido once the client confirms.
+        quotation = str(order.quotations.get().pk)
+        self.client.force_authenticate(self.seller_a)
+        for step in ('process', 'deliver'):
+            self.assertEqual(self.action(order, step, account=self.supplier_a, quotation_id=quotation).status_code, 200)
+        self.client.force_authenticate(self.buyer)
+        self.assertEqual(self.action(order, 'receive', account=self.client_account, quotation_id=quotation).status_code, 200)
+        self.client.force_authenticate(self.seller_a)
+        reserve = next(row for row in self.ledger('?kind=reserve').json()['results'] if row['item']['supplier_invent_id'] == 'A-001')
+        self.assertEqual((reserve['order']['status'], reserve['order']['status_label']), ('received', 'Recibido'))
         self.client.force_authenticate(User.objects.create_superuser('ledger-root', 'ledger-root@example.invalid', 'Example938!'))
         self.assertEqual(self.ledger('', management=True).json()['count'], len(rows))
 

@@ -143,13 +143,20 @@ class QuoteDraftTests(APITestCase):
     def test_writes_are_rejected_before_the_review_and_after_the_agreement(self):
         order = self.order()
         self.client.force_authenticate(self.seller_a)
-        for status in ['pending', 'handshaked']:
+        # Each step after the agreement (the supplier's progress, then the client's Recibido) keeps the draft closed.
+        steps = {'processing': 'process', 'in_transit': 'ship', 'delivered': 'deliver', 'received': 'receive'}
+        for status in ['pending', 'handshaked', *steps]:
             with self.subTest(status):
                 if status == 'handshaked':
                     self.review(order)
                     quote = self.quote(order).data['quotation']
                     self.client.force_authenticate(self.buyer)
                     self.assertEqual(self.action(order, 'accept', quotation_id=quote['id']).status_code, 200)
+                    self.client.force_authenticate(self.seller_a)
+                elif status in steps:
+                    self.client.force_authenticate(self.buyer if status == 'received' else self.seller_a)
+                    account = self.client_account if status == 'received' else self.supplier_a
+                    self.assertEqual(self.action(order, steps[status], account=account, quotation_id=quote['id']).data['status'], status)
                     self.client.force_authenticate(self.seller_a)
                 self.assertEqual(self.client.get(self.draft_url(order)).data, {'editable': False, 'draft': None})
                 for response in [self.save(order, 0, lines=[{'order_line_id': str(order.lines.first().pk), 'unit_price': '1.00'}]), self.discard(order)]:

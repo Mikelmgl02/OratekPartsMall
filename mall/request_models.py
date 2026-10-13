@@ -3,9 +3,17 @@ import uuid
 
 from django.conf import settings
 from django.db import models
-from django.db.models import Q
+from django.db.models import F, Q
 
 from .media_storage import chat_attachment_path, chat_storage
+
+# An order's statuses by stage (mall.deal_lifecycle). They live here, not in deal_lifecycle, so the model's constraints and the request
+# views can use them without an import cycle.
+PRE_HANDSHAKE = ('pending', 'reviewed', 'quoted', 'adjustment')
+GOODS_HELD = ('handshaked', 'processing')  # still with the supplier: a shortfall or a party's cancellation is possible
+ACTIVE_AGREEMENT = ('handshaked', 'processing', 'in_transit')  # confirmed, before the supplier's Entregado
+OPEN_AGREEMENT = ('handshaked', 'processing', 'in_transit', 'delivered')  # confirmed and not closed: delivered waits for the client
+CLOSED_STATUSES = ('received', 'cancelled')
 
 
 class ClientRequestSubmission(models.Model):
@@ -54,9 +62,12 @@ class SupplierRequest(models.Model):
     client_name = models.CharField(max_length=200)
     supplier_name = models.CharField(max_length=200)
     reference = models.CharField(max_length=32, unique=True)
+    # In lifecycle order. After the handshake the supplier marks Procesando, En camino (skipped on a counter pickup) and Entregado; only
+    # the client's Recibido closes the order.
     STATUS_CHOICES = [('pending', 'Enviada · por revisar'), ('reviewed', 'En revisión'),
                       ('quoted', 'Cotizada · por confirmar'), ('adjustment', 'Ajuste solicitado'),
-                      ('handshaked', 'Acuerdo confirmado'), ('delivered', 'Entregado'), ('cancelled', 'Cancelado')]
+                      ('handshaked', 'Acuerdo confirmado'), ('processing', 'Procesando'), ('in_transit', 'En camino'),
+                      ('delivered', 'Entregado · por recibir'), ('received', 'Recibido'), ('cancelled', 'Cancelado')]
     # Who cancelled a confirmed deal and why (mall.deal_lifecycle). Only supplier cancellations count against its reliability.
     CANCEL_SIDES = [('client', 'Cliente'), ('supplier', 'Proveedor'), ('admin', 'MotionPartes')]
     CANCEL_REASONS = [('no_stock', 'Sin existencias'), ('price_error', 'Error de precio'), ('cannot_deliver', 'No puede entregar'),
@@ -72,8 +83,15 @@ class SupplierRequest(models.Model):
     reviewed_at = models.DateTimeField(null=True, blank=True)
     reviewed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True,
                                     related_name='reviewed_supplier_requests')
-    delivered_at = models.DateTimeField(null=True, blank=True)
+    processing_at = models.DateTimeField(null=True, blank=True)
+    processing_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name='+')
+    in_transit_at = models.DateTimeField(null=True, blank=True)
+    in_transit_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name='+')
+    delivered_at = models.DateTimeField(null=True, blank=True)  # the supplier's Entregado (kept once the client confirms)
     delivered_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name='+')
+    # The client's Recibido. Deliveries from before it closed as received with the supplier's date and nobody (received_by NULL).
+    received_at = models.DateTimeField(null=True, blank=True)
+    received_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name='+')
     cancelled_at = models.DateTimeField(null=True, blank=True)
     cancelled_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name='+')
     cancelled_side = models.CharField(max_length=10, choices=CANCEL_SIDES, blank=True, default='')
@@ -83,19 +101,43 @@ class SupplierRequest(models.Model):
     class Meta:
         ordering = ['-created_at', 'id']
         constraints = [models.UniqueConstraint(fields=['submission', 'supplier'], name='unique_submission_supplier_request'),
-                       models.CheckConstraint(condition=Q(status__in=['pending', 'reviewed', 'quoted', 'adjustment', 'handshaked', 'delivered', 'cancelled']),
+                       models.CheckConstraint(condition=Q(status__in=['pending', 'reviewed', 'quoted', 'adjustment', 'handshaked', 'processing',
+                                                                      'in_transit', 'delivered', 'received', 'cancelled']),
                                               name='valid_supplier_request_status'),
-                       # A delivery and a cancellation each leave their date, and a cancellation its side and reason, on exactly that status.
-                       models.CheckConstraint(condition=Q(status='delivered', delivered_at__isnull=False) | (~Q(status='delivered') & Q(delivered_at__isnull=True)),
+                       # Each step leaves its date from its status on. A received order may lack processing_at (deliveries from before
+                       # Procesando existed), and a cancellation keeps the dates it reached; only MotionPartes (admin) cancels after
+                       # dispatch, so only its cancellation may keep the dispatch dates (En camino, Entregado).
+                       models.CheckConstraint(condition=Q(status__in=['processing', 'in_transit', 'delivered'], processing_at__isnull=False)
+                                              | Q(status__in=['received', 'cancelled'])
+                                              | Q(status__in=[*PRE_HANDSHAKE, 'handshaked'], processing_at__isnull=True),
+                                              name='supplier_request_processing_fields'),
+                       models.CheckConstraint(condition=Q(status='in_transit', in_transit_at__isnull=False) | Q(status__in=['delivered', 'received'])
+                                              | Q(status='cancelled', cancelled_side='admin') | Q(status='cancelled', in_transit_at__isnull=True)
+                                              | Q(status__in=[*PRE_HANDSHAKE, 'handshaked', 'processing'], in_transit_at__isnull=True),
+                                              name='supplier_request_transit_fields'),
+                       models.CheckConstraint(condition=Q(status__in=['delivered', 'received'], delivered_at__isnull=False)
+                                              | Q(status='cancelled', cancelled_side='admin') | Q(status='cancelled', delivered_at__isnull=True)
+                                              | Q(status__in=[*PRE_HANDSHAKE, 'handshaked', 'processing', 'in_transit'], delivered_at__isnull=True),
                                               name='supplier_request_delivery_fields'),
+                       # The client confirms only what the supplier marked delivered, and not before it did.
+                       models.CheckConstraint(condition=Q(status='received', received_at__isnull=False, delivered_at__isnull=False,
+                                                          received_at__gte=F('delivered_at'))
+                                              | (~Q(status='received') & Q(received_at__isnull=True)),
+                                              name='supplier_request_received_fields'),
+                       # A cancellation leaves its date, side and reason on exactly that status.
                        models.CheckConstraint(condition=Q(status='cancelled', cancelled_at__isnull=False, cancelled_side__in=['client', 'supplier', 'admin'])
                                               & ~Q(cancel_reason='') | (~Q(status='cancelled') & Q(cancelled_at__isnull=True, cancelled_side='', cancel_reason='')),
                                               name='supplier_request_cancel_fields')]
+        # The inbox poll's Recibido reminder (every 15 s): a client's orders waiting for its confirmation.
+        indexes = [models.Index(fields=['client', '-delivered_at'], condition=Q(status='delivered'), name='sreq_awaiting_receipt')]
 
     def save(self, *args, **kwargs):
         if self.thread_id is None:  # every order belongs to its pair's conversation
             self.thread = DealThread.between(self.client_id, self.supplier_id)
         super().save(*args, **kwargs)
+
+
+STATUS_ORDER = [value for value, _ in SupplierRequest.STATUS_CHOICES]
 
 
 class SupplierRequestLine(models.Model):
@@ -166,8 +208,9 @@ class StockReservation(models.Model):
     """Units a quotation line holds on a supplier item (mall.stock_reservations): they leave the item's available stock when the supplier
     sends the quotation, so its other quotations see what is left. Until the client confirms, the hold lasts until `expires_at` (the
     supplier's quote_hold_days) or the next version, which replaces it; once confirmed it has no expiry and stays held until the supplier's
-    own count includes the sale, a stock upload the supplier marks as already discounting it. A reported shortfall takes the missing units out
-    of `quantity` (the units still held); a rejection or cancellation releases what is left."""
+    own count includes the sale, a stock upload the supplier marks as already discounting it. Items kept by the apiag-cloud pull settle at the
+    supplier's Entregado instead, never at the client's Recibido, which moves no stock. A reported shortfall takes the missing units out of
+    `quantity` (the units still held); a rejection or cancellation releases what is left."""
     STATUSES = [('open', 'Reservada'), ('settled', 'Descontada por el proveedor'), ('released', 'Liberada')]
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     item = models.ForeignKey('mall.SupplierItem', on_delete=models.PROTECT, related_name='reservations')
@@ -191,9 +234,9 @@ class StockReservation(models.Model):
 
 
 class DealShortfall(models.Model):
-    """Units the supplier could not find after the handshake (mall.deal_lifecycle). They leave the supplier's count and the deal's
-    reservation at once, so they never come back as available; the agreement itself changes only when the client accepts. Declined means
-    the client cancelled the deal instead."""
+    """Units the supplier could not find after the handshake (mall.deal_lifecycle), reported only while it still has the goods (Acuerdo
+    confirmado or Procesando). They leave the supplier's count and the deal's reservation at once, so they never come back as available;
+    the agreement itself changes only when the client accepts. Declined means the client cancelled the deal instead."""
     STATUSES = [('pending', 'Esperando al cliente'), ('accepted', 'Aceptado por el cliente'), ('declined', 'El cliente canceló el acuerdo')]
     REASONS = [('no_stock', 'Sin existencias'), ('damaged', 'Dañado'), ('other', 'Otro motivo')]
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

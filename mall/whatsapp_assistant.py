@@ -58,7 +58,7 @@ con el contexto y decide UNA acción:
   «el 1 a 8» o «solo quería 8 del primero». Con un solo artículo en la cesta, opcion puede ser 0.
 - cuenta: quiere comprar para otra de sus cuentas.
 - pedidos: quiere ver sus pedidos, solicitudes u órdenes enviadas, su estado o sus cotizaciones («muéstrame mis pedidos», «¿cómo va mi
-  orden?»).
+  orden?»). Confirmar que recibió una orden se hace en MotionPartes, no aquí: si lo pide, también es pedidos.
 - orden: quiere que su mensaje le llegue al proveedor de una orden ya enviada (por ejemplo «dile que lo necesito el lunes», «¿me lo pueden
   entregar mañana?»). Las preguntas al asistente sobre sus pedidos son pedidos, no orden.
 - responder: un saludo, una pregunta sobre cómo funciona o algo que no es ninguna de las anteriores. En respuesta escribe una contestación
@@ -651,8 +651,9 @@ def pass_on(turn, thread_id):
 
 
 def show_orders(turn):
-    """The account's latest solicitudes, each order with its supplier and state, and the link to Enviadas: read-only."""
-    from .login_hints import hint
+    """The account's latest solicitudes, each order with its supplier and state, and the link to Enviadas: read-only. An order the supplier
+    marked delivered says where to confirm it was received (the site; the assistant never does it)."""
+    from .login_hints import conversation, hint
     from .models import SupplierRequest
     orders = list(SupplierRequest.objects.filter(client=turn.account).order_by('-created_at', '-id')[:8])
     turn.session.step, turn.session.options = 'idle', []
@@ -662,6 +663,8 @@ def show_orders(turn):
         turn.say(text(f'Aún no hay solicitudes enviadas{whose}. Dime qué repuesto buscas y te ayudo a armar la cesta.'))
         return
     lines = '\n'.join(f'{index}. {order.reference} · {order.supplier_name} · {order.get_status_display()} · {timezone.localtime(order.created_at):%d/%m}'
+                      + (f'\n   Confirma en MotionPartes que recibiste {order.reference}: {site()}/?conversacion={conversation(order.pk, turn.user.pk)}'
+                         if order.status == 'delivered' else '')
                       for index, order in enumerate(orders, 1))
     turn.say(text(f'Tus últimas solicitudes{whose}:\n{lines}\n\nSus artículos, cotizaciones y conversaciones están en MotionPartes:\n{link}\n'
                   'Para escribirle a un proveedor, responde a un mensaje de su orden.'))

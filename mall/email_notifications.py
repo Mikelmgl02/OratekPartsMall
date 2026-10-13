@@ -1,7 +1,8 @@
 """Email notifications of the deal inbox, sent through Resend's API. A deal event of the other party (order sent, quotation published,
-adjustment requested, deal confirmed…) is emailed right away; a message of the other party only to people who are not using the app at
-that moment (no inbox poll in the last ACTIVE minutes), at most once per conversation every COOLDOWN minutes, so a live chat does not
-flood their mailbox. Each person turns either kind off in the bell menu (InboxCursor.email_messages / email_updates).
+adjustment requested, deal confirmed, order in Procesando or En camino, the supplier's Entregado, whose button asks the client to confirm
+Recibido…) is emailed right away; a message of the other party only to people who are not using the app at that moment (no inbox poll in
+the last ACTIVE minutes), at most once per conversation every COOLDOWN minutes, so a live chat does not flood their mailbox. Each person
+turns either kind off in the bell menu (InboxCursor.email_messages / email_updates).
 
 Off until RESEND_API_KEY and EMAIL_FROM_ADDRESS are set. Like the browser pushes (mall.push), recipients are read once the deal's
 transaction commits and the HTTP calls run in a thread, best effort: a failure is logged. Emails carry no prices or stock."""
@@ -138,9 +139,11 @@ def event_saved(sender, instance, created=False, raw=False, **kwargs):
         if not people:
             return
         title = event_title(event)
+        # The supplier's Entregado waits for the client: its button says so (the link opens the conversation on the order all the same).
+        action = 'Confirmar recibido' if event.kind == 'deliver' else 'Ver la orden'
         emails = [(user.email, *compose(user, order, their_account(order, event.account_id, user), f'{title} · {order.reference}',
                                         f'{title} (orden {order.reference}).', event.description if event.kind == 'request_adjustment' else '',
-                                        'Ver la orden')) for user in people]
+                                        action)) for user in people]
         push.dispatch(lambda: deliver(emails))
     transaction.on_commit(collect)
 

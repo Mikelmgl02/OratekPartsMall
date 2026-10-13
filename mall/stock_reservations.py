@@ -161,9 +161,10 @@ def correct_shortfall(order, missing, actor):
 
 
 def settle_synced(order, actor):
-    """Entregado, for items kept by the apiag-cloud pull: once the supplier invoices the sale there, apiag-cloud's own count leaves those
-    units out, so the deal's open reservations on them settle now (they would otherwise be discounted twice, the pull never settles).
-    Items counted by Excel keep waiting for the next upload, which asks. Returns the units settled."""
+    """The supplier's Entregado, for items kept by the apiag-cloud pull: once the supplier invoices the sale there, apiag-cloud's own count
+    leaves those units out, so the deal's open reservations on them settle now (they would otherwise be discounted twice, the pull never
+    settles). The client's later Recibido moves nothing. Items counted by Excel keep waiting for the next upload, which asks. Returns the
+    units settled."""
     items, held = held_by(order)
     by_item = {}
     for reservation in held:
@@ -188,7 +189,9 @@ def release(item, reservation, actor, reference):
 
 
 def release_deal(order, actor, why='cancelado'):
-    """A rejected order or a cancelled deal frees the units it still held. Returns the units released."""
+    """A rejected order or a cancelled deal frees the units it still held; `why` names it in the ledger ('cancelado tras el envío' when
+    MotionPartes cancels an order that already left the supplier: its units show as available again until the supplier's next upload, even
+    if the goods did not come back). What settled (apiag-cloud items at Entregado) stays settled. Returns the units released."""
     items, held = held_by(order)
     return sum(release(items[reservation.item_id], reservation, actor, f'{order.reference} · {why}') for reservation in held)
 

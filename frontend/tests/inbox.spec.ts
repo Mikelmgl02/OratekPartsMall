@@ -13,7 +13,7 @@ const conversations = [
   { id: order2, reference: 'ORD-0119', status: 'reviewed', side: 'client', account: party, counterpart: { id: '5', name: 'AUTOPARTES DEL ISTMO' }, unread: 1, activity: iso(95), last_message: { id: 9, body: '¿EL DISCO ES VENTILADO?', account_id: '5', account_name: 'AUTOPARTES DEL ISTMO', actor_name: 'Ana', mine: false, created_at: iso(95) } },
   { id: '66666666-6666-6666-6666-666666666666', reference: 'ORD-0102', status: 'handshaked', side: 'client', account: party, counterpart: { id: '7', name: 'REPUESTOS PANAMÁ' }, unread: 0, activity: iso(60 * 30), last_message: { id: 3, body: 'GRACIAS, CONFIRMADO.', account_id: acct.id, account_name: acct.name, actor_name: 'Francisco', mine: true, created_at: iso(60 * 30) } },
 ].map((row, index) => ({ ...row, id: conversationOf(index + 1), order_id: row.id, orders: [{ id: row.id, reference: row.reference, status: row.status }],
-  order_count: 1, open_orders: ['delivered', 'cancelled'].includes(row.status) ? 0 : 1 }));
+  order_count: 1, open_orders: ['received', 'cancelled'].includes(row.status) ? 0 : 1 }));
 const notifications = [
   { id: 30, kind: 'quote', title: 'GRUPO RAZOR PARTS publicó la cotización v2', description: '', order_id: order, thread_id: conversationOf(1), reference: 'ORD-0123', status: 'quoted', side: 'client', account: party, counterpart: sup, created_at: iso(5), unseen: true },
   { id: 28, kind: 'review_started', title: 'AUTOPARTES DEL ISTMO empezó a revisar tu orden', description: 'EL PROVEEDOR ABRIÓ LA ORDEN. ARTÍCULOS BLOQUEADOS.', order_id: order2, thread_id: conversationOf(2), reference: 'ORD-0119', status: 'reviewed', side: 'client', account: party, counterpart: conversations[1].counterpart, created_at: iso(100), unseen: true },
@@ -38,7 +38,8 @@ const messages = [
 const docOf = (item: { id: string; reference: string; status: string }) => ({ id: item.id, reference: item.reference, status: item.status, created_at: iso(300), updated_at: iso(5),
   reviewed_at: null, line_count: 3, unit_count: 7, quotation_revision: item.status === 'quoted' ? 2 : null, quotation_total: item.status === 'quoted' ? '612.40' : null, quotation_currency: 'USD' });
 
-type Summary = { unread_messages: number; unread_conversations: number; unseen_notifications: number; latest_message: unknown; latest_notification: unknown };
+type Summary = { unread_messages: number; unread_conversations: number; unseen_notifications: number; latest_message: unknown; latest_notification: unknown;
+  awaiting_receipt: { count: number; latest_at: string | null; orders: unknown[] } };
 
 async function mockInbox(page: Page, summary: { current: Summary }) {
   const calls: { method: string; url: string; body: unknown }[] = [];
@@ -66,7 +67,8 @@ async function mockInbox(page: Page, summary: { current: Summary }) {
   });
   return calls;
 }
-const pending = (): Summary => ({ unread_messages: 3, unread_conversations: 2, unseen_notifications: 2, latest_message: null, latest_notification: null });
+const pending = (): Summary => ({ unread_messages: 3, unread_conversations: 2, unseen_notifications: 2, latest_message: null, latest_notification: null,
+  awaiting_receipt: { count: 0, latest_at: null, orders: [] } });
 
 test('signed-out visitors get no inbox; members see unread messages and new notifications in the header', async ({ page }) => {
   await page.route('**/api/session', route => route.fulfill({ json: { authenticated: false } }));
@@ -703,4 +705,34 @@ test('one conversation per supplier: its orders’ messages in one chat with the
   await log.getByRole('button', { name: 'Abrir la orden ORD-0123', exact: true }).click();  // an order's chip in the chat opens its document
   await expect(conversation.locator('.inbox-doc-title')).toContainText('ORD-0123');
   await expect(conversation.getByRole('region', { name: 'Cotización vigente v2', exact: true })).toBeVisible();
+});
+
+test('an order marked Entregado stays in progress until the client confirms it, and only the client’s dot asks for Recibido', async ({ page }) => {
+  await mockInbox(page, { current: pending() });
+  const delivered = { id: order, reference: 'ORD-0123', status: 'delivered' }, received = { id: order2, reference: 'ORD-0119', status: 'received' };
+  const sold = { id: '77777777-7777-4777-8777-777777777777', reference: 'ORD-0200', status: 'delivered' };
+  const purchase = { ...conversations[0], status: 'delivered', order_count: 2, open_orders: 1, orders: [delivered, received] };
+  const sale = { ...conversations[1], id: conversationOf(9), order_id: sold.id, reference: sold.reference, status: 'delivered', side: 'supplier', orders: [sold],
+    counterpart: { id: '9', name: 'TALLER NORTE' } };
+  await page.route(/\/api\/market\/inbox\/conversations(\?.*)?$/, route => route.fulfill({ json: { count: 2, next: null, previous: null, results: [purchase, sale] } }));
+  await page.route(/\/threads\/[^/]+\/orders$/, route => route.fulfill({ json: { results: (new URL(route.request().url()).pathname.includes(sale.id) ? [sold] : [delivered, received]).map(docOf) } }));
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Mensajes, 3 sin leer', exact: true }).click();
+  const panel = page.getByRole('dialog', { name: 'Conversaciones', exact: true });
+  const list = panel.getByRole('complementary', { name: 'Tus conversaciones', exact: true });
+  const buying = list.getByRole('button', { name: /^GRUPO RAZOR PARTS/ }), selling = list.getByRole('button', { name: /^TALLER NORTE/ });
+  await expect(buying).toContainText('Entregado · por recibir · Confirma que la recibiste');  // read aloud with the line
+  await expect(buying.locator('.inbox-row-dot')).toHaveClass(/\bdelivered\b.*\bact\b/);
+  await expect(selling).toContainText('Entregado · por recibir · Esperando recibido del cliente');
+  await expect(selling.locator('.inbox-row-dot')).toHaveClass(/\bdelivered\b/);
+  await expect(selling.locator('.inbox-row-dot')).not.toHaveClass(/\bact\b/);
+  const conversation = panel.getByRole('region', { name: 'Conversación con GRUPO RAZOR PARTS', exact: true });
+  const filters = conversation.getByRole('group', { name: 'Filtrar cotizaciones', exact: true });
+  await expect(filters.getByRole('button')).toHaveText(['Todas · 2', 'En curso · 1', 'Cerradas · 1']);  // received closes it, delivered does not
+  await filters.getByRole('button', { name: 'En curso · 1', exact: true }).click();
+  const table = conversation.getByRole('table', { name: 'Cotizaciones con GRUPO RAZOR PARTS', exact: true });
+  const row = table.getByRole('row').filter({ hasText: 'ORD-0123' });
+  await expect(row).toContainText('EntregadaConfirma que la recibiste');
+  await expect(row.locator('.inbox-row-dot')).toHaveClass(/\bact\b/);
+  await expect(table.getByRole('row').filter({ hasText: 'ORD-0119' })).toHaveCount(0);
 });

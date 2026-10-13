@@ -3,10 +3,14 @@ export type SupplierRequestSummary = {
   id: string; reference: string; client: { id: string; name: string };
   status: DealStatus; version?: number; handshaked_at?: string | null; updated_at?: string; created_at: string; reviewed_at: string | null;
   line_count: number; unit_count: number; quoted_unit_count?: number | null; quotation_total?: string | null; quotation_currency?: string | null; quotation_revision?: number | null;
-  // After the handshake: a shortfall waiting for the client, the delivery and who cancelled.
-  shortfall_pending?: boolean; delivered_at?: string | null; cancelled_at?: string | null; cancelled_side?: 'client' | 'supplier' | 'admin' | null;
+  // After the handshake: a shortfall waiting for the client, the order's progress (Procesando, En camino, Entregado, Recibido) and who cancelled.
+  shortfall_pending?: boolean; processing_at?: string | null; in_transit_at?: string | null; delivered_at?: string | null; received_at?: string | null;
+  cancelled_at?: string | null; cancelled_side?: 'client' | 'supplier' | 'admin' | null;
   agreed_unit_count?: number | null;
 };
+// The lists' status filter (mall request_views.STATUS_GROUPS): a status, or agreements (every confirmed order), active_agreements
+// (confirmed, before the supplier's Entregado) or open_agreements (confirmed and not received or cancelled); '' is every order.
+export type RequestStatusFilter = DealStatus | 'agreements' | 'active_agreements' | 'open_agreements' | '';
 // Supplier list rows only: private badges that never reach the client's payloads.
 export type SupplierRequestListItem = SupplierRequestSummary & {
   draft_state?: 'editing' | 'review_requested' | null; availability_alert?: 'blocked' | 'accepted_with_shortfall' | null;
