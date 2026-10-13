@@ -6,6 +6,15 @@ def normalized_label(value):
     return ' '.join((value or '').strip().upper().split())
 
 
+def part_type_for(category, name):
+    """The PartType of a grupo/subgrupo pair, created with its TechnicalTemplate on first use, as bind_part_types does on a save."""
+    from .models import PartType, TechnicalTemplate
+    part_type, created = PartType.objects.get_or_create(category=normalized_label(category), name=normalized_label(name))
+    if created:
+        TechnicalTemplate.objects.get_or_create(part_type=part_type)
+    return part_type
+
+
 def bind_part_types(parts, using='default'):
     """Shared by normal saves and batched Excel writes; blank classifications stay untyped."""
     from .models import Part, PartType, TechnicalTemplate, PartSpecification

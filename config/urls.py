@@ -16,6 +16,7 @@ from mall.apiag_sync_views import ApiagStatusView, ApiagSyncRequestView
 from mall.inventory_history import (LedgerEntries, LedgerRun, LedgerRunChanges, LedgerRuns, ManagementLedgerEntries, ManagementLedgerRun,
                                     ManagementLedgerRunChanges, ManagementLedgerRuns)
 from mall.sku_proposal_views import ProposalBulk, ProposalDetail, ProposalList, ProposalSummary
+from mall.sku_review_views import ReviewDetail, ReviewList
 from mall.wishlist import WishlistList, WishlistState, WishlistDetail
 from mall.catalog_import import CatalogImport, CatalogImportJobView
 from mall.catalog_classification import CatalogClassification
@@ -64,6 +65,8 @@ urlpatterns = [
     path('api/v1/management/catalog/proposals/', ProposalList.as_view()),
     path('api/v1/management/catalog/proposals/summary/', ProposalSummary.as_view()),
     path('api/v1/management/catalog/proposals/bulk/', ProposalBulk.as_view()),
+    path('api/v1/management/catalog/proposals/review/', ReviewList.as_view()),
+    path('api/v1/management/catalog/proposals/review/<uuid:pk>/', ReviewDetail.as_view()),
     path('api/v1/management/catalog/proposals/<uuid:pk>/', ProposalDetail.as_view()),
     path('api/v1/management/part-types/', PartTypeList.as_view()),
     path('api/v1/management/part-types/<uuid:pk>/', PartTypeDetail.as_view()),

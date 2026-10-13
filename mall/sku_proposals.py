@@ -302,9 +302,10 @@ def update(proposal, values, sources, fingerprint):
     """Refill the fields no person edited, and reopen a rejected or resolved proposal whose items changed. The version moves only when
     something changed, so an administrator's open review or bulk approval is not refused for nothing."""
     before = copy.deepcopy(shown(proposal))
-    edited = {field for field, source in proposal.field_sources.items() if source.get('source') not in AUTOMATIC}
+    edited = {field for field, source in proposal.field_sources.items() if source.get('source') not in AUTOMATIC
+              and not (source.get('source') == 'ai' and field == 'description' and source.get('from') != values['description'])}
     for field in SUPPLIER_FIELDS:
-        if field in edited:
+        if field in edited or (field == 'oem' and proposal.internal_code):  # an internal code never gets the make's OEM number back
             continue
         if field == 'oem':
             proposal.oem_code, proposal.oem_brand = values['oem_code'], values['oem_brand']
@@ -460,7 +461,8 @@ def citation(proposal, rows):
 
 def part_payload(proposal, rows):
     codes, seen, sku_key = [], set(), normalized_reference(proposal.sku)
-    make = vehicle_makes().get(proposal.brand, '')
+    # A supplier's internal code (merchandise, tools) is no OEM number even under a make brand: its codes stay the brand's own.
+    make = '' if proposal.internal_code else vehicle_makes().get(proposal.brand, '')
 
     def add(code, brand, ref_type, source=''):
         pair = (clean(brand), normalized_reference(code))
@@ -471,7 +473,8 @@ def part_payload(proposal, rows):
     if proposal.oem_code:
         same = normalized_reference(proposal.oem_code) == sku_key
         add(proposal.sku if same else proposal.oem_code, proposal.oem_brand, 'oem', citation(proposal, rows))  # the SKU's own spelling
-    # The codes the suppliers print, whatever the SKU became: a dealer's code is its make's OEM number, any other a company code.
+    # The codes the suppliers print, whatever the SKU became: a dealer's code is its make's OEM number, any other (or a dealer's
+    # internal code) a company code.
     for code in printed_forms([row.item for row in rows]):
         if make:
             add(code, make, 'oem', declared_by(proposal, rows))
@@ -536,12 +539,13 @@ def reject(proposal_id, user, expected_version, reason, note=''):
 def edit(proposal_id, user, expected_version, data):
     """An administrator's corrections before deciding. A field whose value changed is theirs from now on; one sent unchanged keeps
     its source, so the suppliers' data (and later the AI) can still fill it."""
-    allowed = {'sku', 'description', 'oem_code', 'oem_brand', 'part_type', 'references'}
+    allowed = {'sku', 'description', 'oem_code', 'oem_brand', 'part_type', 'references', 'internal_code'}
     if set(data) - allowed:
         raise ValidationError({'detail': f'Solo se pueden cambiar: {", ".join(sorted(allowed))}.'})
     with transaction.atomic():
         proposal = locked(proposal_id, expected_version)
-        changed = set()
+        changed, restored, cleared = set(), None, None   # restored: the OEM number unticking brought back; cleared: the one ticking took away
+        previous_oem = remembered_oem(proposal)   # before this edit's own OEM fields (the drawer clears them when it ticks «código interno»)
         if 'sku' in data:
             sku = clean(str(data['sku'] or ''))
             if not sku or len(sku) > 200:
@@ -576,10 +580,116 @@ def edit(proposal_id, user, expected_version, data):
             if references != proposal.references:
                 proposal.references = references
                 changed.add('references')
+        if 'internal_code' in data:
+            if not isinstance(data['internal_code'], bool):
+                raise ValidationError({'internal_code': 'Indica sí o no.'})
+            if data['internal_code'] and clean(str(data.get('oem_code') or '')):
+                raise ValidationError({'internal_code': 'Un código interno no lleva número OEM: quita el número o desmarca «Código interno».'})
+            if data['internal_code'] != proposal.internal_code:
+                memory = (proposal.field_sources.get('internal_code') or {}).get('oem')
+                cleared = previous_oem if data['internal_code'] else None
+                proposal.internal_code = data['internal_code']
+                changed.add('internal_code')
+                if proposal.internal_code and proposal.oem_code:  # an internal code has no OEM number
+                    proposal.oem_code = proposal.oem_brand = ''
+                    changed.add('oem')
+                elif not proposal.internal_code and not proposal.oem_code and 'oem_code' not in data:
+                    restored = restore_oem(proposal, memory)  # not an internal code after all: its OEM number comes back
         if changed:
             mark = {'source': 'admin', 'by': user.username, 'at': timezone.now().isoformat()}
             for field in changed:
                 proposal.field_sources[field] = mark
+            if restored:
+                proposal.field_sources['oem'] = restored
+            if proposal.internal_code and 'internal_code' in changed and cleared:
+                proposal.field_sources['internal_code'] = {**proposal.field_sources['internal_code'], 'oem': cleared}
             proposal.version += 1
             proposal.save()
     return proposal
+
+
+def remembered_oem(proposal):
+    """The OEM number «código interno» is about to clear, with its whole field source (who set it, a library citation), to bring back
+    as it was if it is unticked."""
+    if not proposal.oem_code:
+        return None
+    return {'code': proposal.oem_code, 'brand': proposal.oem_brand, 'field': dict(proposal.field_sources.get('oem') or {'source': 'supplier'})}
+
+
+def restore_oem(proposal, memory=None):
+    """The OEM number back on a proposal that is no longer an internal code: the one «código interno» cleared (the supplier's, the OEM
+    library's, an administrator's), or else a make brand's code as the supplier printed it (suggest's rule). Returns the field's
+    source, or None when there is nothing to bring back."""
+    if memory and memory.get('code') and memory.get('brand'):
+        proposal.oem_code, proposal.oem_brand = memory['code'][:120], memory['brand'][:120]
+        field = memory.get('field') if isinstance(memory.get('field'), dict) and memory['field'].get('source') else {'source': 'supplier'}
+        return dict(field)
+    make = vehicle_makes().get(proposal.brand, '')
+    rows = list(proposal.items.select_related('item'))
+    if not make or not rows:
+        return None
+    proposal.oem_code, proposal.oem_brand = printed_forms([row.item for row in rows])[0][:120], make
+    return {'source': 'supplier'}
+
+
+AI_FIELDS = {'part_type': ['part_type'], 'description': ['description'], 'internal_code': ['internal_code'], 'oem': ['oem_code', 'oem_brand']}
+
+
+def ai_fill(proposal, fill, *, note, run_id, model):
+    """The Revisión IA's fills on a pending proposal the caller holds locked (mall.sku_review): grupo/subgrupo (a pair of the taxonomy,
+    its PartType created on first use), a description with obvious typos fixed, and «código interno» (no OEM number: the one the make
+    brand gave it is cleared). fill maps a field to (value, confidence 0-1[, note]); part_type's value is (category, name). A field an
+    administrator set is never touched. The version moves only on a real change, and updated_at does not: the storefront reminder is
+    about proposals waiting, not about the AI's work on them. Returns {'written': [...], 'kept': [...]} (kept: an administrator's)."""
+    from .technical_data import part_type_for
+    written, kept, at = [], [], timezone.now().isoformat()
+
+    def owned(*fields):
+        return any((proposal.field_sources.get(field) or {}).get('source') == 'admin' for field in fields)
+
+    def stamp(field, confidence, why=None):
+        proposal.field_sources[field] = {'source': 'ai', 'confidence': round(float(confidence), 2), 'note': (why if why is not None else note or '')[:300],
+                                         'at': at, 'run': str(run_id), 'model': model}
+        written.append(field)
+
+    def unpack(field):
+        value, confidence, *why = fill[field]
+        return value, confidence, (why[0] if why else None)
+
+    if 'part_type' in fill:
+        (category, name), confidence, why = unpack('part_type')
+        if owned('part_type'):
+            kept.append('part_type')
+        else:
+            part_type = part_type_for(category, name)
+            if part_type.pk != proposal.part_type_id:
+                proposal.part_type = part_type
+                stamp('part_type', confidence, why)
+    if 'description' in fill:
+        value, confidence, why = unpack('description')
+        value = ' '.join(str(value or '').split()).upper()
+        if owned('description'):
+            kept.append('description')
+        elif value and value != ' '.join(proposal.description.split()).upper():
+            previous = proposal.field_sources.get('description') or {}
+            before = previous.get('from', proposal.description) if previous.get('source') == 'ai' else proposal.description
+            proposal.description = value
+            stamp('description', confidence, why)
+            proposal.field_sources['description']['from'] = before   # the supplier's text it corrected: a new one replaces the fix
+    if 'internal_code' in fill:
+        _, confidence, why = unpack('internal_code')
+        if owned('internal_code', 'oem'):
+            kept.append('internal_code')
+        elif not proposal.internal_code:
+            cleared = remembered_oem(proposal)
+            proposal.internal_code = True
+            stamp('internal_code', confidence, why)
+            if proposal.oem_code:
+                proposal.oem_code = proposal.oem_brand = ''
+                stamp('oem', confidence, why)
+            if cleared:
+                proposal.field_sources['internal_code']['oem'] = cleared
+    if written:
+        proposal.version += 1
+        proposal.save(update_fields=sorted({column for field in written for column in AI_FIELDS[field]} | {'field_sources', 'version'}))
+    return {'written': written, 'kept': kept}

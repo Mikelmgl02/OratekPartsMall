@@ -337,3 +337,4 @@ from .catalog_split_models import CatalogSplit, CatalogSeparation
 from .apiag_models import ApiagConnection
 from .apiag_sync_models import ApiagSucursal, ApiagSync, SupplierItemBranchStock
 from .sku_proposal_models import SkuProposal, SkuProposalItem
+from .sku_review_models import SkuReviewRun, SkuReviewVerdict

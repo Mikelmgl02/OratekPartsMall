@@ -12,7 +12,7 @@ function proposal(id: string, sku: string, brand: string, oem: Proposal['oem'], 
   return { id, status: 'pending', status_label: 'Por revisar', version: 1, sku, description: `PIEZA ${sku}`, brand, oem, part_type: null, references: [],
     field_sources: { sku: { source: 'supplier' }, description: { source: 'supplier' }, ...(oem ? { oem: { source: 'supplier' as const } } : {}) },
     item_count: 1, supplier_count: 1, stock: 4, part: null, decided_by: null, decided_at: null, reject_reason: '', reject_reason_label: '', reject_note: '',
-    created_at: stamp, updated_at: stamp, earlier: null,
+    created_at: stamp, updated_at: stamp, earlier: null, internal_code: false, ai_review: null,
     items: [{ id: `${id.slice(0, 8)}-item`, supplier: 's1', supplier_name: 'Motion Motors', supplier_invent_id: '10', codigo: sku, brand, description: `PIEZA ${sku}`,
       references: [], source: 'apiag', available: 4, matching_status: 'pending' }], ...overrides };
 }

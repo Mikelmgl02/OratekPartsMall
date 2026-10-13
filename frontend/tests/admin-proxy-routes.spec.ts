@@ -65,6 +65,19 @@ test('the proxy forwards Productos nuevos', async ({ page }) => {
   const bulk = await page.request.post('/api/management/catalog/proposals/bulk', { data: { action: 'approve', proposals: [] }, headers: { Origin: origin } });
   expect(bulk.status(), await bulk.text()).toBe(400);
   expect(await bulk.text()).not.toContain('La ruta solicitada no existe');
+  // Revisión IA: the overview and an unknown run are read; starting one without an id is refused by the backend, never billed.
+  const overview = await page.request.get('/api/management/catalog/proposals/review?search=');
+  expect(overview.status(), await overview.text()).toBe(200);
+  expect(Object.keys(await overview.json())).toEqual(expect.arrayContaining(['configured', 'cap_micro_usd', 'eligible_count', 'unreviewed_count', 'runs']));
+  const missing = await page.request.get('/api/management/catalog/proposals/review/00000000-0000-4000-8000-000000000000?verdict=good&mode=actionable');
+  expect(missing.status(), await missing.text()).toBe(404);
+  expect(await missing.text()).not.toContain('La ruta solicitada no existe');
+  for (const [path, data] of [['/api/management/catalog/proposals/review', {}], ['/api/management/catalog/proposals/review/00000000-0000-4000-8000-000000000000', { mode: 'nope' }]] as const) {
+    const refused = await page.request.post(path, { data, headers: { Origin: origin } });
+    expect(refused.status(), `${path}: ${await refused.text()}`).toBe(400);
+  }
+  const reject = await page.request.post('/api/management/catalog/proposals/bulk', { data: { action: 'reject', proposals: [] }, headers: { Origin: origin } });
+  expect(reject.status(), await reject.text()).toBe(400);
 });
 
 test('the proxies forward the supplier ledger routes and their filters', async ({ page }) => {

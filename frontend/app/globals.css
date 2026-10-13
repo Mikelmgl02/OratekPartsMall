@@ -2719,3 +2719,52 @@ body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-s
 .admin-snackbar button { color:#d0ddc5; display:grid; place-items:center; width:28px; height:28px; border-radius:6px; flex-shrink:0; }
 .admin-snackbar button:hover { background:#ffffff14; }
 @media (max-width:640px) { .admin-snackbar { left:12px; right:12px; bottom:12px; max-width:none; } }
+/* Revisión IA of Productos nuevos: verdict pills, the report's tiles and cards, its batch card, and the grid and drawer additions. */
+.review-ai-pill { display:inline-block; padding:4px 7px; border-radius:5px; font-size:9px; font-weight:700; letter-spacing:.02em; white-space:nowrap; background:#f1ede0; color:#998451; }
+.review-ai-pill.good { background:#ecf4e3; color:#5f8a3c; }
+.review-ai-pill.unsure { background:#fbebdf; color:#a98055; }
+.review-ai-pill.bad { background:#fff1ec; color:#a1543c; }
+.review-ai-pill.stale { background:#eef0ec; color:#7b8574; }
+.review-ai-tiles { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:10px; padding:12px 0; font-size:11px; color:var(--muted); }
+.review-ai-tiles span { padding:10px 12px; border:1px solid var(--line); border-radius:9px; background:#fff; min-width:0; }
+.review-ai-tiles strong { display:block; color:var(--ink); font-size:18px; margin-bottom:2px; }
+.review-ai-tiles .good { border-color:#cfe0bd; background:#f8fbf3; }
+.review-ai-tiles .unsure { border-color:#f0dcc8; background:#fffaf5; }
+.review-ai-tiles .bad { border-color:#f0d3c8; background:#fff8f5; }
+.review-ai-actions { margin:4px 0 12px; justify-content:flex-start; }
+.review-ai-actions .fine-print { margin-left:auto; }
+.review-ai-batch { margin:4px 0 12px; }
+.review-ai-sample { margin:0; padding-left:18px; font-size:11px; line-height:1.7; color:var(--muted); overflow-wrap:anywhere; }
+.review-ai-sample strong { color:var(--ink); }
+.review-ai-cards { display:grid; gap:12px; margin-top:14px; }
+.review-ai-card { border:1px solid var(--line); border-left:4px solid #d9dccf; border-radius:10px; background:#fff; padding:14px 16px; min-width:0; display:grid; gap:6px; }
+.review-ai-card.good { border-left-color:#8db35a; }
+.review-ai-card.unsure { border-left-color:#d9a46f; }
+.review-ai-card.bad { border-left-color:#c97a60; }
+.review-ai-card.stale, .review-ai-card.decided { opacity:.75; }
+.review-ai-card-heading { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.review-ai-card-heading strong { font-size:14px; overflow-wrap:anywhere; }
+.review-ai-card-heading small { margin-left:auto; font-size:9px; color:var(--muted); letter-spacing:.04em; }
+.review-ai-description { margin:0; font-size:12px; overflow-wrap:anywhere; }
+.review-ai-description small { color:var(--muted); }
+.review-ai-before { font-size:10px; color:var(--muted); overflow-wrap:anywhere; }
+.review-ai-reasons { margin:0; padding-left:18px; font-size:11px; line-height:1.6; color:#4f5c47; }
+.review-ai-chips { display:flex; flex-wrap:wrap; gap:6px; }
+.review-ai-chips span { padding:3px 7px; border-radius:5px; background:#f3f5ef; color:#5d6e51; font-size:9px; font-weight:600; overflow-wrap:anywhere; }
+.review-ai-chips .ai { background:#eaf2fb; color:#3f6b94; }
+.review-ai-chips .hint { background:#fffaf0; color:#9a7a43; border:1px dashed #e7d3ad; }
+.review-ai-chips .signal { background:#f6f6f2; color:#868c7e; }
+.review-ai-card-actions { display:flex; justify-content:flex-end; }
+.review-ai-verdict { display:flex; align-items:flex-start; gap:12px; flex-wrap:wrap; background:#f6f8f1; border:1px solid #dfe6d4; }
+.review-ai-verdict.bad { background:#fff8f5; border-color:#f0d3c8; }
+.review-ai-verdict.unsure { background:#fffaf5; border-color:#f0dcc8; }
+.review-ai-verdict ul { margin:6px 0 0; padding-left:18px; }
+.review-ai-verdict small { display:block; margin-top:4px; }
+.review-ai-verdict .button { margin-left:auto; text-decoration:none; }
+.new-products-ai-filter { display:flex; align-items:center; gap:8px; font-size:11px; color:var(--muted); }
+.new-products-ai-filter select { height:38px; }
+.field-source.ai { color:#3f6b94; cursor:help; }
+.new-product-internal { font-size:12px; }
+@media (max-width:760px) { .review-ai-tiles { grid-template-columns:repeat(2,minmax(0,1fr)); } .review-ai-actions .fine-print { margin-left:0; flex-basis:100%; } }
+.review-ai-chips .oem { background:#f4efe2; color:#8a6d33; }
+.review-ai-oem-note { padding:8px 10px; border-radius:8px; background:#fffaf0; color:#8a6d33; }

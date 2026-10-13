@@ -586,6 +586,35 @@ An item that gains candidate SKUs (Agrupación inteligente), gets matched, or wh
 
 On the storefront, an administrator (superuser) gets a reminder at the bottom left while proposals wait for review: «Hay N productos nuevos por revisar.» with **Revisar**, which opens that list. It reads `GET management/catalog/proposals/summary/` when the page opens and again when the tab comes back. The summary's `pending_changed_at` is when a pending proposal was last created, reopened or changed. Closing the reminder hides it for the rest of the visit in that tab, until that date moves past the one it was closed at. Approving, linking or rejecting proposals never brings it back. Editing one that stays pending counts as a change. Nobody else sees it or asks for the count.
 
+**Revisión IA** (button in Productos nuevos; `mall/sku_review.py`) reviews the pending proposals and separates the good ones (approve as they are) from the bad ones (reject, or link to the SKU the catalog already has) and the doubtful ones (a person decides). It uses only our own data: the proposal and its items, supplier items and SKUs sharing the code's 7-digit QC/T number, other proposals with the same code base, the grupo/subgrupo vocabulary (`taxonomy()`), and recent decisions as examples. It never uses the web.
+- **Rules first, no tokens:**
+  - a code the catalog already has is bad, with the SKU to link;
+  - a supplier's «NO USO» is bad;
+  - placeholder data (SIN DESCRIPCION, MAL CREADO) with a blank brand and no same-number sibling is bad.
+- **The AI (Gemini, feature `sku_review`) runs in batches of 40.**
+- **Guards the AI cannot overrule:**
+  - a good verdict needs 80 % confidence, a real description and a brand;
+  - only the rules say «already in the catalog»; a possible duplicate the AI sees stays dudosa;
+  - a description it drafts from a sibling is shown, never filled.
+- **Fills (`sku_proposals.ai_fill`), stamped `{source: ai, confidence, note}` and never over an administrator's field:**
+  - grupo/subgrupo at 60 % or more, from the vocabulary; the PartType is created on first use;
+  - a description with obvious typos fixed, at 70 % or more: only a word our own catalog and supplier descriptions do not use is corrected, into one they do, at most two letters away. A real word (a side, a position, a plural, a material) and any number or code is never changed;
+  - «código interno» for a make brand's merchandise, tools and internal codes.
+- **`SkuProposal.internal_code`:** approving such a proposal files its codes as the brand's company alternos, not as the make's OEM numbers (no is_OEM, nothing in the Biblioteca OEM). The administrator can also tick it in the drawer, and a supplier refresh never gives it the OEM number back.
+- **Verdicts and staleness:** a verdict holds for the proposal's version after the fill; any later change makes it stale («cambió»). The fills do not move `updated_at`, so the storefront reminder does not reappear.
+- **Running it:** the browser drives the run batch by batch (pause, resume, a lost answer recovers the saved batch). Every run is shared by all superusers.
+- **Budget:** each AI call is checked first against `SKU_REVIEW_MONTHLY_USD` (default 10; 0 turns it off) and `AI_MONTHLY_BUDGET_USD`, and recorded as «Revisión IA de productos nuevos».
+- **The report:**
+  - tabs Buenas / Dudosas / Malas / Cambiaron / Ya decididas, with the reasons, what was filled and what is only suggested, and a CSV download;
+  - batch actions: **Aprobar N buenas**, **Rechazar N malas** (with the AI's reason and its reasons as the note) and **Vincular N al catálogo**, in chunks of 50 through `catalog/proposals/bulk/` (`action` approve, reject or link), after «Revisé el informe»;
+  - dudosas are decided one by one.
+- **The grid:** a Revisión IA column and filter (`?ai=good|unsure|bad|stale|none`).
+- **Routes:**
+  - `GET/POST catalog/proposals/review/` (overview; start a run with a browser id, idempotent);
+  - `GET catalog/proposals/review/<id>/?verdict=&offset=` (report);
+  - `?mode=actionable&verdict=good|bad|link` (what a batch action sends, with each proposal's reviewed version);
+  - `POST … {mode: review, batch_index}` (one batch).
+
 ## Technical templates and vehicle applications
 
 Each **subgrupo is a `PartType`**, with a permanent UUID and a parent grupo (`category`). Subgrupo names are unique within their grupo. `Part.part_type` selects the template; the existing `category` and `subcategory` strings remain compatible projections for catalog filters, Excel imports and AI classification. Existing complete classifications are backfilled. Imports create/reuse types in batches, and incomplete classifications remain untyped. Renaming a type through the management API updates its items without changing IDs, values or template ownership.

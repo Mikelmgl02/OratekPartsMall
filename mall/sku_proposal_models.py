@@ -26,6 +26,9 @@ class SkuProposal(models.Model):
     oem_code = models.CharField(max_length=120, blank=True, default='', verbose_name='número OEM')
     oem_brand = models.CharField(max_length=120, blank=True, default='', verbose_name='fabricante del número OEM')
     part_type = models.ForeignKey('mall.PartType', on_delete=models.PROTECT, null=True, blank=True, related_name='+', verbose_name='grupo y subgrupo')
+    internal_code = models.BooleanField(default=False, verbose_name='código interno del proveedor',
+                                        help_text='No es un número OEM (mercancía, herramientas, códigos propios): al aprobarlo, sus códigos '
+                                                  'quedan como alternos de la marca y no como OEM.')
     references = models.JSONField(default=list, blank=True, verbose_name='alternos', help_text='[{code, brand, ref_type}]')
     field_sources = models.JSONField(default=dict, blank=True, verbose_name='origen de cada campo')
     fingerprint = models.CharField(max_length=64, verbose_name='huella de los artículos')

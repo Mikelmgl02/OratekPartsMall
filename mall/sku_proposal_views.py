@@ -1,7 +1,7 @@
 """Productos nuevos (superusers): the proposed new catalog SKUs of mall.sku_proposals, with their supplier items."""
 import uuid
 
-from django.db.models import Count, F, IntegerField, Max, OuterRef, Q, Subquery, Sum, Value
+from django.db.models import Count, F, IntegerField, Max, OuterRef, Prefetch, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce, Greatest
 from django.shortcuts import get_object_or_404
 from drf_spectacular.types import OpenApiTypes
@@ -27,6 +27,20 @@ def item_json(row):
             'source': item.source, 'available': item.available_quantity, 'matching_status': item.matching_status}
 
 
+def ai_review(proposal):
+    """The proposal's latest Revisión IA verdict: whether it still holds (stale once the proposal changed), why, and the run."""
+    latest = getattr(proposal, 'latest_verdicts', None)
+    if latest is None:
+        latest = list(proposal.review_verdicts.exclude(applied__has_key='skipped').order_by('-created_at', '-pk')[:1])
+    if not latest:
+        return None
+    verdict = latest[0]
+    return {'verdict': verdict.verdict, 'confidence': verdict.confidence, 'reasons': verdict.reasons, 'reason': verdict.reason,
+            'suggestions': verdict.suggestions, 'stale': verdict.proposal_version != proposal.version, 'run': str(verdict.run_id),
+            'link_part': {'id': str(verdict.link_part_id), 'sku': verdict.link_part.sku} if verdict.link_part_id else None,
+            'created_at': verdict.created_at}
+
+
 def proposal_json(proposal, *, all_items=False):
     rows = list(proposal.items.all())
     part_type = proposal.part_type
@@ -35,7 +49,8 @@ def proposal_json(proposal, *, all_items=False):
         'sku': proposal.sku, 'description': proposal.description, 'brand': proposal.brand,
         'oem': {'code': proposal.oem_code, 'brand': proposal.oem_brand} if proposal.oem_code else None,
         'part_type': {'id': str(part_type.pk), 'category': part_type.category, 'name': part_type.name} if part_type else None,
-        'references': proposal.references, 'field_sources': proposal.field_sources,
+        'references': proposal.references, 'field_sources': proposal.field_sources, 'internal_code': proposal.internal_code,
+        'ai_review': ai_review(proposal) if proposal.status == 'pending' else None,
         'item_count': len(rows), 'supplier_count': len({row.item.supplier_id for row in rows}),
         'stock': sum(row.item.available_quantity for row in rows),
         'items': [item_json(row) for row in (rows if all_items else rows[:PREVIEW_ITEMS])],
@@ -54,12 +69,19 @@ def proposal_json(proposal, *, all_items=False):
 def proposals():
     decided = (SkuProposal.objects.filter(key=OuterRef('key'), status__in=['approved', 'linked'], part__active=True, part__merged_into__isnull=True)
                .exclude(pk=OuterRef('pk')).order_by('-decided_at'))
+    from .sku_review import given
+    from .sku_review_models import SkuReviewVerdict
+    latest = given().filter(proposal=OuterRef('pk')).order_by('-created_at', '-pk')
+    own_latest = given().filter(proposal=OuterRef('proposal_id')).order_by('-created_at', '-pk').values('pk')[:1]
+    newest = Prefetch('review_verdicts', to_attr='latest_verdicts',
+                      queryset=SkuReviewVerdict.objects.filter(pk=Subquery(own_latest)).select_related('link_part'))
     return (SkuProposal.objects.select_related('part_type', 'part', 'decided_by')
-            .prefetch_related('items__item__supplier')
+            .prefetch_related('items__item__supplier', newest)
             .annotate(item_total=Count('items', distinct=True),
                       stock_total=Coalesce(Sum(Greatest(F('items__item__reported_quantity') - F('items__item__reserved_quantity'), Value(0))),
                                            Value(0), output_field=IntegerField()),
-                      earlier_part=Subquery(decided.values('part_id')[:1]), earlier_sku=Subquery(decided.values('part__sku')[:1])))
+                      earlier_part=Subquery(decided.values('part_id')[:1]), earlier_sku=Subquery(decided.values('part__sku')[:1]),
+                      ai_verdict=Subquery(latest.values('verdict')[:1]), ai_version=Subquery(latest.values('proposal_version')[:1])))
 
 
 class ProposalSerializer(serializers.BaseSerializer):
@@ -91,6 +113,12 @@ class ProposalList(generics.ListAPIView):
             rows = rows.filter(brand__iexact=params['brand'].strip())
         if params.get('has_oem') in ('true', 'false'):
             rows = rows.exclude(oem_code='') if params['has_oem'] == 'true' else rows.filter(oem_code='')
+        ai = params.get('ai')
+        if ai:
+            if ai not in ('good', 'bad', 'unsure', 'stale', 'none'):
+                raise ValidationError({'ai': 'Usa good, bad, unsure, stale o none.'})
+            rows = (rows.filter(ai_verdict__isnull=True) if ai == 'none' else rows.filter(ai_verdict__isnull=False).exclude(ai_version=F('version'))
+                    if ai == 'stale' else rows.filter(ai_verdict=ai, ai_version=F('version')))
         if params.get('supplier'):
             try:
                 uuid.UUID(params['supplier'])
@@ -102,7 +130,8 @@ class ProposalList(generics.ListAPIView):
     @extend_schema(operation_id='v1_management_catalog_proposals_list', responses=OpenApiTypes.OBJECT, parameters=[
         OpenApiParameter('status', OpenApiTypes.STR, description='pending (por omisión), approved, linked, rejected, resolved o all.'),
         OpenApiParameter('search', OpenApiTypes.STR), OpenApiParameter('brand', OpenApiTypes.STR), OpenApiParameter('has_oem', OpenApiTypes.STR),
-        OpenApiParameter('supplier', OpenApiTypes.UUID), OpenApiParameter('ordering', OpenApiTypes.STR), OpenApiParameter('page', OpenApiTypes.INT)])
+        OpenApiParameter('supplier', OpenApiTypes.UUID), OpenApiParameter('ordering', OpenApiTypes.STR), OpenApiParameter('page', OpenApiTypes.INT),
+        OpenApiParameter('ai', OpenApiTypes.STR, description='Revisión IA vigente: good, bad, unsure; stale (cambió desde la revisión) o none (sin revisar).')])
     def get(self, request, *args, **kwargs):
         return super().get(request, *args, **kwargs)
 
@@ -171,29 +200,54 @@ class ProposalDetail(APIView):
         return Response(self.current(pk))
 
 
+def message_of(error):
+    detail = error.detail
+    if isinstance(detail, str):
+        return detail
+    values = detail.values() if isinstance(detail, dict) else [detail]
+    return ' '.join(str(value) for values in values for value in (values if isinstance(values, list) else [values]))
+
+
 class ProposalBulk(APIView):
-    """Aprobar seleccionadas: each proposal on its own (one refused does not stop the others), at the version the grid showed."""
+    """Aprobar, rechazar o vincular en lote: each proposal on its own (one refused does not stop the others), at the version the grid or
+    the Revisión IA report showed. reject rows carry reason (and note); link rows carry the catalog SKU (part)."""
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_catalog_proposals_bulk', request=OpenApiTypes.OBJECT, responses=OpenApiTypes.OBJECT)
     def post(self, request):
+        action = request.data.get('action') if isinstance(request.data, dict) else None
         rows = request.data.get('proposals') if isinstance(request.data, dict) else None
-        if request.data.get('action') != 'approve' or not isinstance(rows, list) or not rows or len(rows) > MAX_BULK:
-            raise ValidationError({'detail': f'Envía action approve y de 1 a {MAX_BULK} propuestas con su versión.'})
+        if action not in ('approve', 'reject', 'link') or not isinstance(rows, list) or not rows or len(rows) > MAX_BULK:
+            raise ValidationError({'detail': f'Envía action approve, reject o link y de 1 a {MAX_BULK} propuestas con su versión.'})
         results = []
         for row in rows:
-            if not isinstance(row, dict) or not isinstance(row.get('version'), int) or not row.get('id'):
-                results.append({'id': str(row.get('id') if isinstance(row, dict) else ''), 'ok': False, 'message': 'Falta el id o la versión.'})
+            if not isinstance(row, dict):
+                results.append({'id': '', 'ok': False, 'message': 'Falta el id o la versión.'})
+                continue
+            ident = str(row.get('id') or '')
+            try:
+                uuid.UUID(ident)
+            except ValueError:
+                ident = ''
+            if not ident or not isinstance(row.get('version'), int) or isinstance(row.get('version'), bool):
+                results.append({'id': ident, 'ok': False, 'message': 'Falta el id o la versión.'})
                 continue
             try:
-                proposal = sku_proposals.approve(row['id'], request.user, row['version'])
+                if action == 'approve':
+                    proposal = sku_proposals.approve(ident, request.user, row['version'])
+                elif action == 'reject':
+                    proposal = sku_proposals.reject(ident, request.user, row['version'], str(row.get('reason') or ''), str(row.get('note') or ''))
+                else:
+                    try:
+                        part = str(uuid.UUID(str(row.get('part') or '')))
+                    except ValueError:
+                        raise ValidationError({'part': 'Elige el SKU del catálogo.'})
+                    proposal = sku_proposals.link_existing(ident, request.user, row['version'], part)
             except sku_proposals.DuplicateProposal as refused:
-                results.append({'id': str(row['id']), 'ok': False, 'message': refused.detail})
+                results.append({'id': ident, 'ok': False, 'message': refused.detail})
             except (APIException, ValidationError) as error:
-                detail = error.detail
-                message = detail if isinstance(detail, str) else ' '.join(str(value) for values in (detail.values() if isinstance(detail, dict) else [detail])
-                                                                       for value in (values if isinstance(values, list) else [values]))
-                results.append({'id': str(row['id']), 'ok': False, 'message': str(message)})
+                results.append({'id': ident, 'ok': False, 'message': str(message_of(error))})
             else:
-                results.append({'id': str(proposal.pk), 'ok': True, 'sku': proposal.part.sku})
-        return Response({'approved': sum(result['ok'] for result in results), 'results': results})
+                results.append({'id': str(proposal.pk), 'ok': True, **({'sku': proposal.part.sku} if proposal.part_id else {})})
+        done = sum(result['ok'] for result in results)
+        return Response({'action': action, 'done': done, 'approved': done if action == 'approve' else 0, 'results': results})
