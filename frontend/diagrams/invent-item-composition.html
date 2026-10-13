@@ -15,7 +15,7 @@
 <body>
 <h1>Invent Item Composition</h1>
 <p>Master → references → supplier items: every supplier item hangs from the Reference of its own code and brand, and one reference can have many items. The SKU table merges into OEM lines; catalog cross-references stay as evidence; library numbers and new supplier products are unpublished lines.</p>
-<svg viewBox="0 0 1760 2764" role="img" aria-label="Proposed invent item composition diagram">
+<svg viewBox="0 0 1760 2942" role="img" aria-label="Proposed invent item composition diagram">
   <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
 <rect x="470" y="40" width="360" height="424" rx="10" fill="#fff8e1" stroke="#b8860b" stroke-width="2" stroke-dasharray="6 4"/>
 <text x="650.0" y="70" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">OEM line = Master part</text>
@@ -84,18 +84,20 @@
 <text x="60" y="644" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">alias: TOY · TOYOTA · KAIYI MOTORS…</text>
 <text x="60" y="668" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">tipo: vehículo | repuesto</text>
 <text x="60" y="692" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">familia  → Brand  (KAIYI → CHERY)</text>
-<rect x="40" y="760" width="360" height="232" rx="10" fill="#fdecef" stroke="#c93a5a" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="40" y="760" width="360" height="280" rx="10" fill="#fdecef" stroke="#c93a5a" stroke-width="2" stroke-dasharray="6 4"/>
 <text x="220.0" y="790" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Catalog Equivalence</text>
 <text x="388" y="778" text-anchor="end" font-size="11" font-weight="600" fill="#c93a5a">KEPT</text>
 <text x="220.0" y="805" text-anchor="middle" font-size="11" fill="#c93a5a">was OEMCrossReference</text>
 <line x1="40" y1="812" x2="400" y2="812" stroke="#c93a5a"/>
 <text x="60" y="836" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">reference  → FK  (an OEM number)</text>
 <text x="60" y="860" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">brand  → Brand</text>
-<text x="60" y="884" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">codigo · codigo_compacto</text>
+<text x="60" y="884" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">codigo (as printed) · compacto</text>
 <text x="60" y="908" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">citations  (catalog, page)</text>
-<text x="60" y="932" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">retirada</text>
-<text x="60" y="956" font-size="13" fill="#555">unique (reference, brand, code): many-to-many</text>
-<text x="60" y="980" font-size="13" fill="#555">evidence for matching, never identity</text>
+<text x="60" y="932" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">retirada  (per number)</text>
+<text x="60" y="956" font-size="13" fill="#555">moves with its number on merge or split</text>
+<text x="60" y="980" font-size="13" fill="#555">unique (reference, brand, code): many-to-many</text>
+<text x="60" y="1004" font-size="13" fill="#555">evidence for matching, never identity</text>
+<text x="60" y="1028" font-size="13" fill="#555">counts only from PDF-checked catalogs</text>
 <rect x="40" y="1080" width="360" height="152" rx="10" fill="#fff4e5" stroke="#d9822b" stroke-width="2"/>
 <text x="220.0" y="1110" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Supplier (Account)</text>
 <text x="388" y="1098" text-anchor="end" font-size="11" font-weight="600" fill="#d9822b">KEPT</text>
@@ -116,24 +118,25 @@
 <text x="60" y="1462" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">candidates  (lines)</text>
 <text x="60" y="1486" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">reason</text>
 <text x="60" y="1510" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">status: review | dismissed | applied</text>
-<rect x="900" y="40" width="360" height="176" rx="10" fill="#e8f6fb" stroke="#1f8fb3" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="900" y="40" width="360" height="200" rx="10" fill="#e8f6fb" stroke="#1f8fb3" stroke-width="2" stroke-dasharray="6 4"/>
 <text x="1080.0" y="70" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Search Document</text>
 <text x="1248" y="58" text-anchor="end" font-size="11" font-weight="600" fill="#1f8fb3">NEW</text>
 <line x1="900" y1="84" x2="1260" y2="84" stroke="#1f8fb3"/>
 <text x="920" y="108" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">oem_line  → 1:1</text>
-<text x="920" y="132" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">codes: references (variants share them)</text>
-<text x="920" y="156" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">text: descriptions · grupo · subgrupo</text>
-<text x="920" y="180" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">filters: brand · calidad · stock</text>
-<text x="920" y="204" font-size="13" fill="#555">only publicada lines that are not merged</text>
-<rect x="900" y="250" width="360" height="160" rx="10" fill="#eef1f4" stroke="#5b6b7b" stroke-width="2" stroke-dasharray="6 4"/>
-<text x="1080.0" y="280" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Line Image</text>
-<text x="1248" y="268" text-anchor="end" font-size="11" font-weight="600" fill="#5b6b7b">RENAMED</text>
-<text x="1080.0" y="295" text-anchor="middle" font-size="11" fill="#5b6b7b">was PartImage</text>
-<line x1="900" y1="302" x2="1260" y2="302" stroke="#5b6b7b"/>
-<text x="920" y="326" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">id</text>
-<text x="920" y="350" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">oem_line  → FK</text>
-<text x="920" y="374" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">file  (CDN)</text>
-<text x="920" y="398" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">position</text>
+<text x="920" y="132" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">codes: references (rank 0) +</text>
+<text x="920" y="156" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">  OEM-number equivalences (rank 1)</text>
+<text x="920" y="180" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">text: descriptions · grupo · subgrupo</text>
+<text x="920" y="204" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">filters: brand · calidad · stock</text>
+<text x="920" y="228" font-size="13" fill="#555">only publicada lines that are not merged</text>
+<rect x="900" y="270" width="360" height="160" rx="10" fill="#eef1f4" stroke="#5b6b7b" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="1080.0" y="300" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Line Image</text>
+<text x="1248" y="288" text-anchor="end" font-size="11" font-weight="600" fill="#5b6b7b">RENAMED</text>
+<text x="1080.0" y="315" text-anchor="middle" font-size="11" fill="#5b6b7b">was PartImage</text>
+<line x1="900" y1="322" x2="1260" y2="322" stroke="#5b6b7b"/>
+<text x="920" y="346" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">id</text>
+<text x="920" y="370" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">oem_line  → FK</text>
+<text x="920" y="394" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">file  (CDN)</text>
+<text x="920" y="418" font-size="13" font-family="ui-monospace, monospace" fill="#1a1a1a">position</text>
 <rect x="900" y="620" width="360" height="184" rx="10" fill="#fdecef" stroke="#c93a5a" stroke-width="2" stroke-dasharray="6 4"/>
 <text x="1080.0" y="650" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Reference Source</text>
 <text x="1248" y="638" text-anchor="end" font-size="11" font-weight="600" fill="#c93a5a">KEPT</text>
@@ -245,7 +248,7 @@
 <text x="1262" y="1000" font-size="12" fill="#888" text-anchor="end">oem_line</text>
 <polyline points="1510,1294 1510,1340" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
 <text x="1520" y="1324" font-size="13" fill="#555" text-anchor="start">vehicle</text>
-<text x="40" y="1520" font-size="12" fill="#888" text-anchor="start" font-weight="400">Self-references: Brand.familia → Brand · OEM line.merged_into → OEM line · Reference.reemplazado_por → Reference</text>
+<text x="40" y="1556" font-size="12" fill="#888" text-anchor="start" font-weight="400">Self-references: Brand.familia → Brand · OEM line.merged_into → OEM line · Reference.reemplazado_por → Reference</text>
 <rect x="40" y="1580" width="360" height="232" rx="10" fill="#ffffff" stroke="#8a94a0" stroke-width="2" stroke-dasharray="6 4"/>
 <text x="220.0" y="1610" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Hangs from the Variant</text>
 <text x="388" y="1598" text-anchor="end" font-size="11" font-weight="600" fill="#8a94a0">KEPT</text>
@@ -272,7 +275,7 @@
 <text x="490" y="1800" font-size="13" fill="#555">Revisión IA verdicts (by version)</text>
 <text x="490" y="1824" font-size="13" fill="#555">OEM finder cases: which Reference is_main</text>
 <text x="490" y="1848" font-size="13" fill="#555">AI catalog suggestions · import issues</text>
-<rect x="900" y="1580" width="360" height="320" rx="10" fill="#fff1f1" stroke="#b23b3b" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="900" y="1580" width="360" height="344" rx="10" fill="#fff1f1" stroke="#b23b3b" stroke-width="2" stroke-dasharray="6 4"/>
 <text x="1080.0" y="1610" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Goes away or renamed</text>
 <text x="1248" y="1598" text-anchor="end" font-size="11" font-weight="600" fill="#b23b3b">MAP</text>
 <line x1="900" y1="1624" x2="1260" y2="1624" stroke="#b23b3b"/>
@@ -283,11 +286,12 @@
 <text x="920" y="1744" font-size="13" fill="#555">SupplierCodeMapping  →  Source / interno Ref</text>
 <text x="920" y="1768" font-size="13" fill="#555">SupplierItem.references  →  review cases</text>
 <text x="920" y="1792" font-size="13" fill="#555">OEMCrossReference  →  Catalog Equivalence</text>
-<text x="920" y="1816" font-size="13" fill="#555">OEMReferenceSource  →  Reference Source</text>
-<text x="920" y="1840" font-size="13" fill="#555">PartType + text  →  Subgrupo / Grupo</text>
-<text x="920" y="1864" font-size="13" fill="#555">Alternate (legacy)  →  removed</text>
-<text x="920" y="1888" font-size="13" fill="#555">prefer_oem renames  →  is_main</text>
-<rect x="1330" y="1580" width="360" height="416" rx="10" fill="#fbfbf6" stroke="#c9a400" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="920" y="1816" font-size="13" fill="#555">OEMCrossReferenceRetired  →  its retirada</text>
+<text x="920" y="1840" font-size="13" fill="#555">OEMReferenceSource  →  Reference Source</text>
+<text x="920" y="1864" font-size="13" fill="#555">PartType + text  →  Subgrupo / Grupo</text>
+<text x="920" y="1888" font-size="13" fill="#555">Alternate (legacy)  →  removed</text>
+<text x="920" y="1912" font-size="13" fill="#555">prefer_oem renames  →  is_main</text>
+<rect x="1330" y="1580" width="360" height="488" rx="10" fill="#fbfbf6" stroke="#c9a400" stroke-width="2" stroke-dasharray="6 4"/>
 <text x="1510.0" y="1610" text-anchor="middle" font-size="18" font-weight="600" fill="#1a1a1a">Migration</text>
 <text x="1678" y="1598" text-anchor="end" font-size="11" font-weight="600" fill="#c9a400">PLAN</text>
 <line x1="1330" y1="1624" x2="1690" y2="1624" stroke="#c9a400"/>
@@ -295,63 +299,71 @@
 <text x="1350" y="1672" font-size="13" fill="#555">main brand: library maker if the SKU is</text>
 <text x="1350" y="1696" font-size="13" fill="#555">  one library number, else its TAG brand</text>
 <text x="1350" y="1720" font-size="13" fill="#555">other OEM numbers: non-main, to Revisión OEM</text>
-<text x="1350" y="1744" font-size="13" fill="#555">an OEM number on 2+ SKUs: only the SKU</text>
-<text x="1350" y="1768" font-size="13" fill="#555">  whose code it is; the rest: duplicate case</text>
-<text x="1350" y="1792" font-size="13" fill="#555">each supplier item gets the Reference of</text>
-<text x="1350" y="1816" font-size="13" fill="#555">  its code + brand (shared by equal ones)</text>
-<text x="1350" y="1840" font-size="13" fill="#555">fix spec_conflict first (LH/RH, SET n PCS)</text>
-<text x="1350" y="1864" font-size="13" fill="#555">compact-duplicate SKUs merge only with the</text>
-<text x="1350" y="1888" font-size="13" fill="#555">  same noun and no conflict (70 of 78)</text>
-<text x="1350" y="1912" font-size="13" fill="#555">TAG-suffix SKUs merge only when reviewed</text>
-<text x="1350" y="1936" font-size="13" fill="#555">declared references → review cases</text>
-<text x="1350" y="1960" font-size="13" fill="#555">approved / resolved proposals = history</text>
-<text x="1350" y="1984" font-size="13" fill="#555">library part types → Subgrupo; seed familias</text>
-<rect x="40" y="2036" width="1650" height="678" rx="10" fill="#fbfbf6" stroke="#c9a400" stroke-width="1.5"/>
-<text x="60" y="2066" font-size="16" fill="#6b5600" text-anchor="start" font-weight="600">How it works</text>
-<rect x="60" y="2084" width="254" height="40" rx="20" fill="#eef4ff" stroke="#2b5fd9" stroke-width="1.5"/>
-<text x="187.0" y="2109" text-anchor="middle" font-size="12" fill="#1a1a1a">Variant comes in</text>
-<polyline points="316,2104 336,2104" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
-<rect x="338" y="2084" width="254" height="40" rx="20" fill="#fdecef" stroke="#c93a5a" stroke-width="1.5"/>
-<text x="465.0" y="2109" text-anchor="middle" font-size="12" fill="#1a1a1a">its Reference (code + brand)</text>
-<polyline points="594,2104 614,2104" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
-<rect x="616" y="2084" width="254" height="40" rx="20" fill="#fff8e1" stroke="#b8860b" stroke-width="1.5"/>
-<text x="743.0" y="2109" text-anchor="middle" font-size="12" fill="#1a1a1a">exists: hang from it (its line)</text>
-<polyline points="872,2104 892,2104" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
-<rect x="894" y="2084" width="254" height="40" rx="20" fill="#f1f5fb" stroke="#4a6fa5" stroke-width="1.5"/>
-<text x="1021.0" y="2109" text-anchor="middle" font-size="12" fill="#1a1a1a">new: find its line (TAG, equiv.)</text>
-<polyline points="1150,2104 1170,2104" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
-<rect x="1172" y="2084" width="254" height="40" rx="20" fill="#fff8e1" stroke="#b8860b" stroke-width="1.5"/>
-<text x="1299.0" y="2109" text-anchor="middle" font-size="12" fill="#1a1a1a">none: new line (preparación)</text>
-<polyline points="1428,2104 1448,2104" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
-<rect x="1450" y="2084" width="254" height="40" rx="20" fill="#eaf7f0" stroke="#2f9e6b" stroke-width="1.5"/>
-<text x="1577.0" y="2109" text-anchor="middle" font-size="12" fill="#1a1a1a">Revisión IA → publish</text>
-<text x="60" y="2158" font-size="13" fill="#333" text-anchor="start" font-weight="400">1. A variant always hangs from a Reference: its own code + brand. The key is the compact code when the code looks like an OEM number (8+ characters, 3+ digits), otherwise the</text>
-<text x="78" y="2176" font-size="13" fill="#333" text-anchor="start" font-weight="400">code as printed, so EC-01 and EC01 stay apart. If that Reference exists, the variant joins it (one reference, many variants) and so reaches its line. That is all of exact</text>
-<text x="78" y="2194" font-size="13" fill="#333" text-anchor="start" font-weight="400">matching.</text>
-<text x="60" y="2220" font-size="13" fill="#333" text-anchor="start" font-weight="400">2. Brand: the exact brand first, then the same code with no brand, then brands of the same familia (KAIYI ↔ CHERY, LEXUS ↔ TOYOTA). A variant without a brand joins the one</text>
-<text x="78" y="2238" font-size="13" fill="#333" text-anchor="start" font-weight="400">live Reference of its code, whatever its brand; if the code reaches two lines it opens a review case, never a second brandless Reference. Aliases (TOY = TOYOTA) resolve on</text>
-<text x="78" y="2256" font-size="13" fill="#333" text-anchor="start" font-weight="400">the way in.</text>
-<text x="60" y="2282" font-size="13" fill="#333" text-anchor="start" font-weight="400">3. A new Reference looks for its line. Trailing suffix-table TAGs are stripped one by one while each is auto-eligible (brand, NP, G, JP, RAZ…; never lifecycle):</text>
-<text x="78" y="2300" font-size="13" fill="#333" text-anchor="start" font-weight="400">21421-2B000-K-NP keeps its full code as its Reference and hangs on line 21421-2B000. A catalog equivalence reaching one line works too. Any other suffix, a contained code or</text>
-<text x="78" y="2318" font-size="13" fill="#333" text-anchor="start" font-weight="400">several lines: a review case.</text>
-<text x="60" y="2344" font-size="13" fill="#333" text-anchor="start" font-weight="400">4. No line found → a new OEM line in preparación with this Reference as main. Description matches stay as possible duplicates for Revisión IA; Vincular moves the reference,</text>
-<text x="78" y="2362" font-size="13" fill="#333" text-anchor="start" font-weight="400">with its variants, onto the chosen line.</text>
-<text x="60" y="2388" font-size="13" fill="#333" text-anchor="start" font-weight="400">5. A variant whose description contradicts its reference&#x27;s line (side, size, application) opens a review case and stays out of the line&#x27;s stock until it is resolved. Separar</text>
-<text x="78" y="2406" font-size="13" fill="#333" text-anchor="start" font-weight="400">referencia gives it its own Reference (interno, scoped to its supplier) on another line or a new one. Merchandise, tools and a supplier&#x27;s own codes are interno references too.</text>
-<text x="60" y="2432" font-size="13" fill="#333" text-anchor="start" font-weight="400">5b. A supplier that changes a variant&#x27;s codigo does not move it: the variant stays on its current Reference and the new code waits as a code change in review. Approved: it</text>
-<text x="78" y="2450" font-size="13" fill="#333" text-anchor="start" font-weight="400">becomes a Reference (on that line, or the one the code belongs to) and the variant moves to it. Other codes a supplier declares for an item go the same way: proposed</text>
-<text x="78" y="2468" font-size="13" fill="#333" text-anchor="start" font-weight="400">References in review, never stored on the variant.</text>
-<text x="60" y="2494" font-size="13" fill="#333" text-anchor="start" font-weight="400">6. Productos nuevos = lines in preparación with variants. Publishing turns storefront on. A rejected line (rechazada, with motivo) keeps its references, so the same code</text>
-<text x="78" y="2512" font-size="13" fill="#333" text-anchor="start" font-weight="400">joins it again instead of being proposed again.</text>
-<text x="60" y="2538" font-size="13" fill="#333" text-anchor="start" font-weight="400">7. OEM library numbers with no product = lines in referencia, one per number and Brand familia. They stay out of the queue; when a variant joins one of their references, the</text>
-<text x="78" y="2556" font-size="13" fill="#333" text-anchor="start" font-weight="400">line moves to preparación.</text>
-<text x="60" y="2582" font-size="13" fill="#333" text-anchor="start" font-weight="400">8. A code belongs to one live line. A number that already reaches two lines is never merged automatically: it stays on the line whose own code it is, and a possible-duplicate</text>
-<text x="78" y="2600" font-size="13" fill="#333" text-anchor="start" font-weight="400">case lists the others.</text>
-<text x="60" y="2626" font-size="13" fill="#333" text-anchor="start" font-weight="400">9. Merging moves references (each with its variants), images and favorites; the merged line keeps its codigo, becomes unificada (merged_into) and leaves search. Lines kept</text>
-<text x="78" y="2644" font-size="13" fill="#333" text-anchor="start" font-weight="400">apart with Separar SKU never merge on their own.</text>
-<text x="60" y="2670" font-size="13" fill="#333" text-anchor="start" font-weight="400">10. The variant wins on its own data (calidad, condición, garantía, empaque, price, stock); the OEM line holds what is shared (description, subgrupo, tech data, applications,</text>
-<text x="78" y="2688" font-size="13" fill="#333" text-anchor="start" font-weight="400">images).</text>
-  <text x="40" y="2750" font-size="12" fill="#888">Dashed box = new or reshaped; solid = kept as is. Arrows point from the FK holder to its parent. Chain: OEM line ← Reference ← Variant. A variant reaches its line only through its reference.</text>
+<text x="1350" y="1744" font-size="13" fill="#555">SKUs sharing an OEM number (102 groups):</text>
+<text x="1350" y="1768" font-size="13" fill="#555">  reviewed first; no migration while a</text>
+<text x="1350" y="1792" font-size="13" fill="#555">  number reaches 2+ live SKUs</text>
+<text x="1350" y="1816" font-size="13" fill="#555">each supplier item gets the Reference of</text>
+<text x="1350" y="1840" font-size="13" fill="#555">  its code + brand (shared by equal ones)</text>
+<text x="1350" y="1864" font-size="13" fill="#555">fix spec_conflict first (LH/RH, SET n PCS)</text>
+<text x="1350" y="1888" font-size="13" fill="#555">compact-duplicate SKUs merge only with the</text>
+<text x="1350" y="1912" font-size="13" fill="#555">  same noun and no conflict (70 of 78)</text>
+<text x="1350" y="1936" font-size="13" fill="#555">TAG-suffix SKUs merge only when reviewed</text>
+<text x="1350" y="1960" font-size="13" fill="#555">declared references → review cases</text>
+<text x="1350" y="1984" font-size="13" fill="#555">re-extract the GMB competitor table first</text>
+<text x="1350" y="2008" font-size="13" fill="#555">catalog-copied alternos → Reference inferido</text>
+<text x="1350" y="2032" font-size="13" fill="#555">approved / resolved proposals = history</text>
+<text x="1350" y="2056" font-size="13" fill="#555">library part types → Subgrupo; seed familias</text>
+<rect x="40" y="2108" width="1650" height="784" rx="10" fill="#fbfbf6" stroke="#c9a400" stroke-width="1.5"/>
+<text x="60" y="2138" font-size="16" fill="#6b5600" text-anchor="start" font-weight="600">How it works</text>
+<rect x="60" y="2156" width="254" height="40" rx="20" fill="#eef4ff" stroke="#2b5fd9" stroke-width="1.5"/>
+<text x="187.0" y="2181" text-anchor="middle" font-size="12" fill="#1a1a1a">Variant comes in</text>
+<polyline points="316,2176 336,2176" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="338" y="2156" width="254" height="40" rx="20" fill="#fdecef" stroke="#c93a5a" stroke-width="1.5"/>
+<text x="465.0" y="2181" text-anchor="middle" font-size="12" fill="#1a1a1a">its Reference (code + brand)</text>
+<polyline points="594,2176 614,2176" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="616" y="2156" width="254" height="40" rx="20" fill="#fff8e1" stroke="#b8860b" stroke-width="1.5"/>
+<text x="743.0" y="2181" text-anchor="middle" font-size="12" fill="#1a1a1a">exists: hang from it (its line)</text>
+<polyline points="872,2176 892,2176" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="894" y="2156" width="254" height="40" rx="20" fill="#f1f5fb" stroke="#4a6fa5" stroke-width="1.5"/>
+<text x="1021.0" y="2181" text-anchor="middle" font-size="12" fill="#1a1a1a">new: find its line (TAG, equiv.)</text>
+<polyline points="1150,2176 1170,2176" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="1172" y="2156" width="254" height="40" rx="20" fill="#fff8e1" stroke="#b8860b" stroke-width="1.5"/>
+<text x="1299.0" y="2181" text-anchor="middle" font-size="12" fill="#1a1a1a">none: new line (preparación)</text>
+<polyline points="1428,2176 1448,2176" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="1450" y="2156" width="254" height="40" rx="20" fill="#eaf7f0" stroke="#2f9e6b" stroke-width="1.5"/>
+<text x="1577.0" y="2181" text-anchor="middle" font-size="12" fill="#1a1a1a">Revisión IA → publish</text>
+<text x="60" y="2230" font-size="13" fill="#333" text-anchor="start" font-weight="400">1. A variant always hangs from a Reference: its own code + brand. The key is the compact code when the code looks like an OEM number (8+ characters, 3+ digits), otherwise the</text>
+<text x="78" y="2248" font-size="13" fill="#333" text-anchor="start" font-weight="400">code as printed, so EC-01 and EC01 stay apart. If that Reference exists, the variant joins it (one reference, many variants) and so reaches its line. That is all of exact</text>
+<text x="78" y="2266" font-size="13" fill="#333" text-anchor="start" font-weight="400">matching.</text>
+<text x="60" y="2292" font-size="13" fill="#333" text-anchor="start" font-weight="400">2. Brand: the exact brand first, then the same code with no brand, then brands of the same familia (KAIYI ↔ CHERY, LEXUS ↔ TOYOTA). A variant without a brand joins the one</text>
+<text x="78" y="2310" font-size="13" fill="#333" text-anchor="start" font-weight="400">live Reference of its code, whatever its brand; if the code reaches two lines, or another brand&#x27;s catalog files it on a different line, it opens a review case, never a second</text>
+<text x="78" y="2328" font-size="13" fill="#333" text-anchor="start" font-weight="400">brandless Reference. Aliases (TOY = TOYOTA) resolve on the way in.</text>
+<text x="60" y="2354" font-size="13" fill="#333" text-anchor="start" font-weight="400">3. A new Reference looks for its line. Trailing suffix-table TAGs are stripped one by one while each is auto-eligible (brand, NP, G, JP, RAZ…; never lifecycle):</text>
+<text x="78" y="2372" font-size="13" fill="#333" text-anchor="start" font-weight="400">21421-2B000-K-NP keeps its full code as its Reference and hangs on line 21421-2B000. Any other suffix, a contained code or several lines: a review case.</text>
+<text x="60" y="2398" font-size="13" fill="#333" text-anchor="start" font-weight="400">3b. Catalog equivalences are evidence, never identity, and are never copied into References in bulk (55% of aftermarket codes reach 2+ lines). A variant is placed through one</text>
+<text x="78" y="2416" font-size="13" fill="#333" text-anchor="start" font-weight="400">only when its brand is sent and is the catalog&#x27;s brand, its code is printed as the catalog prints it or looks like an OEM number, every number carrying the code is on one</text>
+<text x="78" y="2434" font-size="13" fill="#333" text-anchor="start" font-weight="400">line, no other brand files the code on another line, there is no spec conflict and the catalog passed its PDF check. It then gets an aftermarket Reference (inferido) on that</text>
+<text x="78" y="2452" font-size="13" fill="#333" text-anchor="start" font-weight="400">line; anything else is a review case.</text>
+<text x="60" y="2478" font-size="13" fill="#333" text-anchor="start" font-weight="400">3c. An inferido Reference goes en disputa when the catalog row behind it is retired or its code comes to reach a second line; while en disputa, new variants of its code open</text>
+<text x="78" y="2496" font-size="13" fill="#333" text-anchor="start" font-weight="400">a review case.</text>
+<text x="60" y="2522" font-size="13" fill="#333" text-anchor="start" font-weight="400">4. No line found → a new OEM line in preparación with this Reference as main. Description matches stay as possible duplicates for Revisión IA; Vincular moves the reference,</text>
+<text x="78" y="2540" font-size="13" fill="#333" text-anchor="start" font-weight="400">with its variants, onto the chosen line.</text>
+<text x="60" y="2566" font-size="13" fill="#333" text-anchor="start" font-weight="400">5. A variant whose description contradicts its reference&#x27;s line (side, size, application) opens a review case and stays out of the line&#x27;s stock until it is resolved. Separar</text>
+<text x="78" y="2584" font-size="13" fill="#333" text-anchor="start" font-weight="400">referencia gives it its own Reference (interno, scoped to its supplier) on another line or a new one. Merchandise, tools and a supplier&#x27;s own codes are interno references too.</text>
+<text x="60" y="2610" font-size="13" fill="#333" text-anchor="start" font-weight="400">5b. A supplier that changes a variant&#x27;s codigo does not move it: the variant stays on its current Reference and the new code waits as a code change in review. Approved: it</text>
+<text x="78" y="2628" font-size="13" fill="#333" text-anchor="start" font-weight="400">becomes a Reference (on that line, or the one the code belongs to) and the variant moves to it. Other codes a supplier declares for an item go the same way: proposed</text>
+<text x="78" y="2646" font-size="13" fill="#333" text-anchor="start" font-weight="400">References in review, never stored on the variant.</text>
+<text x="60" y="2672" font-size="13" fill="#333" text-anchor="start" font-weight="400">6. Productos nuevos = lines in preparación with variants. Publishing turns storefront on. A rejected line (rechazada, with motivo) keeps its references, so the same code</text>
+<text x="78" y="2690" font-size="13" fill="#333" text-anchor="start" font-weight="400">joins it again instead of being proposed again.</text>
+<text x="60" y="2716" font-size="13" fill="#333" text-anchor="start" font-weight="400">7. OEM library numbers with no product = lines in referencia, one per number and Brand familia. They stay out of the queue; when a variant joins one of their references, the</text>
+<text x="78" y="2734" font-size="13" fill="#333" text-anchor="start" font-weight="400">line moves to preparación.</text>
+<text x="60" y="2760" font-size="13" fill="#333" text-anchor="start" font-weight="400">8. A code belongs to one live line. A number that already reaches two lines is never merged automatically: it stays on the line whose own code it is, and a possible-duplicate</text>
+<text x="78" y="2778" font-size="13" fill="#333" text-anchor="start" font-weight="400">case lists the others.</text>
+<text x="60" y="2804" font-size="13" fill="#333" text-anchor="start" font-weight="400">9. Merging moves references (each with its variants), images and favorites; the merged line keeps its codigo, becomes unificada (merged_into) and leaves search. Lines kept</text>
+<text x="78" y="2822" font-size="13" fill="#333" text-anchor="start" font-weight="400">apart with Separar SKU never merge on their own.</text>
+<text x="60" y="2848" font-size="13" fill="#333" text-anchor="start" font-weight="400">10. The variant wins on its own data (calidad, condición, garantía, empaque, price, stock); the OEM line holds what is shared (description, subgrupo, tech data, applications,</text>
+<text x="78" y="2866" font-size="13" fill="#333" text-anchor="start" font-weight="400">images).</text>
+  <text x="40" y="2928" font-size="12" fill="#888">Dashed box = new or reshaped; solid = kept as is. Arrows point from the FK holder to its parent. Chain: OEM line ← Reference ← Variant. A variant reaches its line only through its reference.</text>
 </svg>
 </body>
 </html>
