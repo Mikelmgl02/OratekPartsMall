@@ -12,6 +12,7 @@ from .models import Account, InventoryUpdate, Membership, Part, PartCode, Role, 
 from .services import ingest_inventory
 from .supplier_import import stock_plan
 from .supplier_import_models import SupplierInventoryImportJob
+from .test_factories import move_variant
 
 
 class SupplierExcelImportTests(APITestCase):
@@ -215,10 +216,10 @@ class SupplierExcelImportTests(APITestCase):
             lambda: SupplierItem.objects.filter(pk=self.item.pk).update(reported_quantity=4),
             lambda: SupplierItem.objects.filter(pk=self.item.pk).update(reserved_quantity=1),
             lambda: SupplierItem.objects.filter(pk=self.item.pk).update(source='apiag'),
-            lambda: SupplierItem.objects.filter(pk=self.item.pk).update(part=None, matching_status='pending'),
+            lambda: move_variant(self.item, None),
         ]
         for mutate in mutations:
-            SupplierItem.objects.filter(pk=self.item.pk).update(reported_quantity=5, reserved_quantity=0, source='upload', part=self.part, matching_status='matched')
+            move_variant(self.item, self.part, reported_quantity=5, reserved_quantity=0, source='upload', matching_status='matched')
             result = self.preview([['STABLE-5', '58411-1R000-G', 'KSM', 'TAMBOR', 10]])
             mutate()
             count = StockEntry.objects.count()

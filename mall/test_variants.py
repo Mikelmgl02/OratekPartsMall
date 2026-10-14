@@ -3,7 +3,7 @@ code changes a load applies on its own or leaves waiting (rule 5b, OD5, OD7), Vi
 from, and Reference moves, merges and Separar carrying their items along."""
 from unittest.mock import patch
 
-from django.db import connection
+from django.db import IntegrityError, connection, transaction
 from django.test import TestCase
 from rest_framework.test import APIClient
 
@@ -12,7 +12,8 @@ from .brand_models import Brand
 from .catalog_suffix_models import CatalogCodeSuffix
 from .models import Part, Reference, ReferenceSource, SupplierItem
 from .services import ingest_inventory
-from .test_factories import Fresh, make_line, make_reference, make_supplier, make_user, make_variant
+from .test_factories import (Fresh, drop_variant_constraints, make_line, make_reference, make_supplier, make_user, make_variant,
+                             run_migration_function)
 from .test_main_references import broken_invariants
 
 VARIANT_INVARIANTS = {
@@ -460,3 +461,77 @@ class VariantDataTests(VariantTestCase):
         self.assertEqual([error['column'] for error in second['errors']], ['UNIDADES_POR_EMPAQUE'])
         plan, _ = stock_plan(self.supplier, [first])
         self.assertEqual((plan['preview'][0]['calidad'], plan['preview'][0]['unidades_por_empaque']), ('alternativo', 6))
+
+
+class TightenTests(VariantTestCase):
+    """0078: the composite foreign key keeps each item on its Reference's line, the CHECKs, and the repair before them."""
+    MIGRATION = '0078_variant_reference_checks'
+
+    def test_the_composite_key_moves_items_with_their_reference(self):
+        item = self.load('T-1', '04111-22152-AS')
+        Reference.all_objects.filter(pk=self.alias.pk).update(part=self.branded)  # a plain UPDATE: the database moves the item along
+        item.refresh_from_db()
+        self.assertEqual((item.part_id, item.reference_id), (self.branded.pk, self.alias.pk))
+
+    def refused(self, write):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            write()
+            with connection.cursor() as cursor:
+                cursor.execute('SET CONSTRAINTS ALL IMMEDIATE')  # the composite key is checked at commit
+        with connection.cursor() as cursor:
+            cursor.execute('SET CONSTRAINTS ALL DEFERRED')
+
+    def test_the_constraints_refuse_what_s3_forbids(self):
+        item = self.load('T-2', '04111-22152')
+        loose = self.load('T-3', 'NADA-1')
+        rows = SupplierItem.objects.filter(pk=item.pk)
+        self.refused(lambda: rows.update(reference=None))                      # a line without its Reference
+        self.refused(lambda: rows.update(part=None))                           # a Reference without its line
+        self.refused(lambda: rows.update(part=self.branded))                   # a line its Reference is not on (I4)
+        self.refused(lambda: SupplierItem.objects.filter(pk=loose.pk).update(matching_status='matched'))  # unattached but counted
+        self.assertEqual(SupplierItem.objects.get(pk=item.pk).part_id, self.plain.pk)
+
+    def test_0078_applies_when_its_repair_reattaches_items(self):
+        """0078 run by Django's migration executor, operations and all: the repair's writes leave deferred foreign key checks pending,
+        and the composite key and the CHECKs (ALTER TABLE) still apply in the same transaction."""
+        from django.db.migrations.executor import MigrationExecutor
+        moved = self.load('T-8', '04111-22152-AS')
+        bare = self.load('T-9', '04111-22152')
+        with connection.cursor() as cursor:
+            cursor.execute('SET CONSTRAINTS ALL IMMEDIATE')  # this test's own writes checked now: DDL refuses pending trigger events
+        MigrationExecutor(connection).migrate([('mall', '0077_variant_reference')])
+        with connection.cursor() as cursor:
+            cursor.execute('SET CONSTRAINTS ALL DEFERRED')  # as a migrate session has them: Django's foreign keys checked at commit
+        SupplierItem.objects.filter(pk=moved.pk).update(part=self.branded)  # the code before S3 moved it; its Reference stayed
+        SupplierItem.objects.filter(pk=bare.pk).update(reference=None)      # written before S3
+        MigrationExecutor(connection).migrate([('mall', self.MIGRATION)])
+        moved.refresh_from_db(); bare.refresh_from_db()
+        self.assertEqual((moved.reference.part_id, moved.reference.tipo, moved.reference.detail['s3']['por']), (self.branded.pk, 'interno', '0078'))
+        self.assertEqual(bare.reference_id, references.main_of(self.plain).pk)
+        with connection.cursor() as cursor:
+            present = connection.introspection.get_constraints(cursor, 'mall_supplieritem')
+        self.assertTrue({'variant_line_follows_reference', 'variant_reference_iff_line', 'variant_unattached_is_pending'} <= set(present))
+
+    def test_the_repair_attaches_what_moved_and_stops_for_a_unificada_line(self):
+        drop_variant_constraints()
+        moved = self.load('T-4', '04111-22152-AS')
+        bare = self.load('T-5', '04111-22152')
+        lost = self.load('T-6', 'NADA-2')
+        SupplierItem.objects.filter(pk=moved.pk).update(part=self.branded)      # a queryset moved it, its Reference stayed
+        SupplierItem.objects.filter(pk=bare.pk).update(reference=None)          # written before S3
+        SupplierItem.objects.filter(pk=lost.pk).update(matching_status='review')  # no line, yet in review
+        run_migration_function(self.MIGRATION, 'repair_variants')
+        moved.refresh_from_db(); bare.refresh_from_db(); lost.refresh_from_db()
+        self.assertEqual((moved.part_id, moved.reference.part_id, moved.reference.tipo, moved.reference.supplier_id),
+                         (self.branded.pk, self.branded.pk, 'interno', self.supplier.pk))
+        self.assertEqual(bare.reference_id, references.main_of(self.plain).pk)
+        self.assertEqual(lost.matching_status, 'pending')
+        run_migration_function(self.MIGRATION, 'repair_variants')  # idempotent
+        merged = make_line('MERGED-9')
+        stranded = self.load('T-7', 'NADA-3')
+        SupplierItem.objects.filter(pk=stranded.pk).update(part=merged)
+        Part.objects.filter(pk=merged.pk).update(merged_into=self.plain, estado='unificada', active=False)
+        with self.assertRaisesMessage(RuntimeError, 'líneas unificadas'):
+            run_migration_function(self.MIGRATION, 'repair_variants')
+        SupplierItem.objects.filter(pk=stranded.pk).update(part=None, matching_status='pending')
+        Reference.all_objects.filter(part=merged).update(estado='retirada', is_main=False)

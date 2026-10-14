@@ -530,7 +530,14 @@ class SupplierItem(models.Model):
     class Meta:
         verbose_name = 'artículo del proveedor'
         verbose_name_plural = 'artículos del proveedor'
-        constraints = [models.UniqueConstraint(fields=["supplier", "supplier_invent_id"], name="unique_supplier_invent")]
+        # From 0078 (S3's tighten), with the composite foreign key variant_line_follows_reference that RunSQL adds (Django cannot
+        # describe it): (reference_id, part_id) -> mall_partcode (id, part_id), ON UPDATE CASCADE, deferred (I4).
+        constraints = [models.UniqueConstraint(fields=["supplier", "supplier_invent_id"], name="unique_supplier_invent"),
+                       # Transition until S10: a line exactly when a Reference.
+                       models.CheckConstraint(condition=Q(part__isnull=True, reference__isnull=True) | Q(part__isnull=False, reference__isnull=False),
+                                              name='variant_reference_iff_line'),
+                       # For good (OD21): an item no code places yet waits, pending.
+                       models.CheckConstraint(condition=Q(reference__isnull=False) | Q(matching_status='pending'), name='variant_unattached_is_pending')]
         indexes = [models.Index(fields=['reference', 'part'], name='variant_reference_line_idx'),
                    models.Index(fields=['supplier', 'codigo'], name='variant_supplier_codigo_idx')]
     @property

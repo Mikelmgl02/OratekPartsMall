@@ -11,7 +11,7 @@ from .catalog_grouping import merge_catalog_parts
 from .models import Account, InventoryUpdate, Membership, Part, Role, StockEntry, SupplierItem, User
 from .request_models import ClientRequestSubmission, SupplierRequest, SupplierRequestLine
 from .services import ingest_inventory
-from .test_factories import make_account, make_client, make_line, make_reference, make_supplier, make_user, make_variant
+from .test_factories import make_account, make_client, make_line, make_reference, make_supplier, make_user, make_variant, move_variant
 
 
 class SupplierRequestWorkflowTests(APITestCase):
@@ -361,9 +361,10 @@ class SupplierRequestWorkflowTests(APITestCase):
         response = self.submit(self.payload([(self.item_a, 3)]))
         path = f'{self.url(self.supplier_a)}{response.data["requests"][0]["id"]}/'
         self.client.force_authenticate(self.seller_a)
-        original = {'part': self.part, 'codigo': self.item_a.codigo, 'brand': self.item_a.brand,
-                    'supplier_invent_id': self.item_a.supplier_invent_id, 'matching_status': 'matched'}
-        for changes in [{'part': None}, {'codigo': 'CHANGED'}, {'brand': 'OTHER'},
+        original = {'part': self.part, 'reference_id': SupplierItem.objects.get(pk=self.item_a.pk).reference_id, 'codigo': self.item_a.codigo,
+                    'brand': self.item_a.brand, 'supplier_invent_id': self.item_a.supplier_invent_id, 'matching_status': 'matched'}
+        # An item with no line holds no Reference and waits pending (S3).
+        for changes in [{'part': None, 'reference_id': None, 'matching_status': 'pending'}, {'codigo': 'CHANGED'}, {'brand': 'OTHER'},
                         {'supplier_invent_id': 'NEW-ID'}, {'matching_status': 'pending'}]:
             with self.subTest(changes=changes):
                 SupplierItem.objects.filter(pk=self.item_a.pk).update(**{**original, **changes})
@@ -383,10 +384,11 @@ class SupplierRequestWorkflowTests(APITestCase):
         self.supplier_b.roles.clear()
         self.assertEqual(self.submit(data).status_code, 400)
         self.supplier_b.roles.add(Role.objects.get(code='supplier_wholesale'))
-        for changes in [{'matching_status': 'pending'}, {'matching_status': 'review'}, {'part': None}]:
-            SupplierItem.objects.filter(pk=self.item_b.pk).update(**{'part': self.part, 'reported_quantity': 20, 'matching_status': 'matched', **changes})
+        for changes in [{'matching_status': 'pending'}, {'matching_status': 'review'}, {'part': None, 'matching_status': 'pending'}]:
+            values = {'reported_quantity': 20, 'matching_status': 'matched', **changes}
+            move_variant(self.item_b, values.pop('part', self.part), **values)  # an item with no line has no Reference and waits (S3)
             self.assertEqual(self.submit(data).status_code, 400)
-        SupplierItem.objects.filter(pk=self.item_b.pk).update(part=self.part, reported_quantity=20, matching_status='matched')
+        move_variant(self.item_b, self.part, reported_quantity=20, matching_status='matched')
         self.part.active = False
         self.part.save()
         self.assertEqual(self.submit(data).status_code, 400)
@@ -398,7 +400,7 @@ class SupplierRequestWorkflowTests(APITestCase):
             SupplierItem.objects.filter(pk=self.item_a.pk).update(**{'codigo': '58411-1R000-G', 'brand': 'KSM', **changes})
             self.assertEqual(self.submit(data).status_code, 409)
         different = Part.objects.create(sku='DIFFERENT')
-        SupplierItem.objects.filter(pk=self.item_a.pk).update(codigo='58411-1R000-G', brand='KSM', part=different)
+        move_variant(self.item_a, different, codigo='58411-1R000-G', brand='KSM')
         self.assertEqual(self.submit(data).status_code, 409)
         self.assertFalse(ClientRequestSubmission.objects.exists())
         self.assertEqual(StockEntry.objects.count(), 3)

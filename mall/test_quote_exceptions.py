@@ -18,7 +18,7 @@ from .pricing_models import PricingAuditEvent, SupplierPricingSettings
 from .quotation_exceptions import identity_context
 from .quote_draft_models import DealQuotationAudit, DealQuotationLineAudit
 from .request_models import DealCommand, DealEvent, DealQuotation, StockReservation, SupplierRequest
-from .test_factories import make_line
+from .test_factories import make_line, move_variant
 
 
 class QuoteExceptionTests(APITestCase):
@@ -359,7 +359,7 @@ class QuoteExceptionTests(APITestCase):
         check = DealQuotationAudit.objects.get(quotation_id=quotation['id']).accept_check
         self.assertEqual({line['identity_ok_at_accept'] for line in check['lines']}, {True})
         other, quotation = self.quoted(order=self.reviewed([(self.item_a2, 2)]), quantities={self.item_a2: 2}, prices={self.item_a2: '4.00'})
-        SupplierItem.objects.filter(pk=self.item_a2.pk).update(part=make_line('OTRO-SKU'))
+        move_variant(self.item_a2, make_line('OTRO-SKU'))
         self.assertEqual(self.accept(other, quotation).status_code, 409)
 
     def test_trace_is_supplier_only(self):

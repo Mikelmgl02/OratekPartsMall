@@ -10,6 +10,7 @@ from .models import Account, Membership, Part, PartCode, PartType, Role, Supplie
 from .oem_reference_models import OEMCrossReference, OEMReference
 from .sku_proposal_models import SkuProposal, SkuProposalItem
 from .sku_proposals import ProposalConflict, approve, edit, link_existing, propose, proposals_stage, reject, vehicle_makes
+from .test_factories import move_variant
 
 
 @override_settings(CATALOG_EXTRA_MAKES=['KAIYI'])
@@ -146,7 +147,7 @@ class SkuProposalTests(APITestCase):
         self.assertEqual(self.proposal('A-1').description, 'PASTILLA DELANTERA')   # the supplier's text no longer overwrites it
         with self.assertRaises(Exception):
             edit(proposal.pk, self.root, proposal.version, {'sku': 'OTRO'})   # stale version
-        SupplierItem.objects.filter(pk=item.pk).update(part=Part.objects.create(sku='ELSEWHERE', name='ELSEWHERE'), matching_status='matched')
+        move_variant(item, Part.objects.create(sku='ELSEWHERE', name='ELSEWHERE'), matching_status='matched')
         self.assertEqual(propose()['resolved'], 1)
         self.assertEqual(self.proposal('A-1').status, 'resolved')
 

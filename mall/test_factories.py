@@ -132,3 +132,17 @@ def unhook_variants(refs=None):
     if refs is not None:
         rows = rows.filter(reference_id__in=[getattr(ref, 'pk', ref) for ref in refs])
     return rows.update(reference=None)
+
+
+def move_variant(item, line, **values):
+    """Put a supplier item on another line, or on none, by queryset, as a concurrent change would (no save(), updated_at untouched),
+    keeping S3's constraints: on a line it hangs from that line's Reference for its code (mall.variants.reference_for, made when
+    missing); on none it holds no Reference. values: other columns written in the same UPDATE."""
+    from . import variants
+    from .models import SupplierItem
+    pk = getattr(item, 'pk', item)
+    if line is None:
+        return SupplierItem.objects.filter(pk=pk).update(part=None, reference=None, **{'matching_status': 'pending', **values})
+    row = SupplierItem.objects.get(pk=pk)
+    ref, _ = variants.reference_for(line, values.get('codigo', row.codigo), values.get('brand', row.brand), row.supplier_id, create=True, item=row)
+    return SupplierItem.objects.filter(pk=pk).update(part=line, reference=ref, **values)

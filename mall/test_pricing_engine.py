@@ -21,7 +21,8 @@ from .pricing_models import (ClientPricingProfile, PriceList, PriceListEntry, Pr
 from .pricing_services import set_prices
 from .quote_draft_models import DealQuotationAudit, DealQuotationDraft, DealQuotationDraftLine, DealQuotationLineAudit
 from .request_models import DealQuotation, SupplierRequest
-from .test_factories import make_line
+from . import references
+from .test_factories import make_line, move_variant
 
 TODAY = datetime.date(2026, 10, 5)
 GENERAL = {'id': uuid.UUID('00000000-0000-4000-8000-000000000001'), 'code': 'GENERAL', 'name': 'LISTA GENERAL', 'currency': 'USD'}
@@ -329,7 +330,7 @@ class PricedDraftTests(APITestCase):
         self.assertEqual((lines[0][0].part_id, lines[0][0].supplier_item.part_id), (self.part.pk, target.pk))
         result = price_lines(self.supplier_a, self.client_account.pk, 'USD', lines)[0]
         self.assertEqual((result.unit_price, result.codes), (Decimal('10.00'), []))
-        SupplierItem.objects.filter(pk=self.item_a.pk).update(part=make_line('OTRO-SKU'))
+        move_variant(self.item_a, make_line('OTRO-SKU'))
         lines[0][0].supplier_item = SupplierItem.objects.get(pk=self.item_a.pk)
         result = price_lines(self.supplier_a, self.client_account.pk, 'USD', lines)[0]
         self.assertEqual((result.unit_price, result.codes), (None, ['identity_changed']))
@@ -337,8 +338,10 @@ class PricedDraftTests(APITestCase):
     def test_bulk_loader_uses_a_constant_number_of_queries(self):
         general = self.general()
         mayorista = PriceList.objects.create(supplier=self.supplier_a, code='MAYORISTA', name='MAYORISTA', created_by=self.seller_a)
+        main = references.main_of(self.part)  # every item hangs from a Reference of its line (S3)
         items = SupplierItem.objects.bulk_create([SupplierItem(supplier=self.supplier_a, supplier_invent_id=f'Q-{index:03}', codigo=f'Q-{index:03}', brand='KSM',
-                                                               source='upload', matching_status='matched', part=self.part, reported_quantity=5) for index in range(50)])
+                                                               source='upload', matching_status='matched', part=self.part, reference=main,
+                                                               reported_quantity=5) for index in range(50)])
         now = timezone.now()
         PriceListEntry.objects.bulk_create([PriceListEntry(price_list=general, item=item, unit_price=Decimal('1.00') + index, updated_by=self.seller_a, updated_at=now)
                                             for index, item in enumerate(items)]

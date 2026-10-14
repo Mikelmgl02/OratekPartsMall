@@ -14,7 +14,7 @@ from .catalog_suffix_models import CatalogCodeSuffix
 from .matching_models import SupplierCodeMapping
 from .models import Part, Reference, ReferenceSource, SupplierItem
 from .refactor import s3_variants
-from .test_factories import Fresh, make_line, make_reference, make_supplier, make_user, unhook_variants
+from .test_factories import Fresh, drop_variant_constraints, make_line, make_reference, make_supplier, make_user, unhook_variants
 from .test_variants import broken_variants
 
 
@@ -53,6 +53,7 @@ class S3BackfillTests(Fresh, TestCase):
             (self.grp, 'I', 'RET-0001', '', self.retired),                # a retired line's item attaches the same way
             (self.grp, 'J', 'SIN-LINEA', '', None),                       # no line: stays pending
         ]
+        drop_variant_constraints()  # 0078's, in this test's transaction: the state the backfill runs in
         SupplierItem.objects.bulk_create([  # no save(): the shim would attach them
             SupplierItem(supplier=supplier, supplier_invent_id=invent, codigo=code, brand=brand, part=line, source='upload',
                          matching_status='matched' if line else 'pending', reported_quantity=1)

@@ -8,6 +8,7 @@ from .models import Account, CatalogMerge, Part, PartCode, SupplierItem, User
 from .oem_reference import upsert_reference
 from .oem_reference_models import PartOEMLink
 from .services import ingest_inventory
+from .test_factories import move_variant
 
 URL = '/api/v1/management/catalog/'
 
@@ -162,7 +163,7 @@ class CatalogSplitTests(APITestCase):
         PartCode.objects.create(part=other, brand='GMB', code='GD-4512', ref_type='company')
         item = ingest_inventory(supplier=self.supplier, actor=self.admin, data={'update_id': 'X-1', 'supplier_invent_id': 'X-1', 'codigo': 'ZX 77',
                                 'brand': '', 'description': 'DISCO', 'source': 'upload', 'quantity': 3})
-        SupplierItem.objects.filter(pk=item.pk).update(part=other, matching_status='matched')  # a code that names neither SKU
+        move_variant(item, other, matching_status='matched')  # a code that names neither SKU (its supplier's interno code, S3)
         merged = self.client.post(f'{URL}grouping/merge/', {'target_sku': main.sku, 'source_skus': [other.sku]}, format='json')
         self.assertEqual(merged.status_code, 200, merged.content)
         recorded = CatalogMerge.objects.get().sources

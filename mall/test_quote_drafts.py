@@ -16,7 +16,7 @@ from .pricing_models import PricingAuditEvent, SupplierPricingSettings
 from .quote_draft_models import DealQuotationDraft, DealQuotationDraftLine
 from .quote_drafts import CONFLICT_DETAIL, NOT_EDITABLE_DETAIL
 from .request_models import DealCommand, DealEvent, DealQuotation, SupplierRequest
-from .test_factories import make_line
+from .test_factories import make_line, move_variant
 
 # Fingerprints of legacy deal payloads computed before draft_version existed; in-flight retries must keep matching them.
 LEGACY_QUOTE = {'operation_id': '0b0f5c7e-1d2a-4c3b-9e8f-7a6b5c4d3e2f', 'expected_version': 2, 'action': 'quote', 'currency': 'PAB',
@@ -385,7 +385,7 @@ class QuoteDraftTests(APITestCase):
         line = self.by_code(self.get_draft(order))['58411-1R000-G']
         self.assertEqual(line['stock']['available_quantity'], 8)
         self.assertNotIn('identity_changed', [item['code'] for item in line['exceptions']])
-        SupplierItem.objects.filter(pk=self.item_a.pk).update(part=make_line('OTRO-SKU'))
+        move_variant(self.item_a, make_line('OTRO-SKU'))
         line = self.by_code(self.get_draft(order))['58411-1R000-G']
         self.assertIsNone(line['stock'])
         self.assertIn('identity_changed', [item['code'] for item in line['exceptions']])
