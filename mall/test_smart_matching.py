@@ -6,7 +6,8 @@ from rest_framework.test import APITestCase
 from .models import (Account, Part, PartCode, User, SupplierItem, StockEntry, InventoryUpdate,
                      MatchingCase, MatchingDecision, MatchingQueue, SupplierCodeMapping, CatalogMerge)
 from .services import ingest_inventory
-from .matching_engine import MatchIndex, reconcile_items, reconcile_catalog, create_supplier_families, item_row, part_row, spec_conflict
+from .matching_engine import (MatchIndex, reconcile_items, reconcile_catalog, create_supplier_families, item_row, part_row,
+                              spec_conflict, NO_CODE_EVIDENCE, NO_CODE_EVIDENCE_REASON)
 from .matching_worker import process_queue, analyze_ambiguous
 from .matching_queue import enqueue_matching, matching_work
 
@@ -94,6 +95,8 @@ class SmartMatchingTests(APITestCase):
         reconcile_items(MatchIndex());item.refresh_from_db()
         self.assertIsNone(item.part_id)
         case=MatchingCase.objects.get(item=item)
+        # No code ties it to the SKU (owner decision D1): Productos nuevos takes it, the same description stays a hint.
+        self.assertEqual((case.status,case.method,case.reason,case.target_sku),('unmatched',NO_CODE_EVIDENCE,NO_CODE_EVIDENCE_REASON,''))
         self.assertEqual(case.candidates[0]['id'],str(target.pk))
         response=self.client.post(f'/api/v1/management/matching/{case.pk}/',{
             'action':'approve','target_sku':target.sku,'fingerprint':case.fingerprint},format='json')
@@ -141,11 +144,16 @@ class SmartMatchingTests(APITestCase):
         self.assertEqual(item.part.sku,'58411-07000')
         self.assertEqual(StockEntry.objects.count(),1)
 
+    def code_with_contradiction(self):
+        # The code is the SKU's, the years contradict: a review case with code evidence, the only kind the AI ranks.
+        target=Part.objects.create(sku='58411-07000',description=self.description)
+        return target,self.ingest(target.sku,description='TAMBOR KIA PICANTO 15-20')
+
     @override_settings(GEMINI_API_KEY='test-key')
     def test_ai_is_cached_bounded_and_cannot_apply_semantic_guess(self):
-        target=Part.objects.create(sku='58411-07000',description=self.description)
-        item=self.ingest('D-HYU-1R')
+        target,item=self.code_with_contradiction()
         reconcile_items(MatchIndex())
+        self.assertEqual(MatchingCase.objects.get(item=item).status,'review')
         result={'suggestions':[{'source_sku':item.codigo,'target_sku':target.sku,'confidence':1.0,'reason':'Descripción similar; requiere confirmar aplicación.'}]}
         with patch('mall.matching_worker.call_provider',return_value=result) as provider:
             self.assertEqual(analyze_ambiguous(),1)
@@ -158,8 +166,7 @@ class SmartMatchingTests(APITestCase):
     @override_settings(GEMINI_API_KEY='test-key')
     def test_ai_failure_retains_stock_and_review(self):
         from .catalog_classification import ClassificationProviderError
-        Part.objects.create(sku='58411-07000',description=self.description)
-        item=self.ingest('D-HYU-1R')
+        _,item=self.code_with_contradiction()
         with patch('mall.matching_worker.call_provider',side_effect=ClassificationProviderError()):
             result=process_queue(force=True)
         self.assertEqual(result['ai_analyzed'],0)
@@ -234,14 +241,38 @@ class SmartMatchingTests(APITestCase):
     @override_settings(GEMINI_API_KEY='test-key')
     def test_analysis_explains_provider_failure_without_claiming_no_work(self):
         from .catalog_classification import ClassificationProviderError
-        Part.objects.create(sku='58411-07000', description=self.description)
-        self.ingest('D-HYU-1R')
+        self.code_with_contradiction()
         with patch('mall.matching_worker.call_provider', side_effect=ClassificationProviderError()):
             result = process_queue(force=True)
         self.assertEqual(result['supplier_examined'], 1)
         self.assertEqual(result['ai_eligible'], 1)
         self.assertEqual(result['ai_status'], 'failed')
         self.assertEqual(result['ai_analyzed'], 0)
+
+    @override_settings(CATALOG_EXTRA_MAKES=['KAIYI'])
+    def test_word_only_items_go_to_new_products_and_keep_only_informative_hints(self):
+        # Before D1 the shared make, model and year (KAIYI FX11 2025) made these SKUs candidates and kept the item in review.
+        Part.objects.create(sku='025CHA-1504110', description='TAPA KAIYI FX11 2025 55W')
+        Part.objects.create(sku='RX1809-RAINX-KIT', description='LIMPIAPARABRISAS RAINX KAIYI 2025')
+        farol = Part.objects.create(sku='58411-07000', description='FAROL DELANTERO MOLDURA CROMADA')
+        for i in range(25):  # FX11 is a model this supplier writes on many items: it says nothing about the product
+            SupplierItem.objects.create(supplier=self.suppliers[0], supplier_invent_id=f'FX-{i}', codigo=f'FX11-{i}', brand='KAIYI',
+                                        description=f'PIEZA {i} KAIYI FX11', matching_status='matched', part=farol)
+        item = self.ingest('F16-4121020-01AA', brand='KAIYI', description='FAROL KAIYI FX11 2025 CROMADA 55W')
+        lone = self.ingest('F16-4121020-02AA', brand='KAIYI', description='FAROL KAIYI FX11 2025', stable='LONE')
+        index = MatchIndex()
+        candidates, method, strong, reason = index.resolve(item)
+        self.assertEqual(([c['sku'] for c in candidates], method, strong, reason), (['58411-07000'], NO_CODE_EVIDENCE, False, NO_CODE_EVIDENCE_REASON))
+        self.assertEqual(index.informative(item), {'FAROL', 'CROMADA'})
+        self.assertEqual(index.resolve(lone)[:2], ([], NO_CODE_EVIDENCE))  # one informative word is no hint
+        with patch('mall.matching_worker.call_provider') as provider:
+            result = process_queue(force=True)
+        provider.assert_not_called()  # hints are never sent to the matching AI: Revisión IA sees them in Productos nuevos
+        self.assertEqual(result['matched_items'], 0)
+        case = MatchingCase.objects.get(item=item)
+        self.assertEqual((case.status, case.method, case.target_sku, [c['sku'] for c in case.candidates]),
+                         ('unmatched', NO_CODE_EVIDENCE, '', ['58411-07000']))
+        self.assertEqual(MatchingCase.objects.get(item=lone).status, 'unmatched')
 
     def test_code_evidence_still_goes_to_review_and_pads_sold_as_a_set_link_by_code(self):
         Part.objects.create(sku='0446502220', description='PASTILLA FRENO DEL TOYOTA HILUX')

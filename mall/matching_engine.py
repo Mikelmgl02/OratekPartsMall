@@ -7,6 +7,10 @@ When no SKU, alterno or remembered mapping carries a code, the OEM library is
 read as a fallback: an OEM number linked to a SKU (by its code, a catalog or an
 OEM alterno) or an aftermarket code a catalog files under such a number. It
 applies only when it reaches exactly one SKU; duplicates go to review.
+
+A supplier item that no code ties to any SKU (no exact code, remembered mapping, declared or labelled reference, library hit or
+code family) is a new product: its case is unmatched and Productos nuevos takes it (owner decision D1). The SKUs its description
+words find stay on the case only as hints, scored without makes, brands, years, units or the supplier's own common words.
 """
 import hashlib
 import json
@@ -25,6 +29,20 @@ from .matching_queue import matching_work
 from .oem_links import reach_index, same_make
 
 VERSION = 'matching-3-oem-identity'
+# Owner decision D1: a supplier item no code ties to any SKU is a new product (Productos nuevos). Description words never link
+# it; the SKUs they find stay on its case only as hints (possible duplicates for Revisión IA).
+NO_CODE_EVIDENCE = 'no_code_evidence'
+NO_CODE_EVIDENCE_REASON = 'Sin evidencia de código: va a Productos nuevos'
+WORD = re.compile(r'[A-Z0-9]{3,}')
+YEAR = re.compile(r'^(?:19|20)\d\d$')
+UNIT = re.compile(r'^\d+(?:MM|CM|MTS?|V|W|KW|A|AH|HP|CC|ML|L|LTS?|GR?|KGS?|LBS?|PSI|PCS|PZS?|OZ)$')
+UNIT_WORDS = {'PCS', 'PZS', 'PZA', 'PZAS', 'LTS', 'LBS', 'KGS', 'MTS', 'UND', 'UNID', 'VOLT', 'VOLTS', 'WATTS', 'AMP', 'GAL', 'GALON',
+              'LITRO', 'LITROS'}
+HINTS = 8               # hints kept on a case
+HINT_BUCKET = 200       # a word more SKUs than this describe retrieves nothing
+HINT_WORDS = 2          # a hint shares at least this many informative words with the item
+COMMON_SHARE = 0.05     # a word in more than this share of one supplier's items (its models: FX11, GS11...) hints at nothing
+COMMON_MIN = 20         # ... nor in more than this many of them, so a small supplier keeps its words
 
 
 def digest(value):
@@ -142,6 +160,23 @@ def spec_conflict(a, b):
     return False
 
 
+def noise_words():
+    """Words that name a vehicle make (TOY, NIS, KAIYI...) or a brand of the suppliers' items or the catalog's alternos (DFSK, FEBEST,
+    GMB...): many products share them, so they hint at none. Only one-word brands: ELECTRO AIRE or JAPAN PARTS keep AIRE and PARTS."""
+    from .oem_finder import MAKE_TOKENS
+    from .oem_links import EXTRA_MAKES
+    from .sku_proposals import vehicle_makes
+    makes = vehicle_makes()
+    words = set(MAKE_TOKENS) | set(EXTRA_MAKES) | set(makes) | set(makes.values())
+    brands = (set(SupplierItem.objects.order_by().values_list('brand', flat=True).distinct())
+              | set(PartCode.objects.order_by().values_list('brand', flat=True).distinct()))
+    for brand in brands:
+        tokens = description(brand).split()
+        if len(tokens) == 1:
+            words.add(tokens[0])
+    return words
+
+
 class MatchIndex:
     def __init__(self):
         self.parts = {str(p.pk): part_row(p) for p in Part.objects.filter(active=True, merged_into__isnull=True).prefetch_related('codes')}
@@ -191,6 +226,47 @@ class MatchIndex:
                 self.mappings[(str(mapping.supplier_id), normalized_reference(mapping.code), mapping.brand)] = (str(part.pk), mapping.description, bool(mapping.actor_id))
                 if mapping.actor_id and mapping.brand and detailed(mapping.description):
                     self.portable[(normalized_reference(mapping.code), mapping.brand, description(mapping.description))].add(str(part.pk))
+        self.noise = noise_words()
+        self.common = {}
+
+    def common_words(self, supplier_id):
+        """Words in more than 5% of one supplier's items: its vehicle models (FX11, GS11, PHEV...) and what it writes on everything."""
+        key = str(supplier_id)
+        if key not in self.common:
+            counts, total = Counter(), 0
+            for text in SupplierItem.objects.filter(supplier_id=supplier_id).values_list('description', flat=True):
+                total += 1
+                counts.update(set(WORD.findall(description(text))))
+            limit = max(total * COMMON_SHARE, COMMON_MIN)
+            self.common[key] = {word for word, count in counts.items() if count > limit}
+        return self.common[key]
+
+    def informative(self, item):
+        """The item's description words that can hint at a product: not a make or brand, a year, a unit or a word its supplier puts
+        on many items."""
+        common = self.common_words(item.supplier_id)
+        return {word for word in WORD.findall(description(item.description))
+                if word not in self.noise and word not in common and word not in UNIT_WORDS and not YEAR.match(word) and not UNIT.match(word)}
+
+    def word_scores(self, item):
+        """SKUs by how many of the item's informative words their description shares. Only words few SKUs use count (rare words
+        retrieve a bounded set; no full-catalog AI prompt), and an item with fewer than two such words finds nothing."""
+        words, scores = self.informative(item), Counter()
+        if len(words) >= HINT_WORDS:
+            for word in words:
+                bucket = self.words.get(word, set())
+                if len(bucket) <= HINT_BUCKET:
+                    scores.update(bucket)
+        return scores
+
+    def hints(self, item):
+        """Possible duplicates of an item with no code evidence, never evidence themselves: SKUs with the same detailed description,
+        then SKUs sharing at least two informative words with it."""
+        scores = self.word_scores(item)
+        order = lambda pk: (-scores[pk], self.parts[pk]['sku'])
+        same = sorted(self.descriptions.get(description(item.description), set()), key=order) if detailed(item.description) else []
+        ranked = same + sorted((pk for pk, score in scores.items() if score >= HINT_WORDS and pk not in same), key=order)
+        return [self.parts[pk] for pk in ranked[:HINTS]]
 
     def oem_targets(self, refs):
         return set().union(*(self.reaching.get(ref, set()) for ref in refs))
@@ -280,6 +356,7 @@ class MatchIndex:
             target = self.parts[next(iter(learned))]
             if not spec_conflict(item.description, target['description']):
                 return [target], 'reviewed_brand_spec', True, 'Código y marca confirmados en otro proveedor con especificaciones idénticas.'
+        reached = set()
         if not exact and not remembered and not learned:
             # The OEM library: the code is an aftermarket code a catalog files under an OEM number a SKU reaches, or that number itself.
             aftermarket = self.aftermarket_targets(code, item.brand)
@@ -316,13 +393,10 @@ class MatchIndex:
             stripped = re.sub(r'(?:OEM|OE|REF(?:ERENCIA)?|REEMPLAZA)\s*[:#=]?\s*[A-Z0-9]+(?:[-./][A-Z0-9]+)+', '', item.description.upper()).strip(' ,;')
             if same_spec(stripped, target['description']):
                 return [target], 'explicit_oem', True, 'Referencia OEM explícita y sin contradicciones de posición o medida.'
+        if not (exact or remembered or declared or text_refs or learned or reached or family):
+            return self.hints(item), NO_CODE_EVIDENCE, False, NO_CODE_EVIDENCE_REASON
         candidates |= self.descriptions.get(description(item.description), set()) if detailed(item.description) else set()
-        # Rare tokens retrieve a bounded candidate set; no full-catalog AI prompt.
-        scores = Counter()
-        for word in set(re.findall(r'[A-Z0-9]{3,}', description(item.description))):
-            bucket = self.words.get(word, set())
-            if len(bucket) <= 200:
-                scores.update(bucket)
+        scores = self.word_scores(item)
         ranked = sorted(candidates, key=lambda pk: (-scores[pk], self.parts[pk]['sku']))
         ranked.extend(pk for pk, score in scores.most_common(16) if score >= 2 and pk not in candidates)
         return [self.parts[pk] for pk in ranked[:8]], 'needs_review', False, ' '.join(reasons) or 'No hay evidencia suficiente para vincular automáticamente.'
@@ -386,12 +460,18 @@ def reconcile_items(index, *, stats=None):
         if stats is not None:
             stats['supplier_examined'] = stats.get('supplier_examined', 0) + 1
         candidates, method, strong, reason = index.resolve(item)
+        unmatched = not candidates
+        if method == NO_CODE_EVIDENCE:
+            if item.part_id:  # a linked item keeps its SKU until a person reviews its new code: never a new product
+                method, reason = 'needs_review', 'No hay evidencia suficiente para vincular automáticamente.'
+            else:  # Productos nuevos takes it; its candidates are hints, so none is proposed as the target
+                unmatched = True
         if item.part_id and candidates and str(item.part_id) != candidates[0]['id']:
             strong = False
             reason = 'El código cambió de familia. Se conserva el vínculo anterior hasta su revisión.'
         case = save_case(key=f'supplier:{item.pk}', kind='supplier', item=item, sources=[item_row(item)],
-                         candidates=candidates, target=candidates[0]['sku'] if candidates else '', method=method,
-                         reason=reason, status='review' if candidates else 'unmatched')
+                         candidates=candidates, target=candidates[0]['sku'] if candidates and not unmatched else '', method=method,
+                         reason=reason, status='unmatched' if unmatched else 'review')
         if strong and case.status == 'review':
             try:
                 apply_item(case, candidates[0], automatic=True)
