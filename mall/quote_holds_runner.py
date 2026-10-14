@@ -31,7 +31,8 @@ def main(argv=None):
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
     import django
     django.setup()
-    run(expire_pass, once=options.once, heartbeat=Heartbeat('' if options.once else HEARTBEAT_FILE))
+    # Holds only touch reserved units and the deal's events, so they keep running under the catalog freeze; level all stops them.
+    run(expire_pass, once=options.once, heartbeat=Heartbeat('' if options.once else HEARTBEAT_FILE), idle_under=('all',), signals=True)
 
 
 if __name__ == '__main__':

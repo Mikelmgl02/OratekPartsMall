@@ -8,6 +8,7 @@ from django.db import transaction
 from django.utils import timezone
 from .matching_models import MatchingQueue, MatchingCase
 from .matching_queue import matching_lock, matching_work
+from .matching_runner import WorkerStopping, checkpoint
 from .matching_engine import (MatchIndex, create_supplier_families, reconcile_catalog,
                               reconcile_items)
 from .catalog_classification import call_provider, provider_configuration, ClassificationProviderError
@@ -101,6 +102,7 @@ def _process_queue(*, force=False, use_ai=True):
         queue.stage, queue.started_at = 'catalog', now
         queue.save(update_fields=['lease', 'lease_until', 'error', 'stage', 'started_at'])
     def stage(value):
+        checkpoint()  # a stop signal or the catalog freeze ends the pass here, between two stages
         MatchingQueue.objects.filter(pk=1, lease=lease).update(stage=value)
     try:
         with matching_work():
@@ -141,6 +143,10 @@ def _process_queue(*, force=False, use_ai=True):
         MatchingQueue.objects.filter(pk=1, lease=lease).update(completed=revision, lease=None, lease_until=None,
             finished_at=timezone.now(), summary=summary, error='', stage='completed')
         return summary
+    except WorkerStopping:
+        # Stopped between stages: what they committed stays, the lease goes back at once and the next pass starts over.
+        MatchingQueue.objects.filter(pk=1, lease=lease).update(lease=None, lease_until=None, stage='stopped')
+        raise
     except Exception:
         logger.exception('Matching pipeline failed; committed stock and matching decisions are retained.')
         MatchingQueue.objects.filter(pk=1, lease=lease).update(lease=None, lease_until=timezone.now() + timedelta(seconds=60),

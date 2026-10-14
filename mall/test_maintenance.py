@@ -1,15 +1,27 @@
-"""Ops safety of the refactor's deploy windows (S0.11): the catalog write freeze."""
+"""Ops safety of the refactor's deploy windows (S0.11): the catalog write freeze and the workers' clean stop. The runner loop itself is
+tested in test_matching_runner."""
 import json
+import signal
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
-from django.test import RequestFactory, SimpleTestCase, override_settings
+from cryptography.fernet import Fernet
+from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import URLPattern, URLResolver, get_resolver
 from rest_framework.test import APITestCase
 
+from .apiag_models import ApiagConnection
+from .apiag_sync import process_due
+from .apiag_sync_models import ApiagSync
+from .apiag_tokens import encrypt
 from .maintenance import (ALL_DETAIL, BIBLIOTECA_DETAIL, CATALOG_DETAIL, CATALOG_ROUTES, MaintenanceFreezeMiddleware, biblioteca_frozen,
                           freeze_level)
-from .models import Account, Membership, Part, Role, User, WishlistItem
+from .matching_models import MatchingQueue
+from .matching_runner import STOP, WorkerStopping
+from .matching_worker import process_queue
+from .models import Account, Membership, Part, Role, SupplierItem, User, WishlistItem
+from .test_apiag_sync import FakeApiag
 
 ID = '00000000-0000-4000-8000-000000000001'
 ACCOUNT = f'/api/v1/accounts/{ID}'
@@ -193,3 +205,83 @@ class FreezeThroughTheApiTests(FreezeFolderMixin, APITestCase):
         self.assertEqual(response.status_code, 200)
         self.part.refresh_from_db()
         self.assertEqual(self.part.description, 'TAMBOR NUEVO')
+
+
+class WorkerStopMixin(FreezeFolderMixin):
+    def setUp(self):
+        super().setUp()
+        STOP.reset()
+        self.addCleanup(STOP.reset)
+
+
+class MatchingWorkerStopTests(WorkerStopMixin, TestCase):
+    def setUp(self):
+        super().setUp()
+        MatchingQueue.objects.create(pk=1, requested=3, completed=2)
+
+    def stopped_pass(self, during):
+        with patch('mall.matching_worker.reconcile_catalog', side_effect=during) as reconcile, \
+                patch('mall.matching_worker.create_supplier_families') as families, self.assertRaises(WorkerStopping) as stopped:
+            process_queue()
+        reconcile.assert_called_once()
+        families.assert_not_called()  # the next stage never started
+        queue = MatchingQueue.objects.get(pk=1)
+        self.assertEqual((queue.lease, queue.lease_until, queue.stage, queue.completed, queue.error), (None, None, 'stopped', 2, ''))
+        return str(stopped.exception)
+
+    def test_a_stop_signal_ends_the_pass_at_the_next_stage_and_gives_the_lease_back(self):
+        def signalled(*args, **kwargs):
+            STOP.handle(signal.SIGTERM)
+            return 0
+        self.assertEqual(self.stopped_pass(signalled), 'signal')
+
+    def test_a_freeze_that_begins_mid_pass_ends_it_the_same_way(self):
+        STOP.idle_under = ('catalog', 'all')  # as the runner sets it
+        def frozen(*args, **kwargs):
+            self.freeze('catalog')
+            return 0
+        self.assertEqual(self.stopped_pass(frozen), 'freeze')
+
+    def test_outside_the_runner_the_freeze_does_not_stop_a_pass(self):
+        self.freeze('all')
+        summary = process_queue(use_ai=False)
+        queue = MatchingQueue.objects.get(pk=1)
+        self.assertEqual((queue.stage, queue.completed, queue.lease), ('completed', 3, None))
+        self.assertIn('matched_items', summary)
+
+
+KEY = Fernet.generate_key().decode()
+
+
+@override_settings(APIAG_TOKEN_KEYS=[KEY], APIAG_SYNC_MINUTES=5, APIAG_SYNC_DAILY_AT='03:30')
+class ApiagStopTests(WorkerStopMixin, APITestCase):
+    def setUp(self):
+        super().setUp()
+        self.supplier = Account.objects.create(name='Motion Motors')
+        self.supplier.roles.add(Role.objects.get(code='supplier_wholesale'))
+        self.connection = ApiagConnection.objects.create(account=self.supplier, server_url='https://mm.oratek.info',
+                                                         token_ciphertext=encrypt('apiagTok3n-For-MotionPartes-0001'), token_hint='0001')
+        self.apiag = FakeApiag()
+        for item_id in (10, 11, 12):
+            self.apiag.publish(item_id, f'FILTRO-{item_id}', {1: 2})
+        for target, value in [('mall.apiag_sync.apiag_client.get', self.apiag), ('mall.apiag_sync.PAGE_SIZE', 1)]:
+            patcher = patch(target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_a_stop_signal_ends_the_pull_after_its_page_and_the_next_run_starts_it_again(self):
+        fetch = self.apiag.__call__
+        def signalled(*args, **kwargs):
+            STOP.handle(signal.SIGTERM)  # arrives while the first page is on its way
+            return fetch(*args, **kwargs)
+        with patch('mall.apiag_sync.apiag_client.get', signalled), self.assertRaises(WorkerStopping):
+            process_due()
+        sync = ApiagSync.objects.get(connection=self.connection)
+        self.assertEqual((sync.lease, sync.lease_until, sync.stage, sync.started_at, sync.since, sync.progress, sync.completed),
+                         (None, None, 'idle', None, '', {}, 0))
+        self.assertEqual(list(SupplierItem.objects.filter(supplier=self.supplier).values_list('supplier_invent_id', flat=True)), ['10'])
+        STOP.reset()
+        self.assertEqual(process_due()['mode'], 'full')  # the same pull, from the start: values are absolute
+        sync.refresh_from_db()
+        self.assertEqual((sync.stage, sync.since), ('completed', self.apiag.clock.isoformat()))
+        self.assertEqual(SupplierItem.objects.filter(supplier=self.supplier, reported_quantity=2).count(), 3)

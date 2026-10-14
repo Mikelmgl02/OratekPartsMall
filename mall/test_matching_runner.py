@@ -1,11 +1,13 @@
 import io
 import os
+import signal
 import tempfile
 import time
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import Mock, patch
-from django.test import SimpleTestCase, TestCase, TransactionTestCase
-from .matching_runner import HEARTBEAT_MAX_AGE, PROBATION_SECONDS, Heartbeat, healthcheck, main, run
+from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
+from .matching_runner import (HEARTBEAT_MAX_AGE, POLL_SECONDS, PROBATION_SECONDS, STOP, STOP_DEADLINE_SECONDS, Heartbeat, Stop, WorkerStopping,
+                              checkpoint, healthcheck, main, run)
 from .models import User
 
 
@@ -174,3 +176,159 @@ class MatchingRunnerFailingPassTests(RunnerTestMixin, TransactionTestCase):
             run(lambda **kwargs: next(passes)(**kwargs), heartbeat=Heartbeat(self.path, interval=0, clock=lambda: now[0]), sleep=sleep)
         # First failure still beats; repeats do not; a long pass after them beats once past its probation.
         self.assertEqual(seen, [True, False, False, True, True])
+
+
+class RunnerFreezeAndStopTests(RunnerTestMixin, SimpleTestCase):
+    """The loop under the catalog freeze (mall.maintenance) and after SIGTERM/SIGINT."""
+
+    def setUp(self):
+        super().setUp()
+        self.folder = os.path.join(self.tmp.name, 'maintenance')
+        os.mkdir(self.folder)
+        settings_override = override_settings(MAINTENANCE_DIR=self.folder)
+        settings_override.enable()
+        self.addCleanup(settings_override.disable)
+        STOP.reset()
+        self.addCleanup(STOP.reset)
+
+    def freeze(self, level):
+        path = os.path.join(self.folder, 'freeze')
+        if level is None:
+            os.remove(path)
+        else:
+            with open(path, 'w') as handle:
+                handle.write(level)
+
+    def loop(self, process_queue, sleep, **kwargs):
+        stdout = io.StringIO()
+        with patch('django.db.connections.close_all'), redirect_stdout(stdout), redirect_stderr(io.StringIO()):
+            run(process_queue, heartbeat=Heartbeat(self.path, interval=0), sleep=sleep, **kwargs)
+        return stdout.getvalue()
+
+    def test_the_freeze_idles_the_loop_with_a_live_heartbeat_until_it_is_lifted(self):
+        self.freeze('catalog')
+        delays, process_queue = [], Mock(return_value=None)
+        def sleep(delay):
+            delays.append((delay, process_queue.call_count, os.path.exists(self.path)))
+            if len(delays) == 2:
+                self.freeze(None)
+            if len(delays) == 3:
+                STOP.handle(signal.SIGTERM)
+        out = self.loop(process_queue, sleep)
+        self.assertEqual(delays, [(POLL_SECONDS, 0, True), (POLL_SECONDS, 0, True), (POLL_SECONDS, 1, True)])
+        self.assertEqual(out.count('Maintenance freeze (catalog): idle until it is lifted.'), 1)
+        self.assertIn('Maintenance freeze lifted: resuming.', out)
+        self.assertIn('SIGTERM: exiting.', out)
+
+    def test_quote_holds_keep_running_under_the_catalog_freeze_and_idle_at_level_all(self):
+        for level, passes in [('catalog', 1), ('all', 0)]:
+            self.freeze(level)
+            process_queue = Mock(return_value=None)
+            with redirect_stdout(io.StringIO()):
+                run(process_queue, once=True, idle_under=('all',), sleep=Mock(side_effect=AssertionError('--once must not sleep')))
+            self.assertEqual(process_queue.call_count, passes, level)
+
+    def test_a_manual_pass_does_not_run_under_the_freeze(self):
+        self.freeze('all')
+        process_queue = Mock(return_value=None)
+        with redirect_stdout(io.StringIO()) as out:
+            run(process_queue, once=True, sleep=Mock(side_effect=AssertionError('--once must not sleep')))
+        process_queue.assert_not_called()
+        self.assertIn('Maintenance freeze (all): no pass while it is on.', out.getvalue())
+
+    def test_a_signal_while_waiting_exits_before_another_pass(self):
+        process_queue = Mock(return_value=None)
+        out = self.loop(process_queue, lambda delay: STOP.handle(signal.SIGINT))
+        process_queue.assert_called_once()
+        self.assertIn('SIGINT: exiting.', out)
+
+    def test_a_signal_during_a_pass_stops_it_at_its_next_checkpoint_only_once(self):
+        steps = []
+        def process_queue(**kwargs):
+            checkpoint()  # nothing asked yet: goes on
+            steps.append('unit 1')
+            STOP.handle(signal.SIGTERM)
+            try:
+                checkpoint()
+            except WorkerStopping as stopped:
+                steps.append(str(stopped))
+                checkpoint()  # the code giving the lease back runs past it
+                steps.append('lease given back')
+                raise
+            steps.append('unit 2')
+        out = self.loop(process_queue, Mock(side_effect=AssertionError('must exit, not sleep')))
+        self.assertEqual(steps, ['unit 1', 'signal', 'lease given back'])
+        self.assertIn('Pass stopped between units (SIGTERM).', out)
+        self.assertIn('SIGTERM: exiting.', out)
+
+    def test_a_freeze_that_begins_during_a_pass_idles_the_loop_instead_of_exiting(self):
+        passes = []
+        def process_queue(**kwargs):
+            passes.append(len(passes))
+            if len(passes) == 1:
+                self.freeze('catalog')
+                checkpoint()
+        def sleep(delay):
+            if len(passes) == 1:
+                self.freeze(None)
+            else:
+                STOP.handle(signal.SIGTERM)
+        out = self.loop(process_queue, sleep)
+        self.assertEqual(passes, [0, 1])
+        self.assertIn('Pass stopped between units (maintenance freeze).', out)
+        self.assertIn('Maintenance freeze (catalog): idle until it is lifted.', out)
+
+    def test_handlers_are_installed_for_the_loop_and_restored_after_it(self):
+        before = {number: signal.getsignal(number) for number in (signal.SIGTERM, signal.SIGINT)}
+        seen = []
+        def process_queue(**kwargs):
+            seen.append(signal.getsignal(signal.SIGTERM) == STOP.handle)
+            signal.raise_signal(signal.SIGINT)  # with the default handler this would be a KeyboardInterrupt
+            seen.append(STOP.requested)
+        self.loop(process_queue, Mock(side_effect=AssertionError('must exit, not sleep')), signals=True)
+        self.assertEqual(seen, [True, True])
+        self.assertEqual({number: signal.getsignal(number) for number in before}, before)
+
+    def test_a_second_signal_does_not_wait(self):
+        STOP.handle(signal.SIGTERM)
+        with self.assertRaises(SystemExit) as exit:
+            STOP.handle(signal.SIGTERM)
+        self.assertEqual(exit.exception.code, 128 + signal.SIGTERM)
+
+    def test_the_default_sleep_is_cut_short_by_a_signal(self):
+        STOP.handle(signal.SIGTERM)
+        started = time.monotonic()
+        STOP.sleep(30)
+        self.assertLess(time.monotonic() - started, 1)
+
+
+class StopDeadlineTests(SimpleTestCase):
+    """A pass that reaches no checkpoint in time is cut at its next query outside a transaction, never inside one."""
+
+    def test_after_the_deadline_the_next_query_outside_a_transaction_raises_once(self):
+        now = [100.0]
+        stop = Stop(clock=lambda: now[0])
+        execute = Mock(return_value='rows')
+        outside, inside = {'connection': Mock(in_atomic_block=False)}, {'connection': Mock(in_atomic_block=True)}
+        self.assertEqual(stop.on_query(execute, 'SELECT 1', None, False, outside), 'rows')
+        stop.handle(signal.SIGTERM)
+        now[0] += STOP_DEADLINE_SECONDS - 1
+        self.assertEqual(stop.on_query(execute, 'SELECT 1', None, False, outside), 'rows')  # still time to reach a checkpoint
+        now[0] += 1
+        self.assertEqual(stop.on_query(execute, 'UPDATE x', None, False, inside), 'rows')  # a unit already begun commits whole
+        with self.assertRaises(WorkerStopping):
+            stop.on_query(execute, 'SELECT 2', None, False, outside)
+        self.assertEqual(stop.on_query(execute, 'UPDATE lease', None, False, outside), 'rows')  # giving the lease back still runs
+        self.assertEqual([call.args[0] for call in execute.call_args_list], ['SELECT 1', 'SELECT 1', 'UPDATE x', 'UPDATE lease'])
+
+    def test_main_installs_the_handlers_for_the_service_and_manual_passes(self):
+        with patch('django.setup'), patch('mall.matching_worker.process_queue'), patch('mall.matching_runner.run') as runner:
+            main(['--once'])
+            main([])
+        self.assertEqual([call.kwargs['signals'] for call in runner.call_args_list], [True, True])
+        from . import apiag_sync_runner, quote_holds_runner
+        for module in (apiag_sync_runner, quote_holds_runner):
+            with patch('django.setup'), patch(f'{module.__name__}.run') as runner:
+                module.main([])
+            self.assertTrue(runner.call_args.kwargs['signals'], module.__name__)
+        self.assertEqual(runner.call_args.kwargs['idle_under'], ('all',))  # quote-holds

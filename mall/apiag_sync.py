@@ -35,6 +35,7 @@ from . import apiag_client
 from .apiag_models import ApiagConnection
 from .apiag_sync_models import ApiagSucursal, ApiagSync, SupplierItemBranchStock
 from .apiag_tokens import TokenUnreadable, token
+from .matching_runner import WorkerStopping, checkpoint
 from .models import Account, SupplierItem
 from .serializers import InventorySerializer
 from .services import ingest_inventory
@@ -292,6 +293,7 @@ def pull(sync, lease, now, state):
     while True:
         totals, samples, seen, first, after, restart = Counter(), [], set(), None, 0, False
         while True:
+            checkpoint()  # a stop signal or the catalog freeze ends the pull here, between two pages
             if clock.monotonic() - started > RUN_LIMIT.total_seconds():
                 raise SyncFailed('timeout', 'La sincronización tardó demasiado y se detuvo; la próxima continúa desde el mismo punto.')
             params = {'limit': PAGE_SIZE, 'after': after, **({'since': since} if since else {})}
@@ -364,6 +366,11 @@ def process_due(*, force=False, use_ai=True):
     fenced = ApiagSync.objects.filter(pk=sync.pk, lease=lease)
     try:
         summary = run(sync, lease, now)
+    except WorkerStopping:
+        # Stopped between pages (a stop signal or the catalog freeze): the pages applied stay, the cursor does not move and the row
+        # looks as it did before the claim, so the same pull starts again as soon as the service is back.
+        fenced.update(lease=None, lease_until=None, stage=sync.stage, started_at=sync.started_at, next_run_at=sync.next_run_at, progress={})
+        raise
     except SyncFailed as failure:
         permanent = failure.status in PERMANENT
         fenced.update(completed=revision, lease=None, lease_until=None, stage='paused' if permanent else 'failed',

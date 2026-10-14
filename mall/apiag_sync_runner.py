@@ -1,5 +1,6 @@
 """The apiag-sync service: pulls each supplier's apiag-cloud (mall.apiag_sync), one pull per pass, on the matching runner's loop
-(heartbeat, backoff, fresh connections after a failure).
+(heartbeat, backoff, fresh connections after a failure). It idles while the catalog freeze is on, and SIGTERM stops a pull after its
+current page.
 
     python -m mall.apiag_sync_runner                 the service (docker compose: apiag-sync)
     python -m mall.apiag_sync_runner --once          one pass by hand
@@ -25,7 +26,7 @@ def main(argv=None):
     import django
     django.setup()
     from .apiag_sync import process_due
-    run(process_due, once=options.once, heartbeat=Heartbeat('' if options.once else HEARTBEAT_FILE))
+    run(process_due, once=options.once, heartbeat=Heartbeat('' if options.once else HEARTBEAT_FILE), signals=True)
 
 
 if __name__ == '__main__':
