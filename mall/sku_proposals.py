@@ -4,9 +4,10 @@ Supplier items the matching worker could tie to no SKU become one proposal per p
 supplier). An administrator approves it, and the SKU is created with the same rules as «Crear SKU» and its items are linked. The
 administrator can instead link it to an existing SKU or reject it. Nothing reaches the catalog without that decision.
 
-Which items: pending ones with no SKU whose matching case found no candidate at all (unmatched), or whose candidates an administrator
-already turned down (dismissed). Items with plausible SKUs stay in Agrupación inteligente, and an item that gains one leaves its
-proposal. A short code, or a blank or placeholder brand (GENERICO, S/M...), is too common to say two suppliers sell the same product:
+Which items: pending ones with no SKU whose matching case found no code evidence (unmatched: no exact code, remembered mapping,
+declared or labelled reference, OEM library hit or code family; description words only leave hints on the case, owner decision D1),
+or whose candidates an administrator already turned down (dismissed). Items a code ties to SKUs stay in Agrupación inteligente, and
+an item that gains such a code leaves its proposal. A short code, or a blank or placeholder brand (GENERICO, S/M...), is too common to say two suppliers sell the same product:
 those items stay one proposal per supplier.
 
 What a proposal starts with comes from the suppliers' own data. The SKU is the code as printed and the description the most detailed
@@ -169,7 +170,8 @@ def busy_suppliers():
 
 def candidate_items(*, busy=False):
     """Items a proposal may hold: pending, no SKU, an active supplier, a code with letters or digits, and a supplier matching case that
-    found no candidate (unmatched) or whose candidates were turned down (dismissed). Suppliers mid-import wait, unless busy=True."""
+    found no code evidence (unmatched, its word hints included) or whose candidates were turned down (dismissed). Suppliers mid-import
+    wait, unless busy=True."""
     rows = (SupplierItem.objects.filter(part__isnull=True, matching_status='pending', supplier__active=True, codigo__regex=r'[0-9A-Za-z]')
             .filter(Exists(MatchingCase.objects.filter(item=OuterRef('pk'), kind='supplier', status__in=CANDIDATE_CASES))))
     return rows if busy else rows.exclude(supplier_id__in=busy_suppliers())

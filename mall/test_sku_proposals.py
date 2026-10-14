@@ -327,3 +327,22 @@ class SkuProposalTests(APITestCase):
         self.assertEqual(list(moved.items.values_list('item_id', flat=True)), [first.pk])
         proposal.refresh_from_db()
         self.assertEqual((proposal.items.count(), proposal.sku, proposal.status), (1, '12-345-678', 'pending'))
+
+    def test_items_with_no_code_evidence_become_proposals_and_their_hints_reach_the_ai_review(self):
+        from .matching_engine import NO_CODE_EVIDENCE, MatchIndex, reconcile_items
+        from .sku_review import candidates
+        lamp = Part.objects.create(sku='58411-07000', description='FAROL DELANTERO MOLDURA CROMADA')
+        Part.objects.create(sku='025CHA-1504110', description='TAPA KAIYI FX11 2025')   # only the make, model and year in common
+        item = self.item(self.dealer, '30', 'F16-4121020-01AA', 'KAIYI', 'FAROL KAIYI FX11 2025 CROMADA', case=None)
+        coded = self.item(self.dealer, '31', '58411 07000', '', 'FAROL', case=None)   # its code is the SKU's: not a new product
+        reconcile_items(MatchIndex())
+        case = MatchingCase.objects.get(item=item)
+        self.assertEqual((case.status, case.method, [c['sku'] for c in case.candidates]), ('unmatched', NO_CODE_EVIDENCE, ['58411-07000']))
+        coded.refresh_from_db()
+        self.assertEqual(coded.part, lamp)
+        self.assertEqual(propose()['created'], 1)
+        proposal = self.proposal('F16-4121020-01AA')
+        self.assertEqual(list(proposal.items.values_list('item_id', flat=True)), [item.pk])
+        self.assertEqual([(c['kind'], c['id'], c['sku']) for c in candidates(proposal)], [('part', str(lamp.pk), '58411-07000')])
+        Part.objects.filter(pk=lamp.pk).update(active=False)   # a retired SKU is no longer a possible duplicate
+        self.assertEqual(candidates(proposal), [])

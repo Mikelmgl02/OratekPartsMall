@@ -29,6 +29,8 @@ from .ai_budget import AssistantDisabled, AssistantLimit, check_monthly, estimat
 from .catalog_classification import (PROVIDER_TIMEOUT, ClassificationConflict, ClassificationProviderError, ClassificationUnavailable,
                                      generate_json, provider_configuration)
 from .category_suggestions import taxonomy
+from .matching_engine import NO_CODE_EVIDENCE
+from .matching_models import MatchingCase
 from .models import Part, SupplierItem
 from .sku_proposal_models import SkuProposal
 from .sku_proposals import PLACEHOLDER_BRANDS, ai_fill, catalog_owners, clean, duplicate_checks, vehicle_makes
@@ -43,6 +45,7 @@ CLAIM_SECONDS = PROVIDER_TIMEOUT + 30
 FEATURE = 'sku_review'
 SIBLINGS = 5
 CANDIDATES = 4
+HINTS = 3                     # the matching engine's description hints the AI sees as candidates, after the code-base ones
 DECISION_EXAMPLES = 15
 GOOD_CONFIDENCE = 80          # a good verdict needs at least this; below it is unsure
 BAD_CONFIDENCE = 80           # so does a bad one: it goes into «Rechazar N malas»
@@ -137,17 +140,30 @@ def siblings(proposal, item_ids):
 
 
 def candidates(proposal):
-    """Possibly the same product: other pending proposals and catalog SKUs whose code shares this one's base."""
-    base = code_base(proposal.sku)
-    if len(base) < 5:
-        return []
-    found = [{'kind': 'proposal', 'id': str(pk), 'sku': sku, 'descripcion': clean(description)[:120]}
-             for pk, sku, description in SkuProposal.objects.filter(status='pending', sku__istartswith=base).exclude(pk=proposal.pk)
-             .values_list('pk', 'sku', 'description').order_by('sku')[:CANDIDATES]]
-    found += [{'kind': 'part', 'id': str(pk), 'sku': sku, 'descripcion': clean(description)[:120]}
-              for pk, sku, description in Part.objects.filter(active=True, merged_into__isnull=True, sku__istartswith=base)
-              .values_list('pk', 'sku', 'description').order_by('sku')[:CANDIDATES - len(found)]] if len(found) < CANDIDATES else []
-    return found
+    """Possibly the same product: other pending proposals and catalog SKUs whose code shares this one's base, then the hints the
+    matching engine left on its items' cases (word_hints)."""
+    base, found = code_base(proposal.sku), []
+    if len(base) >= 5:
+        found = [{'kind': 'proposal', 'id': str(pk), 'sku': sku, 'descripcion': clean(description)[:120]}
+                 for pk, sku, description in SkuProposal.objects.filter(status='pending', sku__istartswith=base).exclude(pk=proposal.pk)
+                 .values_list('pk', 'sku', 'description').order_by('sku')[:CANDIDATES]]
+        found += [{'kind': 'part', 'id': str(pk), 'sku': sku, 'descripcion': clean(description)[:120]}
+                  for pk, sku, description in Part.objects.filter(active=True, merged_into__isnull=True, sku__istartswith=base)
+                  .values_list('pk', 'sku', 'description').order_by('sku')[:CANDIDATES - len(found)]] if len(found) < CANDIDATES else []
+    seen = {row['id'] for row in found}
+    return found + [row for row in word_hints(proposal) if row['id'] not in seen][:HINTS]
+
+
+def word_hints(proposal):
+    """Catalog SKUs the matching engine found for the proposal's items by description only (the same description or shared rare
+    words) when no code tied them to a SKU: possibly the same product, never evidence. Retired and merged SKUs are left out."""
+    ids = []
+    for rows in (MatchingCase.objects.filter(item__sku_proposal__proposal=proposal, kind='supplier', status='unmatched', method=NO_CODE_EVIDENCE)
+                 .order_by('key').values_list('candidates', flat=True)):
+        ids += [row['id'] for row in rows if row.get('id') and row['id'] not in ids]
+    live = {str(pk): (sku, description) for pk, sku, description in
+            Part.objects.filter(pk__in=ids, active=True, merged_into__isnull=True).values_list('pk', 'sku', 'description')} if ids else {}
+    return [{'kind': 'part', 'id': pk, 'sku': live[pk][0], 'descripcion': clean(live[pk][1])[:120]} for pk in ids if pk in live]
 
 
 def evidence(proposal, makes):
