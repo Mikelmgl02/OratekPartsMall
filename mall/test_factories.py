@@ -4,7 +4,7 @@ The factories speak the target's terms (supplier, line, reference, variant, libr
 the app itself uses. Each stage of the refactor changes these functions, not the hundreds of tests built on them:
 
 - make_line: an OEM line, today a catalog Part.
-- make_reference: one of the line's codes, today a PartCode; tipo is the target's name for ref_type (oem, aftermarket, otro).
+- make_reference: one of the line's codes, a Reference (PartCode until S2a); tipo oem, aftermarket, interno or otro, ref_type in step.
 - make_variant: a supplier's item, today a SupplierItem loaded through ingest_inventory like an upload.
 - make_library_number: a number of the OEM library, today an OEMReference with one source.
 - make_account, make_supplier, make_client: accounts with one role and their members.
@@ -20,13 +20,13 @@ from django.db import connection
 from django.db.migrations.loader import MigrationLoader
 
 from . import catalog_suffixes
-from .models import Account, Membership, Part, PartCode, Role, User
+from .models import Account, Membership, Part, Reference, Role, User
 from .oem_reference import upsert_reference
 from .services import ingest_inventory
 
 PASSWORD = 'Example938!'
-# The target's Reference tipo -> today's PartCode.ref_type.
-REF_TYPES = {'oem': 'oem', 'aftermarket': 'company', 'otro': 'unknown'}
+# The target's Reference tipo -> the legacy ref_type Reference.save keeps in step until S10.
+REF_TYPES = {'oem': 'oem', 'aftermarket': 'company', 'interno': 'unknown', 'otro': 'unknown'}
 
 
 def make_user(username, *, password=PASSWORD, superuser=False):
@@ -62,8 +62,9 @@ def make_catalog(rows):
 
 
 def make_reference(line, code, *, brand='', tipo='otro', source='', **fields):
-    """One of the line's codes. brand '' means any brand; source is where the equivalence came from (reference_source)."""
-    return PartCode.objects.create(part=line, code=code, brand=brand, ref_type=REF_TYPES[tipo], reference_source=source, **fields)
+    """One of the line's codes, written as it is (no key check: a test may need a clash). brand '' means any brand; source is where
+    the equivalence came from (reference_source); estado, supplier... pass through."""
+    return Reference.objects.create(part=line, code=code, brand=brand, tipo=tipo, ref_type=REF_TYPES[tipo], reference_source=source, **fields)
 
 
 def make_variant(supplier, invent_id, code, quantity=0, *, actor=None, brand='', description='', line=None, **data):

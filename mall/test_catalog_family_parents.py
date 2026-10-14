@@ -8,6 +8,7 @@ from rest_framework.test import APITestCase
 
 from .catalog_families import family_candidates
 from .catalog_import import load_job_groups, replace_job_groups
+from . import references
 from .models import Account, CatalogImportJob, CatalogMerge, Membership, Part, PartCode, PartImage, Role, StockEntry, SupplierItem, User
 from .services import ingest_inventory
 
@@ -119,7 +120,7 @@ class MissingCatalogParentTests(APITestCase):
         self.assertEqual(self.client.get(self.grouping).data['count'], 0)
         self.assertEqual(self.client.post(self.grouping + 'merge/', {**payload, 'create_target': True}, format='json').status_code, 400)
         self.assertFalse(Part.objects.filter(sku=self.base).exists())
-        unrelated.codes.all().delete()
+        references.retire(unrelated.codes.all())  # a retired code holds nothing
         response = self.client.post(self.grouping + 'merge/', {**payload, 'create_target': True}, format='json')
         self.assertEqual(response.status_code, 200, response.data)
         self.assertTrue(response.data['summary']['target_created'])

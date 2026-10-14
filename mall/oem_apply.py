@@ -3,7 +3,7 @@
 apply_auto() grades the catalog like a dry run and applies only AUTO_FLAG_CURRENT, AUTO_RENAME_BASE and the renames whose tags the
 owner confirmed (STRONG_PENDING_OWNER_TAGS in the design), in stock first, in batches of at most 100, after a canary. Each row runs
 in its own transaction: lock the Part's supplier Accounts then the Part, re-check it against the snapshot (SKU, description,
-taxonomy, OEM flag, codes, no new claimant), write the verified OEM PartCode and let catalog_identity.prefer_oem flag or rename the
+taxonomy, OEM flag, codes, no new claimant), write the verified OEM Reference and let catalog_identity.prefer_oem flag or rename the
 SAME Part UUID (the old SKU stays as an alterno). Every applied row links its CatalogIdentityChange to the run in OEMFinderChange
 (evidence plus what an undo needs). A ValidationError from prefer_oem turns the row into a CONFLICT review case, never a retry.
 revert_run() undoes a run or one Part of it, idempotently. Nothing here calls an AI provider.
@@ -24,7 +24,8 @@ from . import oem_finder as of
 from .catalog_families import normalized_reference
 from .catalog_identity import prefer_oem, reference_owners, reference_pattern, rename_conflicts
 from .lines import all_lines
-from .models import Account, CatalogIdentityChange, Part, PartCode, SupplierItem
+from . import references
+from .models import Account, CatalogIdentityChange, Part, Reference, SupplierItem
 
 APPLY_TIERS = of.APPLY_TIERS
 FLAG = 'AUTO_FLAG_CURRENT'
@@ -196,7 +197,7 @@ def new_claimant(known, pid, keys):
         for id_, sku, active, merged in all_lines().filter(sku__iregex=rx).exclude(pk=pid).values_list('id', 'sku', 'active', 'merged_into_id'):
             if key in normalized_reference(sku) and known.parts.get(str(id_)) != (sku, active, str(merged) if merged else None):
                 return sku
-        for part_id, code, brand in PartCode.objects.filter(code__iregex=rx).exclude(part_id=pid).values_list('part_id', 'code', 'brand'):
+        for part_id, code, brand in Reference.objects.filter(code__iregex=rx).exclude(part_id=pid).values_list('part_id', 'code', 'brand'):
             if key in normalized_reference(code) and (str(part_id), code, brand) not in known.codes:
                 return code
         for part_id, codigo in SupplierItem.objects.filter(codigo__iregex=rx, part__isnull=False).exclude(part_id=pid).values_list('part_id', 'codigo'):
@@ -206,7 +207,7 @@ def new_claimant(known, pid, keys):
 
 
 def code_rows(pid):
-    return {c['id']: c for c in PartCode.objects.filter(part_id=pid).values('id', 'code', 'brand', 'ref_type', 'reference_source')}
+    return {c['id']: c for c in Reference.objects.filter(part_id=pid).values('id', 'code', 'brand', 'ref_type', 'reference_source')}
 
 
 def current_snapshot(part, codes):
@@ -222,21 +223,23 @@ def reference_source(tier, r, run_id):
 def code_conflict(part, code, brand):
     if len(code) > 120:
         return 'El OEM supera 120 caracteres y no puede guardarse como referencia.'
-    owner = PartCode.objects.filter(brand=brand, code=code).exclude(part=part.pk).values_list('part__sku', flat=True).first()
+    owner = (Reference.objects.filter(brand=brand, code=code).exclude(part=part.pk).values_list('part__sku', flat=True).first()
+             or references.conflicts(code, brand, line=part.pk).exclude(part=part.pk).values_list('part__sku', flat=True).first())
     return f'{brand} {code} ya es un alterno de {owner}.' if owner else ''
 
 
 def ensure_code(part, code, brand, ref_type, source):
-    """The (brand, code) reference on this Part: created, or retyped to a verified OEM when it existed unverified."""
+    """The (brand, code) reference on this Part: added (mall.references), or retyped to a verified OEM when it existed unverified."""
     problem = code_conflict(part, code, brand)
     if problem:
         raise ValidationError(problem)
-    existing = PartCode.objects.filter(part=part, brand=brand, code=code).first()
+    existing = Reference.objects.filter(part=part, brand=brand, code=code).first()
     if existing is None:
-        return PartCode.objects.create(part=part, code=code, brand=brand, ref_type=ref_type, reference_source=source)
+        existing, added = references.add(part, code, brand, ref_type=ref_type, source=source)
+        if added:
+            return existing
     if source and (existing.ref_type != ref_type or not existing.reference_source.strip()):
-        existing.ref_type, existing.reference_source = ref_type, source
-        existing.save(update_fields=['ref_type', 'reference_source'])
+        references.update(existing, ref_type=ref_type, reference_source=source)
     return existing
 
 
@@ -515,8 +518,8 @@ CODE_KEYS = ('id', 'code', 'brand', 'ref_type', 'reference_source')
 
 
 def written_rows(part, c):
-    """This Part's rows for one PartCode the apply wrote: the same id (edited since?) or the same brand and code (re-created since)."""
-    return list(PartCode.objects.filter(Q(pk=c['id']) | Q(brand=c['brand'], code=c['code']), part=part).values(*CODE_KEYS))
+    """This Part's live rows for one Reference the apply wrote: the same id (edited since?) or the same brand and code (re-created since)."""
+    return list(Reference.objects.filter(Q(pk=c['id']) | Q(brand=c['brand'], code=c['code']), part=part).values(*CODE_KEYS))
 
 
 def same_code(row, c):
@@ -524,9 +527,10 @@ def same_code(row, c):
 
 
 def revert_link(link_id, actor):
-    """Undo one applied row: the old SKU back (when nobody else holds it), the PartCodes the run created deleted and the ones it
-    retyped restored, the OEM flag cleared, a reverse CatalogIdentityChange written and reverted_at set. All or nothing: a row whose
-    SKU, grouping or written PartCodes were edited since is skipped untouched. Repeating it changes nothing."""
+    """Undo one applied row: the old SKU back (when nobody else holds it), the References the run created retired (mall.references:
+    never deleted) and the ones it retyped restored, the OEM flag cleared, a reverse CatalogIdentityChange written and reverted_at set.
+    All or nothing: a row whose SKU, grouping or written References were edited since is skipped untouched. Repeating it changes
+    nothing."""
     from .oem_finder_models import OEMFinderChange
     part_id = OEMFinderChange.objects.values_list('part_id', flat=True).get(pk=link_id)
     with transaction.atomic():
@@ -555,12 +559,9 @@ def revert_link(link_id, actor):
                     edited.append(row)
         if edited:  # all or nothing: a kept algo OEM would let reference reconciliation rename the SKU again
             raise Skip('codes_changed', ', '.join(sorted({f'{r["brand"]} {r["code"]}'.strip() for r in edited})))
-        PartCode.objects.filter(pk__in=[r['id'] for r in delete]).delete()
-        for pk, before in restore:  # save(), not update(): the OEM reference library follows the PartCode signals
-            code = PartCode.objects.get(pk=pk)
-            for k in CODE_KEYS[1:]:
-                setattr(code, k, before[k])
-            code.save(update_fields=list(CODE_KEYS[1:]))
+        references.retire([r['id'] for r in delete], actor=actor, reason=f'Deshecho el buscador OEM (corrida {link.run_id})')
+        for pk, before in restore:  # one save each, not a queryset update: the OEM reference library follows the Reference signals
+            references.update(Reference.objects.get(pk=pk), actor=actor, **{k: before[k] for k in CODE_KEYS[1:]})
         fields = ['is_OEM']
         # A code that is a declared or verified number of the OEM list stays OEM: that is what OEM means, whoever flagged it first.
         from .catalog_identity import exact_listed

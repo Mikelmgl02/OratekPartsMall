@@ -8,7 +8,8 @@ from rest_framework.test import APITestCase
 
 from . import oem_apply as oa
 from . import oem_reference as orf
-from .models import Part, PartCode, User
+from . import references
+from .models import Part, PartCode, Reference, User
 from .oem_reference import (classify_number, compact, derived_status, linked_parts, refresh_status, source_of,
                             upsert_reference)
 from .oem_reference_models import OEMReference, OEMReferenceSource
@@ -175,21 +176,24 @@ class SyncTests(Fresh, TestCase):
         self.assertEqual([(s.kind, s.citation) for s in ref.sources.all()], [('catalog_approval', 'CATÁLOGO TOYOTA EPC 2024')])
         self.assertEqual((ref.status, ref.version), ('declared', 2))
 
-    def test_retyping_renaming_or_deleting_the_alterno_removes_exactly_its_source(self):
+    def test_retyping_renaming_or_retiring_the_alterno_removes_exactly_its_source(self):
+        def numbers():
+            return sorted((ref.manufacturer, ref.code, ref.sources.count()) for ref in OEMReference.objects.all())
         code = oem(self.part, '17801-30070')
         code.ref_type = 'unknown'
         code.save()
-        self.assertFalse(OEMReference.objects.exists())  # its only source is gone: so is the reference
+        self.assertEqual(numbers(), [('TOYOTA', '1780130070', 0)])  # its only source is gone; the number stays (S2a: never deleted)
         code.ref_type = 'oem'
         code.save()
         code.code = '17801-30080'
         code.save()
-        self.assertEqual(list(OEMReference.objects.values_list('code', flat=True)), ['1780130080'])
+        self.assertEqual(numbers(), [('TOYOTA', '1780130070', 0), ('TOYOTA', '1780130080', 1)])
         code.brand = 'LEXUS'
         code.save()
-        self.assertEqual(list(OEMReference.objects.values_list('manufacturer', 'code')), [('LEXUS', '1780130080')])
-        code.delete()
-        self.assertFalse(OEMReference.objects.exists() or OEMReferenceSource.objects.exists())
+        self.assertEqual(numbers(), [('LEXUS', '1780130080', 1), ('TOYOTA', '1780130070', 0), ('TOYOTA', '1780130080', 0)])
+        references.retire(code)
+        self.assertEqual(numbers(), [('LEXUS', '1780130080', 0), ('TOYOTA', '1780130070', 0), ('TOYOTA', '1780130080', 0)])
+        self.assertFalse(OEMReferenceSource.objects.exists())
 
     def test_the_alterno_points_at_its_reference_through_every_change(self):
         code = oem(self.part, '17801-30070')
@@ -205,31 +209,33 @@ class SyncTests(Fresh, TestCase):
         self.assertIsNone(code.oem_reference)
         sister = oem(self.other, '17801-30070', source='LISTA TOYOTA')
         upsert_reference('TOYOTA', '1780130070', source_kind='price_list', citation='LISTA 2026')
-        sister.delete()  # the reference outlives it (price list): nothing else changes
-        self.assertTrue(self.ref().sources.filter(kind='price_list').exists())
+        references.retire(sister)  # the reference keeps its price list and loses the source the alterno backed
+        self.assertEqual([source.kind for source in self.ref().sources.all()], ['price_list'])
+        sister.refresh_from_db()
+        self.assertEqual((sister.estado, sister.oem_reference), ('retirada', self.ref()))  # a retired alterno keeps its number, as history
 
     def test_a_source_backed_by_two_alternos_stays_until_the_last_one_goes(self):
         first, second = oem(self.part, '17801-30070'), oem(self.other, '1780130070')
         ref = self.ref()
         source = ref.sources.get()
         self.assertEqual(([e['id'] for e in source.detail['part_codes']], ref.printed_forms), ([first.pk, second.pk], ['17801-30070']))
-        first.delete()
+        references.retire(first)
         self.assertEqual([e['id'] for e in self.ref().sources.get().detail['part_codes']], [second.pk])
-        PartCode.objects.filter(pk=second.pk).delete()  # a queryset delete sends the same signal
-        self.assertIsNone(self.ref())
+        references.retire(Reference.objects.filter(pk=second.pk))  # a queryset retires one row at a time: the same signal
+        self.assertEqual((self.ref().sources.count(), self.ref().status), (0, 'inferred'))  # the number stays, with no source
 
     def test_a_reference_with_other_sources_or_human_input_outlives_the_alterno(self):
         code = oem(self.part, '17801-30070')
         upsert_reference('TOYOTA', '17801-30070', source_kind='manual', citation='LISTA DISTRIBUIDOR 2026 P. 4', detail={'verified': False})
         self.assertEqual(self.ref().status, 'declared')
-        code.delete()
+        references.retire(code)
         ref = self.ref()
         self.assertEqual(([s.kind for s in ref.sources.all()], ref.status), (['manual'], 'declared'))
         other = oem(self.other, '17801-30080')
         disputed = self.ref('1780130080')
         disputed.status, disputed.dispute_note = 'disputed', 'ES UN FILTRO DE CABINA'
         disputed.save()
-        other.delete()
+        references.retire(other)
         disputed = self.ref('1780130080')
         self.assertEqual((disputed.status, disputed.sources.count()), ('disputed', 0))
 
@@ -250,7 +256,7 @@ class SyncTests(Fresh, TestCase):
             company = oem(self.part, 'ALT-17801', 'ACME', '', ref_type='company')
             company.code = 'ALT-17802'
             company.save()
-            company.delete()
+            references.retire(company)
         self.assertFalse(any('oemreference' in q['sql'].lower() for q in queries.captured_queries))
         oem(self.part, '17801-30070', brand='')
         self.assertFalse(OEMReference.objects.exists())
@@ -264,7 +270,8 @@ class SyncTests(Fresh, TestCase):
         self.assertEqual(response.status_code, 201, response.content)
         self.assertEqual((self.ref().status, self.ref().sources.get().kind), ('verified', 'ai_lookup'))
         self.assertEqual(self.client.delete(f'/api/v1/management/alternates/{response.json()["id"]}/').status_code, 204)
-        self.assertFalse(OEMReference.objects.exists())
+        self.assertEqual(Reference.all_objects.get(pk=response.json()['id']).estado, 'retirada')  # retired, not deleted
+        self.assertEqual((OEMReference.objects.count(), OEMReferenceSource.objects.count()), (1, 0))  # the number stays without its source
 
 
 class ApplyRevertSyncTests(Catalog, TestCase):
@@ -276,7 +283,7 @@ class ApplyRevertSyncTests(Catalog, TestCase):
         self.assertEqual((ref.printed_forms, ref.system, ref.family, ref.part_type), (['48654-30030'], 'TOYOTA', '48654', 'BASE AMORT'))
         self.assertEqual((ref.sources.get().citation, ref.sources.get().detail['run']), (f'algo:oem-finder:v3:current:{run.pk}', run.pk))
         self.assertEqual(oa.revert_run(run.pk)['reverted'], 11)
-        self.assertFalse(OEMReference.objects.exists())
+        self.assertEqual((OEMReference.objects.count(), OEMReferenceSource.objects.count()), (11, 0))  # the numbers stay (S2a), unbacked
 
     def test_a_rename_and_the_restore_of_a_retyped_alterno(self):
         part = self.part('54830-2H000-MOBIS')
@@ -288,7 +295,7 @@ class ApplyRevertSyncTests(Catalog, TestCase):
         self.assertEqual(len(self.link('54830-2H000-MOBIS').undo['updated_codes']), 1)
         self.assertEqual(oa.revert_run(run.pk)['reverted'], 1)
         self.assertEqual(PartCode.objects.get(code='54830-2H000').ref_type, 'unknown')
-        self.assertFalse(OEMReference.objects.exists())
+        self.assertFalse(OEMReference.objects.get().sources.exists())
 
     def test_a_disputed_number_is_never_applied_again(self):
         from .catalog_identity import unmark_disputed
@@ -333,14 +340,14 @@ class MissingTablesTests(Fresh, TestCase):
             with self.assertNoLogs('mall.oem_reference', level='WARNING'):
                 code.reference_source = 'OTRA FUENTE'
                 code.save()
-                code.delete()
+                references.retire(code)
             self.assertEqual(Part.objects.count(), 1)  # the failed sync ran in a savepoint: the transaction is still usable
-            self.assertEqual(PartCode.objects.count(), 0)
+            self.assertEqual((Reference.objects.count(), Reference.all_objects.get().estado), (0, 'retirada'))
             for response in (self.client.get(URL), self.client.post(URL, {'manufacturer': 'TOYOTA', 'code': '1'}, content_type='application/json'),
                              self.client.get(f'{URL}00000000-0000-4000-8000-000000000001/')):
                 self.assertEqual(response.status_code, 503)
                 self.assertIn('migraciones', response.json()['detail'])
-        oem(part, '17801-30070')
+        references.add(part, '17801-30070', 'TOYOTA', ref_type='oem', source=ALGO)  # added again: the retired alterno comes back
         self.assertEqual(OEMReference.objects.count(), 1)
 
     def test_an_unexpected_sync_error_is_logged_and_never_breaks_the_save(self):
@@ -540,8 +547,8 @@ class APITests(Fresh, APITestCase):
         cleared = self.patch({'action': 'clear_dispute'})
         self.assertEqual((cleared.data['status'], cleared.data['dispute_note']), ('inferred', ''))
         self.assertEqual(self.patch({'action': 'clear_dispute'}).data['version'], cleared.data['version'])
-        self.code.delete()  # the last automatic source goes with its alterno
-        self.assertFalse(OEMReference.objects.exists())
+        references.retire(self.code)  # the last automatic source goes with its alterno; the number stays
+        self.assertEqual(OEMReference.objects.get().sources.count(), 0)
         ref, _ = upsert_reference('TOYOTA', '17801-30070', source_kind='price_list', citation='LISTA 2026')
         only = ref.sources.get()
         self.assertEqual(self.patch({'action': 'remove_source', 'source_id': only.pk}, ref).status_code, 400)  # never the last one

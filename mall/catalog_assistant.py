@@ -22,6 +22,7 @@ from .catalog_grouping import merge_catalog_parts
 from .management import IsSuperuser, UppercaseCharField
 from .lines import storefront_lines
 from .models import CatalogMerge, Part
+from .references import live_q
 
 
 class AssistantStart(serializers.Serializer):
@@ -64,7 +65,7 @@ def eligible_parts(scope, search):
         parts = parts.filter(Q(category='') | Q(subcategory=''))
     if search:
         parts = parts.filter(Q(sku__icontains=search) | Q(name__icontains=search) |
-            Q(description__icontains=search) | Q(codes__code__icontains=search) |
+            Q(description__icontains=search) | Q(live_q('codes__'), codes__code__icontains=search) |
             Q(category__icontains=search) | Q(subcategory__icontains=search)).distinct()
     return parts.order_by('sku')
 

@@ -3,11 +3,12 @@
 normalize() is the spelling the table keeps; lookup() finds the brand a spelling names (its nombre or one of its aliases);
 familia_root() and same_familia() read the familia (KAIYI and CHERY are one familia: the same code is the same part across it, never
 the same brand alone); get_or_create() adds a brand for a new spelling. rename() and merge() are the only code that changes a nombre:
-they re-key the codes that carry it (Reference.brand, today PartCode.brand, which stays text until S10) in the same transaction, keep
+they re-key the codes that carry it (Reference.brand, which stays text until S10) in the same transaction, keep
 the old spelling as an alias, and open a merge case when a code would end up twice under one brand. resolve() (every spelling to its
 canonical brand, everywhere) comes with S6.
 """
 from django.db import transaction
+from django.db.models import Q
 
 from .brand_models import Brand, BrandAlias, normalize_name
 
@@ -103,26 +104,30 @@ def set_familia(brand, familia):
 
 
 def rekey(old, new, *, reason):
-    """Move the codes that carry the spelling `old` to `new` (PartCode.brand). A code already held under `new` stays where it is:
-    on another line it opens a merge case (the two lines may be one part, MatchingCase kind catalog_reference, reviewed in
-    Coincidencias), on the same line it is only listed. OEM alternos are saved one by one so the OEM library mirror follows them;
-    the rest move in one UPDATE. Returns {'moved', 'kept': [{id, code, part}], 'cases': [case ids]}."""
+    """Move the codes that carry the spelling `old` to `new` (Reference.brand), retired ones too, so every brand a code carries stays
+    a brand or an alias. A code already held under `new` stays where it is: when both are live and on two lines it opens a merge case
+    (the two lines may be one part, MatchingCase kind catalog_reference, reviewed in Coincidencias), otherwise it is only listed. OEM
+    alternos are saved one by one so the OEM library mirror follows them; the rest move in one UPDATE. Returns {'moved', 'kept':
+    [{id, code, part}], 'cases': [case ids]}."""
     from .matching_queue import enqueue_matching
-    from .models import PartCode
-    rows = list(PartCode.objects.select_for_update(of=('self',)).filter(brand=old).order_by('pk'))  # the codes only: lines stay unlocked
+    from .models import Reference
+    rows = list(Reference.all_objects.select_for_update(of=('self',)).filter(brand=old).order_by('pk'))  # the codes only: lines stay unlocked
     if not rows:
         return {'moved': 0, 'kept': [], 'cases': []}
-    taken = {row.code: row for row in PartCode.objects.select_for_update(of=('self',)).filter(brand=new, code__in=[r.code for r in rows])}
+    held = list(Reference.all_objects.select_for_update(of=('self',)).filter(brand=new)
+                .filter(Q(code__in=[r.code for r in rows]) | Q(clave__in=[r.clave for r in rows])).order_by('pk'))
+    by_code = {row.code: row for row in held}  # the printed code under `new`, whatever its estado (unique_brand_code until 0074)
+    by_key = {row.clave: row for row in held if row.estado in Reference.EXCLUSIVE}  # its key, held by a live one
     moving, kept, cases = [], [], []
     for row in rows:
-        other = taken.get(row.code)
+        other = by_code.get(row.code) or (by_key.get(row.clave) if row.estado in Reference.EXCLUSIVE else None)
         if other is None:
             moving.append(row)
             continue
         kept.append({'id': row.pk, 'code': row.code, 'part': str(row.part_id)})
-        if other.part_id != row.part_id:
+        if other.part_id != row.part_id and 'retirada' not in (row.estado, other.estado):
             cases.append(open_merge_case(row, other, old, new, reason))
-    PartCode.objects.filter(pk__in=[row.pk for row in moving if row.ref_type != 'oem']).update(brand=new)
+    Reference.all_objects.filter(pk__in=[row.pk for row in moving if row.ref_type != 'oem']).update(brand=new)
     for row in moving:
         if row.ref_type == 'oem':
             row.brand = new

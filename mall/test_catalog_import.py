@@ -194,7 +194,7 @@ class CatalogImportTests(APITestCase):
     def test_failed_batch_rolls_back_skus_as_well_as_codes(self):
         raw = self.excel([['NEW', '', '', 'NEW-ALT']])
         preview = self.upload(raw).data
-        with patch('mall.catalog_import.PartCode.objects.bulk_create', side_effect=IntegrityError('Concurrent duplicate')):
+        with patch('mall.catalog_import.references.bulk_create', side_effect=IntegrityError('Concurrent duplicate')):
             self.assertEqual(self.upload(raw, mode='import', preview_token=preview['preview_token']).status_code, 409)
         self.assertEqual(Part.objects.count(), 0)
         self.assertEqual(PartCode.objects.count(), 0)
@@ -239,7 +239,7 @@ class CatalogImportTests(APITestCase):
         self.assertEqual(Part.objects.count(), 500)
         self.assertEqual(self.client.post(url, {'batch_index': 0}).data['progress']['completed_batches'], 1)
         self.assertEqual(Part.objects.count(), 500)
-        with patch('mall.catalog_import.PartCode.objects.bulk_create', side_effect=IntegrityError('Concurrent duplicate')):
+        with patch('mall.catalog_import.references.bulk_create', side_effect=IntegrityError('Concurrent duplicate')):
             self.assertEqual(self.client.post(url, {'batch_index': 1}).status_code, 409)
         self.assertEqual(Part.objects.count(), 500)
         self.assertEqual(PartCode.objects.count(), 500)

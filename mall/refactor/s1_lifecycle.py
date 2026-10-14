@@ -47,7 +47,7 @@ from collections import Counter, defaultdict
 
 STAGE = 's1'
 EXPECTED = {'publicada': 31526, 'unificada': 2472, 'retirada': 232, 'proveedor': 123, 'marcas': 270}  # plan §3 S1, 2026-10-13
-COLUMNS = (('SupplierItem', 'brand'), ('PartCode', 'brand'), ('OEMReference', 'manufacturer'), ('OEMCrossReference', 'brand'),
+COLUMNS = (('SupplierItem', 'brand'), ('Reference', 'brand'), ('OEMReference', 'manufacturer'), ('OEMCrossReference', 'brand'),
            ('SkuProposal', 'brand'), ('SkuProposal', 'oem_brand'), ('SupplierCodeMapping', 'brand'), ('OEMReviewCase', 'brand'),
            ('OEMAutoCandidate', 'brand'), ('OEMFinderChange', 'brand'), ('BasketEvent', 'brand'), ('SupplierRequestLine', 'brand'),
            ('Part', 'legacy_brand'))
@@ -303,15 +303,15 @@ def brand_plan():
     from ..sku_proposals import vehicle_makes
     spellings, written = defaultdict(set), defaultdict(set)
     for model, field in COLUMNS:
-        for value in apps.get_model('mall', model).objects.exclude(**{field: ''}).values_list(field, flat=True).distinct():
+        for value in apps.get_model('mall', model)._base_manager.exclude(**{field: ''}).values_list(field, flat=True).distinct():  # retired rows too
             name = normalize(value)
             if name:
                 spellings[name].add(f'{model}.{field}')
                 written[name].add(value.strip().upper())
     library = {name for name, sources in spellings.items() if 'OEMReference.manufacturer' in sources}
     crossref = {name for name, sources in spellings.items() if 'OEMCrossReference.brand' in sources}
-    PartCode = apps.get_model('mall', 'PartCode')
-    company = {normalize(b) for b in PartCode.objects.filter(ref_type='company').exclude(brand='').values_list('brand', flat=True).distinct()}
+    Reference = apps.get_model('mall', 'Reference')  # PartCode until S2a
+    company = {normalize(b) for b in Reference._base_manager.filter(ref_type='company').exclude(brand='').values_list('brand', flat=True).distinct()}
     tags, skipped_tags = tag_names(spellings)
     makes = {normalize(token): normalize(make) for token, make in vehicle_makes().items()}
     vehicle = (library | set(makes.values()) | {normalize(make) for make in EXTRA_MAKES} | {normalize(make) for make in EXTRA_MAKES.values()}

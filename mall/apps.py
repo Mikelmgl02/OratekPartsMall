@@ -13,18 +13,20 @@ class MallConfig(AppConfig):
         post_delete.connect(images_deleted, sender=PartImage, dispatch_uid='catalog_image_cleanup')
 
         from django.db.models.signals import post_save
-        from .models import Part, PartCode
+        from .models import Part, Reference
         from .matching_queue import enqueue_matching
-        for model in (Part, PartCode):
-            post_save.connect(enqueue_matching, sender=model, dispatch_uid=f'matching_save_{model.__name__}')
-            post_delete.connect(enqueue_matching, sender=model, dispatch_uid=f'matching_delete_{model.__name__}')
+        # The uids keep their pre-S2a names (PartCode), so a reload never connects a handler twice.
+        for model, name in ((Part, 'Part'), (Reference, 'PartCode')):
+            post_save.connect(enqueue_matching, sender=model, dispatch_uid=f'matching_save_{name}')
+            post_delete.connect(enqueue_matching, sender=model, dispatch_uid=f'matching_delete_{name}')
 
-        # The OEM reference library mirrors every OEM alterno; the handlers never break the PartCode write.
+        # The OEM reference library mirrors every OEM alterno (a Reference of tipo oem with a brand) until S4 makes the References the
+        # library; the handlers never break the Reference write. A retire drops the source the alterno backed, never the number.
         from django.db.models.signals import pre_save
         from .oem_reference import partcode_deleted, partcode_pre_save, partcode_saved
-        pre_save.connect(partcode_pre_save, sender=PartCode, dispatch_uid='oem_reference_pre_save')
-        post_save.connect(partcode_saved, sender=PartCode, dispatch_uid='oem_reference_save')
-        post_delete.connect(partcode_deleted, sender=PartCode, dispatch_uid='oem_reference_delete')
+        pre_save.connect(partcode_pre_save, sender=Reference, dispatch_uid='oem_reference_pre_save')
+        post_save.connect(partcode_saved, sender=Reference, dispatch_uid='oem_reference_save')
+        post_delete.connect(partcode_deleted, sender=Reference, dispatch_uid='oem_reference_delete')
 
         # A renamed, created or grouped SKU refreshes the link to the OEM number its own code names; never breaks the Part write.
         from .oem_links import part_pre_save, part_saved

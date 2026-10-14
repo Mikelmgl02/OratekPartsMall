@@ -1,13 +1,14 @@
-"""OEM reference library service: compact numbers, idempotent upserts with provenance, the status rule, the PartCode mirror and the
+"""OEM reference library service: compact numbers, idempotent upserts with provenance, the status rule, the Reference mirror and the
 catalog SKUs that carry a number.
 
-The PartCode signal handlers mirror every OEM alterno (ref_type='oem' with a brand) wherever it is saved (OEM finder apply, Revisión
-OEM approval, catalog editor, AI lookup approval): an 'algo:' reference_source is the OEM finder (inferred), an http(s) one an AI
-lookup approved into the catalog (verified) and any other, blank included, a catalog approval (declared). Each automatic source lists
-the alternos that back it (detail.part_codes); deleting or retyping one (an undo, an edit) removes exactly that, the source when no
-alterno backs it any more and the reference when it has no sources left and nothing keeps it (curated: a dispute or notes, another
-SKU's alterno or a supplier catalog link; a name link does not, it only exists because the number does). The handlers run in a savepoint and never break the PartCode
-write; before migration 0039 they skip quietly. Nothing here renames a SKU, writes a PartCode or calls an AI provider.
+The Reference (PartCode until S10) signal handlers mirror every OEM alterno (tipo/ref_type oem with a brand) wherever it is saved (OEM
+finder apply, Revisión OEM approval, catalog editor, AI lookup approval): an 'algo:' reference_source is the OEM finder (inferred), an
+http(s) one an AI lookup approved into the catalog (verified) and any other, blank included, a catalog approval (declared). Each
+automatic source lists the alternos that back it (detail.part_codes); retiring or retyping one (an undo, an edit; inventory refactor
+S2a: nothing deletes a Reference) removes exactly that, and the source when no alterno backs it any more. The number itself stays:
+from S2a the mirror never deletes an OEMReference (OEM numbers are durable; S4 makes them References). The handlers run in a savepoint
+and never break the Reference write; before migration 0039 they skip quietly. Nothing here renames a SKU, writes a Reference or calls
+an AI provider.
 """
 import logging
 import re
@@ -24,7 +25,7 @@ log = logging.getLogger(__name__)
 VERIFIED_KINDS = {'price_list', 'manufacturer_catalog'}
 DECLARED_KINDS = {'aftermarket_catalog', 'supplier_declaration', 'catalog_approval', 'manual'}
 FILLABLE = ('description', 'part_type', 'applications')
-TRACKED = ('code', 'brand', 'ref_type', 'reference_source')
+TRACKED = ('code', 'brand', 'ref_type', 'reference_source', 'estado')
 ALGO_RE = re.compile(r'^algo:(?P<finder>[^:]+):(?P<version>[^:]+):(?P<rule>.+):(?P<run>\d+)$', re.I)
 # Characters the database strips where it has no REGEXP_REPLACE (SQLite): every separator the catalog's SKUs and codes use.
 SEPARATORS = ' -/_.+()#,:;*&\'"[]{}|\\°!?@$%=<>~`^\t'
@@ -51,7 +52,7 @@ def derived_status(sources):
 
 
 def source_of(text):
-    """(kind, citation, detail) of a PartCode.reference_source: 'algo:oem-finder:v2:current:7' is the OEM finder (run 7), an http(s)
+    """(kind, citation, detail) of a Reference.reference_source: 'algo:oem-finder:v2:current:7' is the OEM finder (run 7), an http(s)
     URL an AI lookup approved into the catalog, anything else (blank included) a catalog approval."""
     text = (text or '').strip()[:500]
     if text.lower().startswith('algo:'):
@@ -67,9 +68,9 @@ def values_of(partcode):
 
 
 def partcode_key(row):
-    """(manufacturer, compact code, kind, citation) of an OEM alterno, or None: other reference types are not OEM facts, and a
-    brandless OEM alterno names no manufacturer to file it under."""
-    if not row or row.get('ref_type') != 'oem':
+    """(manufacturer, compact code, kind, citation) of an OEM alterno, or None: other reference types are not OEM facts, a brandless
+    OEM alterno names no manufacturer to file it under, and a retired one backs nothing any more."""
+    if not row or row.get('ref_type') != 'oem' or row.get('estado') == 'retirada':
         return None
     manufacturer, number = manufacturer_name(row.get('brand')), compact(row.get('code'))
     if not manufacturer or not number or len(manufacturer) > 120 or len(number) > 60:
@@ -190,18 +191,11 @@ def upsert_reference(manufacturer, code, *, printed=None, source_kind, citation=
     return ref, False
 
 
-def curated(ref, leaving=None):
-    """Worth keeping even after its last automatic source is withdrawn: someone disputed, annotated or chained it, or a SKU is still
-    tied to it by evidence of its own (another SKU's alterno, or a supplier catalog's link), so withdrawing one alterno never takes
-    the number from the others. A name link (sku_name) does not count: it only exists because the number is in the list."""
-    return (ref.status == 'disputed' or bool(ref.notes.strip() or ref.applications.strip()) or bool(ref.superseded_by_id)
-            or ref.supersedes.exists() or ref.part_links.exclude(source='sku_name').exists() or ref.alternos.exclude(pk=leaving).exists())
-
-
 def remove_partcode_source(partcode, number=None, keep=None):
-    """Drop one PartCode from the automatic sources of a number (its own by default) that list it, except keep (the source it backs
-    now, whose reference the caller settles): a source goes when no alterno backs it any more and the reference when it has no
-    sources left (unless curated); otherwise the status is re-derived. Returns the references that changed."""
+    """Drop one Reference from the automatic sources of a number (its own by default) that list it, except keep (the source it backs
+    now, whose reference the caller settles): a source goes when no alterno backs it any more, and the number's status is re-derived.
+    The number stays even with no source left (from S2a the mirror never deletes an OEMReference). Returns the references that
+    changed."""
     number = compact(partcode.code if number is None else number)
     touched = {}
     for source_id, ref_id, kind, citation, detail in (OEMReferenceSource.objects.filter(reference__code=number, kind__in=AUTOMATIC_KINDS)
@@ -222,23 +216,22 @@ def remove_partcode_source(partcode, number=None, keep=None):
     for ref in touched.values():
         if keep and (ref.manufacturer, ref.code) == keep[:2]:
             continue  # the caller adds the new source next and re-derives the status then
-        if not ref.sources.exists() and not curated(ref, leaving=partcode.pk):
-            ref.delete()
-        else:
-            refresh_status(ref, changed=True)
+        refresh_status(ref, changed=True)
     return list(touched.values())
 
 
 def sync_from_partcode(partcode, before=None, created=False):
-    """Mirror one saved PartCode: an OEM alterno upserts its reference with the source its reference_source names, listing itself in
-    that source's part_codes; whatever it backed before (another type, number, brand or source) loses it."""
+    """Mirror one saved Reference: an OEM alterno upserts its reference with the source its reference_source names, listing itself in
+    that source's part_codes; whatever it backed before (another type, number, brand or source, or all of it once retired) loses it.
+    A retired alterno keeps pointing at its number, as history."""
     from .models import Part
     now, then = partcode_key(values_of(partcode)), partcode_key(before)
     if not created:
         for number in {key[1] for key in (now, then) if key}:
             remove_partcode_source(partcode, number=number, keep=now)
     if now is None:
-        link(partcode, None)
+        if partcode.estado != 'retirada':
+            link(partcode, None)
         return None
     manufacturer, number, kind, citation = now
     detail = {**source_of(partcode.reference_source)[2], 'part_codes': [{'id': partcode.pk, 'part': str(partcode.part_id), 'code': partcode.code}]}
@@ -253,15 +246,15 @@ def sync_from_partcode(partcode, before=None, created=False):
 
 def link(partcode, ref):
     """Point the alterno at its reference (or at none) with a queryset update, so the save signals do not run a second time."""
-    from .models import PartCode
+    from .models import Reference
     ref_id = ref.pk if ref is not None else None
     if partcode.oem_reference_id != ref_id:
-        PartCode.objects.filter(pk=partcode.pk).update(oem_reference=ref_id)
+        Reference.all_objects.filter(pk=partcode.pk).update(oem_reference=ref_id)
         partcode.oem_reference_id = ref_id
 
 
 def guarded(sync, *args):
-    """Run a library sync in a savepoint so it never breaks the PartCode write that triggered it; while the tables are not migrated
+    """Run a library sync in a savepoint so it never breaks the Reference write that triggered it; while the tables are not migrated
     it is skipped quietly (one warning per process)."""
     try:
         with transaction.atomic():
@@ -282,10 +275,11 @@ def guarded(sync, *args):
 
 
 def partcode_pre_save(sender, instance, raw=False, update_fields=None, **kwargs):
-    """What an existing PartCode was before this save, so a retyped or renamed OEM alterno leaves the source it backed."""
+    """What an existing Reference was before this save (retired or not), so a retyped, renamed or retired OEM alterno leaves the
+    source it backed."""
     if raw or instance._state.adding or instance.pk is None or (update_fields is not None and not set(update_fields) & set(TRACKED)):
         return
-    instance._oem_reference_before = sender.objects.filter(pk=instance.pk).values(*TRACKED).first()
+    instance._oem_reference_before = sender._base_manager.filter(pk=instance.pk).values(*TRACKED).first()
 
 
 def partcode_saved(sender, instance, created=False, raw=False, **kwargs):
@@ -314,7 +308,7 @@ def linked_parts(refs):
     codes moved to the SKU they were grouped into, and so are lines off the catalog (mall.lines.catalog_lines: a library number's
     own referencia line, a line in preparación)."""
     from .lines import catalog_lines, catalog_q
-    from .models import PartCode, PartOEMLink
+    from .models import PartOEMLink, Reference
     refs = list(refs)
     out, seen, by_number = {ref.pk: [] for ref in refs}, defaultdict(set), defaultdict(list)
     for ref in refs:
@@ -332,7 +326,7 @@ def linked_parts(refs):
                 .order_by('sku').values_list('id', 'sku', 'is_OEM', 'active', 'number')):
         for ref in by_number[row[4]]:
             add(ref, *row[:4], 'sku', row[1])
-    for row in (PartCode.objects.filter(catalog_q(prefix='part__')).annotate(number=compact_sql('code')).filter(number__in=numbers)
+    for row in (Reference.objects.filter(catalog_q(prefix='part__')).annotate(number=compact_sql('code')).filter(number__in=numbers)
                 .order_by('part__sku', 'code', 'pk').values_list('part_id', 'part__sku', 'part__is_OEM', 'part__active', 'ref_type', 'code',
                                                                   'brand', 'number')):
         for ref in by_number[row[7]]:
@@ -349,8 +343,8 @@ def linked_q():
     """Q for references some canonical catalog SKU carries (the linked_parts rule) on a queryset annotated with pair (manufacturer:code),
     as uncorrelated IN subqueries the database evaluates once."""
     from .lines import catalog_lines, catalog_q
-    from .models import PartCode, PartOEMLink
-    alternos = PartCode.objects.filter(catalog_q(prefix='part__'))
+    from .models import PartOEMLink, Reference
+    alternos = Reference.objects.filter(catalog_q(prefix='part__'))
     return (Q(code__in=catalog_lines().annotate(number=compact_sql('sku')).values('number'))
             | Q(code__in=alternos.exclude(ref_type='oem').annotate(number=compact_sql('code')).values('number'))
             | Q(pair__in=alternos.filter(ref_type='oem').annotate(pair=Concat('brand', Value(':'), compact_sql('code'), output_field=CharField()))

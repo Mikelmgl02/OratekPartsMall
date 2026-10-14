@@ -5,8 +5,8 @@ items print each one; the numbers a catalog files the code under) and decides ea
 
 - keep: the code stays as the SKU's alterno, marked confirmed (its source becomes "CONFIRMADO POR <USUARIO> · <cita>"), so the
   cleanup never treats it as a catalog copy again;
-- remove: the alterno is deleted;
-- remove_copies: the SKU's catalog alternos it already reaches through its numbers are deleted (customers keep seeing them).
+- remove: the alterno is retired (mall.references: it leaves the SKU's codes and stays as history);
+- remove_copies: the SKU's catalog alternos it already reaches through its numbers are retired (customers keep seeing them).
 """
 from django.db import transaction
 from drf_spectacular.utils import OpenApiResponse, extend_schema
@@ -18,7 +18,8 @@ from rest_framework.views import APIView
 from . import prune_catalog_alternos as prune
 from .lines import catalog_lines
 from .management import IsSuperuser
-from .models import Part, PartCode
+from . import references
+from .models import Part
 from .oem_links import part_equivalents
 from .oem_reference_models import OEMCrossReference, OEMReferenceSource, compact, manufacturer_name
 from .oem_reference_views import OEMReferenceLink, require_tables
@@ -174,15 +175,15 @@ class AlternateReviewItem(APIView):
             part = Part.objects.select_for_update().filter(pk=canonical(pk).pk).first()
             undecided, copies = catalog_alternos(part)
             if action == 'remove_copies':
-                PartCode.objects.filter(pk__in=[code.pk for code in copies]).delete()
+                references.retire(copies, actor=request.user, reason='Revisión de alternos: copia de catálogo')
                 return Response(detail(part))
             eligible = {code.pk: code for code in (undecided if action == 'keep' else undecided + copies)}
             code = eligible.get(alternate)
             if code is None:
                 return Response({'detail': CHANGED, 'review': detail(part)}, status=409)
             if action == 'remove':
-                code.delete()
+                references.retire(code, actor=request.user, reason='Revisión de alternos')
             else:
-                code.reference_source = f'CONFIRMADO POR {request.user.username.upper()} · {code.reference_source}'[:500]
-                code.save(update_fields=['reference_source'])
+                references.update(code, actor=request.user,
+                                  reference_source=f'CONFIRMADO POR {request.user.username.upper()} · {code.reference_source}'[:500])
         return Response(detail(part))

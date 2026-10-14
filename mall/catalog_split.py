@@ -31,7 +31,8 @@ from .catalog_split_models import CatalogSeparation, CatalogSplit
 from .management import IsSuperuser, ManagedPartSerializer, catalog_queryset, with_merged_counts
 from .media_serializers import PartImageSerializer
 from .lines import catalog_lines
-from .models import (Account, CatalogIdentityChange, CatalogMerge, ItemApplication, MatchingDecision, Part, PartCode, PartImage,
+from . import references
+from .models import (Account, CatalogIdentityChange, CatalogMerge, ItemApplication, MatchingDecision, Part, PartImage, Reference,
                      PartSpecification, SupplierInventoryImportJob, SupplierItem)
 from .oem_reference_models import PartOEMLink
 
@@ -203,7 +204,7 @@ def rehome_catalog_links(target, restored):
     links = list(PartOEMLink.objects.select_for_update().filter(part=target, source='catalog').select_related('reference').order_by('pk'))
     if not links:
         return {'moved': 0, 'shared': 0}
-    keys = {part.pk: {normalized_reference(part.sku), *map(normalized_reference, PartCode.objects.filter(part=part).values_list('code', flat=True))}
+    keys = {part.pk: {normalized_reference(part.sku), *map(normalized_reference, Reference.objects.filter(part=part).values_list('code', flat=True))}
             for part in [target, *restored]}
     held = set(PartOEMLink.objects.filter(source='catalog', part__in=restored).values_list('part_id', 'reference_id'))
     moved = shared = 0
@@ -241,7 +242,7 @@ def split_catalog_part(*, actor, target_id, restore, reason=''):
         if pk in wanted:
             raise ValidationError({'detail': 'No repitas un SKU por separar.'})
         wanted[pk] = entry
-    codes = {code.pk: code for code in PartCode.objects.select_for_update().filter(part=target).order_by('pk')}
+    codes = {code.pk: code for code in Reference.objects.select_for_update().filter(part=target).order_by('pk')}
     items = {str(item.pk): item for item in SupplierItem.objects.select_for_update().filter(part=target).order_by('pk')}
     images = {str(image.pk): image for image in PartImage.objects.select_for_update().filter(part=target).order_by('pk')}
     plan = {pk: {'codes': [], 'items': [], 'images': []} for pk in wanted}
@@ -280,18 +281,18 @@ def split_catalog_part(*, actor, target_id, restore, reason=''):
         elif claimed and number == target_number:
             raise ValidationError({'detail': f'{code.code} es el código de {target.sku}: cámbialo en Editar antes de pasarlo a otro SKU.'})
     for pk in wanted:
-        clash = PartCode.objects.filter(code=children[pk].sku).exclude(part_id__in=[target.pk, *wanted]).select_related('part').first()
+        clash = Reference.objects.filter(code=children[pk].sku).exclude(part_id__in=[target.pk, *wanted]).select_related('part').first()
         if clash:
             raise ValidationError({'detail': f'{children[pk].sku} es alterno de {clash.part.sku}. Corrige esa asignación antes de separarlo.'})
 
     restored = [children[pk] for pk in wanted]
     for part in restored:
         moves = plan[str(part.pk)]
-        PartCode.objects.filter(pk__in=moves['codes']).update(part=part)
+        Reference.objects.filter(pk__in=moves['codes']).update(part=part)
         SupplierItem.objects.filter(pk__in=moves['items']).update(part=part)
         PartImage.objects.filter(pk__in=moves['images']).update(part=part)
-    if removed:
-        PartCode.objects.filter(pk__in=[code.pk for code in removed]).delete()
+    if removed:  # retired, never deleted (mall.references): S2b's split moves them back to their line instead
+        references.retire(removed, actor=actor, reason='Separar SKU: el código de un SKU restaurado')
     for part in [target, *restored]:
         gallery = list(PartImage.objects.filter(part=part).order_by('position', 'created_at', 'pk'))
         for position, image in enumerate(gallery):
@@ -305,7 +306,7 @@ def split_catalog_part(*, actor, target_id, restore, reason=''):
     # A parent SKU the grouping created and the split leaves empty has nothing to identify: it retires, which also keeps the worker
     # from proposing the same parent again (mall.matching_engine.catalog_families blocks inactive bases).
     created = any(merge.target_id == target.pk and merge.summary.get('target_created') for merge in merges)
-    retired = bool(created and target.active and not Part.objects.filter(merged_into=target).exists() and not PartCode.objects.filter(part=target).exists()
+    retired = bool(created and target.active and not Part.objects.filter(merged_into=target).exists() and not Reference.objects.filter(part=target).exists()
                    and not SupplierItem.objects.filter(part=target).exists() and not PartImage.objects.filter(part=target).exists())
     if retired:
         target.active, target.estado = False, 'retirada'

@@ -11,7 +11,8 @@ from django.db.models import Q
 from rest_framework.exceptions import ValidationError
 from .catalog_families import normalized_reference
 from .lines import LIVE, all_lines, catalog_lines, storefront_lines
-from .models import CatalogIdentityChange, Part, PartCode
+from . import references
+from .models import CatalogIdentityChange, Part, Reference
 
 
 NON_ALNUM = '[^0-9A-Za-z]*'
@@ -25,7 +26,7 @@ def reference_pattern(key, *, anchored=True):
 
 
 def reference_owners(code, part, *, merged_here=True):
-    """Other Parts (retired included) whose SKU, and other Parts' PartCodes, are this reference once normalized.
+    """Other Parts (retired included) whose SKU, and other Parts' References, are this reference once normalized.
     merged_here=False ignores Parts already merged into this one: they share its identity."""
     key = normalized_reference(code)
     if not key:
@@ -35,7 +36,7 @@ def reference_owners(code, part, *, merged_here=True):
     if not merged_here:
         parts = parts.exclude(merged_into=part.pk)
     return ([s for s in parts.values_list('sku', flat=True) if normalized_reference(s) == key]
-            + [c for c in PartCode.objects.filter(code__iregex=rx).exclude(part=part.pk).values_list('code', flat=True)
+            + [c for c in Reference.objects.filter(code__iregex=rx).exclude(part=part.pk).values_list('code', flat=True)
                if normalized_reference(c) == key])
 
 
@@ -89,22 +90,21 @@ def preserve_sku_reference(part, sku, *, is_oem=False):
     # A full supplier code remains a neutral alias for feeds with no brand.
     defaults = {'ref_type': 'company', 'brand': info['brand']} if info else {'ref_type': 'oem' if is_oem else 'unknown', 'brand': ''}
     existing = part.codes.filter(code=sku).first()
-    if not existing and PartCode.objects.filter(code__iexact=sku).exclude(part=part).exists():
+    if not existing and Reference.objects.filter(code__iexact=sku).exclude(part=part).exists():
         return  # Conflicting library ownership must go through grouping review.
-    if not existing:
-        PartCode.objects.get_or_create(part=part, code=sku, brand=defaults['brand'],
-                                       defaults={'ref_type': defaults['ref_type']})
-    elif is_oem and existing.ref_type == 'unknown':
-        existing.ref_type = 'oem'
-        existing.save(update_fields=['ref_type'])
-    elif info and existing.ref_type == 'unknown':
-        if not PartCode.objects.filter(brand=info['brand'], code=sku).exclude(pk=existing.pk).exists():
-            existing.brand, existing.ref_type = info['brand'], 'company'
-            existing.save(update_fields=['brand', 'ref_type'])
-    if info and not all_lines().filter(sku__iexact=info['code']).exclude(pk=part.pk).exists():
-        if not PartCode.objects.filter(code__iexact=info['code']).exclude(part=part).exists():
-            PartCode.objects.get_or_create(part=part, code=info['code'], brand=info['brand'],
-                                           defaults={'ref_type': 'company'})
+    try:
+        if not existing:
+            references.add(part, sku, defaults['brand'], ref_type=defaults['ref_type'])
+        elif is_oem and existing.ref_type == 'unknown':
+            references.update(existing, ref_type='oem')
+        elif info and existing.ref_type == 'unknown':
+            if not Reference.objects.filter(brand=info['brand'], code=sku).exclude(pk=existing.pk).exists():
+                references.update(existing, brand=info['brand'], ref_type='company')
+        if info and not all_lines().filter(sku__iexact=info['code']).exclude(pk=part.pk).exists():
+            if not Reference.objects.filter(code__iexact=info['code']).exclude(part=part).exists():
+                references.add(part, info['code'], info['brand'], ref_type='company')
+    except references.ReferenceConflict:
+        return  # another line holds the key (mall.references.validate): grouping review decides, as above
 
 
 @transaction.atomic
@@ -163,7 +163,7 @@ def prefer_oem(part, *, actor=None, selected=None, confirm_current=False):
 
 def reconcile_identities(actor=None):
     """Shared by every feed: inexpensive local references before AI matching."""
-    criteria = Q(codes__ref_type='oem')
+    criteria = Q(codes__ref_type='oem', codes__estado__in=references.LIVE)
     for suffix in company_registry():
         criteria |= Q(sku__endswith='-' + suffix)
     # A main already marked OEM is left alone by prefer_oem and never takes a company alterno: skip it up front.

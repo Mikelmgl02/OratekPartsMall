@@ -5,11 +5,12 @@ from rest_framework.exceptions import ValidationError
 from django.db.models import Q
 from .lines import storefront_lines
 from .models import Account, InventoryUpdate, StockEntry, SupplierItem
+from .references import live_q
 from .matching_queue import enqueue_matching
 
 def matching_part(codigo, brand):
     matches = list(storefront_lines().filter(
-        Q(sku=codigo) | Q(codes__code=codigo, codes__brand__in=[brand, ''])
+        Q(sku=codigo) | Q(live_q('codes__'), codes__code=codigo, codes__brand__in=[brand, ''])  # a retired code matches nothing
     ).distinct()[:2])
     # Ambiguous legacy code mappings require review instead of arbitrary matching.
     return matches[0] if len(matches) == 1 else None

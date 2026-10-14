@@ -7,6 +7,7 @@ from django.db import connection
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 
+from .brand_models import Brand
 from .models import Part
 from .refactor import snapshot
 from .test_factories import (Fresh, make_catalog, make_client, make_library_number, make_line, make_reference, make_supplier, make_user,
@@ -27,6 +28,7 @@ class CaptureTests(Fresh, TestCase):
                                    ('28113-F2000', 'FILTRO AIRE HYU ELANTRA')])
         self.line = self.lines['17801-30070']
         make_reference(self.line, '17801-30070', brand='TOYOTA', tipo='oem', source='CATÁLOGO')
+        Brand.objects.create(nombre='TOYOTA')  # every brand a code carries is a brand (I12: the S1 seed, then S2a's backfill)
         make_variant(self.supplier, 'S-1', '17801-30070', 4, actor=seller, brand='KSM', line=self.line)
         duplicate = make_line('17801-30070-G', description='FILTRO AIRE TOY')
         Part.objects.filter(pk=duplicate.pk).update(active=False, merged_into=self.line, estado='unificada')

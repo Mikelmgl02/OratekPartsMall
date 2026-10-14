@@ -2,6 +2,7 @@ from django.test import override_settings
 from rest_framework.test import APITestCase
 
 from .catalog_identity import mark_exact_matches
+from . import references
 from .models import CatalogIdentityChange, Part, PartCode, PartOEMLink, User
 from .oem_reference_models import OEMReference, OEMReferenceSource
 
@@ -194,13 +195,14 @@ class ExactMatchTests(APITestCase):
         code = PartCode.objects.create(part=owner, brand='TOYOTA', code='16100-19125', ref_type='oem', reference_source='algo:oem-finder:v2:current:9')
         reference = OEMReference.objects.get(manufacturer='TOYOTA', code='1610019125')
         PartOEMLink.objects.create(part=tied, reference=reference, source='catalog', citations=['GMB Water Pump Catalog 2016 · pág. 556'])
-        code.delete()
+        references.retire(code)
         self.assertTrue(OEMReference.objects.filter(pk=reference.pk).exists())  # a supplier catalog still ties the GMB pump to it
         self.assertTrue(PartOEMLink.objects.filter(part=tied).exists())
         lone = Part.objects.create(sku='17801-31110', description='FILTRO')
         alone = PartCode.objects.create(part=lone, brand='LEXUS', code='17801-31110', ref_type='oem', reference_source='algo:oem-finder:v2:current:9')
-        alone.delete()
-        self.assertFalse(OEMReference.objects.filter(code='1780131110').exists())  # nothing backs it and nothing uses it
+        references.retire(alone)
+        lone_number = OEMReference.objects.get(code='1780131110')  # nothing backs it now, and it stays: S2a never deletes a number
+        self.assertEqual((lone_number.sources.count(), lone_number.status), (0, 'inferred'))
 
 
 class MarkingRulesTests(APITestCase):

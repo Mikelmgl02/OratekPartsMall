@@ -2,12 +2,13 @@ from django import forms
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 from django.utils import timezone
-from .models import Account, Brand, BrandAlias, Invitation, InventoryUpdate, Membership, Part, PartCode, Role, StockEntry, SupplierItem, User
+from .models import (Account, Brand, BrandAlias, Invitation, InventoryUpdate, Membership, Part, Reference, ReferenceSource, Role, StockEntry,
+                     SupplierItem, User)
 admin.site.site_header = "Administración de MotionPartes"
 admin.site.site_title = "Administración de MotionPartes"
 admin.site.index_title = "Gestión del catálogo"
 admin.site.register(User, UserAdmin)
-for model in [Account, Role, Membership, Invitation, PartCode]:
+for model in [Account, Role, Membership, Invitation]:
     admin.site.register(model)
 
 class PartAdminForm(forms.ModelForm):
@@ -40,6 +41,63 @@ class PartAdmin(admin.ModelAdmin):
             obj.decided_by, obj.decided_at = request.user, timezone.now()
             obj.version, obj.changed_at = (obj.version or 0) + 1, obj.decided_at
         super().save_model(request, obj, form, change)
+
+class ReferenceAdminForm(forms.ModelForm):
+    """A Reference's key is checked as mall.references.validate checks it (another line's key, the brandless reservation)."""
+    class Meta:
+        model = Reference
+        fields = ['part', 'code', 'brand', 'tipo', 'estado', 'supplier', 'reference_source', 'dispute_note', 'notes']
+    def clean(self):
+        from . import references
+        data = super().clean()
+        if data.get('estado') == 'retirada' and not self.instance.pk:
+            self.add_error('estado', 'Una referencia nueva no puede estar retirada.')
+        elif data.get('part') and data.get('code'):
+            try:
+                references.validate(data['code'], data.get('brand', ''), line=data['part'], supplier=data.get('supplier'),
+                                    estado=data.get('estado') or 'declarado', exclude=self.instance.pk)
+            except references.ReferenceConflict as error:
+                raise forms.ValidationError(error.message)
+        return data
+
+class ReferenceSourceInline(admin.TabularInline):
+    model = ReferenceSource
+    extra = 0
+    can_delete = False
+    readonly_fields = ['kind', 'citation', 'marks', 'retirada', 'retired_by', 'retired_at', 'detail', 'created_by', 'created_at']
+    def has_add_permission(self, request, obj=None):
+        return False
+
+@admin.register(Reference)
+class ReferenceAdmin(admin.ModelAdmin):
+    """Every Reference, retired ones included (Reference.all_objects). mall.references writes them: a change is saved through update
+    (retire for estado retirada), a new one through add; none is ever deleted."""
+    form = ReferenceAdminForm
+    list_display = ['code', 'brand', 'part', 'tipo', 'estado', 'clave']
+    list_filter = ['tipo', 'estado']
+    search_fields = ['code', 'brand', 'clave', 'part__sku']
+    raw_id_fields = ['part', 'supplier']
+    readonly_fields = ['clave', 'uid', 'ref_type', 'printed_forms', 'reemplazado_por', 'oem_reference', 'detail', 'created_by', 'created_at',
+                       'updated_at', 'version']
+    inlines = [ReferenceSourceInline]
+    def get_queryset(self, request):
+        return Reference.all_objects.select_related('part')
+    def save_model(self, request, obj, form, change):
+        from . import references
+        data = {name: form.cleaned_data[name] for name in form.changed_data if name in form.cleaned_data}
+        if not change:
+            obj.pk = references.add(obj.part, obj.code, obj.brand, tipo=obj.tipo, estado=obj.estado, supplier=obj.supplier,
+                                    source=obj.reference_source, actor=request.user, notes=obj.notes)[0].pk
+            return
+        current = Reference.all_objects.get(pk=obj.pk)
+        if data.get('estado') == 'retirada':
+            data.pop('estado')
+            references.retire(current, actor=request.user, reason='Retirada desde la administración')
+            current.refresh_from_db()
+        if data:
+            references.update(current, actor=request.user, **data)
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 class BrandAliasForm(forms.ModelForm):
     class Meta:

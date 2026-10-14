@@ -3,7 +3,7 @@
 Filters (tier, blocker, suffix chain, make, system, stock, search) with counts per tier and facets; one decision per case under a
 fingerprint compare-and-set (approve, choose_oem for MULTI_OEM, send_to_merge for CONFLICT, dismiss with a reason, reopen), each
 audited in OEMReviewDecision. Approving goes through the O3 apply path: an apply_auto OEMFinderRun with scope.stage='review', the
-Part locked (Account -> Part) and re-checked against the case snapshot, the verified OEM PartCode written and catalog_identity.
+Part locked (Account -> Part) and re-checked against the case snapshot, the verified OEM Reference written and catalog_identity.
 prefer_oem flagging or renaming the SAME Part, an OEMFinderChange holding the evidence and the undo, so the run reverts like any
 other. Bulk approval of a filter is one run executed in batches by the caller (preview, start, step). Nothing here calls an AI.
 """
@@ -24,7 +24,8 @@ from . import oem_finder as of
 from .catalog_families import family_candidates, normalized_reference
 from .catalog_identity import prefer_oem, reference_pattern
 from .lines import all_lines, storefront_lines
-from .models import CatalogIdentityChange, Part, PartCode, SupplierItem
+from . import references
+from .models import CatalogIdentityChange, Part, Reference, SupplierItem
 
 APPROVE_TIERS = ('STRONG_PENDING_OWNER_TAGS', 'CURRENT_REVIEW', 'PROBABLE_BASE', 'CURRENT_LIKELY_OEM', 'LOCAL_XREF', 'VARIANT_REVIEW', 'WEAK')
 BULK_TIERS = ('STRONG_PENDING_OWNER_TAGS', 'CURRENT_REVIEW', 'PROBABLE_BASE', 'CURRENT_LIKELY_OEM', 'LOCAL_XREF')
@@ -142,7 +143,7 @@ def overview(f):
 # ------------------------------------------------------------------ rows
 def code_dicts(part_ids):
     out = {}
-    for c in PartCode.objects.filter(part_id__in=part_ids).order_by('pk').values('id', 'part_id', 'code', 'brand', 'ref_type', 'reference_source'):
+    for c in Reference.objects.filter(part_id__in=part_ids).order_by('pk').values('id', 'part_id', 'code', 'brand', 'ref_type', 'reference_source'):
         out.setdefault(str(c.pop('part_id')), {})[c['id']] = c
     return out
 
@@ -392,7 +393,7 @@ def key_owners(part, code):
     rx = reference_pattern(key)
     owners = [(str(p), s) for p, s in all_lines().filter(sku__iregex=rx).exclude(pk=part.pk).exclude(merged_into=part.pk).values_list('pk', 'sku')
               if normalized_reference(s) == key]
-    return owners + [(str(p), c) for p, c in PartCode.objects.filter(code__iregex=rx).exclude(part=part.pk).values_list('part_id', 'code')
+    return owners + [(str(p), c) for p, c in Reference.objects.filter(code__iregex=rx).exclude(part=part.pk).values_list('part_id', 'code')
                      if normalized_reference(c) == key]
 
 
@@ -453,11 +454,16 @@ def keep_alternos(part, case, others):
     refs = list(ev.get('secondary_company_refs') or []) + ([ev['company_reference']] if ev.get('company_reference') else [])
     wanted += [(r['code'], r['brand'], 'company') for r in refs if r.get('code') and r.get('brand')]
     for code, brand, ref_type in dict.fromkeys((c.strip().upper(), b.strip().upper(), t) for c, b, t in wanted):
-        if len(code) > 120 or PartCode.objects.filter(brand=brand, code=code).exclude(part=part).exists() or key_owners(part, code):
+        if len(code) > 120 or Reference.objects.filter(brand=brand, code=code).exclude(part=part).exists() or key_owners(part, code):
             skipped.append(f'{brand} {code}'.strip())
-        elif not PartCode.objects.filter(part=part, brand=brand, code=code).exists():
-            PartCode.objects.create(part=part, code=code, brand=brand, ref_type=ref_type)
-            kept.append(f'{brand} {code}'.strip())
+        elif not Reference.objects.filter(part=part, brand=brand, code=code).exists():
+            try:
+                _, added = references.add(part, code, brand, ref_type=ref_type)
+            except references.ReferenceConflict:  # another line holds its key: reported, never moved
+                skipped.append(f'{brand} {code}'.strip())
+                continue
+            if added:
+                kept.append(f'{brand} {code}'.strip())
     return kept, skipped
 
 

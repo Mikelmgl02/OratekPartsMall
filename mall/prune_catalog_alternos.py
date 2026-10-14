@@ -1,7 +1,7 @@
 """Alternos step 2c: remove the company alternos a supplier catalog copied onto a SKU once the SKU reaches the same code through its
-OEM numbers (mall.oem_links). A SKU that carries any catalog alterno it cannot reach that way is left whole, for a person to review:
-the copy may come from an item matched through a number the catalog prints for several parts. Hand-typed alternos, OEM alternos and
-codes no imported catalog cites are never touched.
+OEM numbers (mall.oem_links); removing one retires it (mall.references), so it stays as history. A SKU that carries any catalog
+alterno it cannot reach that way is left whole, for a person to review: the copy may come from an item matched through a number the
+catalog prints for several parts. Hand-typed alternos, OEM alternos and codes no imported catalog cites are never touched.
 
     python -m mall.prune_catalog_alternos --dry-run|--apply [--report PATH]
 
@@ -27,15 +27,15 @@ def written_by_catalog(source, citations):
 
 
 def plan():
-    """{'remove': [PartCode], 'review': {sku: [PartCode]}}: per canonical SKU, its catalog-written company alternos, all removed when
+    """{'remove': [Reference], 'review': {sku: [Reference]}}: per canonical SKU, its catalog-written company alternos, all removed when
     the SKU reaches every one of them through its OEM numbers, none otherwise."""
     from .lines import catalog_q
-    from .models import PartCode
+    from .models import Reference
     from .oem_links import part_equivalents
     from .oem_reference_models import compact, manufacturer_name
     citations = catalog_citations()
     by_part = defaultdict(list)
-    for code in (PartCode.objects.filter(catalog_q(prefix='part__'), ref_type='company').select_related('part')
+    for code in (Reference.objects.filter(catalog_q(prefix='part__'), ref_type='company').select_related('part')
                  .order_by('part__sku', 'brand', 'code', 'pk')):
         if written_by_catalog(code.reference_source, citations):
             by_part[code.part_id].append(code)
@@ -63,8 +63,8 @@ def write_report(path, result):
 
 def run(*, apply=False, report_path=None, stdout=None):
     from django.db import transaction
+    from . import references
     from .matching_queue import matching_lock
-    from .models import PartCode
     stdout = stdout or sys.stdout
 
     def execute():
@@ -74,7 +74,7 @@ def run(*, apply=False, report_path=None, stdout=None):
         removed = 0
         if apply and result['remove']:
             with transaction.atomic():
-                removed = PartCode.objects.filter(pk__in=[code.pk for code in result['remove']]).delete()[0]
+                removed = references.retire(result['remove'], reason='Copia de catálogo que el SKU ya alcanza por sus números OEM')
         kept = sum(len(codes) for codes in result['review'].values())
         stdout.write(f"{'Aplicado' if apply else 'Simulación'} · {len(result['remove'])} alternos de catálogo ya llegan por número OEM "
                      f"en {len({code.part_id for code in result['remove']})} SKU ({removed} retirados) · {len(result['review'])} SKU con "

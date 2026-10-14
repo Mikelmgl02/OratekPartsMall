@@ -9,6 +9,7 @@ from xml.etree.ElementTree import ParseError
 from defusedxml.common import DefusedXmlException
 from django.core import signing
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from openpyxl import load_workbook
@@ -22,7 +23,8 @@ from drf_spectacular.utils import extend_schema
 
 from .management import IsSuperuser
 from .lines import CATALOG, all_lines, phrase
-from .models import CatalogClassificationState, CatalogImportBatch, CatalogImportIssue, CatalogImportJob, Part, PartCode
+from . import references
+from .models import CatalogClassificationState, CatalogImportBatch, CatalogImportIssue, CatalogImportJob, Part, Reference
 from .catalog_recovery import date_identifier, date_recovery, description_text, recovery_evidence
 from .workbook_reader import header, identifier_text
 
@@ -297,26 +299,32 @@ def read_excel(raw, *, include_warnings=False, include_recovery=False, include_r
 def build_plan(groups, errors, row_count, *, lock=False, warnings=None, error_sink=None):
     errors = list(errors)
     candidates = set(groups) | {code for group in groups.values() for _, code in group['codes']}
-    parts, codes = {}, []
+    parts, codes = {}, {}
     # Bound SQL parameter lists even when a workbook contains tens of thousands
     # of rows. An individual SKU may itself have many alterno codes.
     ordered_candidates = sorted(candidates)
     for offset in range(0, len(ordered_candidates), 2000):
         chunk = ordered_candidates[offset:offset + 2000]
         parts_query = all_lines().filter(sku__in=chunk).select_related('merged_into').order_by('pk')  # every estado, as UNIQUE(sku) until S4
-        codes_query = PartCode.objects.filter(code__in=chunk).select_related('part').order_by('pk')
+        # A line's live References, by the printed code or by its key (clave: 17801-30070 is 1780130070, mall.references).
+        codes_query = (Reference.objects.filter(Q(code__in=chunk) | Q(clave__in=sorted({references.clave(code) for code in chunk})))
+                       .select_related('part').order_by('pk'))
         if lock:
             parts_query = parts_query.select_for_update(of=('self',))
             codes_query = codes_query.select_for_update(of=('self',))
         parts.update((part.sku, part) for part in parts_query)
-        codes.extend(codes_query)
+        codes.update((entry.pk, entry) for entry in codes_query)
+    codes = list(codes.values())
     owners = {sku: [('', part.merged_into.sku if part.merged_into_id else sku)] for sku, part in parts.items()}
+    key_owners = {}  # clave -> [(brand, SKU)]: a code is held by its key, and a brandless one for every brand (the brandless reservation)
     for entry in codes:
         owners.setdefault(entry.code, []).append((entry.brand, entry.part.sku))
+        key_owners.setdefault(entry.clave, []).append((entry.brand, entry.part.sku))
     for group in groups.values():
         for brand, code in group['codes']:
             owners.setdefault(code, []).append((brand, group['sku']))
-    existing_pairs = {(entry.part.sku, entry.brand, entry.code) for entry in codes}
+            key_owners.setdefault(references.clave(code), []).append((brand, group['sku']))
+    existing_keys = {(entry.part.sku, entry.brand, entry.clave) for entry in codes}
     summary = {'rows': row_count, 'created_skus': 0, 'updated_skus': 0, 'unchanged_skus': 0, 'added_codes': 0}
     preview = []
     for sku, group in groups.items():
@@ -324,7 +332,8 @@ def build_plan(groups, errors, row_count, *, lock=False, warnings=None, error_si
             errors.append({'row': group['row'], 'column': 'SKU', 'message': f'El SKU {sku} ya se usa como alterno de otro SKU.'})
         for (brand, code), number in group['codes'].items():
             conflicts = code in groups and code != sku
-            conflicts |= any(owner != sku and (not brand or not other_brand or brand == other_brand) for other_brand, owner in owners.get(code, []))
+            conflicts |= any(owner != sku and (not brand or not other_brand or brand == other_brand)
+                             for other_brand, owner in owners.get(code, []) + key_owners.get(references.clave(code), []))
             if conflicts:
                 errors.append({'row': number, 'column': 'CODIGO_ALTERNO', 'message': f'El código {code} identifica otro SKU. Revisa su asignación.'})
         existing = parts.get(sku)
@@ -332,7 +341,11 @@ def build_plan(groups, errors, row_count, *, lock=False, warnings=None, error_si
             errors.append({'row': group['row'], 'column': 'SKU', 'message': f'El SKU {sku} ya se agrupó bajo {existing.merged_into.sku}. Usa el SKU interno de destino y conserva este código como alterno.'})
         elif existing and existing.estado not in CATALOG:  # referencia, preparación, rechazada: only a person moves it (mall.lines.set_estado)
             errors.append({'row': group['row'], 'column': 'SKU', 'message': f'El SKU {sku} está {phrase(existing.estado)} y no forma parte del catálogo: la importación no lo cambia.'})
-        added = [(brand, code) for brand, code in group['codes'] if (sku, brand, code) not in existing_pairs]
+        keys, added = set(existing_keys), []
+        for brand, code in group['codes']:  # one Reference per key: a spelling of a code the line holds adds nothing
+            if (sku, brand, references.clave(code)) not in keys:
+                keys.add((sku, brand, references.clave(code)))
+                added.append((brand, code))
         group['existing'] = existing
         group['added'] = added
         changed = existing and any(getattr(existing, field) != value for field, value in group['fields'].items())
@@ -352,7 +365,9 @@ def build_plan(groups, errors, row_count, *, lock=False, warnings=None, error_si
         relevant_pairs.setdefault(group['sku'], set()).add('')
         for brand, code in group['codes']:
             relevant_pairs.setdefault(code, set()).add(brand)
-    relevant_codes = [entry for entry in codes if any(not brand or not entry.brand or brand == entry.brand for brand in relevant_pairs.get(entry.code, []))]
+            relevant_pairs.setdefault(references.clave(code), set()).add(brand)
+    relevant_codes = [entry for entry in codes if any(not brand or not entry.brand or brand == entry.brand
+                                                      for brand in relevant_pairs.get(entry.code, set()) | relevant_pairs.get(entry.clave, set()))]
     snapshot = {
         'parts': sorted((str(part.pk), part.sku, part.name, part.description, part.active, part.category, part.subcategory, str(part.merged_into_id or '')) for part in parts.values()),
         'codes': sorted((entry.pk, str(entry.part_id), entry.part.sku, entry.brand, entry.code) for entry in relevant_codes),
@@ -411,14 +426,14 @@ def save_plan(groups):
             new_parts.append(part)
         elif group['action'] == 'update':
             changed_parts.append(part)
-        new_codes.extend(PartCode(part=part, brand=brand, code=code) for brand, code in group['added'])
+        new_codes.extend(references.build(part, code, brand) for brand, code in group['added'])
     from .lines import bulk_create_lines, bulk_update_lines
     from .technical_data import bind_part_types
     bind_part_types(new_parts + changed_parts)
     # ACTIVO=NO retires a line and ACTIVO=SI publishes it: the lines' writers keep estado in step with active.
     bulk_create_lines(new_parts, batch_size=500)
     bulk_update_lines(changed_parts, ['name', 'description', 'active', 'category', 'subcategory', 'part_type'], batch_size=500)
-    PartCode.objects.bulk_create(new_codes, batch_size=500)
+    references.bulk_create(new_codes, batch_size=500)
 
 
 def encode_groups(groups):

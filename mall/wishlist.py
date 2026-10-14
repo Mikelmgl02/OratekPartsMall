@@ -14,6 +14,7 @@ from .catalog_availability import catalog_availability
 from .catalog_scope import catalog_scope
 from .lines import on_storefront, storefront_lines
 from .models import Membership, Part, WishlistItem
+from .references import live_q
 from .oem_links import equivalents_for
 from .serializers import PartSerializer
 
@@ -54,8 +55,8 @@ class WishlistList(generics.ListAPIView):
         if search:
             query = query.filter(Q(part__sku__icontains=search) | Q(part__name__icontains=search) |
                                  Q(part__description__icontains=search) | Q(part__category__icontains=search) |
-                                 Q(part__subcategory__icontains=search) | Q(part__codes__code__icontains=search) |
-                                 Q(part__codes__brand__icontains=search)).distinct()
+                                 Q(part__subcategory__icontains=search) | Q(live_q('part__codes__'), part__codes__code__icontains=search) |
+                                 Q(live_q('part__codes__'), part__codes__brand__icontains=search)).distinct()
         return query.select_related('part').prefetch_related('part__codes', 'part__images').order_by('-saved_at', '-id')
 
     def list(self, request, *args, **kwargs):

@@ -26,7 +26,8 @@ from .classification_models import CatalogClassificationState, CatalogClassifica
 from .catalog_import import ImportResponse
 from .management import IsSuperuser
 from .lines import all_lines, catalog_lines, storefront_lines
-from .models import Part, PartCode
+from .models import Part, Reference
+from .references import live_q
 from .catalog_families import (normalized_reference, supplier_base, supplier_suffix_match,
                                family_candidates, description_text)
 
@@ -155,7 +156,8 @@ def candidate_context(groups, source_skus):
     source = [staged[sku] for sku in source_skus if sku in staged]
     bases = {base for sku in staged if (base := supplier_base(sku))}
     aliases = {code['code'] for row in source for code in row['codes']} | {row['sku'] for row in source} | {supplier_base(row['sku']) for row in source}
-    catalogue = storefront_lines().filter(Q(sku__in=aliases) | Q(codes__code__in=aliases)).distinct().order_by('sku').prefetch_related('codes')
+    catalogue = (storefront_lines().filter(Q(sku__in=aliases) | Q(live_q('codes__'), codes__code__in=aliases)).distinct().order_by('sku')
+                 .prefetch_related('codes'))
     catalogue_rows = {part.sku: {'sku': part.sku, 'row': None, 'name': part.name,
                                'is_OEM': part.is_OEM,
                                'description': part.description[:2000], 'category': part.category,
@@ -174,7 +176,7 @@ def candidate_context(groups, source_skus):
                                       'subcategory': part.subcategory,
                                       'codes': [{'brand': code.brand, 'code': code.code, 'ref_type': code.ref_type, 'reference_source': code.reference_source} for code in sorted(part.codes.all(), key=lambda code: code.pk)[:40]]}
     rows = {**catalogue_rows, **staged}
-    blocked = set(all_lines().filter(sku__in=bases).values_list('sku', flat=True)) | set(PartCode.objects.filter(code__in=bases).values_list('code', flat=True))
+    blocked = set(all_lines().filter(sku__in=bases).values_list('sku', flat=True)) | set(Reference.objects.filter(code__in=bases).values_list('code', flat=True))
     families = family_candidates(rows, blocked)
     family_targets = {member['sku']: base for base, family in families.items() for member in family['sources']}
     rows.update({base: family['target'] for base, family in families.items()})

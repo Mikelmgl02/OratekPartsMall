@@ -29,7 +29,8 @@ from rest_framework.views import APIView
 from .catalog_families import supplier_base
 from .management import IsSuperuser, ManagedPartSerializer, catalog_queryset, validate_code_mapping, with_merged_counts
 from .lines import catalog_lines
-from .models import Part, PartCode
+from . import references
+from .models import Part, Reference
 from .oem_finder import OEMFinder
 from .oem_reference_models import OEMReference, compact, manufacturer_name
 
@@ -47,7 +48,7 @@ def number_problem(sku):
 
 def holder(part, make):
     """Another SKU that already files this make's number as its OEM alterno: the two are the same part (Agrupar SKU)."""
-    return (PartCode.objects.filter(ref_type='oem', oem_reference__manufacturer=make, oem_reference__code=compact(part.sku))
+    return (Reference.objects.filter(ref_type='oem', oem_reference__manufacturer=make, oem_reference__code=compact(part.sku))
             .exclude(part=part).select_related('part').first())
 
 
@@ -214,18 +215,18 @@ def tie(part, make, cite):
         validate_code_mapping(part=part, brand=make, code=part.sku)
     except ValidationError as error:
         return ' '.join(str(item) for item in (error.detail if isinstance(error.detail, list) else [error.detail]))
-    codes = list(PartCode.objects.select_for_update().filter(part=part, code=part.sku).order_by('pk'))
+    codes = list(Reference.objects.select_for_update().filter(part=part, code=part.sku).order_by('pk'))
     # The make's code already on the SKU, or its neutral alias, becomes the OEM alterno; otherwise a new alterno is filed.
     code = next((item for item in codes if item.brand == make), None) or next((item for item in codes if not item.brand and item.ref_type == 'unknown'), None)
     try:
         with transaction.atomic():
             if code is None:
-                PartCode.objects.create(part=part, brand=make, code=part.sku, ref_type='oem', reference_source=cite)
+                code, added = references.add(part, part.sku, make, tipo='oem', source=cite)
+                if not added and code.tipo != 'oem':  # the make's spelling of the same key was there under another type
+                    references.update(code, tipo='oem', reference_source=code.reference_source.strip() or cite)
             else:
-                code.brand, code.ref_type = make, 'oem'
-                code.reference_source = code.reference_source.strip() or cite
-                code.save()
-    except IntegrityError:
+                references.update(code, brand=make, tipo='oem', reference_source=code.reference_source.strip() or cite)
+    except (IntegrityError, references.ReferenceConflict):
         return f'{make} {part.sku} ya es alterno de otro SKU. Revisa esa asignación o agrupa los SKU.'
     if not part.is_OEM:
         part.is_OEM = True
@@ -297,7 +298,7 @@ def create_oem(*, actor, rows):
 
 
 @transaction.atomic
-def unmark_oem(*, rows):
+def unmark_oem(*, rows, actor=None):
     parts = locked_parts(rows)
     if len(parts) != len({row['id'] for row in rows}):
         raise ValidationError({'detail': 'Uno de los SKU ya no está en el catálogo o se agrupó en otro.'})
@@ -306,9 +307,8 @@ def unmark_oem(*, rows):
         raise ValidationError({'detail': 'No se quitó ninguna marca: ' + ' '.join(errors)})
     for row in rows:
         part = parts[row['id']]
-        if row['retire_number']:
-            for code in PartCode.objects.filter(part=part, ref_type='oem', code=part.sku):
-                code.delete()
+        if row['retire_number']:  # the OEM alterno its marking filed is retired (mall.references), and its number stays in the list
+            references.retire(Reference.objects.filter(part=part, ref_type='oem', code=part.sku), actor=actor, reason='Quitar marca OEM')
         if part.is_OEM:
             part.is_OEM = False
             part.save(update_fields=['is_OEM'])
@@ -365,5 +365,5 @@ class CatalogUnmarkOEM(APIView):
     def post(self, request):
         data = UnmarkOEMRequest(data=request.data)
         data.is_valid(raise_exception=True)
-        rows = unmark_oem(rows=data.validated_data['rows'])
+        rows = unmark_oem(rows=data.validated_data['rows'], actor=request.user)
         return Response({'updated': ManagedPartSerializer(rows, many=True, context={'request': request}).data})

@@ -1,9 +1,11 @@
 import uuid
 from django.contrib.auth.models import AbstractUser
+from django.contrib.postgres.functions import RandomUUID
 from django.conf import settings
 from django.db import models
 from django.db.models import F, Q
-from django.db.models.functions import Lower
+from django.db.models.functions import Length, Lower, Trim, Upper
+from django.db.models.lookups import GreaterThanOrEqual
 from django.utils import timezone
 from .media_storage import catalog_storage, catalog_image_path
 
@@ -183,9 +185,59 @@ class CatalogMerge(models.Model):
     summary = models.JSONField(default=dict)
     created_at = models.DateTimeField(auto_now_add=True)
 
-class PartCode(models.Model):
-    # Approved cross-references belong to the master, independently of stock.
+def _regexp_replace(expression, pattern, replacement=''):
+    return models.Func(expression, models.Value(pattern), models.Value(replacement), models.Value('g'), function='REGEXP_REPLACE',
+                       output_field=models.CharField())
+
+
+# A Reference's clave (plan §2): the compact code ([A-Z0-9] only) when the code is OEM-like (8+ such characters, 3+ digits), otherwise
+# the code as printed, upper case, trimmed, with its inner spaces collapsed. Every function is immutable, so PostgreSQL stores it as a
+# generated column that no writer can get wrong (old code and bulk paths included); mall.references.clave() is the same rule in Python.
+_COMPACT_CODE = _regexp_replace(Upper('code'), '[^A-Z0-9]')
+CLAVE = models.Case(
+    models.When(GreaterThanOrEqual(Length(_COMPACT_CODE), 8) & GreaterThanOrEqual(Length(_regexp_replace(F('code'), '[^0-9]')), 3),
+                then=_COMPACT_CODE),
+    default=_regexp_replace(Upper(Trim('code')), r'\s+', ' '), output_field=models.CharField(max_length=120))
+REFERENCE_LIVE = ('verificado', 'declarado', 'inferido', 'disputa')  # every estado but retirada
+REFERENCE_DELETE_REFUSED = ('Una referencia no se borra: mall.references.retire la retira de su línea (estado retirada) y queda como '
+                            'historial.')
+
+
+class ReferenceDeleteRefused(RuntimeError):
+    """A delete of a Reference (inventory refactor S2a: nothing deletes a Reference, mall.references.retire takes it off its line)."""
+
+
+class ReferenceQuerySet(models.QuerySet):
+    def delete(self):
+        raise ReferenceDeleteRefused(REFERENCE_DELETE_REFUSED)
+    delete.alters_data = True
+    delete.queryset_only = True
+
+
+class LiveReferenceManager(models.Manager.from_queryset(ReferenceQuerySet)):
+    """Reference.objects, and so every line's `codes` and their prefetches: the References that are not retirada. Readers skip retired
+    rows through it; Reference.all_objects reads every row (mall.references, the stage CLIs, the admin). A filter that reaches codes
+    through a relation (codes__code=...) joins every row instead, so it names the live estados too (mall.references.live_q)."""
+    def get_queryset(self):
+        return super().get_queryset().filter(estado__in=REFERENCE_LIVE)
+
+
+class AllReferenceManager(models.Manager.from_queryset(ReferenceQuerySet)):
+    pass
+
+
+class Reference(models.Model):
+    # One code of an OEM line (inventory refactor S2a; PartCode until then, and PartCode stays an alias of it until S10). It keeps
+    # PartCode's integer ids, its table (mall_partcode) and the line's `codes` relation, which the API, the split payloads and other
+    # code depend on. mall.references is its only writer: it creates (build/add), changes (update) and retires (retire) References,
+    # and nothing deletes one. Until S10 ref_type is kept in step with tipo (save() below; a CHECK from 0074) and the JSON keeps
+    # ref_type/kind; brand stays text holding the canonical Brand.nombre, '' meaning any brand.
     KINDS = [('alias', 'Equivalencia'), ('oem', 'Referencia OEM'), ('manufacturer', 'Referencia de fabricante')]
+    TIPOS = [('oem', 'OEM'), ('aftermarket', 'Posventa'), ('interno', 'Código interno del proveedor'), ('otro', 'Otro')]
+    ESTADOS = [('verificado', 'Verificada'), ('declarado', 'Declarada'), ('inferido', 'Inferida'), ('disputa', 'En disputa'),
+               ('retirada', 'Retirada')]
+    EXCLUSIVE = ('verificado', 'declarado', 'inferido')  # the estados that hold their key for one line (reference_one_live_line, 0074)
+    LIVE = REFERENCE_LIVE
     part = models.ForeignKey(Part, on_delete=models.PROTECT, related_name="codes", verbose_name='repuesto del catálogo')
     brand = models.CharField(max_length=120, blank=True, default='', verbose_name='marca opcional')
     code = models.CharField(max_length=120, verbose_name='código')
@@ -195,6 +247,31 @@ class PartCode(models.Model):
     # The OEM table row an OEM alterno files under (brand as manufacturer, compact code); kept by the oem_reference signal handlers.
     oem_reference = models.ForeignKey('mall.OEMReference', on_delete=models.SET_NULL, null=True, blank=True, related_name='alternos',
                                       verbose_name='referencia OEM')
+    # The public id: PostgreSQL fills it for every row, old code's inserts included. No API exposes it before S4, which sets it to the
+    # OEMReference id of each library number.
+    uid = models.UUIDField(db_default=RandomUUID(), unique=True, editable=False, verbose_name='identificador público')
+    printed_forms = models.JSONField(default=list, db_default=[], blank=True, verbose_name='otras formas impresas',
+                                     help_text='Grafías del mismo código vistas en otras fuentes (13780-61J00-NP-).')
+    clave = models.GeneratedField(expression=CLAVE, output_field=models.CharField(max_length=120), db_persist=True, verbose_name='clave')
+    tipo = models.CharField(max_length=12, choices=TIPOS, default='otro', db_default='otro', verbose_name='tipo')
+    supplier = models.ForeignKey(Account, on_delete=models.PROTECT, null=True, blank=True, related_name='internal_references',
+                                 verbose_name='proveedor', help_text='Solo en un código interno: el proveedor que lo usa.')
+    is_main = models.BooleanField(default=False, db_default=False, verbose_name='principal')
+    estado = models.CharField(max_length=10, choices=ESTADOS, default='declarado', db_default='declarado', verbose_name='estado')
+    dispute_note = models.TextField(blank=True, default='', db_default='', verbose_name='motivo de la disputa')
+    notes = models.TextField(blank=True, default='', db_default='', verbose_name='notas')
+    detail = models.JSONField(default=dict, db_default={}, blank=True, verbose_name='detalle')
+    reemplazado_por = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name='reemplaza',
+                                        verbose_name='reemplazada por')
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+                                   editable=False, verbose_name='creada por')
+    # NULL on the References that existed before S2a (0073 adds the columns without filling them).
+    created_at = models.DateTimeField(null=True, blank=True, default=timezone.now, editable=False, verbose_name='creada el')
+    updated_at = models.DateTimeField(null=True, blank=True, auto_now=True, verbose_name='última actualización')
+    version = models.PositiveIntegerField(default=1, db_default=1, editable=False, verbose_name='versión')
+
+    objects = LiveReferenceManager()
+    all_objects = AllReferenceManager()
 
     @property
     def kind(self):
@@ -204,14 +281,79 @@ class PartCode(models.Model):
     @kind.setter
     def kind(self, value):
         self.ref_type = {'alias': 'unknown', 'manufacturer': 'company'}.get(value, value)
+
     class Meta:
-        verbose_name = 'código de repuesto'
-        verbose_name_plural = 'códigos de repuestos'
-        constraints = [models.UniqueConstraint(fields=["brand", "code"], name="unique_brand_code")]
+        db_table = 'mall_partcode'
+        verbose_name = 'referencia'
+        verbose_name_plural = 'referencias'
+        constraints = [models.UniqueConstraint(fields=["brand", "code"], name="unique_brand_code")]  # until 0074
+
+    def __str__(self):
+        return f'{self.brand} {self.code}'.strip()
+
+    @classmethod
+    def from_db(cls, db, field_names, values):
+        instance = super().from_db(db, field_names, values)
+        instance._tipo_pair = (instance.__dict__.get('tipo'), instance.__dict__.get('ref_type'))  # what save() compares against
+        return instance
+
     def save(self, *args, **kwargs):
         self.brand = self.brand.strip().upper()
         self.code = self.code.strip().upper()
+        fields = kwargs.get('update_fields')
+        # tipo and ref_type stay in step (whichever changed since load wins) and are written together, so the code that only knows
+        # ref_type keeps working until S10.
+        if fields is None or {'tipo', 'ref_type'} & set(fields):
+            from .references import pair_tipo
+            pair_tipo(self)
+            if fields is not None:
+                fields = kwargs['update_fields'] = set(fields) | {'tipo', 'ref_type'}
+        if not self._state.adding:
+            self.version = (self.version or 0) + 1
+            if fields:  # a partial save stamps updated_at and the version too (update_fields=[] still saves nothing)
+                fields = kwargs['update_fields'] = set(fields) | {'version', 'updated_at'}
         super().save(*args, **kwargs)
+        self._tipo_pair = (self.__dict__.get('tipo'), self.__dict__.get('ref_type'))
+
+    def delete(self, *args, **kwargs):
+        raise ReferenceDeleteRefused(REFERENCE_DELETE_REFUSED)
+
+
+PartCode = Reference  # the class's name until S10 (plan §1.1); mall.test_refactor_guards keeps new code from using it
+
+
+class ReferenceSource(models.Model):
+    """Where a Reference comes from (inventory refactor S2a): a catalog page, the OEM library, a supplier, an administrator, an AI
+    lookup or the OEM finder. Writers upsert on (reference, kind, citation) and merge detail (mall.references.cite). Until S10 the
+    Reference keeps its reference_source text too; S10 derives it from the newest source."""
+    KINDS = [('catalogo', 'Catálogo de marca'), ('biblioteca', 'Biblioteca OEM'), ('proveedor', 'Proveedor'), ('admin', 'Administrador'),
+             ('ia', 'Investigación IA'), ('buscador', 'Buscador OEM')]
+    reference = models.ForeignKey(Reference, on_delete=models.CASCADE, related_name='sources', verbose_name='referencia')
+    kind = models.CharField(max_length=12, choices=KINDS, verbose_name='tipo de fuente')
+    citation = models.CharField(max_length=500, blank=True, default='', verbose_name='cita')
+    marks = models.JSONField(default=list, blank=True, verbose_name='marcas', help_text="Lo que la fuente anota junto al código: '*', 'W/HOUSING'...")
+    retirada = models.BooleanField(default=False, verbose_name='retirada')
+    retired_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+                                   verbose_name='retirada por')
+    retired_at = models.DateTimeField(null=True, blank=True, verbose_name='retirada el')
+    # legacy_kind, run, rule, part_codes, pages, brand_codes...
+    detail = models.JSONField(default=dict, blank=True, verbose_name='detalle')
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+                                   verbose_name='registrada por')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='registrada el')
+
+    class Meta:
+        verbose_name = 'fuente de referencia'
+        verbose_name_plural = 'fuentes de referencias'
+        ordering = ['created_at', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['reference', 'kind', 'citation'], name='reference_source_unique'),
+            models.CheckConstraint(condition=Q(kind__in=['catalogo', 'biblioteca', 'proveedor', 'admin', 'ia', 'buscador']),
+                                   name='reference_source_valid_kind'),
+        ]
+
+    def __str__(self):
+        return f'{self.reference} · {self.get_kind_display()}'
 
 
 class CatalogIdentityChange(models.Model):
@@ -275,7 +417,7 @@ class CatalogImportIssue(models.Model):
         constraints = [models.UniqueConstraint(fields=['job', 'row'], name='unique_catalog_import_issue_row')]
 
 class Alternate(models.Model):
-    # Historical compatibility records; the active alternos library uses PartCode.
+    # Historical compatibility records; the active alternos library uses Reference.
     part = models.ForeignKey(Part, on_delete=models.PROTECT, related_name="alternates", verbose_name='repuesto del catálogo')
     replacement = models.ForeignKey(Part, on_delete=models.PROTECT, related_name="replaces", verbose_name='repuesto alterno')
     notes = models.TextField(blank=True, verbose_name='notas')

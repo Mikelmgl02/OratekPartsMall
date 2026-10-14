@@ -1,6 +1,6 @@
 """Brands as a table (inventory refactor S1, plan §2): one row per brand, vehicle makes and parts makers alike, with the spellings
 that name it (BrandAlias: TOY → TOYOTA) and, for a few makes, the familia it belongs to (KAIYI under CHERY, LEXUS under TOYOTA; one
-level). Reference.brand (today PartCode.brand) stays text holding the canonical nombre until S10, so today's lookups and JSON keep
+level). Reference.brand (PartCode.brand before S2a) stays text holding the canonical nombre until S10, so today's lookups and JSON keep
 working; mall.brands is the only writer of `nombre` (rename/merge re-key those codes in the same transaction)."""
 from django.db import models
 from django.db.models import F, Q

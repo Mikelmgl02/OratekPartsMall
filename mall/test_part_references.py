@@ -3,6 +3,7 @@ from unittest.mock import patch
 from django.core.files.uploadedfile import SimpleUploadedFile
 from openpyxl import Workbook, load_workbook
 from rest_framework.test import APITestCase
+from . import references
 from .models import Account, Membership, Part, PartCode, Role, StockEntry, SupplierItem, User, MatchingCase
 from .serializers import InventorySerializer
 from .services import ingest_inventory
@@ -137,7 +138,7 @@ class PartReferenceTests(APITestCase):
         item = self.ingest(description='DISCO TRASERO 256 MM', refs=[{'code':'51712-1R000'}])
         self.match(item)
         case = MatchingCase.objects.get(item=item)
-        self.ref.delete()
+        references.retire(self.ref)  # the library changed: the code left the line
         response = self.client.post(f'/api/v1/management/matching/{case.pk}/', dict(
             action='approve', fingerprint=case.fingerprint, target_sku=self.master.sku), format='json')
         self.assertEqual(response.status_code, 409, response.data)

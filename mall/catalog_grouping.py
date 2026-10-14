@@ -10,7 +10,8 @@ from rest_framework.views import APIView
 
 from .management import IsSuperuser, ManagedPartSerializer, UppercaseCharField
 from .lines import all_lines, on_storefront, storefront_lines
-from .models import Alternate, CatalogMerge, Part, PartCode, PartImage, SupplierItem
+from . import references
+from .models import Alternate, CatalogMerge, Part, PartImage, Reference, SupplierItem
 from .wishlist import merge_wishlists
 from .catalog_families import family_candidates, supplier_base
 
@@ -78,7 +79,7 @@ def merge_catalog_parts(*, actor, target_sku, source_skus, category='', subcateg
     if created_target:
         if not create_target or any(supplier_base(sku) != target_sku for sku in source_skus):
             raise ValidationError('El nuevo SKU debe ser el código base completo de los alternos seleccionados.')
-        if PartCode.objects.filter(code=target_sku).exists():
+        if Reference.objects.filter(code=target_sku).exists():
             raise ValidationError('El código base ya es un alterno de otro SKU. Revisa su asignación.')
         family_rows = {part.sku: {'sku': part.sku, 'description': part.description, 'is_OEM': part.is_OEM} for part in
                        storefront_lines(Part.objects.select_for_update()).filter(sku__startswith=target_sku + '-').order_by('pk')}
@@ -119,12 +120,12 @@ def merge_catalog_parts(*, actor, target_sku, source_skus, category='', subcateg
         children = list(Part.objects.select_for_update().filter(merged_into_id__in=source_ids).order_by('pk'))
         retired_ids = source_ids | {part.pk for part in children}
         participant_ids = retired_ids | {target.pk}
-        source_codes = list(PartCode.objects.select_for_update().filter(part_id__in=retired_ids).order_by('pk'))
+        source_codes = list(Reference.objects.select_for_update().filter(part_id__in=retired_ids).order_by('pk'))  # live: retired ones stay as history
         incoming = {(row.brand, row.code) for row in source_codes} | {('', part.sku) for part in sources}
         identifiers = {code for _, code in incoming}
         # A neutral alias reserves the code across brands, matching the same
         # rules used by normal catalog management and supplier matching.
-        for row in PartCode.objects.select_for_update().filter(code__in=identifiers).exclude(part_id__in=participant_ids).order_by('pk'):
+        for row in Reference.objects.select_for_update().filter(code__in=identifiers).exclude(part_id__in=participant_ids).order_by('pk'):
             if any(row.code == code and (not brand or not row.brand or brand == row.brand) for brand, code in incoming):
                 raise ValidationError({'detail': f'El código {row.code} pertenece a otro SKU. Corrige su asignación antes de unificar.'})
         other_skus = all_lines(Part.objects.select_for_update()).filter(sku__in=identifiers).exclude(pk__in=participant_ids).exclude(merged_into=target).order_by('pk')
@@ -136,13 +137,11 @@ def merge_catalog_parts(*, actor, target_sku, source_skus, category='', subcateg
         brought = {str(part.pk): {'codes': [], 'items': [], 'images': []} for part in sources}
         for row in source_codes:
             brought[owner[row.part_id]]['codes'].append({'brand': row.brand, 'code': row.code})
-        summary['codes_transferred'] = PartCode.objects.filter(pk__in=[row.pk for row in source_codes]).update(part=target)
-        for source in sources:
-            alias, created = PartCode.objects.get_or_create(part=target, brand='', code=source.sku,
-                                                        defaults={'ref_type': 'oem' if source.is_OEM else 'unknown'})
+        summary['codes_transferred'] = Reference.objects.filter(pk__in=[row.pk for row in source_codes]).update(part=target)
+        for source in sources:  # each source's codigo stays a neutral alias of the target (mall.references: ReferenceConflict is a 400)
+            alias, created = references.add(target, source.sku, '', tipo='oem' if source.is_OEM else 'otro', actor=actor)
             if source.is_OEM and alias.ref_type == 'unknown':
-                alias.ref_type = 'oem'
-                alias.save(update_fields=['ref_type'])
+                references.update(alias, ref_type='oem', actor=actor)
             summary['sku_aliases_created'] += int(created)
         # Only the catalog link changes. Inventory ID, codigo, brand, stock
         # counters, matching status, timestamps and ledger remain intact.

@@ -523,7 +523,7 @@ class CatalogImport:
         return bool(owners - {pid}) or (claimed is not None and claimed != pid)
 
     def add_code(self, pid, code, brand, ref_type, cite, apply, bucket):
-        from .models import PartCode
+        from . import references
         pid, code, brand, rc = str(pid), code.strip().upper(), brand.strip().upper(), self.report['counts']
         if not code or len(code) > 120:
             return
@@ -535,12 +535,17 @@ class CatalogImport:
             rc[f'{bucket}_conflict'] += 1
             self.note(f'{bucket}_conflict', {'sku': self.finder.by_id[self.fid[str(pid)]]['sku'], 'code': code, 'brand': brand})
             return
+        if apply:
+            try:
+                references.add(pid, code, brand, ref_type=ref_type, source=cite)
+            except references.ReferenceConflict:  # another line holds the key (mall.references.validate): reported, never moved
+                rc[f'{bucket}_conflict'] += 1
+                self.note(f'{bucket}_conflict', {'sku': self.finder.by_id[self.fid[str(pid)]]['sku'], 'code': code, 'brand': brand})
+                return
+            self.ix['codes'].setdefault(key, set()).add(pid)
         self.ix['claims'][key] = pid
         rc[f'{bucket}_new'] += 1
         self.note(f'{bucket}_new', {'sku': self.finder.by_id[self.fid[str(pid)]]['sku'], 'code': code, 'brand': brand})
-        if apply:
-            PartCode.objects.create(part_id=pid, code=code, brand=brand, ref_type=ref_type, reference_source=cite)
-            self.ix['codes'].setdefault(key, set()).add(pid)
 
     def sheet(self, part, item, apply, target=None):
         """Classify an unclassified SKU into target (the subgrupo its description names, else the item's), add missing template fields
@@ -715,7 +720,7 @@ def build_indexes(finder, imported=()):
     """Matching keys (raw, oem) from the catalog's own data only, never from alternos citing a supplier catalog (imported); the
     ownership indexes (codes, skus) hold every code so an imported alterno still counts as present or as owned."""
     from .lines import all_lines
-    from .models import PartCode
+    from .models import Reference
     raw, oem, codes, skus = defaultdict(set), defaultdict(set), defaultdict(set), defaultdict(set)
     from .catalog_suffixes import clean_code
 
@@ -737,7 +742,7 @@ def build_indexes(finder, imported=()):
             if it['source'] in ('sku', 'sku_prefixed', 'sku_segment', 'alterno', 'codigo', 'supplier_reference') and it.get('key'):
                 oem[it['key']].add(str(pid))
     # Finder snapshot ids and ORM ids differ in type (str vs UUID): every index keys parts by str(id).
-    for pid, code in PartCode.objects.values_list('part_id', 'code'):
+    for pid, code in Reference.objects.values_list('part_id', 'code'):
         codes[compact(code)].add(str(pid))
     for pid, sku in all_lines().values_list('pk', 'sku'):  # estado: a line in any estado holds its codigo (UNIQUE(sku) until S4)
         skus[compact(sku)].add(str(pid))
@@ -749,7 +754,7 @@ def shaft_numbers(table=None):
     its own code, carries as an OEM alterno or is linked to. A CV catalog lists them for its joints, but the joint does not replace
     the shaft (is_assembly)."""
     from .lines import storefront_lines
-    from .models import PartCode
+    from .models import Reference
     from .oem_links import chunks, name_key
     from .oem_reference_models import PartOEMLink
     shafts, numbers = [], set()
@@ -759,7 +764,7 @@ def shaft_numbers(table=None):
             numbers.add(name_key(sku, table))
     for chunk in chunks(shafts):
         numbers.update(PartOEMLink.objects.filter(part_id__in=chunk).values_list('reference__code', flat=True))
-        numbers.update(compact(code) for code in PartCode.objects.filter(part_id__in=chunk, ref_type='oem').values_list('code', flat=True))
+        numbers.update(compact(code) for code in Reference.objects.filter(part_id__in=chunk, ref_type='oem').values_list('code', flat=True))
     return numbers - {''}
 
 

@@ -1,11 +1,13 @@
 """Guards the inventory refactor keeps on (plan §1.4): the models equal the migrations, migrations import no app code, the test
-settings keep the outside services off, guard the network and never drop a real database, and (S1) every Part.objects filter on
-active, merged_into or the SKU goes through mall.lines. The later stages add theirs (Reference deletes outside references.py, new
-PartCode uses, bulk writes outside the choke points)."""
+settings keep the outside services off, guard the network and never drop a real database, (S1) every Part.objects filter on active,
+merged_into or the SKU goes through mall.lines, and (S2a) nothing deletes a Reference outside mall.references, no new code names
+PartCode or reaches codes through a codes__ join outside the reviewed allowlist, and no bulk write of lines or References happens
+outside their choke points (mall.lines, mall.references)."""
 import ast
 import io
 import re
 import socket
+from collections import Counter
 from contextlib import redirect_stderr
 from pathlib import Path
 from types import SimpleNamespace
@@ -204,3 +206,128 @@ get_object_or_404(storefront_lines(), pk=pk)
         self.assertEqual(part_filters(source), [
             (2, ['active', 'merged_into__isnull']), (3, ['sku__in']), (4, ['sku']), (5, ['sku__iexact']), (6, ['merged_into__isnull']),
             (7, ['sku__iregex']), (8, ['active'])])
+
+
+# --- S2a: References are written by mall.references, never deleted, and PartCode is a name of the past ------------------------------
+
+REFERENCE_NAMES = {'PartCode', 'Reference'}
+REFERENCE_RELATIONS = {'codes', 'alternos', 'reemplaza', 'internal_references', 'all_objects'}
+# The app modules that still name PartCode or join codes through codes__ (a join reaches retired rows, so each one names the live
+# estados: mall.references.live_q), as reviewed in S2a: at most this many uses each. New code writes Reference and goes through
+# Reference.objects or a line's codes, which leave retired rows out; S10 removes the alias and this list.
+LEGACY_ALLOWED = {
+    'catalog_assistant.py': 2, 'catalog_classification.py': 2, 'catalog_grouping_suggestions.py': 4, 'catalog_identity.py': 2,
+    'catalog_search.py': 3, 'matching_engine.py': 4, 'models.py': 1, 'oem_finder.py': 2, 'oem_links.py': 9, 'refactor/snapshot.py': 3,
+    'serializers.py': 2, 'services.py': 3, 'sku_proposals.py': 2, 'supplier_catalog_replace.py': 2, 'supplier_import.py': 3,
+    'wishlist.py': 4,
+}
+BULK_METHODS = {'bulk_create', 'bulk_update'}
+BULK_CHOKE_POINTS = {Path('lines.py'), Path('references.py')}
+# Bulk writes of lines elsewhere, reviewed: the catalog assistant's taxonomy (category, subcategory, part_type; S5's lane).
+BULK_ALLOWED = {'catalog_assistant.py': 1}
+
+
+def docstrings(tree):
+    """The ids of the docstring constants of a module, its classes and functions (their prose may name anything)."""
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
+                found.add(id(first.value))
+    return found
+
+
+def legacy_uses(source):
+    """How many times source names PartCode (a name, an attribute, an import) or a codes__ lookup (a keyword or a string)."""
+    tree = ast.parse(source)
+    skip, count = docstrings(tree), 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == 'PartCode' or isinstance(node, ast.Attribute) and node.attr == 'PartCode':
+            count += 1
+        elif isinstance(node, ast.ImportFrom):
+            count += sum(1 for alias in node.names if alias.name == 'PartCode')
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and 'codes__' in node.value and id(node) not in skip:
+            count += 1
+        elif isinstance(node, ast.keyword) and node.arg and 'codes__' in node.arg:
+            count += 1
+    return count
+
+
+def chain_names(node):
+    """The names and attributes along an expression's chain (Reference.all_objects.filter(...).order_by(...) -> Reference, all_objects,
+    filter, order_by)."""
+    names = []
+    while isinstance(node, (ast.Call, ast.Attribute, ast.Subscript, ast.Name)):
+        if isinstance(node, ast.Name):
+            names.append(node.id)
+            break
+        if isinstance(node, ast.Attribute):
+            names.append(node.attr)
+        node = node.func if isinstance(node, ast.Call) else node.value
+    return names
+
+
+def reference_deletes(source):
+    """[line] of each .delete() whose chain starts at Reference/PartCode or passes through a relation to References (codes,
+    alternos, reemplaza, internal_references, all_objects)."""
+    rows = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == 'delete':
+            names = set(chain_names(node.func.value))
+            if names & REFERENCE_NAMES or names & REFERENCE_RELATIONS:
+                rows.append(node.lineno)
+    return rows
+
+
+def bulk_writes(source):
+    """[line] of each bulk_create or bulk_update on Part, Reference or PartCode."""
+    rows = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in BULK_METHODS:
+            names = chain_names(node.func.value)
+            if names and names[-1] in {'Part', 'Reference', 'PartCode'}:
+                rows.append(node.lineno)
+    return rows
+
+
+class ReferenceGuardTests(SimpleTestCase):
+    def test_nothing_deletes_a_reference_outside_mall_references(self):
+        """A Reference is retired (mall.references.retire), never deleted: Reference.delete and its querysets' delete refuse at run
+        time, and this keeps the code from trying. mall.references.purge is the one exception, for the S2a backfill's rollback."""
+        found = {f'{relative}:{line}' for relative, path in app_modules() if relative != Path('references.py')
+                 for line in reference_deletes(path.read_text(encoding='utf-8'))}
+        self.assertEqual(found, set(), 'Borrados de referencias fuera de mall.references (usa references.retire).')
+
+    def test_no_new_code_names_partcode_or_joins_codes(self):
+        """PartCode stays an alias of Reference until S10 for the code that already uses it; a codes__ join reads retired rows unless it
+        names the live estados. Each module may keep at most the uses reviewed in S2a."""
+        counts = {str(relative): legacy_uses(path.read_text(encoding='utf-8')) for relative, path in app_modules()}
+        over = {module: count for module, count in counts.items() if count > LEGACY_ALLOWED.get(module, 0)}
+        self.assertEqual(over, {}, 'Usos nuevos de PartCode o de codes__ (usa Reference, Reference.objects o mall.references.live_q).')
+
+    def test_bulk_writes_of_lines_and_references_go_through_their_choke_points(self):
+        found = Counter(str(relative) for relative, path in app_modules() if relative not in BULK_CHOKE_POINTS
+                        for _ in bulk_writes(path.read_text(encoding='utf-8')))
+        over = {module: count for module, count in found.items() if count > BULK_ALLOWED.get(module, 0)}
+        self.assertEqual(over, {}, 'bulk_create/bulk_update de líneas o referencias fuera de mall.lines y mall.references.')
+
+    def test_the_scans_find_each_form(self):
+        source = """
+code.delete()
+Reference.objects.filter(pk=1).delete()
+PartCode.objects.get(pk=1).delete()
+part.codes.exclude(pk__in=keep).delete()
+Reference.all_objects.filter(estado='retirada').delete()
+ref.alternos.all().delete()
+PartImage.objects.filter(part=part).delete()
+models.PartCode.objects.filter(code=x)
+Q(codes__code='X') | Q(part__codes__brand='Y')
+values('part__codes__code')
+Part.objects.bulk_update(lines, ['name'])
+Reference.objects.bulk_create(rows)
+PartImage.objects.bulk_update(images, ['position'])
+"""
+        self.assertEqual(reference_deletes(source), [3, 4, 5, 6, 7])
+        self.assertEqual(legacy_uses(source), 5)
+        self.assertEqual(bulk_writes(source), [12, 13])

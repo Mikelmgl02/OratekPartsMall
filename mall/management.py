@@ -18,7 +18,8 @@ from rest_framework.exceptions import ValidationError
 
 from .apiag_tokens import ConnectionData, connection_data
 from .lines import all_lines, catalog_lines, phrase, refuse_unificada, stage_estado
-from .models import Account, Invitation, Membership, Part, PartCode, PartType, Role, SupplierItem, User
+from . import references
+from .models import Account, Invitation, Membership, Part, PartType, Reference, Role, SupplierItem, User
 from .serializers import SupplierItemSerializer
 from .media_serializers import PartImageSerializer
 
@@ -208,7 +209,7 @@ class ManagedCodeSerializer(serializers.Serializer):
     brand = UppercaseCharField(max_length=120, required=False, allow_blank=True, default='')
     code = UppercaseCharField(max_length=120)
     kind = LegacyReferenceKind()
-    ref_type = serializers.ChoiceField(choices=PartCode.REF_TYPES, required=False)
+    ref_type = serializers.ChoiceField(choices=Reference.REF_TYPES, required=False)
     reference_source = serializers.CharField(max_length=500, required=False, allow_blank=True)
 
     def to_internal_value(self, data):
@@ -223,15 +224,17 @@ class ManagedCodeSerializer(serializers.Serializer):
 
 
 def validate_code_mapping(*, part, brand, code):
-    existing = PartCode.objects.filter(code=code)
-    if brand:
-        existing = existing.filter(Q(brand=brand) | Q(brand=''))
+    """Refuse a code another line holds: one of its live References under the same key (mall.references.validate: the clave, and a
+    brandless code reserves it for every brand), or its codigo."""
+    message = f'El código {code} ya pertenece a otro SKU. Si son equivalentes, usa Agrupar SKU para unificarlos primero.'
+    held = references.conflicts(code, brand, line=part)
+    if (held.exclude(part=part) if part else held).exists():
+        raise serializers.ValidationError(message)
     skus = all_lines().filter(sku=code)  # a line in any estado holds its codigo: retired, merged elsewhere or not yet published
     if part:
-        existing = existing.exclude(part=part)
         skus = skus.exclude(Q(pk=part.pk) | Q(merged_into=part))
-    if existing.exists() or skus.exists():
-        raise serializers.ValidationError(f'El código {code} ya pertenece a otro SKU. Si son equivalentes, usa Agrupar SKU para unificarlos primero.')
+    if skus.exists():
+        raise serializers.ValidationError(message)
 
 
 class ManagedPartSerializer(serializers.ModelSerializer):
@@ -261,7 +264,7 @@ class ManagedPartSerializer(serializers.ModelSerializer):
 
     def validate_sku(self, sku):
         parts = all_lines().filter(sku__iexact=sku)  # every estado: UNIQUE(sku) holds every line, merged ones too, until S4
-        codes = PartCode.objects.filter(code=sku)
+        codes = Reference.objects.filter(code=sku)  # live References: a retired code no longer names its line
         if self.instance:
             parts = parts.exclude(pk=self.instance.pk)
             codes = codes.exclude(part=self.instance)
@@ -284,17 +287,27 @@ class ManagedPartSerializer(serializers.ModelSerializer):
         pairs = {(code['brand'], code['code']) for code in codes}
         if len(pairs) != len(codes):
             raise serializers.ValidationError('No repitas la misma combinación de marca y código.')
+        if len({(brand, references.clave(code)) for brand, code in pairs}) != len(pairs):
+            raise serializers.ValidationError('No repitas un código con otra grafía (con o sin guiones) para la misma marca.')
         for brand, code in pairs:
             validate_code_mapping(part=self.instance, brand=brand, code=code)
         return codes
 
     def save_codes(self, part, codes):
+        """The line's References become exactly these (mall.references): each one found by its key (a new spelling replaces the
+        printed one) or added, its type and source as sent; the ones not sent are retired, never deleted."""
+        user = getattr(self.context.get('request'), 'user', None)
+        actor = user if getattr(user, 'is_authenticated', False) else None
         keep = []
         for code in codes:
-            entry, _ = PartCode.objects.update_or_create(part=part, brand=code['brand'], code=code['code'],
-                defaults={k: v for k, v in code.items() if k not in ['brand', 'code']})
+            extra = {key: value for key, value in code.items() if key not in ('brand', 'code')}
+            entry, _ = references.add(part, code['code'], code['brand'], ref_type=extra.get('ref_type'), source=extra.get('reference_source', ''),
+                                      actor=actor)
+            changes = {key: value for key, value in {**extra, 'code': code['code']}.items() if getattr(entry, key) != value}
+            if changes:
+                references.update(entry, actor=actor, **changes)
             keep.append(entry.pk)
-        part.codes.exclude(pk__in=keep).delete()
+        references.retire(part.codes.exclude(pk__in=keep), actor=actor, reason='Quitada al editar los códigos del SKU')
 
     def create(self, validated_data):
         codes = validated_data.pop('codes', [])
@@ -408,8 +421,9 @@ class InventoryMatchSerializer(ManagedInventorySerializer):
 
 
 class ManagedAlternateSerializer(serializers.ModelSerializer):
+    """One Reference of a line, as the Alternos screen edits it; mall.references writes it and DELETE retires it."""
     kind = LegacyReferenceKind()
-    ref_type = serializers.ChoiceField(choices=PartCode.REF_TYPES, required=False)
+    ref_type = serializers.ChoiceField(choices=Reference.REF_TYPES, required=False)
 
     def to_internal_value(self, data):
         return validate_reference_type(data, super().to_internal_value(data), self.instance)
@@ -420,7 +434,7 @@ class ManagedAlternateSerializer(serializers.ModelSerializer):
     part_sku = serializers.CharField(source='part.sku', read_only=True)
 
     class Meta:
-        model = PartCode
+        model = Reference
         fields = ['id', 'part', 'part_name', 'part_sku', 'code', 'brand', 'kind', 'ref_type', 'reference_source']
         read_only_fields = ['id', 'part_name', 'part_sku']
         validators = []
@@ -434,12 +448,16 @@ class ManagedAlternateSerializer(serializers.ModelSerializer):
         code = data.get('code', getattr(self.instance, 'code', ''))
         brand = data.get('brand', getattr(self.instance, 'brand', ''))
         validate_code_mapping(part=part, brand=brand, code=code)
-        existing = PartCode.objects.filter(brand=brand, code=code)
+        existing = Reference.objects.filter(clave=references.clave(code), brand=brand, supplier__isnull=True)
         if self.instance:
             existing = existing.exclude(pk=self.instance.pk)
         if existing.exists():
             raise serializers.ValidationError('Este alterno ya está registrado para este SKU y marca.')
         return data
+
+    def actor(self):
+        user = getattr(self.context.get('request'), 'user', None)
+        return user if getattr(user, 'is_authenticated', False) else None
 
     def create(self, validated_data):
         try:
@@ -448,7 +466,11 @@ class ManagedAlternateSerializer(serializers.ModelSerializer):
                 if part.merged_into_id:
                     raise serializers.ValidationError({'part': 'Selecciona el SKU principal; este SKU ya fue unificado.'})
                 validate_code_mapping(part=part, brand=validated_data.get('brand', ''), code=validated_data['code'])
-                return super().create(validated_data)
+                entry, added = references.add(part, validated_data['code'], validated_data.get('brand', ''), ref_type=validated_data.get('ref_type'),
+                                              source=validated_data.get('reference_source', ''), actor=self.actor())
+                if not added:
+                    raise serializers.ValidationError('Este alterno ya está registrado para este SKU y marca.')
+                return entry
         except IntegrityError:
             raise serializers.ValidationError('Este alterno ya está registrado.')
 
@@ -458,22 +480,31 @@ class ManagedAlternateSerializer(serializers.ModelSerializer):
                 part = Part.objects.select_for_update().get(pk=validated_data.get('part', instance.part).pk)
                 if part.merged_into_id:
                     raise serializers.ValidationError({'part': 'Selecciona el SKU principal; este SKU ya fue unificado.'})
-                instance = PartCode.objects.select_for_update().get(pk=instance.pk)
+                instance = Reference.objects.select_for_update().get(pk=instance.pk)
                 validate_code_mapping(part=part, brand=validated_data.get('brand', instance.brand), code=validated_data.get('code', instance.code))
-                return super().update(instance, validated_data)
+                return references.update(instance, actor=self.actor(), **validated_data)
         except IntegrityError:
             raise serializers.ValidationError('Este alterno ya está registrado.')
 
 
 class CatalogSearch(filters.SearchFilter):
-    """The search fields, or an OEM number the SKU reaches or an aftermarket code filed under one (mall.oem_links.search_q)."""
+    """The search fields, a live Reference of the line (its code or brand: a retired one finds nothing), or an OEM number the SKU
+    reaches or an aftermarket code filed under one (mall.oem_links.search_q). Every term must match one of them."""
 
     def filter_queryset(self, request, queryset, view):
+        from functools import reduce
+        from operator import and_, or_
         from .oem_links import search_q
         terms = self.get_search_terms(request)
-        matched = super().filter_queryset(request, queryset, view)
-        library = search_q(' '.join(terms)) if terms else None
-        # DRF removes duplicates with an Exists subquery, and the library adds pk__in subqueries: both sides stay row-unique.
+        if not terms:
+            return queryset
+        lookups = [self.construct_search(str(field), queryset) for field in self.get_search_fields(view, request) or []]
+        matched = queryset.filter(reduce(and_, (reduce(or_, (Q(**{lookup: term}) for lookup in lookups),
+                                                       Q(pk__in=Reference.objects.filter(Q(code__icontains=term) | Q(brand__icontains=term))
+                                                         .values('part_id')))
+                                                for term in terms)))
+        library = search_q(' '.join(terms))
+        # The line's own columns and pk__in subqueries (codes and the library alike) keep every row unique: no join, no distinct.
         return matched | queryset.filter(library) if library is not None else matched
 
 
@@ -497,7 +528,7 @@ def with_merged_counts(parts):
 class CatalogList(SuperuserMixin, generics.ListCreateAPIView):
     serializer_class = ManagedPartSerializer
     filter_backends = [CatalogSearch, StableOrdering]
-    search_fields = ['sku', 'name', 'description', 'codes__code', 'codes__brand']
+    search_fields = ['sku', 'name', 'description']  # and the line's live References' codes and brands (CatalogSearch)
     ordering_fields = ['sku', 'name', 'description', 'category', 'subcategory', 'active', 'is_OEM', 'stock_record_count']
     queryset = catalog_queryset()
 
@@ -672,13 +703,19 @@ class AlternateList(SuperuserMixin, generics.ListCreateAPIView):
     filter_backends = [filters.SearchFilter, StableOrdering]
     search_fields = ['part__sku', 'part__name', 'code', 'brand']
     ordering_fields = ['part__sku', 'code', 'brand', 'ref_type']
-    queryset = PartCode.objects.select_related('part').order_by('part__sku', 'code', 'brand', 'id')
+    queryset = Reference.objects.select_related('part').order_by('part__sku', 'code', 'brand', 'id')
 
 
 class AlternateDetail(SuperuserMixin, generics.RetrieveUpdateDestroyAPIView):
+    """DELETE retires the alterno (mall.references.retire): it leaves the line's codes and stays as history."""
     serializer_class = ManagedAlternateSerializer
     queryset = AlternateList.queryset
     http_method_names = ['get', 'patch', 'delete', 'head', 'options']
+
+    def perform_destroy(self, instance):
+        with transaction.atomic():
+            Part.objects.select_for_update().filter(pk=instance.part_id).first()
+            references.retire(instance, actor=self.request.user, reason='Retirada en Alternos')
 
 
 class AccountList(SuperuserMixin, generics.ListCreateAPIView):

@@ -17,6 +17,7 @@ from .catalog_grouping import merge_catalog_parts
 from .catalog_identity import prefer_oem, reconcile_identities
 from .catalog_suffixes import suffix_table
 from .matching_engine import MatchIndex
+from . import references
 from .models import Account, CatalogIdentityChange, Part, PartCode, PartImage, StockEntry, SupplierItem, User
 from .oem_finder_models import OEMApplyHalt, OEMFinderChange, OEMFinderRun, OEMReviewCase
 from .services import ingest_inventory
@@ -245,8 +246,8 @@ class ApplyRevertTests(Catalog, TestCase):
         part = self.part('54830-2H000-MOBIS')
         self.assertEqual((part.sku, part.is_OEM, set(part.codes.values_list('code', 'brand', 'ref_type', 'reference_source'))), ('54830-2H000', True, codes))
         self.assertIsNone(self.link('54830-2H000-MOBIS').reverted_at)
-        PartCode.objects.filter(part=part, code='54830-2H000').delete()  # re-created with the values the run wrote: still the run's
-        PartCode.objects.create(part=part, code='54830-2H000', brand='HYUNDAI', ref_type='oem', reference_source=f'algo:oem-finder:v3:strong-MOBIS:{run.pk}')
+        references.retire(PartCode.objects.filter(part=part, code='54830-2H000'))  # added again with the values the run wrote: still the run's
+        references.add(part, '54830-2H000', 'HYUNDAI', ref_type='oem', source=f'algo:oem-finder:v3:strong-MOBIS:{run.pk}')
         self.assertEqual(oa.revert_run(run.pk)['reverted'], 1)
         reconcile_identities()  # no verified OEM is left behind to rename the SKU again
         part = self.part('54830-2H000-MOBIS')

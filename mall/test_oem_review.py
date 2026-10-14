@@ -165,7 +165,9 @@ class DecisionTests(Review, APITestCase):
         self.assertEqual(response.status_code, 200, response.data)
         part = self.part('MR-968365')
         self.assertEqual((part.sku, part.is_OEM), ('MR968365', True))
-        self.assertTrue(part.codes.filter(code='MR-968365', brand='MITSUBISHI', ref_type='oem', reference_source='').exists())
+        # The catalog's spelling stays on the same Reference (one per key from S2a: mall.references): a printed form of the verified one.
+        written = part.codes.get(clave='MR968365', brand='MITSUBISHI')
+        self.assertEqual((written.ref_type, written.printed_forms), ('oem', ['MR-968365']))
         self.assertEqual(response.data['case']['decision']['method'], 'rename')
 
     def test_local_xref_keeps_the_company_code_as_an_alterno(self):
