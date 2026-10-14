@@ -166,7 +166,10 @@ class Part(models.Model):
                                               name='line_rejected_has_reason'),
                        # Transition until S10, when active becomes a generated mirror of estado.
                        models.CheckConstraint(condition=Q(active=True, estado='publicada') | Q(active=False) & ~Q(estado='publicada'),
-                                              name='line_active_iff_publicada')]
+                                              name='line_active_iff_publicada'),
+                       # From 0076 (S2b's tighten): tipo mirrors the main Reference; is_OEM mirrors tipo until S10.
+                       models.CheckConstraint(condition=Q(tipo__in=['OEM', 'AFTERMARKET', 'UNKNOWN']), name='line_valid_tipo'),
+                       models.CheckConstraint(condition=Q(is_OEM=True, tipo='OEM') | Q(is_OEM=False) & ~Q(tipo='OEM'), name='line_oem_iff_tipo')]
 
 
 class PartImage(models.Model):
@@ -329,8 +332,12 @@ class Reference(models.Model):
             models.CheckConstraint(condition=~Q(code=''), name='reference_code_set'),
             models.CheckConstraint(condition=~Q(estado='disputa') | ~Q(dispute_note=''), name='reference_dispute_note'),
             models.CheckConstraint(condition=~Q(reemplazado_por=F('id')), name='reference_not_own_replacement'),
+            # From 0076 (S2b's tighten): one main per line, never retired (rule 3g; I1 is the main on every live line, which
+            # mall.references.ensure_mains keeps until S10).
+            models.UniqueConstraint(fields=['part'], condition=Q(is_main=True) & ~Q(estado='retirada'), name='reference_one_main_per_line'),
+            models.CheckConstraint(condition=~(Q(is_main=True) & Q(estado='retirada')), name='reference_main_not_retired'),
         ]
-        indexes = [models.Index(fields=['clave'], name='reference_clave_idx')]
+        indexes = [models.Index(fields=['clave'], name='reference_clave_idx'), models.Index(fields=['part', 'is_main'], name='reference_part_main_idx')]
 
     def __str__(self):
         return f'{self.brand} {self.code}'.strip()

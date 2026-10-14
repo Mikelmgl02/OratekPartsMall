@@ -295,19 +295,19 @@ class ReviewCaseTests(Fresh, TestCase):
         self.run_finder()
         OEMReviewCase.objects.filter(part=self.parts['43211-29026-JR']).update(status='dismissed', decision={'action': 'dismiss'})
         Part.objects.filter(pk=self.parts['43211-29026-JR'].pk).update(description='MUÑEQUILLA TOY HIACE 05-')
-        Part.objects.filter(pk=self.parts['333512'].pk).update(is_OEM=True)
+        Part.objects.filter(pk=self.parts['333512'].pk).update(is_OEM=True, tipo='OEM')  # the pair moves together (0076)
         stats = self.run_finder()['counts']['cases']
         self.assertEqual((stats['updated'], stats['resolved']), (1, 1))
         reopened = self.case('43211-29026-JR')
         self.assertEqual((reopened.status, reopened.decision, reopened.snapshot['description']), ('review', {}, 'MUÑEQUILLA TOY HIACE 05-'))
         self.assertEqual(self.case('333512').status, 'resolved')
-        Part.objects.filter(pk=self.parts['333512'].pk).update(is_OEM=False)
+        Part.objects.filter(pk=self.parts['333512'].pk).update(is_OEM=False, tipo='UNKNOWN')
         self.assertEqual(self.run_finder()['counts']['cases']['updated'], 1)
         self.assertEqual(self.case('333512').status, 'review')
 
     def test_a_scoped_run_only_touches_its_selection(self):
         self.run_finder()
-        Part.objects.filter(pk=self.parts['333512'].pk).update(is_OEM=True)
+        Part.objects.filter(pk=self.parts['333512'].pk).update(is_OEM=True, tipo='OEM')  # the pair moves together (0076)
         outcome = self.run_finder(tier='CONFLICT', limit=2)
         self.assertEqual(outcome['counts']['scope'], {'CONFLICT': 2})
         self.assertEqual(outcome['counts']['cases'], {'created': 0, 'updated': 0, 'restamped': 0, 'unchanged': 2, 'stock_changed': 0, 'resolved': 0, 'skipped': 0})

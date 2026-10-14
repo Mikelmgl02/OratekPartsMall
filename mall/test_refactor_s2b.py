@@ -6,6 +6,7 @@ import os
 import tempfile
 from unittest.mock import patch
 
+from django.db import IntegrityError, connection, transaction
 from django.test import TestCase
 
 from . import references
@@ -15,8 +16,25 @@ from .matching_models import MatchingCase, SupplierCodeMapping
 from .models import Part, Reference, ReferenceSource
 from .oem_reference_models import PartOEMLink
 from .refactor import s2b_main_refs
-from .test_factories import Fresh, make_library_number, make_line, make_reference, make_supplier, make_user, make_variant
+from .test_factories import (Fresh, make_library_number, make_line, make_reference, make_supplier, make_user, make_variant,
+                             run_migration_function)
 from .test_main_references import broken_invariants
+
+TIGHTEN = {'mall_part': ('line_oem_iff_tipo',), 'mall_partcode': ('reference_one_main_per_line', 'reference_main_not_retired')}
+
+
+def drop_tighten_constraints():
+    """0076's constraints, inside a test's transaction (they come back when it rolls back): the state the backfill runs in."""
+    with connection.cursor() as cursor:
+        cursor.execute('SET CONSTRAINTS ALL IMMEDIATE')
+        for table, names in TIGHTEN.items():
+            present = connection.introspection.get_constraints(cursor, table)
+            for name in names:
+                if name in present:
+                    if present[name].get('check') or not present[name].get('index'):
+                        cursor.execute(f'ALTER TABLE {table} DROP CONSTRAINT {name}')
+                    else:
+                        cursor.execute(f'DROP INDEX {name}')
 
 
 class BackfillTests(Fresh, TestCase):
@@ -30,6 +48,10 @@ class BackfillTests(Fresh, TestCase):
         patcher = patch.dict(os.environ, {'REFACTOR_OUTPUT': self.output.name})
         patcher.start()
         self.addCleanup(patcher.stop)
+        drop_tighten_constraints()
+        tightened = patch.object(s2b_main_refs, 'tightened', return_value=False)
+        tightened.start()
+        self.addCleanup(tightened.stop)
         for nombre in ('TOYOTA', 'MITSUBISHI', 'GMB'):
             Brand.objects.create(nombre=nombre)
         CatalogCodeSuffix.objects.create(token='ZQX', cls='TAG', tag_kind='brand', attribution='brand: GMB', confidence='high',
@@ -199,4 +221,83 @@ class KeeperTests(TestCase):
             self.assertTrue(s2b_main_refs.messy_spelling(sku), sku)
         for sku in ('16546-18000', '11115-54073.AS', '04111-54220/280-AS'):
             self.assertFalse(s2b_main_refs.messy_spelling(sku), sku)
+class TightenTests(TestCase):
+    """0076_line_main_reference_checks: the mains repaired by ensure_main's rules, then one main per line, never retired, and
+    is_OEM = (tipo = 'OEM')."""
+    MIGRATION = '0076_line_main_reference_checks'
 
+    def refused(self, write):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            write()
+
+    def test_one_main_per_line_never_retired_and_the_pair_in_step(self):
+        line = make_line('TIGHT-1')
+        other = make_reference(line, 'TIGHT-ALT')
+        self.refused(lambda: Reference.all_objects.filter(pk=other.pk).update(is_main=True))
+        self.refused(lambda: Reference.all_objects.filter(pk=references.main_of(line).pk).update(estado='retirada'))
+        self.refused(lambda: Part.objects.filter(pk=line.pk).update(is_OEM=True))
+        self.refused(lambda: Part.objects.filter(pk=line.pk).update(tipo='OTRO'))
+        Part.objects.filter(pk=line.pk).update(is_OEM=True, tipo='OEM')
+        references.retire(other)
+        Reference.all_objects.filter(pk=other.pk).update(is_main=False)  # a retired row is never the main, but may have been
+
+    def test_the_repair_gives_every_live_line_its_main_and_tipo_and_is_idempotent(self):
+        run_migration_function(self.MIGRATION, 'repair_mains')  # nothing to repair
+        drop_tighten_constraints()
+        missing, renamed, oem = make_line('REP-1'), make_line('REP-2'), make_line('REP-3', is_OEM=True)
+        held = make_line('REP-HELD')
+        make_reference(held, 'REP-4')
+        taken = create_line_without_main('REP-4')
+        references.purge([references.main_of(missing).pk])
+        Part.objects.filter(pk=renamed.pk).update(sku='REP-2B')  # estado: a rename nothing followed
+        Part.objects.filter(pk=oem.pk).update(tipo='UNKNOWN')
+        for _ in range(2):
+            run_migration_function(self.MIGRATION, 'repair_mains')
+        self.assertEqual(broken_invariants(), {})
+        self.assertEqual((references.main_of(missing).code, references.main_of(renamed).code), ('REP-1', 'REP-2B'))
+        self.assertEqual(Part.objects.get(pk=oem.pk).tipo, 'OEM')
+        self.assertEqual(references.main_of(taken).estado, 'disputa')  # another line holds its brandless key
+
+    def test_a_unificada_line_holds_no_main_and_live_references_or_variants_there_need_a_person(self):
+        line, target = make_line('UNI-1'), make_line('UNI-T')
+        stray = references.main_of(line)
+        Part.objects.filter(pk=line.pk).update(merged_into=target, estado='unificada', active=False)  # a merge by direct writes
+        run_migration_function(self.MIGRATION, 'repair_mains')
+        stray = Reference.all_objects.get(pk=stray.pk)
+        self.assertEqual((stray.is_main, stray.estado), (False, 'retirada'))
+        self.assertEqual(broken_invariants(), {})
+        make_reference(line, 'UNI-ALT')
+        with self.assertRaisesMessage(RuntimeError, 'I3 (referencias vivas en líneas unificadas): 1'):
+            run_migration_function(self.MIGRATION, 'repair_mains')
+
+
+class TightenExecutorTests(TestCase):
+    """0076 run by Django's migration executor, operations and all, not only its RunPython."""
+
+    def test_0076_applies_when_its_repair_creates_a_main_and_never_breaks_the_brandless_reservation(self):
+        from django.db.migrations.executor import MigrationExecutor
+        with connection.cursor() as cursor:
+            cursor.execute('SET CONSTRAINTS ALL IMMEDIATE')  # this test's own writes checked now: DDL refuses pending trigger events
+        MigrationExecutor(connection).migrate([('mall', '0075_line_main_reference')])
+        with connection.cursor() as cursor:
+            cursor.execute('SET CONSTRAINTS ALL DEFERRED')  # as a migrate session has them: Django's foreign keys checked at commit
+        plain = create_line_without_main('EXEC-1')
+        holder = make_line('EXEC-HOLDER')
+        make_reference(holder, 'EXEC-2', brand='ACME', tipo='aftermarket')  # held under a brand on another line
+        clashing = create_line_without_main('EXEC-2')
+        # The repair inserts the two mains (deferred foreign key checks pending), then the index and constraints run.
+        MigrationExecutor(connection).migrate([('mall', TightenTests.MIGRATION)])
+        self.assertEqual((references.main_of(plain).code, references.main_of(plain).estado), ('EXEC-1', 'declarado'))
+        self.assertEqual(references.main_of(clashing).estado, 'disputa')  # a brandless main against a branded holder (I5)
+        self.assertEqual(broken_invariants(), {})
+        with connection.cursor() as cursor:
+            self.assertIn('reference_one_main_per_line', connection.introspection.get_constraints(cursor, 'mall_partcode'))
+
+
+def create_line_without_main(sku):
+    """A line inserted the way the code before S2b did (no main), to give 0076's repair something to do."""
+    line = make_line(sku)
+    main = references.main_of(line)
+    if main is not None:
+        references.purge([main.pk])
+    return line

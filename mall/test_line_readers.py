@@ -297,7 +297,7 @@ class CatalogToolReaderTests(TestCase):
         draft = make_line('MR453383', description='EJE MIT', estado='preparacion')
         merged = make_line('MR 453383', description='EJE MIT', merged_into=part)
         self.assertEqual(set(exact_items()), {part.pk})
-        Part.objects.filter(pk__in=[part.pk, draft.pk, merged.pk]).update(is_OEM=True)
+        Part.objects.filter(pk__in=[part.pk, draft.pk, merged.pk]).update(is_OEM=True, tipo='OEM')  # the pair moves together (0076)
         self.assertEqual(sorted(unmark_disputed(ref)), sorted([part.sku, draft.sku]))  # a line in preparación is not published as OEM
         self.assertEqual(list(Part.objects.filter(is_OEM=True).values_list('sku', flat=True)), [merged.sku])
 

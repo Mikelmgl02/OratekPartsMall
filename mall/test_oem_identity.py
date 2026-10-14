@@ -258,6 +258,8 @@ class OEMIdentityTests(APITestCase):
         unverified = Part.objects.create(sku='51712-TEST')
         PartCode.objects.create(part=unverified, code=unverified.sku, brand='HYUNDAI', ref_type='oem')
         self.oem()  # A different OEM in the library doesn't classify the company main.
+        from .test_refactor_s2b import drop_tighten_constraints
+        drop_tighten_constraints()  # 0026 writes is_OEM alone, as the database of its time allowed (0076 pairs it with tipo)
         run_migration_function('0026_part_is_oem_matching_progress', 'mark_verified_main_oems')
         self.assertEqual(list(Part.objects.filter(is_OEM=True).values_list('pk',flat=True)), [verified.pk])
 
