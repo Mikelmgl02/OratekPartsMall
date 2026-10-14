@@ -1,17 +1,17 @@
 import io
 import json
-import shutil
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone as dt_timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
 from django.db.models import F
 from django.test import TestCase, override_settings
 from rest_framework.test import APITestCase
 
-from . import catalog_suffixes as cs
+from . import catalog_suffixes as cs, oem_finder
 from .catalog_identity import company_reference, reconcile_identities
 from .catalog_suffix_models import CatalogCodeSuffix, CatalogCodeSuffixChange
 from .catalog_suffixes import (LEGACY_COMPANY_SUFFIXES, SuffixTable, chain_summary, classify, classify_chain, company_suffixes,
@@ -42,6 +42,14 @@ def relabel_night(user, tokens=revert.TOKENS):
             relabel(row, label(row, 'confirm_tag', {}), 'confirm_tag', user)
     CatalogCodeSuffixChange.objects.filter(action='seed_confirm').update(created_at=RELABEL_NIGHT - timedelta(hours=1))
     CatalogCodeSuffixChange.objects.filter(action='confirm_tag', token__in=tokens).update(created_at=RELABEL_NIGHT)
+
+
+@contextmanager
+def scratch_checkout():
+    """A temporary main checkout with its output/ folder: a test's revert writes its manifest there, never in the live output/."""
+    with tempfile.TemporaryDirectory() as folder, override_settings(MAIN_CHECKOUT=folder):
+        (Path(folder) / 'output').mkdir()
+        yield Path(folder)
 
 
 class Fresh:
@@ -513,11 +521,7 @@ class SuffixRevertTests(Fresh, APITestCase):
         super().setUp()
         self.admin = User.objects.create_superuser('miguel', 'miguel@example.invalid', 'Example938!')
         self.client.force_authenticate(self.admin)
-        self.output = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.output, ignore_errors=True)
-        patcher = patch.object(revert, 'OUTPUT', self.output)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        self.checkout = self.enterContext(scratch_checkout())
 
     def row(self, token):
         return CatalogCodeSuffix.objects.get(token=token)
@@ -525,6 +529,16 @@ class SuffixRevertTests(Fresh, APITestCase):
     def run_revert(self, **kwargs):
         out = io.StringIO()
         return revert.run(stdout=out, **kwargs), out.getvalue()
+
+    def manifest(self):
+        return [json.loads(line) for line in revert.manifest_path().read_text().splitlines()]
+
+    def add_alias(self, token, alias):
+        """An alias added before the relabel night, as Sufijos does it."""
+        row = self.row(token)
+        response = self.client.patch(f'{BASE}{token}/', {'action': 'add_alias', 'version': row.version, 'alias': alias}, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        CatalogCodeSuffixChange.objects.filter(action__in=('add_alias', 'set_alias')).update(created_at=RELABEL_NIGHT - timedelta(minutes=5))
 
     def test_the_owners_relabel_is_reverted_with_one_audit_row_per_token(self):
         rows = [{'token': t, 'version': self.row(t).version} for t in revert.TOKENS]
@@ -561,16 +575,18 @@ class SuffixRevertTests(Fresh, APITestCase):
         # The cache is invalidated in this process: position and size tails are variants again, never strippable brands.
         self.assertEqual((classify('-', 'L').cls, classify('-', 'STD').kind, strip_tags('58411-07000-L')[2]), ('VARIANT', 'size', 'variant'))
         self.assertEqual(company_suffixes(), LEGACY_COMPANY_SUFFIXES)
-        lines = [json.loads(line) for line in (self.output / revert.MANIFEST).read_text().splitlines()]
-        self.assertEqual(len(lines), 45)
-        self.assertEqual((lines[0]['before']['cls'], lines[0]['after']['cls'], lines[0]['actor']), ('TAG', 'VARIANT', 'miguel'))
+        # The manifest lives in the main checkout's output/ (here a temporary one), every line naming its database.
+        self.assertEqual((revert.manifest_path(), result['manifest']), (self.checkout / 'output' / revert.MANIFEST, str(revert.manifest_path())))
+        lines = self.manifest()
+        self.assertEqual((len(lines), {line['database'] for line in lines}), (45, {connection.settings_dict['NAME']}))
+        self.assertEqual((lines[0]['before']['cls'], lines[0]['after']['cls'], lines[0]['actor'], lines[0]['action']), ('TAG', 'VARIANT', 'miguel', 'update'))
         self.assertIn('Siguiente: python -m mall.link_oem_numbers --apply', out)
 
         changes, top = CatalogCodeSuffixChange.objects.count(), CatalogCodeSuffix.objects.order_by('-version').first().version
         again, _ = self.run_revert(apply=True, username='miguel')
         self.assertEqual((again['already'], again['revert'], again['rows_written']), (45, 0, 0))
         self.assertEqual((CatalogCodeSuffixChange.objects.count(), CatalogCodeSuffix.objects.order_by('-version').first().version), (changes, top))
-        self.assertEqual(len((self.output / revert.MANIFEST).read_text().splitlines()), 45)
+        self.assertEqual(len(self.manifest()), 45)
 
     def test_tokens_edited_after_the_relabel_or_never_relabelled_are_left_alone(self):
         relabel_night(self.admin, [t for t in revert.TOKENS if t != 'XX'])
@@ -584,46 +600,126 @@ class SuffixRevertTests(Fresh, APITestCase):
         self.assertEqual((self.row('XX').cls, self.row('RH').cls), ('VARIANT', 'VARIANT'))
         self.assertFalse(self.row('XX').changes.exists())
 
+    def test_a_token_confirmed_before_without_an_audited_confirmation_is_left_alone(self):
+        # RH was owner-confirmed before the relabel by a write that left no audit row: the relabel's own stamp is all the row has, so
+        # the revert cannot give its confirmation back and leaves it for Sufijos.
+        CatalogCodeSuffix.objects.filter(token='RH').update(owner_confirmed=True, status='owner_confirmed',
+                                                            confirmed_at=RELABEL_NIGHT - timedelta(days=2))
+        relabel_night(self.admin)
+        result, out = self.run_revert(apply=True, username='miguel')
+        self.assertEqual((result['revert'], result['unaudited'], result['tokens']['unaudited']), (44, 1, ['RH']))
+        self.assertIn('RH: TAG brand · sin la auditoría del relabel', out)
+        rh = self.row('RH')
+        self.assertEqual((rh.cls, rh.confirmed_by), ('TAG', self.admin))
+        self.assertFalse(rh.changes.filter(action='set_variant').exists())
+        self.assertEqual(self.row('LH').cls, 'VARIANT')
+
     def patch_note(self, token, version):
         return self.client.patch(f'{BASE}{token}/', {'action': 'note', 'version': version, 'notes': 'REVISAR'}, format='json')
 
     def test_aliases_follow_their_token_back(self):
-        l = self.row('L')
-        self.assertEqual(self.client.patch(f'{BASE}L/', {'action': 'add_alias', 'version': l.version, 'alias': 'LFT'}, format='json').status_code, 200)
-        CatalogCodeSuffixChange.objects.filter(action__in=('add_alias', 'set_alias')).update(created_at=RELABEL_NIGHT - timedelta(minutes=5))
+        self.add_alias('L', 'LFT')
         before = {k: getattr(self.row('LFT'), k) for k in self.LABEL}
         relabel_night(self.admin)
         self.assertEqual((self.row('LFT').cls, self.row('LFT').tag_kind, classify('-', 'LFT').auto_eligible), ('TAG', 'brand', True))
+        # A read-only analysis before the apply sees the alias as the apply leaves it.
+        memory = {r['token']: r for r in revert.reverted_rows(cs._db_rows())}['LFT']
         result, _ = self.run_revert(apply=True, username='miguel')
         self.assertEqual((result['revert'], result['rows_written']), (45, 46))
         alias = self.row('LFT')
         self.assertEqual(({k: getattr(alias, k) for k in self.LABEL}, alias.alias_of.token), (before, 'L'))
+        self.assertEqual({k: memory[k] for k in self.LABEL}, before)
         self.assertEqual((alias.cls, alias.variant_kind), ('VARIANT', 'position'))
         self.assertEqual(alias.changes.order_by('-created_at', '-id').first().note, 'Alias de L')
         self.assertFalse(classify('-', 'LFT').auto_eligible)
 
     def test_an_apply_on_the_live_database_needs_the_freeze_and_an_author(self):
+        if connection.vendor != 'postgresql':
+            self.skipTest('PostgreSQL only: the live database is the PostgreSQL one')
         relabel_night(self.admin)
-        freeze = self.output / 'freeze'
-        with patch.object(revert, 'live_database', return_value=True), patch.object(revert, 'FREEZE_FILE', freeze):
+        folder = self.checkout / '.maintenance'
+        folder.mkdir()
+        with override_settings(LIVE_DATABASE_NAME=connection.settings_dict['NAME'], MAINTENANCE_DIR=str(folder)):
             result, out = self.run_revert(apply=True, username='miguel')
             self.assertIsNone(result)
-            self.assertIn('Activa la congelación del catálogo', out)
+            self.assertIn('sin el congelamiento del catálogo', out)
+            self.assertIsNone(self.run_revert(rollback=True, username='miguel')[0])
             self.assertEqual(self.run_revert()[0]['revert'], 45)  # a dry run never needs it
-            freeze.write_text('catalog\n')
+            (folder / 'freeze').write_text('catalog\n')
             self.assertIsNone(self.run_revert(apply=True)[0])
             self.assertIsNone(self.run_revert(apply=True, username='nadie')[0])
             self.assertFalse(CatalogCodeSuffixChange.objects.filter(action='set_variant').exists())
-            with patch.object(revert, 'OUTPUT', self.output / 'missing'):
-                self.assertIsNone(self.run_revert(apply=True, username='miguel')[0])
+            with override_settings(MAIN_CHECKOUT=str(self.checkout / 'missing')):
+                result, out = self.run_revert(apply=True, username='miguel')
+                self.assertIsNone(result)
+                self.assertIn('Falta la carpeta', out)
             self.assertEqual(self.run_revert(apply=True, username='miguel')[0]['revert'], 45)
         self.assertEqual(self.row('RH').cls, 'VARIANT')
+
+    def test_the_manifest_is_written_before_the_commit(self):
+        relabel_night(self.admin)
+        top = CatalogCodeSuffix.objects.order_by('-version').first().version
+        with patch.object(revert, 'write_manifest', side_effect=OSError(28, 'No space left on device')), self.assertRaises(OSError):
+            self.run_revert(apply=True, username='miguel')
+        # A failed write rolls every row back: no revert without its manifest.
+        self.assertEqual((self.row('RH').cls, CatalogCodeSuffix.objects.order_by('-version').first().version), ('TAG', top))
+        self.assertFalse(CatalogCodeSuffixChange.objects.filter(action='set_variant').exists())
+        self.assertFalse(revert.manifest_path().exists())
+
+    def test_a_manifest_with_another_databases_lines_is_refused(self):
+        relabel_night(self.admin)
+        path = revert.manifest_path()
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({'stage': 's0.1', 'database': 'test_partsmall_s0sfx1', 'id': 1, 'token': 'RH', 'action': 'update'}) + '\n')
+        result, out = self.run_revert(apply=True, username='miguel')
+        self.assertIsNone(result)
+        self.assertIn('tiene líneas de otra base (test_partsmall_s0sfx1)', out)
+        self.assertIsNone(self.run_revert(rollback=True, username='miguel')[0])
+        self.assertIn('Aviso: El manifiesto', self.run_revert()[1])
+        self.assertEqual((self.row('RH').cls, len(path.read_text().splitlines())), ('TAG', 1))
+        self.assertFalse(CatalogCodeSuffixChange.objects.filter(action='set_variant').exists())
+        path.unlink()
+        self.assertEqual(self.run_revert(apply=True, username='miguel')[0]['revert'], 45)
+
+    def test_rollback_puts_back_what_the_apply_changed(self):
+        self.add_alias('L', 'LFT')
+        relabel_night(self.admin)
+        tokens = [*revert.TOKENS, 'LFT']
+        before = {t: revert.recorded(revert.stamped(self.row(t))) for t in tokens}
+        self.assertEqual(self.run_revert(apply=True, username='miguel')[0]['rows_written'], 46)
+        self.assertEqual(self.patch_note('XX', self.row('XX').version).status_code, 200)  # edited after the apply: left alone
+
+        result, out = self.run_revert(rollback=True, username='miguel')
+        self.assertEqual((result['rows'], result['rollback'], result['already'], result['changed'], result['tokens']['changed']),
+                         (46, 45, 0, 1, ['XX']))
+        self.assertIn('Rollback · S0.1: 46 filas aplicadas en esta base · 45 por deshacer', out)
+        self.assertIn('XX: cambiados después de aplicar, se deja como está', out)
+        # Every other row is back as the relabel left it, confirmation stamp included.
+        for token in tokens:
+            if token != 'XX':
+                self.assertEqual(revert.recorded(revert.stamped(self.row(token))), before[token], token)
+        self.assertEqual((self.row('XX').cls, self.row('XX').notes), ('VARIANT', 'REVISAR'))
+        audit = self.row('RH').changes.order_by('-created_at', '-id').first()
+        self.assertEqual((audit.action, audit.note, audit.actor, audit.before['cls'], audit.after['cls']),
+                         ('confirm_tag', revert.ROLLBACK_NOTE, self.admin, 'VARIANT', 'TAG'))
+        self.assertEqual(CatalogCodeSuffixChange.objects.filter(note=revert.ROLLBACK_NOTE).count(), 45)
+        self.assertEqual((classify('-', 'RH').cls, classify('-', 'LFT').auto_eligible), ('TAG', True))
+        self.assertEqual([line['action'] for line in self.manifest()].count('rollback'), 45)
+
+        again, _ = self.run_revert(rollback=True, username='miguel')
+        self.assertEqual((again['rollback'], again['already'], again['changed'], again['rows_written']), (0, 45, 1, 0))
+        # The rollback's own audit rows are not edits: the tokens can be reverted again, the edited one aside.
+        result, _ = self.run_revert(apply=True, username='miguel')
+        self.assertEqual((result['revert'], result['already'], result['changed'], result['rows_written']), (44, 0, 1, 45))
+        self.assertEqual((self.row('RH').cls, self.row('LFT').cls), ('VARIANT', 'VARIANT'))
 
     def test_command_line(self):
         relabel_night(self.admin, ['RH'])
         Part.objects.create(sku='48654-60040-RH', name='48654-60040-RH', description='BASE AMORT TOY PRADO RH')
         out = io.StringIO()
-        self.assertEqual(revert.main(['--dry-run', '--finder', '--json'], stdout=out), 0)
+        with patch.object(oem_finder, 'load_snapshot', wraps=oem_finder.load_snapshot) as loads:
+            self.assertEqual(revert.main(['--dry-run', '--finder', '--json'], stdout=out), 0)
+        self.assertEqual(loads.call_count, 1)  # both finder passes grade one catalog read
         self.assertIn('1 por revertir', out.getvalue())
         self.assertIn('Buscador OEM (solo lectura), SKU por nivel hoy → con D4:', out.getvalue())
         result = json.loads(out.getvalue().splitlines()[-1])
@@ -640,3 +736,6 @@ class SuffixRevertTests(Fresh, APITestCase):
         self.assertEqual(revert.main(['--apply'], stdout=io.StringIO()), 1)
         self.assertEqual(revert.main(['--apply', '--user', 'miguel'], stdout=io.StringIO()), 0)
         self.assertEqual(self.row('RH').cls, 'VARIANT')
+        self.assertEqual(revert.main(['--rollback'], stdout=io.StringIO()), 1)
+        self.assertEqual(revert.main(['--rollback', '--user', 'miguel'], stdout=io.StringIO()), 0)
+        self.assertEqual(self.row('RH').cls, 'TAG')

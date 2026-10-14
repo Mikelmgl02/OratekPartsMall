@@ -13,7 +13,7 @@ from .catalog_suffix_models import CatalogCodeSuffix, CatalogCodeSuffixChange
 from .matching_models import MatchingDecision
 from .models import CatalogMerge, Part, User
 from .refactor import s0_merge_audit as merge_audit
-from .test_catalog_suffixes import relabel_night
+from .test_catalog_suffixes import relabel_night, scratch_checkout
 
 
 class MergeAuditTests(TestCase):
@@ -80,7 +80,7 @@ class MergeAuditTests(TestCase):
     def test_once_d4_is_applied_the_audit_reads_the_table_as_it_is(self):
         self.catalog()
         from .refactor import s0_suffix_revert as revert
-        with tempfile.TemporaryDirectory() as folder, patch.object(revert, 'OUTPUT', Path(folder)):
+        with scratch_checkout():
             revert.run(apply=True, username='miguel', stdout=io.StringIO())
         result = merge_audit.audit()
         self.assertEqual(result['pending_d4'], 0)

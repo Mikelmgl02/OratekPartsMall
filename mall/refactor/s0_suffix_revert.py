@@ -1,45 +1,105 @@
 """D4 (owner decision of 2026-10-13): the 45 position, size and spec tokens of the code suffix table that were relabelled as brand
 TAGs on 2026-10-07 go back to the label they had before. Stage S0.1 of the inventory refactor.
 
-    python -m mall.refactor.s0_suffix_revert --dry-run|--apply --user USERNAME
+    python -m mall.refactor.s0_suffix_revert --dry-run|--apply|--rollback --user USERNAME
 
 Each token takes back the 11 audited fields of its relabel's `before` (class, kind, attribution, company flag, confidence, status,
 owner confirmation, scopes, notes, alias) and the confirmation stamp it had, with a set_variant CatalogCodeSuffixChange. Every save
 bumps the table version and invalidates the suffix cache, so the OEM finder re-tiers only the SKUs whose chain reads one of them.
-A token already back is skipped; one edited after its relabel (or without a complete audit row) is reported and left alone: relabel
-it from Sufijos. Aliases follow their token, as an owner label does. An apply takes the suffix table lock (SUFFIX_LOCK) and writes
-in one transaction; on the live database it refuses unless the catalog freeze is on, and it appends every changed row with its
-before-values to /app/output/refactor/s0/suffix-revert/manifest.jsonl. Re-running changes nothing. To undo it, confirm the tokens as
-TAG again from Sufijos (a one-click relabel restores the previous TAG label). Afterwards run python -m mall.link_oem_numbers --apply
-and python -m mall.oem_finder --dry-run; --dry-run --finder previews the finder's tiers with D4 first, storing nothing.
+A token already back is skipped; one edited after its relabel, or without a complete audit row (its `before`, and the confirmation it
+had when it was owner-confirmed), is reported and left alone: relabel it from Sufijos. Aliases follow their token, as an owner label
+does. --apply and --rollback take the suffix table lock (SUFFIX_LOCK) and write in one transaction; on the live database they refuse
+unless the catalog freeze is on. Every changed row goes with its before-values to the manifest, the main checkout's git-ignored
+output/refactor/s0/suffix-revert/manifest.jsonl (/app/output/… in the containers), written and flushed before the transaction commits,
+so a failed write changes nothing; a manifest holding another database's lines (a test run's) is refused, never appended to.
+Re-running changes nothing. --rollback puts back the rows the last apply on this database changed, stamps included, unless one was
+edited since. After either, run python -m mall.link_oem_numbers --apply and python -m mall.oem_finder --dry-run; --dry-run --finder
+previews the finder's tiers with D4 first, storing nothing.
 """
 import argparse
 import json
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 TOKENS = ('0.25', '0.50', 'A', 'ABANICO', 'ABS', 'ALZADO', 'AS', 'ASB', 'AZUL', 'B', 'BASE', 'BOMBA', 'C', 'CONO', 'CR', 'D', 'DIESEL',
           'FL', 'FR', 'GL', 'GRAPA', 'GUIA', 'H', 'L', 'LED', 'LH', 'M', 'O', 'PUNTA', 'R', 'RH', 'RL', 'RR', 'SELLO', 'SF', 'SOCKET',
           'ST', 'STD', 'SYN', 'TAPA', 'USA', 'X', 'XEN', 'XENON', 'XX')
 RELABELLED_ON = ('2026-10-06', '2026-10-07')  # the night of Oct 6-7 (America/Panama); 02:50 UTC on Oct 7
 NOTE = 'Revertido: palabra de posición o medida (decisión del dueño, 2026-10-13)'
-# The catalog write freeze of S0.11 (mall.maintenance once it lands): any level (catalog or all) counts.
-FREEZE_FILE = Path('/app/.maintenance/freeze')
-LIVE_DATABASES = ('partsmall',)
-OUTPUT = Path('/app/output')  # the main checkout's git-ignored output/
+ROLLBACK_NOTE = 'Deshecho: vuelve la etiqueta que tenía antes de la reversión D4 (rollback de S0.1)'
 MANIFEST = Path('refactor/s0/suffix-revert/manifest.jsonl')
 STATUS_LABELS = {'revert': 'por revertir', 'already': 'ya revertidos', 'changed': 'cambiados después del relabel',
                  'unaudited': 'sin la auditoría del relabel'}
+ROLLBACK_LABELS = {'rollback': 'por deshacer', 'already': 'ya deshechos', 'changed': 'cambiados después de aplicar'}
+CLASS_ACTIONS = {'TAG': 'confirm_tag', 'VARIANT': 'set_variant', 'UNKNOWN': 'set_unknown'}  # the audit action of a restored label
 
 
-def catalog_frozen():
-    return FREEZE_FILE.exists()
+def main_checkout():
+    """The main checkout (settings.MAIN_CHECKOUT once S0.11 lands, else BASE_DIR): the repository a .claude/worktrees/<name>
+    checkout belongs to, so a run from the worktree writes where a run from the main checkout does. A test copy is its own."""
+    from django.conf import settings
+    base = Path(getattr(settings, 'MAIN_CHECKOUT', None) or settings.BASE_DIR)
+    return base.parents[2] if (base.parent.name, base.parent.parent.name) == ('worktrees', '.claude') else base
 
 
-def live_database():
+def output_dir():
+    return main_checkout() / 'output'  # git-ignored; /app/output in the containers
+
+
+def manifest_path():
+    return output_dir() / MANIFEST
+
+
+def current_database():
     from django.db import connection
-    return connection.vendor == 'postgresql' and connection.settings_dict['NAME'] in LIVE_DATABASES
+    return str(connection.settings_dict['NAME'])
+
+
+def refusal():
+    """Why --apply or --rollback may not write now, or None. The S0.11 guard (mall.refactor.guard) once it lands; until then the
+    same check: the live database (LIVE_DATABASE_NAME, partsmall) without the catalog freeze file, at either level."""
+    try:
+        from .guard import refusal as shared
+    except ImportError:  # S0.11 has not landed yet
+        shared = None
+    if shared is not None:
+        return shared(True)
+    from django.conf import settings
+    from django.db import connection
+    live = getattr(settings, 'LIVE_DATABASE_NAME', 'partsmall')
+    folder = Path(getattr(settings, 'MAINTENANCE_DIR', None) or main_checkout() / '.maintenance')
+    if connection.vendor != 'postgresql' or connection.settings_dict['NAME'] != live or (folder / 'freeze').exists():
+        return None
+    return (f'Base de datos en vivo ({live}) sin el congelamiento del catálogo: no se escribe nada. Congela primero '
+            f'(mkdir -p {folder} && echo catalog > {folder / "freeze"}), espera a que MatchingQueue.lease y ApiagSync.lease estén '
+            'vacíos y vuelve a ejecutar; quita el archivo al terminar.')
+
+
+def manifest_lines():
+    """The manifest's lines, oldest first ([] while there is none)."""
+    path = manifest_path()
+    if not path.exists():
+        return []
+    with open(path, encoding='utf-8') as handle:
+        return [json.loads(line) for line in handle if line.strip()]
+
+
+def foreign_lines():
+    """The message for a manifest that holds another database's lines (a test run's), which a rollback here must never read; or None."""
+    others = sorted({str(line.get('database')) for line in manifest_lines()} - {current_database()})
+    if others:
+        return (f"El manifiesto {manifest_path()} tiene líneas de otra base ({', '.join(others)}): muévelo o bórralo antes de aplicar "
+                'o deshacer en esta.')
+    return None
+
+
+def manifest_problem():
+    """Why the manifest cannot take this run's lines, or None: its folder is missing, or it holds another database's lines."""
+    if not output_dir().is_dir():
+        return f'Falta la carpeta {output_dir()} para el manifiesto; ejecútalo dentro del contenedor de la app.'
+    return foreign_lines()
 
 
 def relabels(tokens=None):
@@ -53,12 +113,13 @@ def relabels(tokens=None):
 
 
 def stamp(row, change, before):
-    """(confirmed_by id, confirmed_at) the token had before its relabel: the last audited confirmation, or none."""
+    """(confirmed_by id, confirmed_at) the token had before its relabel: none when it was not owner-confirmed, else its last audited
+    confirmation. None when that confirmation has no audit row: the relabel's own stamp is all the row has, so it is left alone."""
     if not before.get('owner_confirmed'):
         return None, None
     prior = [c for c in row.changes.filter(created_at__lte=change.created_at).exclude(pk=change.pk).order_by('-created_at', '-id')
              if (c.after or {}).get('owner_confirmed') is True]
-    return (prior[0].actor_id, prior[0].created_at) if prior else (row.confirmed_by_id, row.confirmed_at)
+    return (prior[0].actor_id, prior[0].created_at) if prior else None
 
 
 def plan(lock=False):
@@ -78,29 +139,43 @@ def plan(lock=False):
         if row is None or change is None or set(keys) - set(before):
             continue
         current = snapshot(row)
+        # This tool's own audit rows (an apply undone by --rollback) are not edits: the token can be reverted again.
+        later = [c for c in row.changes.filter(created_at__gte=change.created_at).exclude(pk=change.pk) if c.note not in (NOTE, ROLLBACK_NOTE)]
         if all(current[k] == before[k] for k in keys):
             entry['status'] = 'already'
-        elif all(current[k] == (change.after or {}).get(k) for k in keys) and not row.changes.filter(created_at__gte=change.created_at).exclude(pk=change.pk).exists():
-            entry['status'] = 'revert'
+        elif all(current[k] == (change.after or {}).get(k) for k in keys) and not later:
+            entry['stamp'] = stamp(row, change, before)
+            entry['status'] = 'revert' if entry['stamp'] is not None else 'unaudited'
         else:
             entry['status'] = 'changed'
     return entries
 
 
 def reverted_rows(rows, entries=None):
-    """The suffix table rows (catalog_suffixes FIELDS dicts) with D4 applied in memory: what a read-only analysis sees before the apply.
-    Rows already back, or edited since, stay as they are. entries: a plan() already made."""
+    """The suffix table rows (catalog_suffixes FIELDS dicts, alias_of as a token) with D4 applied in memory, aliases following their
+    token as restore() writes them: what a read-only analysis sees before the apply. Rows already back, or edited since, stay as they
+    are. entries: a plan() already made."""
+    from ..catalog_suffix_views import alias_label
     pending = {e['token']: e['before'] for e in (plan() if entries is None else entries) if e['status'] == 'revert'}
-    return [dict(r, **{k: pending[r['token']][k] for k in r if k in pending[r['token']]}) if r['token'] in pending else r for r in rows]
+    result = []
+    for r in rows:
+        if r['token'] in pending:
+            r = dict(r, **{k: v for k, v in pending[r['token']].items() if k in r})
+        elif r.get('alias_of') in pending:
+            root, certain = SimpleNamespace(**pending[r['alias_of']]), r['status'] != 'needs_owner_label'
+            if certain or r['cls'] != root.cls:
+                r = dict(r, **alias_label(root, certain))
+        result.append(r)
+    return result
 
 
 def finder_preview():
-    """{tier: [SKUs now, SKUs once D4 applies]} from two read-only OEM finder passes (nothing stored): what the --dry-run of
-    mall.oem_finder after the apply will show, AUTO_RENAME_BASE above all."""
+    """{tier: [SKUs now, SKUs once D4 applies]} from two read-only OEM finder passes over one catalog read (nothing stored): what the
+    --dry-run of mall.oem_finder after the apply will show, AUTO_RENAME_BASE above all."""
     from .. import catalog_suffixes as cs
-    from ..oem_finder import TIER_ORDER, execute
-    rows = cs._db_rows() or cs.fixture_rows()
-    now, after = (execute(store=False, stage='s0_suffix_revert', table=cs.SuffixTable(r, source='db'))['counts']['tiers']
+    from ..oem_finder import TIER_ORDER, execute, load_snapshot
+    rows, catalog = cs._db_rows() or cs.fixture_rows(), load_snapshot()
+    now, after = (execute(store=False, stage='s0_suffix_revert', snapshot=catalog, table=cs.SuffixTable(r, source='db'))['counts']['tiers']
                   for r in (rows, reverted_rows(rows)))
     return {tier: [now.get(tier, [0])[0], after.get(tier, [0])[0]] for tier in TIER_ORDER if now.get(tier) or after.get(tier)}
 
@@ -115,7 +190,7 @@ def restore(entry, user):
     for key in SNAPSHOT:
         setattr(row, key, before[key])
     row.alias_of = CatalogCodeSuffix.objects.get(token=before['alias_of']) if before['alias_of'] else None
-    row.confirmed_by_id, row.confirmed_at = stamp(row, entry['change'], before)
+    row.confirmed_by_id, row.confirmed_at = entry['stamp']
     row.save()  # takes the next table version and invalidates the suffix cache
     audit = CatalogCodeSuffixChange.objects.create(suffix=row, token=row.token, action='set_variant', actor=user, before=audited,
                                                    after=snapshot(row), note=NOTE, version=row.version)
@@ -133,20 +208,73 @@ def stamped(row):
     return {**snapshot(row), 'confirmed_by_id': row.confirmed_by_id, 'confirmed_at': row.confirmed_at}
 
 
-def manifest_line(row, old, audit, now, user):
-    from django.db import connection
-    return {'stage': 's0.1', 'database': connection.settings_dict['NAME'], 'model': 'mall.CatalogCodeSuffix', 'id': row.pk,
-            'token': row.token, 'action': 'update', 'before': old, 'after': stamped(row), 'audit_id': audit.pk,
-            'version': row.version, 'actor': user.username, 'at': now}
+def recorded(values):
+    """A stamped row as the manifest compares it: JSON values, the confirmation time as one ISO text."""
+    from django.utils.dateparse import parse_datetime
+    data = json.loads(json.dumps(values, default=str))
+    return {**data, 'confirmed_at': parse_datetime(data['confirmed_at']).isoformat() if data.get('confirmed_at') else None}
+
+
+def manifest_line(row, old, audit, now, user, action='update'):
+    return {'stage': 's0.1', 'database': current_database(), 'model': 'mall.CatalogCodeSuffix', 'id': row.pk, 'token': row.token,
+            'action': action, 'before': old, 'after': stamped(row), 'audit_id': audit.pk, 'version': row.version,
+            'actor': user.username, 'at': now}
 
 
 def write_manifest(lines):
-    path = OUTPUT / MANIFEST
+    """Append the lines and flush them to disk. Called inside the transaction: a failed write rolls the rows back."""
+    path = manifest_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, 'a', encoding='utf-8') as handle:
         for line in lines:
             handle.write(json.dumps(line, ensure_ascii=False, default=str) + '\n')
+        handle.flush()
+        os.fsync(handle.fileno())
     return path
+
+
+def applied_lines():
+    """{row id: the line of the last apply on this database that changed it}, in the order the apply wrote them."""
+    lines, database = {}, current_database()
+    for line in manifest_lines():
+        if (line.get('stage'), line.get('database'), line.get('action')) == ('s0.1', database, 'update'):
+            lines[line['id']] = line
+    return lines
+
+
+def rollback_plan(lock=False):
+    """One entry per row the last apply changed: rollback (as the apply left it), already (back at its before-values) or changed
+    (edited since, or gone: left alone)."""
+    from ..catalog_suffix_models import CatalogCodeSuffix
+    lines = applied_lines()
+    rows = CatalogCodeSuffix.objects.select_related('alias_of').filter(pk__in=list(lines)).order_by('pk')
+    rows = {row.pk: row for row in (rows.select_for_update(of=('self',)) if lock else rows)}
+    entries = []
+    for pk, line in lines.items():
+        row = rows.get(pk)
+        current = recorded(stamped(row)) if row else None
+        status = 'rollback' if current == recorded(line['after']) else 'already' if current == recorded(line['before']) else 'changed'
+        entries.append({'token': line['token'], 'row': row, 'line': line, 'status': status})
+    return entries
+
+
+def roll_back(entry, user):
+    """Put one locked row back to the before-values its apply recorded, stamp included, and audit it; returns its manifest line."""
+    from django.utils import timezone
+    from django.utils.dateparse import parse_datetime
+    from ..catalog_suffix_models import CatalogCodeSuffix, CatalogCodeSuffixChange
+    from ..catalog_suffix_views import SNAPSHOT, snapshot
+    row, before, now = entry['row'], entry['line']['before'], timezone.now()
+    audited, old = snapshot(row), stamped(row)
+    for key in SNAPSHOT:
+        setattr(row, key, before[key])
+    row.alias_of = CatalogCodeSuffix.objects.get(token=before['alias_of']) if before['alias_of'] else None
+    row.confirmed_by_id = before['confirmed_by_id']
+    row.confirmed_at = parse_datetime(before['confirmed_at']) if before['confirmed_at'] else None
+    row.save()
+    audit = CatalogCodeSuffixChange.objects.create(suffix=row, token=row.token, action=CLASS_ACTIONS[row.cls], actor=user, before=audited,
+                                                   after=snapshot(row), note=ROLLBACK_NOTE, version=row.version)
+    return manifest_line(row, old, audit, now, user, action='rollback')
 
 
 def describe(entry):
@@ -159,26 +287,57 @@ def describe(entry):
     return f'{row.token}: {now} · {STATUS_LABELS[entry["status"]]}'
 
 
-def run(*, apply=False, username=None, finder=False, stdout=None):
-    """Plan, and with apply restore the tokens (finder: preview the OEM finder tiers). None when the apply is refused."""
+def undo(user, stdout):
+    """--rollback: the rows of the last apply on this database back to their before-values, in one transaction."""
+    from django.db import transaction
+    from ..catalog_suffix_views import lock_table, table_version
+    version, lines = table_version(), []
+    with transaction.atomic():
+        lock_table()
+        entries = rollback_plan(lock=True)
+        for entry in entries:
+            if entry['status'] == 'rollback':
+                lines.append(roll_back(entry, user))
+        path = write_manifest(lines) if lines else None  # before the commit
+    counts = {status: sum(e['status'] == status for e in entries) for status in ROLLBACK_LABELS}
+    result = {'mode': 'rollback', 'rows': len(entries), **counts, 'rows_written': len(lines), 'version_before': version,
+              'version_after': table_version(),
+              'tokens': {status: [e['token'] for e in entries if e['status'] == status] for status in ROLLBACK_LABELS}}
+    stdout.write(f'Rollback · S0.1: {len(entries)} filas aplicadas en esta base · '
+                 + ' · '.join(f'{counts[s]} {label}' for s, label in ROLLBACK_LABELS.items())
+                 + f" · versión de la tabla {version} → {result['version_after']}\n")
+    if not entries:
+        stdout.write('El manifiesto no tiene ninguna aplicación en esta base: no hay nada que deshacer.\n')
+    for entry in entries:
+        if entry['status'] == 'changed':
+            stdout.write(f"  {entry['token']}: {ROLLBACK_LABELS['changed']}, se deja como está\n")
+    if path:
+        result['manifest'] = str(path)
+        stdout.write(f'Manifiesto: {path}\n'
+                     'Siguiente: python -m mall.link_oem_numbers --apply y python -m mall.oem_finder --dry-run\n')
+    return result
+
+
+def run(*, apply=False, rollback=False, username=None, finder=False, stdout=None):
+    """Plan, and with apply restore the tokens, or with rollback undo the last apply (finder: preview the OEM finder tiers).
+    None when a write is refused."""
     from django.contrib.auth import get_user_model
     from django.db import transaction
     from ..catalog_suffix_views import lock_table, table_version
     stdout = stdout or sys.stdout
     user = None
-    if apply:
-        if live_database() and not catalog_frozen():
-            stdout.write(f'Activa la congelación del catálogo ({FREEZE_FILE}) antes de aplicar en la base en vivo.\n')
-            return None
-        if not OUTPUT.is_dir():
-            stdout.write(f'Falta la carpeta {OUTPUT} para el manifiesto; ejecútalo dentro del contenedor de la app.\n')
+    if apply or rollback:
+        reason = refusal() or manifest_problem()
+        if reason:
+            stdout.write(reason + '\n')
             return None
         user = get_user_model().objects.filter(username=username or '').first()
         if user is None:
             stdout.write('Indica con --user el usuario que figura como autor del cambio.\n')
             return None
-    version = table_version()
-    lines = []
+    if rollback:
+        return undo(user, stdout)
+    version, lines, path = table_version(), [], None
     with transaction.atomic():
         if apply:
             lock_table()
@@ -187,13 +346,15 @@ def run(*, apply=False, username=None, finder=False, stdout=None):
             for entry in entries:
                 if entry['status'] == 'revert':
                     lines += restore(entry, user)
+            if lines:
+                path = write_manifest(lines)  # before the commit: a failed write rolls every row back
     others = sorted(set(relabels()) - set(TOKENS))
     counts = {status: sum(e['status'] == status for e in entries) for status in STATUS_LABELS}
     result = {'mode': 'apply' if apply else 'dry_run', 'expected': len(TOKENS), **counts, 'rows_written': len(lines),
               'version_before': version, 'version_after': table_version(), 'other_relabels': others,
               'tokens': {status: [e['token'] for e in entries if e['status'] == status] for status in STATUS_LABELS}}
-    if lines:
-        result['manifest'] = str(write_manifest(lines))
+    if path:
+        result['manifest'] = str(path)
     stdout.write(f"{'Aplicado' if apply else 'Simulación'} · D4: {len(TOKENS)} sufijos esperados · "
                  + ' · '.join(f'{counts[s]} {label}' for s, label in STATUS_LABELS.items())
                  + f" · versión de la tabla {version} → {result['version_after']}\n")
@@ -202,12 +363,15 @@ def run(*, apply=False, username=None, finder=False, stdout=None):
             stdout.write(f'  {describe(entry)}\n')
     if others:
         stdout.write(f"Otros sufijos pasados de variante a marca esa noche (no se tocan): {', '.join(others)}\n")
+    warning = not apply and output_dir().is_dir() and foreign_lines()  # an apply would refuse it
+    if warning:
+        stdout.write(f'Aviso: {warning}\n')
     if finder and not apply:
         result['finder'] = finder_preview()
         stdout.write('Buscador OEM (solo lectura), SKU por nivel hoy → con D4:\n'
                      + ''.join(f'  {tier}: {a} → {b}\n' for tier, (a, b) in result['finder'].items() if a != b or tier == 'AUTO_RENAME_BASE'))
-    if apply and lines:
-        stdout.write(f"Manifiesto: {result['manifest']}\n"
+    if path:
+        stdout.write(f'Manifiesto: {path}\n'
                      'Siguiente: python -m mall.link_oem_numbers --apply y python -m mall.oem_finder --dry-run\n')
     return result
 
@@ -217,7 +381,8 @@ def main(argv=None, stdout=None):
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--dry-run', action='store_true', help='Muestra qué sufijos cambiarían sin escribir nada.')
     mode.add_argument('--apply', action='store_true', help='Restaura cada sufijo con su auditoría (requiere la congelación en vivo).')
-    parser.add_argument('--user', help='Usuario que figura como autor de los cambios (obligatorio con --apply).')
+    mode.add_argument('--rollback', action='store_true', help='Deshace la última aplicación con el manifiesto (requiere la congelación en vivo).')
+    parser.add_argument('--user', help='Usuario que figura como autor de los cambios (obligatorio con --apply y --rollback).')
     parser.add_argument('--finder', action='store_true', help='Con --dry-run: compara los niveles del buscador OEM hoy y con D4 (solo lectura).')
     parser.add_argument('--json', action='store_true', help='Imprime también el resultado en JSON.')
     options = parser.parse_args(argv)
@@ -225,7 +390,7 @@ def main(argv=None, stdout=None):
     import django
     django.setup()
     stdout = stdout or sys.stdout
-    result = run(apply=options.apply, username=options.user, finder=options.finder, stdout=stdout)
+    result = run(apply=options.apply, rollback=options.rollback, username=options.user, finder=options.finder, stdout=stdout)
     if result is not None and options.json:
         stdout.write(json.dumps(result, ensure_ascii=False, default=str) + '\n')
     return 0 if result is not None else 1

@@ -1,9 +1,7 @@
 import io
 import json
-import tempfile
 import threading
 from datetime import timedelta
-from pathlib import Path
 from unittest import skipUnless
 from unittest.mock import patch
 
@@ -19,7 +17,7 @@ from .matching_worker import process_queue
 from .models import Account, CatalogImportJob, Part, PartCode, SupplierItem, User
 from .oem_finder_models import OEMFinderRun, OEMReviewCase
 from .refactor import s0_suffix_revert as revert
-from .test_catalog_suffixes import relabel_night
+from .test_catalog_suffixes import relabel_night, scratch_checkout
 from .test_factories import Fresh, make_catalog  # Fresh: the OEM modules import it from here
 
 # Representative rows from the prototype samples, plus the class members the lexicon needs (>= 5 other keys = strong).
@@ -364,7 +362,7 @@ class ReviewCaseTests(Fresh, TestCase):
         self.assertEqual((rh.tier, rh.chain, rh.blockers), ('PROBABLE_BASE', 'RH', ['no_second_unit', 'side_not_confirmed_by_class']))
         self.assertEqual({k: v for k, v in OEMReviewCase.objects.values_list('part_id', 'fingerprint') if k not in reading},
                          {k: v for k, v in before.items() if k not in reading})
-        with tempfile.TemporaryDirectory() as folder, patch.object(revert, 'OUTPUT', Path(folder)):
+        with scratch_checkout():
             self.assertEqual(revert.run(apply=True, username='miguel', stdout=io.StringIO())['revert'], 45)
         outcome = self.run_finder()
         self.assertEqual(outcome['counts']['cases']['updated'], 2)
