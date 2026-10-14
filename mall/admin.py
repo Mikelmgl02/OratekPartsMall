@@ -1,12 +1,64 @@
+from django import forms
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
-from .models import Account, Invitation, InventoryUpdate, Membership, Part, PartCode, Role, StockEntry, SupplierItem, User
+from django.utils import timezone
+from .models import Account, Brand, BrandAlias, Invitation, InventoryUpdate, Membership, Part, PartCode, Role, StockEntry, SupplierItem, User
 admin.site.site_header = "Administración de MotionPartes"
 admin.site.site_title = "Administración de MotionPartes"
 admin.site.index_title = "Gestión del catálogo"
 admin.site.register(User, UserAdmin)
-for model in [Account, Role, Membership, Invitation, Part, PartCode]:
+for model in [Account, Role, Membership, Invitation, PartCode]:
     admin.site.register(model)
+
+class PartAdminForm(forms.ModelForm):
+    class Meta:
+        model = Part
+        fields = '__all__'
+    def clean(self):
+        data = super().clean()
+        if data.get('estado') == 'rechazada' and not data.get('decision_reason'):
+            self.add_error('decision_reason', 'Elige un motivo para rechazar la línea.')
+        return data
+
+@admin.register(Part)
+class PartAdmin(admin.ModelAdmin):
+    """estado is the line's lifecycle; active follows it (Part.save). Merging and Separar SKU own unificada."""
+    form = PartAdminForm
+    list_display = ['sku', 'name', 'estado', 'origen', 'active', 'merged_into']
+    list_filter = ['estado', 'origen']
+    search_fields = ['sku', 'name', 'description']
+    readonly_fields = ['active', 'merged_into', 'decided_by', 'decided_at', 'version', 'created_at', 'updated_at', 'changed_at']
+    def formfield_for_choice_field(self, db_field, request, **kwargs):
+        if db_field.name == 'estado':
+            kwargs['choices'] = [choice for choice in db_field.choices if choice[0] != 'unificada']
+        return super().formfield_for_choice_field(db_field, request, **kwargs)
+    def get_readonly_fields(self, request, obj=None):
+        fields = list(super().get_readonly_fields(request, obj))
+        return fields + ['estado'] if obj is not None and obj.merged_into_id else fields
+    def save_model(self, request, obj, form, change):
+        if 'estado' in form.changed_data:  # a person decided it, as mall.lines.set_estado records
+            obj.decided_by, obj.decided_at = request.user, timezone.now()
+            obj.version, obj.changed_at = (obj.version or 0) + 1, obj.decided_at
+        super().save_model(request, obj, form, change)
+
+class BrandAliasInline(admin.TabularInline):
+    model = BrandAlias
+    extra = 0
+
+@admin.register(Brand)
+class BrandAdmin(admin.ModelAdmin):
+    """The nombre of an existing brand changes only through mall.brands.rename or merge, which re-key the codes that carry it."""
+    list_display = ['nombre', 'tipo', 'familia']
+    list_filter = ['tipo']
+    search_fields = ['nombre', 'aliases__alias']
+    inlines = [BrandAliasInline]
+    def get_readonly_fields(self, request, obj=None):
+        return ['nombre', 'created_at', 'updated_at'] if obj is not None else ['created_at', 'updated_at']
+
+@admin.register(BrandAlias)
+class BrandAliasAdmin(admin.ModelAdmin):
+    list_display = ['alias', 'brand']
+    search_fields = ['alias', 'brand__nombre']
 
 @admin.register(SupplierItem)
 class SupplierItemAdmin(admin.ModelAdmin):

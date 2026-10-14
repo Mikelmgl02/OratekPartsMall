@@ -409,10 +409,12 @@ def save_plan(groups):
         elif group['action'] == 'update':
             changed_parts.append(part)
         new_codes.extend(PartCode(part=part, brand=brand, code=code) for brand, code in group['added'])
+    from .lines import bulk_create_lines, bulk_update_lines
     from .technical_data import bind_part_types
     bind_part_types(new_parts + changed_parts)
-    Part.objects.bulk_create(new_parts, batch_size=500)
-    Part.objects.bulk_update(changed_parts, ['name', 'description', 'active', 'category', 'subcategory', 'part_type'], batch_size=500)
+    # ACTIVO=NO retires a line and ACTIVO=SI publishes it: the lines' writers keep estado in step with active.
+    bulk_create_lines(new_parts, batch_size=500)
+    bulk_update_lines(changed_parts, ['name', 'description', 'active', 'category', 'subcategory', 'part_type'], batch_size=500)
     PartCode.objects.bulk_create(new_codes, batch_size=500)
 
 

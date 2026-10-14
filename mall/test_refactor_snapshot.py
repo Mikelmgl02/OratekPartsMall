@@ -29,7 +29,7 @@ class CaptureTests(Fresh, TestCase):
         make_reference(self.line, '17801-30070', brand='TOYOTA', tipo='oem', source='CATÁLOGO')
         make_variant(self.supplier, 'S-1', '17801-30070', 4, actor=seller, brand='KSM', line=self.line)
         duplicate = make_line('17801-30070-G', description='FILTRO AIRE TOY')
-        Part.objects.filter(pk=duplicate.pk).update(active=False, merged_into=self.line)
+        Part.objects.filter(pk=duplicate.pk).update(active=False, merged_into=self.line, estado='unificada')
         make_library_number('TOYOTA', '48654-0K050', citation='LISTA 2026')
 
     def test_a_capture_reads_every_screen_and_writes_nothing(self):
@@ -68,7 +68,9 @@ class CaptureTests(Fresh, TestCase):
         self.assertIn(f'admin_grid/sku p1/results[id={self.line.pk}]/description', [path for path, _, _ in allowed['expected']])
 
     def test_checks_run_what_today_has_and_skip_what_no_stage_added_yet(self):
+        make_line('17801-30070-OLD', active=False)  # C1 (S1): publicada, unificada and retirada lines, as on the live catalog
         results = {(check_id, outcome) for check_id, _, outcome, _ in snapshot.run_checks()}
+        self.assertIn(('C1', 'OK'), results)
         self.assertIn(('I6', 'OK'), results)
         self.assertIn(('C0', 'INFO'), results)
         self.assertIn(('I1', 'OMITIDA'), results)

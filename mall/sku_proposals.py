@@ -437,8 +437,8 @@ def link(proposal, rows, part, user, action):
             'proposal': str(proposal.pk), 'sources': [row.snapshot], 'target': part_row(part)})
 
 
-def decide(proposal, outcome, user, *, part=None, reason='', note=''):
-    proposal.status, proposal.part, proposal.decided_by, proposal.decided_at = outcome, part, user, timezone.now()
+def decide(proposal, outcome, user, *, part=None, reason='', note='', at=None):
+    proposal.status, proposal.part, proposal.decided_by, proposal.decided_at = outcome, part, user, at or timezone.now()
     proposal.reject_reason, proposal.reject_note, proposal.version = reason, note, proposal.version + 1
     proposal.save()
 
@@ -506,9 +506,10 @@ def approve(proposal_id, user, expected_version):
         serializer = ManagedPartSerializer(data=part_payload(proposal, rows), context={'request': SimpleNamespace(user=user)})
         if not serializer.is_valid():
             raise ValidationError(serializer.errors)
-        part = serializer.save()
+        now = timezone.now()  # the line's decision is the proposal's (origen proveedor: it came from the suppliers' items)
+        part = serializer.save(origen='proveedor', decided_by=user, decided_at=now)
         link(proposal, rows, part, user, 'proposal_approved')
-        decide(proposal, 'approved', user, part=part)
+        decide(proposal, 'approved', user, part=part, at=now)
     enqueue_matching()  # other suppliers' items with the same code can link now
     return proposal
 

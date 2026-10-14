@@ -4,6 +4,7 @@ from django.conf import settings
 from django.db import models
 from django.db.models import F, Q
 from django.db.models.functions import Lower
+from django.utils import timezone
 from .media_storage import catalog_storage, catalog_image_path
 
 class User(AbstractUser):
@@ -53,6 +54,13 @@ class Invitation(models.Model):
         verbose_name_plural = 'invitaciones'
 
 class Part(models.Model):
+    # The OEM line's lifecycle (inventory refactor S1; mall.lines is its writer and the readers' querysets). Until S10 `active` is
+    # kept equal to estado == 'publicada' (save() below; a CHECK from 0072) and merged_into is set exactly on unificada lines.
+    ESTADOS = [('referencia', 'Referencia'), ('preparacion', 'En preparación'), ('publicada', 'Publicada'), ('rechazada', 'Rechazada'),
+               ('retirada', 'Retirada'), ('unificada', 'Unificada')]
+    ORIGENES = [('catalogo', 'Catálogo'), ('biblioteca', 'Biblioteca OEM'), ('proveedor', 'Proveedor')]
+    REASONS = [('duplicate', 'Ya existe en el catálogo'), ('not_a_part', 'No es un repuesto'), ('bad_data', 'Datos del proveedor incorrectos'),
+               ('other', 'Otro motivo')]  # SkuProposal.REJECT_REASONS
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False, verbose_name='ID')
     sku = models.CharField(max_length=200, unique=True, verbose_name='SKU interno')
     is_OEM = models.BooleanField(default=False, db_index=True, verbose_name='El SKU principal es OEM')
@@ -67,11 +75,46 @@ class Part(models.Model):
     active = models.BooleanField(default=True, verbose_name='activo')
     merged_into = models.ForeignKey('self', on_delete=models.PROTECT, null=True, blank=True,
                                     related_name='merged_parts', editable=False, verbose_name='SKU unificado')
+    estado = models.CharField(max_length=12, choices=ESTADOS, default='publicada', db_default='publicada', db_index=True, verbose_name='estado')
+    origen = models.CharField(max_length=10, choices=ORIGENES, default='catalogo', db_default='catalogo', verbose_name='origen')
+    decided_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+                                   editable=False, verbose_name='decidido por')
+    decided_at = models.DateTimeField(null=True, blank=True, editable=False, verbose_name='decidido el')
+    decision_reason = models.CharField(max_length=20, choices=REASONS, blank=True, default='', db_default='', verbose_name='motivo')
+    decision_note = models.TextField(blank=True, default='', db_default='', verbose_name='nota')
+    aplicaciones_texto = models.TextField(blank=True, default='', db_default='', verbose_name='aplicaciones (texto)')
+    field_sources = models.JSONField(default=dict, blank=True, db_default={}, verbose_name='origen de cada campo')
+    version = models.PositiveIntegerField(default=1, db_default=1, editable=False, verbose_name='versión')
+    # NULL on the lines that existed before S1 (0071 adds the columns without filling them).
+    created_at = models.DateTimeField(null=True, blank=True, default=timezone.now, editable=False, verbose_name='creada el')
+    updated_at = models.DateTimeField(null=True, blank=True, auto_now=True, verbose_name='última actualización')
+    changed_at = models.DateTimeField(null=True, blank=True, editable=False, verbose_name='último cambio visible',
+                                      help_text='Solo cambios que una persona ve (mall.lines.touch_visible), no los rellenos de la IA.')
     def __str__(self):
         return f"{self.sku} · {self.name}" if self.name and self.name != self.sku else self.sku
+    @classmethod
+    def from_db(cls, db, field_names, values):
+        instance = super().from_db(db, field_names, values)
+        instance._lifecycle = (instance.__dict__.get('active'), instance.__dict__.get('estado'))  # what save() compares against
+        return instance
+    def refresh_from_db(self, using=None, fields=None, from_queryset=None):
+        loaded = dict(zip(('active', 'estado'), getattr(self, '_lifecycle', (None, None))))
+        super().refresh_from_db(using=using, fields=fields, from_queryset=from_queryset)
+        for name in loaded:
+            if fields is None or name in fields:
+                loaded[name] = self.__dict__.get(name)
+        self._lifecycle = (loaded['active'], loaded['estado'])
     def save(self, *args, **kwargs):
         self.sku = self.sku.strip().upper()
         fields = kwargs.get('update_fields')
+        # estado and active stay in step (whichever changed since load wins; merged_into forces unificada) and are written together.
+        if fields is None or {'active', 'estado', 'merged_into'} & set(fields):
+            from .lines import pair_lifecycle
+            pair_lifecycle(self)
+            if fields is not None:
+                fields = kwargs['update_fields'] = set(fields) | {'active', 'estado'}
+        if fields:  # a partial save stamps updated_at too (auto_now only writes it when listed); update_fields=[] still saves nothing
+            fields = kwargs['update_fields'] = set(fields) | {'updated_at'}
         if fields is None or {'category', 'subcategory', 'part_type'} & set(fields):
             from .technical_data import bind_part_types
             if self._state.adding and self.part_type_id and not (self.category or self.subcategory):
@@ -80,6 +123,7 @@ class Part(models.Model):
             if fields is not None:
                 kwargs['update_fields'] = set(fields) | {'category', 'subcategory', 'part_type'}
         super().save(*args, **kwargs)
+        self._lifecycle = (self.active, self.estado)
     class Meta:
         verbose_name = 'repuesto'
         verbose_name_plural = 'repuestos'
@@ -338,3 +382,4 @@ from .apiag_models import ApiagConnection
 from .apiag_sync_models import ApiagSucursal, ApiagSync, SupplierItemBranchStock
 from .sku_proposal_models import SkuProposal, SkuProposalItem
 from .sku_review_models import SkuReviewRun, SkuReviewVerdict
+from .brand_models import Brand, BrandAlias

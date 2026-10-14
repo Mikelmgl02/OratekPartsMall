@@ -25,6 +25,7 @@ from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 from .catalog_families import normalized_reference, supplier_base, application, family_candidates
 from .catalog_suffixes import HEAD_SYN
+from .lines import create_line
 from .models import Account, Part, PartCode, SupplierItem, SupplierCodeMapping, MatchingCase, MatchingDecision
 from .matching_queue import matching_work
 from .oem_links import reach_index, same_make
@@ -674,7 +675,7 @@ def create_supplier_families():
                              reason='Varios códigos de proveedor comparten código base y especificaciones completas.')
             if case.status == 'dismissed':
                 continue
-            part = Part.objects.create(sku=base, name=base, description=items[0].description.upper())
+            part = create_line(base, origen='proveedor', name=base, description=items[0].description.upper())  # from supplier codes
             # Matching the children is done by the same resolver, with an audit per item.
             case.status = 'applied'
             case.save(update_fields=['status'])

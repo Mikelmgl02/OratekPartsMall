@@ -297,8 +297,8 @@ def split_catalog_part(*, actor, target_id, restore, reason=''):
             image.position = position
         PartImage.objects.bulk_update(gallery, ['position'])
     for part in restored:
-        part.active, part.merged_into = True, None
-        part.save(update_fields=['active', 'merged_into'])  # its name links come back (mall.oem_links.part_saved)
+        part.active, part.merged_into, part.estado = True, None, 'publicada'
+        part.save(update_fields=['active', 'merged_into', 'estado'])  # its name links come back (mall.oem_links.part_saved)
     links = rehome_catalog_links(target, restored)
 
     # A parent SKU the grouping created and the split leaves empty has nothing to identify: it retires, which also keeps the worker
@@ -307,8 +307,8 @@ def split_catalog_part(*, actor, target_id, restore, reason=''):
     retired = bool(created and target.active and not Part.objects.filter(merged_into=target).exists() and not PartCode.objects.filter(part=target).exists()
                    and not SupplierItem.objects.filter(part=target).exists() and not PartImage.objects.filter(part=target).exists())
     if retired:
-        target.active = False
-        target.save(update_fields=['active'])
+        target.active, target.estado = False, 'retirada'
+        target.save(update_fields=['active', 'estado'])
     summary = {'restored_skus': len(restored), 'codes_moved': sum(len(plan[pk]['codes']) for pk in plan), 'aliases_removed': len(removed),
                'items_moved': sum(len(plan[pk]['items']) for pk in plan), 'images_moved': sum(len(plan[pk]['images']) for pk in plan),
                'links_moved': links['moved'], 'links_shared': links['shared'], 'target_retired': retired}

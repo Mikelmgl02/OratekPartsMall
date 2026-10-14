@@ -162,7 +162,7 @@ def merge_catalog_parts(*, actor, target_sku, source_skus, category='', subcateg
             image.position = position + offset
         PartImage.objects.bulk_update(images, ['part', 'position'])
         summary['images_transferred'] = len(images)
-        Part.objects.filter(pk__in=retired_ids).update(active=False, merged_into=target)
+        Part.objects.filter(pk__in=retired_ids).update(active=False, merged_into=target, estado='unificada')  # the pair moves together (mall.lines)
         merge = CatalogMerge.objects.create(actor=actor, target=target,
                                            sources=[{'id': str(part.pk), 'sku': part.sku, **brought[str(part.pk)]} for part in sources], summary=summary)
     metadata_fields = []

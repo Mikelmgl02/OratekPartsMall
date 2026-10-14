@@ -254,8 +254,9 @@ class ManagedPartSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Part
-        fields = ['id', 'sku', 'is_OEM', 'name', 'description', 'category', 'subcategory', 'part_type', 'active', 'codes', 'stock_record_count', 'merged_count', 'images', 'identity', 'main_reference']
-        read_only_fields = ['id', 'stock_record_count', 'merged_count']
+        fields = ['id', 'sku', 'is_OEM', 'name', 'description', 'category', 'subcategory', 'part_type', 'active', 'estado', 'origen', 'codes', 'stock_record_count', 'merged_count', 'images', 'identity', 'main_reference']
+        # estado and origen are the line's lifecycle (mall.lines): `active` still turns a line publicada or retirada here.
+        read_only_fields = ['id', 'estado', 'origen', 'stock_record_count', 'merged_count']
 
     def validate_sku(self, sku):
         parts = Part.objects.filter(sku__iexact=sku)
@@ -297,6 +298,7 @@ class ManagedPartSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         codes = validated_data.pop('codes', [])
         main = validated_data.pop('main_reference', None)
+        validated_data['estado'] = 'publicada' if validated_data.get('active', True) else 'retirada'
         try:
             with transaction.atomic():
                 part = Part.objects.create(**validated_data)
@@ -317,6 +319,12 @@ class ManagedPartSerializer(serializers.ModelSerializer):
                 instance = Part.objects.select_for_update().get(pk=instance.pk)
                 if instance.merged_into_id:
                     raise serializers.ValidationError('Este SKU ya fue unificado. Modifica el SKU principal.')
+                if 'active' in validated_data and validated_data['active'] != instance.active:
+                    if instance.estado not in ('publicada', 'retirada'):
+                        from .lines import phrase
+                        raise serializers.ValidationError({'active': f'Esta línea está {phrase(instance.estado)}: solo una línea '
+                                                                     'publicada o retirada se activa o desactiva aquí.'})
+                    validated_data['estado'] = 'publicada' if validated_data['active'] else 'retirada'
                 old_sku = instance.sku
                 old_is_oem = instance.is_OEM
                 # The flag describes this exact main code, not every alternate.
