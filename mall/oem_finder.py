@@ -176,11 +176,12 @@ MAJOR_SYSTEMS = {'TOYOTA', 'NISSAN', 'HMG', 'SUZUKI', 'HONDA', 'MITSU_OLD', 'MIT
 # Systems allowed in the auto gates: never MAZDA, FORD, GM, KIA_LEGACY, MITSU_OLD, ISUZU, MB, BMW, VAG, MOPAR, CN, HINO54.
 AUTO_FLAG_SYSTEMS = {'TOYOTA', 'HMG', 'NISSAN', 'HONDA', 'SUZUKI', 'MITSU_NEW', 'SUBARU'}
 AUTO_RENAME_SYSTEMS = {'TOYOTA', 'HMG', 'NISSAN', 'HONDA', 'SUZUKI', 'SUBARU'}
-# drive-shaft assembly classes: a component head on them is a different part
+# drive-shaft assembly classes: a component head on them is a different part. Mazda's 25-40X/25-50X/25-60X are the CV joint, not
+# the shaft (the owner, 2026-10-14), so a PUNTA or JUNTA on them is the part itself.
 ASSEMBLY_CLASSES = {('TOYOTA', '43410'), ('TOYOTA', '43420'), ('TOYOTA', '43430'), ('TOYOTA', '43440'), ('NISSAN', '39100'),
                     ('NISSAN', '39101'), ('NISSAN', '39600'), ('HONDA', '44305'), ('HONDA', '44306'), ('HONDA', '44011'),
                     ('HMG', '49500'), ('HMG', '49501'), ('HMG', '49600'), ('SUZUKI', '44101'), ('SUZUKI', '44102'),
-                    ('MITSU_NEW', '3815A'), ('MAZDA', '25-40'), ('MAZDA', '25-50'), ('MAZDA', '25-60')}
+                    ('MITSU_NEW', '3815A')}
 COMPONENT_HEADS = set('PUNTA BOTA KIT JUEGO TRICETA CUBREPOLVO BUJE BOLA TOPE RETENEDORA BALINERA CRUZETA PISTON SELLO '
                       'ESCOBILLA BENDIX RECTIFICADOR REGULADOR SELENOIDE POLEA ASPA BASE ORING GUIA TAPA EMP ANILLO '
                       'CAUCHO DIAFRAGMA RESORTE'.split())
