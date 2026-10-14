@@ -3,9 +3,9 @@ mall.catalog_identity.mark_exact_matches.
 
     python -m mall.mark_exact_oem --dry-run|--apply [--report PATH]
 
-Every matching pass already does this (OEM_EXACT_MARK); run it to see or apply the marks at once, for instance after an import of
-OEM numbers. --report writes one CSV row per SKU (sku, the list items with its code). It never renames a SKU or writes a PartCode;
-each mark leaves a CatalogIdentityChange (reference.action = exact_match).
+A matching pass does this too when OEM_EXACT_MARK=1 (off by default since the owner retired OEM linking on 2026-10-14); run it to
+see or apply the marks at once, for instance after an import of OEM numbers. --report writes one CSV row per SKU (sku, the list items
+with its code). It never renames a SKU or writes a PartCode; each mark leaves a CatalogIdentityChange (reference.action = exact_match).
 """
 import argparse
 import csv

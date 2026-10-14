@@ -8,8 +8,9 @@ of OEM numbers. The two actions are different things:
 - Crear OEM desde SKU adds the item to the list first, from the SKU's code, make, description and part type, as a manual entry naming
   who created it, and then ties the SKU the same way.
 
-A declared or verified number of the list already marks its exact SKUs on every matching pass (catalog_identity.mark_exact_matches);
-these actions are for the rest: a number only the OEM finder inferred, a short number, or one the list does not have yet.
+A declared or verified number of the list marks its exact SKUs on every matching pass when OEM_EXACT_MARK=1 (off by default since the
+owner retired OEM linking on 2026-10-14; catalog_identity.mark_exact_matches); these actions are for the rest: a number only the OEM
+finder inferred, a short number, or one the list does not have yet.
 
 Quitar marca OEM takes the mark off a SKU whose code is not in the list (and can retire its OEM alterno). A SKU whose code is in the
 list is OEM by definition: when that number is wrong, it is put in dispute in Biblioteca OEM, which unmarks its SKUs.

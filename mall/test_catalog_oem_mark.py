@@ -1,3 +1,4 @@
+from django.test import override_settings
 from rest_framework.test import APITestCase
 
 from .catalog_identity import mark_exact_matches
@@ -166,7 +167,8 @@ class ExactMatchTests(APITestCase):
         part.refresh_from_db()
         self.assertTrue(part.is_OEM)
 
-    def test_the_matching_pass_marks_them(self):
+    @override_settings(OEM_EXACT_MARK=True)
+    def test_the_matching_pass_marks_them_when_oem_exact_mark_is_on(self):
         from .matching_engine import reconcile_catalog
         listed('MITSUBISHI', 'MR453383')
         part = Part.objects.create(sku='MR-453383', description='EJE MIT')
@@ -174,6 +176,16 @@ class ExactMatchTests(APITestCase):
         reconcile_catalog(self.root, stats=stats)
         part.refresh_from_db()
         self.assertEqual((part.is_OEM, stats['marked_exact_oems']), (True, 1))
+
+    @override_settings(OEM_EXACT_MARK=False)
+    def test_the_matching_pass_marks_nothing_when_oem_exact_mark_is_off(self):  # the default since the owner retired OEM linking (2026-10-14)
+        from .matching_engine import reconcile_catalog
+        listed('MITSUBISHI', 'MR453383')
+        part = Part.objects.create(sku='MR-453383', description='EJE MIT')
+        stats = {}
+        reconcile_catalog(self.root, stats=stats)
+        part.refresh_from_db()
+        self.assertEqual((part.is_OEM, stats['marked_exact_oems']), (False, 0))
 
     def test_a_number_other_skus_are_tied_to_stays_in_the_list_when_one_alterno_goes(self):
         tied = Part.objects.create(sku='16100-19125-GMB', description='BOMBA AGUA TOY')

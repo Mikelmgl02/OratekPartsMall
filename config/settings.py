@@ -238,8 +238,9 @@ GEMINI_GROUNDING_USD_PER_CALL = env_usd('GEMINI_GROUNDING_USD_PER_CALL', '0.035'
 QUOTES_REQUIRE_DRAFT = os.getenv('QUOTES_REQUIRE_DRAFT', '1').lower() in ('true', '1', 'yes')
 # OEM finder dry run as a matching worker stage after catalog grouping (off by default; python -m mall.oem_finder runs it by hand).
 OEM_FINDER_AUTO_STAGE = os.getenv('OEM_FINDER_AUTO_STAGE', '0').lower() in ('true', '1', 'yes')
-# Every matching pass marks OEM the SKUs whose code is a declared or verified number of the OEM list (mall.catalog_identity).
-OEM_EXACT_MARK = os.getenv('OEM_EXACT_MARK', '1').lower() in ('true', '1', 'yes')
+# 1 makes every matching pass mark OEM the SKUs whose code is a declared or verified number of the OEM list (mall.catalog_identity).
+# Off by default: the owner retired OEM linking on 2026-10-14 (a SKU's OEM numbers become references on its line).
+OEM_EXACT_MARK = os.getenv('OEM_EXACT_MARK', '0').lower() in ('true', '1', 'yes')
 # Owner decision D1 in the matching engine: a supplier item no code ties to a SKU goes to Productos nuevos, and its description words
 # are only hints. Off keeps the engine as it was; it is switched on once the owner has checked the dry run (refactor stage S0.9).
 MATCHING_NO_CODE_EVIDENCE = os.getenv('MATCHING_NO_CODE_EVIDENCE', '0').lower() in ('true', '1', 'yes')
