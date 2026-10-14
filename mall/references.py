@@ -262,18 +262,21 @@ def build(line, code, brand='', *, tipo=None, ref_type=None, estado=None, suppli
                      dispute_note=(dispute_note or '').strip(), **fields)
 
 
-def bulk_create(references, *, batch_size=500, actor=None):
+def bulk_create(references, *, batch_size=500, actor=None, serialized=False):
     """Insert built References in bulk (no signals, as before S2a's catalog import), then their sources. The caller has planned the
     keys (the catalog import's plan); here they are checked again under each clave's advisory lock (plan §1.6.5), so a writer adding
     the same key elsewhere meanwhile waits and one of the two is refused (ReferenceConflict), and every brand becomes a brand (I12).
-    The database refuses a duplicate key from 0074."""
+    The database refuses a duplicate key from 0074. serialized: the caller already keeps every other writer out (a stage CLI under the
+    catalog freeze and the matching lock), so the keys are checked without taking one advisory lock each: S2b's backfill inserts some
+    31,000 mains in one transaction, more locks than PostgreSQL's lock table holds."""
     Reference, _ = _models()
     references = list(references)
     if not references:
         return references
     keys = sorted({clave(ref.code) for ref in references})
     with transaction.atomic():
-        lock(*keys)
+        if not serialized:
+            lock(*keys)
         held = {}
         for start in range(0, len(keys), 2000):
             for row in Reference.objects.filter(clave__in=keys[start:start + 2000], estado__in=EXCLUSIVE).select_related('part').order_by('pk'):
