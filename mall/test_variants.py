@@ -1,0 +1,328 @@
+"""Variants hang from References (inventory refactor S3, mall.variants): which Reference of its line an item takes, the save() shim, the
+code changes a load applies on its own or leaves waiting (rule 5b, OD5, OD7), Vincular, the refusal to retire a Reference items hang
+from, and Reference moves, merges and Separar carrying their items along."""
+from unittest.mock import patch
+
+from django.db import connection
+from django.test import TestCase
+from rest_framework.test import APIClient
+
+from . import line_merge, references, variants
+from .brand_models import Brand
+from .catalog_suffix_models import CatalogCodeSuffix
+from .models import Part, Reference, ReferenceSource, SupplierItem
+from .services import ingest_inventory
+from .test_factories import Fresh, make_line, make_reference, make_supplier, make_user, make_variant
+from .test_main_references import broken_invariants
+
+VARIANT_INVARIANTS = {
+    'I4': 'SELECT count(*) FROM mall_supplieritem s JOIN mall_partcode r ON r.id = s.reference_id WHERE s.part_id IS DISTINCT FROM r.part_id',
+    'I7': "SELECT count(*) FROM mall_supplieritem s JOIN mall_partcode r ON r.id = s.reference_id WHERE r.tipo = 'interno' "
+          'AND r.supplier_id <> s.supplier_id',
+    'linea_sin_referencia': 'SELECT count(*) FROM mall_supplieritem WHERE (reference_id IS NULL) <> (part_id IS NULL)',
+    'sin_referencia_no_pendiente': "SELECT count(*) FROM mall_supplieritem WHERE reference_id IS NULL AND matching_status <> 'pending'",
+}
+
+
+def broken_variants():
+    """{invariant: rows breaking it} for I4, I7 and 0078's CHECKs, empty when they all hold."""
+    found = {}
+    with connection.cursor() as cursor:
+        for name, query in VARIANT_INVARIANTS.items():
+            cursor.execute(query)
+            count = cursor.fetchone()[0]
+            if count:
+                found[name] = count
+    return found
+
+
+class VariantTestCase(Fresh, TestCase):
+    def setUp(self):
+        super().setUp()
+        self.root = make_user('var-root', superuser=True)
+        self.supplier = make_supplier('VAR PROVEEDOR', self.root)
+        self.other = make_supplier('VAR OTRO')
+        Brand.objects.create(nombre='TOYOTA', tipo='vehiculo')
+        Brand.objects.create(nombre='GMB', tipo='repuesto')
+        Brand.objects.create(nombre='ENDO', tipo='repuesto')
+        self.plain = make_line('04111-22152', description='BOMBA AGUA')
+        self.branded = make_line('43512-60150', description='DISCO FRENO', is_OEM=True)
+        references.retype_main(self.branded, 'oem', brand='TOYOTA')
+        self.alias = make_reference(self.plain, '04111-22152-AS')
+        self.updates = 0
+
+    def load(self, invent_id, codigo, brand='', quantity=1, supplier=None, **data):
+        self.updates += 1
+        return ingest_inventory(supplier=supplier or self.supplier, actor=self.root, data={
+            'update_id': f'var-{self.updates}', 'supplier_invent_id': invent_id, 'codigo': codigo, 'brand': brand, 'source': 'upload',
+            'quantity': quantity, **data})
+
+    def tearDown(self):
+        self.assertEqual(broken_variants(), {})
+        self.assertEqual(broken_invariants(), {})
+        super().tearDown()
+
+
+class WhichReferenceTests(VariantTestCase):
+    def test_an_exact_load_hangs_from_its_code(self):
+        main = references.main_of(self.plain)
+        item = self.load('A-1', '04111-22152')
+        self.assertEqual((item.part_id, item.reference_id, item.matching_status), (self.plain.pk, main.pk, 'matched'))
+        alias = self.load('A-2', '04111-22152-AS')
+        self.assertEqual((alias.part_id, alias.reference_id), (self.plain.pk, self.alias.pk))
+
+    def test_a_brandless_item_joins_the_branded_reference_of_its_clave(self):
+        item = self.load('B-1', '43512-60150')
+        self.assertEqual((item.reference_id, item.reference.brand, item.matching_status),
+                         (references.main_of(self.branded).pk, 'TOYOTA', 'matched'))
+
+    def test_a_branded_item_joins_the_brandless_reference_and_spaces_do_not_count(self):
+        item = self.load('C-1', '04111-22152', brand='GMB')
+        self.assertEqual(item.reference_id, references.main_of(self.plain).pk)
+        spaced = make_line('AL-X7-5P', description='ALARMA')
+        own = make_reference(spaced, 'AL-X7-5P', brand='MOTION MOTORS', tipo='aftermarket')
+        rows = list(Reference.objects.filter(part=spaced))
+        self.assertEqual(variants.choose(rows, spaced.sku, 'AL-X7-5P', 'MOTION  MOTORS', self.supplier.pk), (own, 'exacta'))
+
+    def test_what_the_line_lacks_becomes_a_public_or_an_interno_reference(self):
+        CatalogCodeSuffix.objects.create(token='ZQX', cls='TAG', tag_kind='brand', attribution='brand: GMB', confidence='high',
+                                         status='owner_confirmed', owner_confirmed=True)
+        rows = list(Reference.objects.filter(part=self.branded))
+        self.assertEqual(variants.choose(rows, self.branded.sku, '43512-60150', 'ENDO', self.supplier.pk), (None, 'nueva'))
+        self.assertEqual(variants.choose(rows, self.branded.sku, '43512-60150-ZQX', '', self.supplier.pk), (None, 'nueva'))
+        self.assertEqual(variants.choose(rows, self.branded.sku, '43512-60150-L', '', self.supplier.pk), (None, 'nueva_interna'))
+        self.assertEqual(variants.choose(rows, self.branded.sku, 'DFSK-0716', 'DFSK', self.supplier.pk), (None, 'nueva_interna'))
+        # Linking an item never publishes its code (only the S3 backfill applies the B19 rules): the supplier's own interno code.
+        endo = make_variant(self.supplier, 'D-1', 'ZZ-NOMATCH-1', 2, actor=self.root, brand='ENDO')
+        endo.codigo = '43512-60150'
+        endo.save(update_fields=['codigo'])
+        variants.vincular(endo, self.branded, actor=self.root)
+        own = endo.reference
+        self.assertEqual((own.code, own.brand, own.tipo, own.supplier_id, own.estado), ('43512-60150', 'ENDO', 'interno', self.supplier.pk, 'declarado'))
+        self.assertTrue(ReferenceSource.objects.filter(reference=own, kind='proveedor').exists())
+        self.assertNotIn(own, self.branded.codes.all())  # readers never see it
+        self.assertEqual(variants.reference_for(self.branded, '43512-60150', 'GMB', self.other, public=True), (None, 'nueva'))
+        local = make_variant(self.supplier, 'D-2', 'DFSK-0716', 1, actor=self.root, brand='DFSK', line=self.branded)
+        self.assertEqual((local.reference.tipo, local.reference.supplier_id, local.reference.part_id), ('interno', self.supplier.pk, self.branded.pk))
+        # Another supplier's item with the same code gets its own interno code, never this supplier's (I7).
+        theirs = make_variant(self.other, 'D-3', 'DFSK-0716', 1, actor=self.root, brand='DFSK', line=self.branded)
+        self.assertNotEqual(theirs.reference_id, local.reference_id)
+        self.assertEqual(theirs.reference.supplier_id, self.other.pk)
+
+    def test_an_item_on_a_line_outside_the_catalog_is_pending(self):
+        prepared = make_line('PREP-0001', estado='referencia', active=False)
+        item = make_variant(self.supplier, 'E-1', 'PREP-0001', 1, actor=self.root)
+        self.assertIsNone(item.part_id)
+        variants.vincular(item, prepared, status='matched', actor=self.root)
+        self.assertEqual((item.part_id, item.matching_status), (prepared.pk, 'pending'))
+        Part.objects.filter(pk=prepared.pk).update(estado='publicada', active=True)
+        prepared.refresh_from_db()
+        self.assertEqual(variants.recompute_status(prepared), 1)
+        self.assertEqual(SupplierItem.objects.get(pk=item.pk).matching_status, 'matched')
+
+
+class ShimTests(VariantTestCase):
+    def test_code_that_writes_part_gets_the_reference_and_vincular_follows_a_new_part(self):
+        item = self.load('S-1', 'NO-MATCH-1')
+        self.assertEqual((item.part_id, item.reference_id, item.matching_status), (None, None, 'pending'))
+        item.part, item.matching_status = self.plain, 'matched'
+        item.save(update_fields=['part', 'matching_status'])
+        item.refresh_from_db()
+        self.assertEqual((item.reference.part_id, item.reference.tipo, item.reference.supplier_id), (self.plain.pk, 'interno', self.supplier.pk))
+        interno = item.reference_id
+        item.part = self.branded
+        item.save()
+        item.refresh_from_db()
+        self.assertEqual((item.reference_id, item.reference.part_id), (interno, self.branded.pk))  # its only item's code goes with it
+        item.part = None
+        item.save()
+        item.refresh_from_db()
+        self.assertEqual((item.reference_id, item.matching_status), (None, 'pending'))
+
+    def test_a_save_that_does_not_touch_the_line_reads_nothing(self):
+        item = self.load('S-2', '04111-22152')
+        item.reserved_quantity = 1
+        with self.assertNumQueries(1):
+            item.save(update_fields=['reserved_quantity'])
+
+
+class CodeChangeTests(VariantTestCase):
+    def test_a_brand_after_no_brand_stays_matched_on_its_own_key(self):
+        item = self.load('G-1', '04111-22152', quantity=5)
+        main = item.reference
+        item = self.load('G-1', '04111-22152', brand='GMB', quantity=5)
+        self.assertEqual((item.brand, item.codigo_pendiente, item.matching_status, item.part_id), ('GMB', None, 'matched', self.plain.pk))
+        self.assertEqual((item.reference.clave, item.reference.brand, item.reference.estado), (main.clave, 'GMB', 'declarado'))
+        self.assertTrue(ReferenceSource.objects.filter(reference=item.reference, kind='proveedor').exists())
+        onto_main = self.load('G-2', '43512-60150', quantity=1)
+        onto_main = self.load('G-2', '43512-60150', brand='TOYOTA', quantity=1)
+        self.assertEqual((onto_main.reference_id, onto_main.matching_status), (references.main_of(self.branded).pk, 'matched'))
+
+    def test_a_formatting_change_applies_and_keeps_the_spelling(self):
+        line = make_line('13780-61J00', description='FILTRO AIRE')
+        item = self.load('F-1', '13780-61J00')
+        item = self.load('F-1', '1378061J00')
+        self.assertEqual((item.codigo, item.codigo_pendiente, item.matching_status, item.reference_id),
+                         ('1378061J00', None, 'matched', references.main_of(line).pk))
+        self.assertIn('1378061J00', references.main_of(line).printed_forms)
+
+    def test_a_code_already_on_the_same_line_applies_on_its_own(self):
+        item = self.load('O-1', '04111-22152')
+        item = self.load('O-1', '04111-22152-AS')
+        self.assertEqual((item.codigo, item.codigo_pendiente, item.reference_id, item.matching_status),
+                         ('04111-22152-AS', None, self.alias.pk, 'matched'))
+
+    def test_any_other_change_waits_out_of_stock_with_the_old_code(self):
+        make_line('OTHER-123', description='OTRA COSA')
+        item = self.load('P-1', '04111-22152', quantity=3)
+        reference = item.reference_id
+        item = self.load('P-1', 'OTHER-123', quantity=3)
+        self.assertEqual((item.codigo, item.brand, item.codigo_pendiente, item.brand_pendiente, item.matching_status, item.reference_id),
+                         ('04111-22152', '', 'OTHER-123', '', 'review', reference))
+        again = self.load('P-1', 'OTHER-123', quantity=4)
+        self.assertEqual((again.codigo, again.codigo_pendiente, again.matching_status, again.reported_quantity), ('04111-22152', 'OTHER-123', 'review', 4))
+        back = self.load('P-1', '04111-22152', quantity=4)
+        self.assertEqual((back.codigo_pendiente, back.matching_status), (None, 'matched'))
+
+    def test_an_unattached_item_takes_the_new_code(self):
+        item = self.load('U-1', 'UNKNOWN-1')
+        item = self.load('U-1', 'UNKNOWN-2')
+        self.assertEqual((item.codigo, item.codigo_pendiente, item.reference_id), ('UNKNOWN-2', None, None))
+
+    def test_the_excel_preview_shows_the_waiting_code(self):
+        from .supplier_import import stock_plan
+        make_line('OTHER-456', description='OTRA')
+        self.load('X-1', '04111-22152')
+        rows = [{'row': 2, 'data': {'supplier_invent_id': 'X-1', 'codigo': 'OTHER-456', 'brand': '', 'quantity': 1}},
+                {'row': 3, 'data': {'supplier_invent_id': 'X-2', 'codigo': '04111-22152-AS', 'brand': '', 'quantity': 1}}]
+        plan, _ = stock_plan(self.supplier, rows)
+        first, second = plan['preview']
+        self.assertEqual((first['codigo_pendiente'], first['matching_status'], first['part_id']), ('OTHER-456', 'review', str(self.plain.pk)))
+        self.assertEqual((second['codigo_pendiente'], second['matching_status']), (None, 'matched'))
+        self.assertIn('pendiente de revisión', plan['warnings'][0]['message'])
+
+    def test_vincular_applies_the_waiting_code(self):
+        other = make_line('OTHER-789', description='OTRA')
+        item = self.load('V-1', '04111-22152')
+        item = self.load('V-1', 'OTHER-789')
+        variants.vincular(item, other, actor=self.root)
+        item.refresh_from_db()
+        self.assertEqual((item.codigo, item.codigo_pendiente, item.part_id, item.reference_id, item.matching_status),
+                         ('OTHER-789', None, other.pk, references.main_of(other).pk, 'matched'))
+
+
+    def test_the_ledger_records_the_waiting_code(self):
+        from .inventory_history import field_changes, snapshot
+        make_line('OTHER-321', description='OTRA')
+        item = self.load('L-1', '04111-22152')
+        before = snapshot(item)
+        item = self.load('L-1', 'OTHER-321')
+        self.assertEqual(field_changes(before, item), {'codigo_pendiente': [None, 'OTHER-321'], 'brand_pendiente': [None, '']})
+
+    def test_the_matching_only_proposes_a_waiting_code_and_its_approval_applies_it(self):
+        from .matching_engine import MatchIndex, apply_item, reconcile_items
+        from .matching_models import MatchingCase
+        other = make_line('OTHER-999', description='BOMBA AGUA')
+        item = self.load('W-1', '04111-22152', description='BOMBA AGUA')
+        item = self.load('W-1', 'OTHER-999', description='BOMBA AGUA')
+        reconcile_items(MatchIndex())
+        case = MatchingCase.objects.get(item=item)
+        item.refresh_from_db()
+        self.assertEqual((case.status, case.candidates[0]['sku'], item.matching_status, item.codigo_pendiente, item.part_id),
+                         ('review', 'OTHER-999', 'review', 'OTHER-999', self.plain.pk))
+        self.assertEqual(case.sources[0]['codigo_pendiente'], 'OTHER-999')
+        apply_item(case, case.candidates[0], actor=self.root)
+        item.refresh_from_db()
+        self.assertEqual((item.codigo, item.codigo_pendiente, item.part_id, item.reference_id, item.matching_status),
+                         ('OTHER-999', None, other.pk, references.main_of(other).pk, 'matched'))
+
+
+class InventoryMatchTests(VariantTestCase):
+    def setUp(self):
+        super().setUp()
+        self.client = APIClient()
+        self.client.force_authenticate(self.root)
+
+    def url(self, item):
+        return f'/api/v1/management/inventory/{item.pk}/'
+
+    def test_vincular_unlink_and_status(self):
+        item = self.load('M-1', 'LOCAL-77')
+        response = self.client.patch(self.url(item), {'part': str(self.plain.pk), 'matching_status': 'matched'}, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['reference'], SupplierItem.objects.get(pk=item.pk).reference_id)
+        item.refresh_from_db()
+        self.assertEqual((item.part_id, item.reference.tipo, item.matching_status), (self.plain.pk, 'interno', 'matched'))
+        source = ReferenceSource.objects.get(reference=item.reference, kind='proveedor', citation__startswith='Código aprendido')
+        self.assertEqual(source.detail['legacy'], 'SupplierCodeMapping')
+        kept = item.reference_id
+        self.assertEqual(self.client.patch(self.url(item), {'matching_status': 'review'}, format='json').status_code, 200)
+        item.refresh_from_db()
+        self.assertEqual((item.reference_id, item.matching_status), (kept, 'review'))
+        self.assertEqual(self.client.patch(self.url(item), {'part': None, 'matching_status': 'review'}, format='json').status_code, 400)
+        with patch('mall.request_models.StockReservation.objects') as held:  # units a quotation or an order holds
+            held.filter.return_value.exists.return_value = True
+            refused = self.client.patch(self.url(item), {'part': None, 'matching_status': 'pending'}, format='json')
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn('apartadas', str(refused.data))
+        self.assertEqual(self.client.patch(self.url(item), {'part': None, 'matching_status': 'pending'}, format='json').status_code, 200)
+        item.refresh_from_db()
+        self.assertEqual((item.part_id, item.reference_id, item.matching_status), (None, None, 'pending'))
+
+    def test_a_unificada_line_is_refused(self):
+        item = self.load('M-2', 'LOCAL-78')
+        merged = make_line('MERGED-1')
+        line_merge.merge_lines(self.plain, [merged], actor=self.root)
+        response = self.client.patch(self.url(item), {'part': str(merged.pk), 'matching_status': 'matched'}, format='json')
+        self.assertEqual(response.status_code, 400)
+
+
+class RetireAndMoveTests(VariantTestCase):
+    def test_a_reference_items_hang_from_is_not_retired(self):
+        item = self.load('R-1', '04111-22152-AS')
+        with self.assertRaises(references.ReferenceHasVariants) as refused:
+            references.retire(self.alias)
+        self.assertEqual(refused.exception.status_code, 409)
+        client = APIClient()
+        client.force_authenticate(self.root)
+        response = client.delete(f'/api/v1/management/alternates/{self.alias.pk}/')
+        self.assertEqual(response.status_code, 409)
+        self.assertIn('tiene artículos de proveedor', str(response.data))
+        self.assertEqual(Reference.objects.get(pk=self.alias.pk).estado, 'declarado')
+        self.assertEqual(SupplierItem.objects.get(pk=item.pk).reference_id, self.alias.pk)
+
+    def test_moving_a_reference_moves_its_items(self):
+        item = self.load('R-2', '04111-22152-AS')
+        references.update(self.alias, part=self.branded)
+        item.refresh_from_db()
+        self.assertEqual((item.part_id, item.reference_id), (self.branded.pk, self.alias.pk))
+
+    def test_merge_and_separar_carry_items_with_their_references(self):
+        source = make_line('04111-22152-K', description='BOMBA AGUA')
+        item = self.load('R-3', '04111-22152-K')
+        former = item.reference
+        line_merge.merge_lines(self.plain, [source], actor=self.root)
+        item.refresh_from_db()
+        self.assertEqual((item.part_id, item.reference_id), (self.plain.pk, former.pk))
+        # Separar refuses to leave the item behind while its Reference goes back with its line.
+        with self.assertRaises(Exception) as refused:
+            line_merge.split_line(self.plain.pk, [{'id': str(source.pk), 'codes': [], 'items': [], 'images': []}], actor=self.root)
+        self.assertIn('cuelga de una referencia', str(refused.exception))
+        line_merge.split_line(self.plain.pk, [{'id': str(source.pk), 'codes': [], 'items': [str(item.pk)], 'images': []}], actor=self.root)
+        item.refresh_from_db()
+        self.assertEqual((item.part_id, item.reference_id), (source.pk, former.pk))
+
+    def test_an_absorbed_reference_hands_its_items_over_and_takes_them_back(self):
+        source = make_line('SRC-55555', description='BOMBA AGUA')
+        held = make_reference(self.plain, 'ABS-777')
+        waiting = make_reference(source, 'ABS-777', estado='disputa', dispute_note='Código duplicado de 04111-22152: caso de unificación.')
+        item = make_variant(self.supplier, 'R-4', 'ABS-777', 1, actor=self.root)
+        variants.vincular(item, source, actor=self.root)
+        self.assertEqual(item.reference_id, waiting.pk)
+        line_merge.merge_lines(self.plain, [source], actor=self.root)
+        item.refresh_from_db()
+        self.assertEqual((item.part_id, item.reference_id), (self.plain.pk, held.pk))
+        self.assertEqual(Reference.all_objects.get(pk=waiting.pk).estado, 'retirada')
+        line_merge.split_line(self.plain.pk, [{'id': str(source.pk), 'codes': [], 'items': [str(item.pk)], 'images': []}], actor=self.root)
+        item.refresh_from_db()
+        self.assertEqual((item.part_id, item.reference_id), (source.pk, waiting.pk))

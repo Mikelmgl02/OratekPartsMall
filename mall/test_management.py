@@ -184,8 +184,10 @@ class ManagementTests(APITestCase):
         # Both editors operate on the same code row and keep its identity.
         self.assertEqual(self.client.patch(f'/api/v1/management/catalog/{part.pk}/', {'codes': [{'code': 'D-HYU-1R', 'brand': 'OEM'}]}, format='json').status_code, 200)
         self.assertEqual(self.client.get(url).data['code'], 'D-HYU-1R')
-        self.assertEqual(self.client.delete(url).status_code, 204)
-        self.assertFalse(part.codes.filter(is_main=False).exists())
+        refused = self.client.delete(url)
+        self.assertEqual(refused.status_code, 409)  # the supplier's item hangs from it (S3): move or separate it first
+        self.assertIn('tiene artículos de proveedor', str(refused.data))
+        self.assertTrue(part.codes.filter(is_main=False).exists())
         self.assertEqual(Part.objects.count(), 1)
         stock.refresh_from_db()
         self.assertEqual(stock.part, part)

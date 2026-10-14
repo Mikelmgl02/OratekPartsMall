@@ -17,10 +17,12 @@ from .models import Part, Reference, ReferenceSource
 from .oem_reference_models import PartOEMLink
 from .refactor import s2b_main_refs
 from .test_factories import (Fresh, make_library_number, make_line, make_reference, make_supplier, make_user, make_variant,
-                             run_migration_function)
+                             run_migration_function, unhook_variants)
 from .test_main_references import broken_invariants
 
-TIGHTEN = {'mall_part': ('line_oem_iff_tipo',), 'mall_partcode': ('reference_one_main_per_line', 'reference_main_not_retired')}
+TIGHTEN = {'mall_part': ('line_oem_iff_tipo',), 'mall_partcode': ('reference_one_main_per_line', 'reference_main_not_retired'),
+           # S3's (0078): an item on a line without its Reference is the state before S3, which these backfills run in.
+           'mall_supplieritem': ('variant_line_follows_reference', 'variant_reference_iff_line', 'variant_unattached_is_pending')}
 
 
 def drop_tighten_constraints():
@@ -83,6 +85,7 @@ class BackfillTests(Fresh, TestCase):
         SupplierCodeMapping.objects.create(supplier=self.supplier, code='ALTMAP1', brand='GMB', part=self.tag)
         SupplierCodeMapping.objects.create(supplier=self.supplier, code='LOCAL9', brand='SIN MARCA', part=self.keeper)
         # The state the backfill finds: no main (the S2b code makes them, the old code did not), tipo at 0075's default.
+        unhook_variants()  # and no item hangs from a Reference (S3 came later)
         references.purge(Reference.all_objects.filter(is_main=True).values_list('pk', flat=True))
         self.spelling = make_reference(self.spelled, '1780130070')  # an alias of the codigo's key: reused and respelled
         self.loser = make_reference(self.respelled, '28113 F2000')  # reused by 28113F2000, which loses the key to 28113-F2000 (stock)
@@ -152,7 +155,7 @@ class BackfillTests(Fresh, TestCase):
         self.assertEqual((case.kind, case.target_sku, [row['sku'] for row in case.sources]), ('catalog', '43512-60150', ['DISCO-X']))
         source = ReferenceSource.objects.get(reference=self.mapped, kind='proveedor')
         self.assertTrue(source.citation.startswith('Código aprendido · S2B PROVEEDOR · '))
-        interno = Reference.objects.get(tipo='interno')
+        interno = Reference.all_objects.get(tipo='interno')  # an interno code is its supplier's: readers never see it (S3)
         self.assertEqual((interno.part_id, interno.code, interno.brand, interno.supplier_id), (self.keeper.pk, 'LOCAL9', '', self.supplier.pk))
         lines = self.manifest()
         self.assertEqual(lines[0]['action'], 'run')

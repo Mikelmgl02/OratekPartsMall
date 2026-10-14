@@ -423,39 +423,62 @@ class ManagedInventorySerializer(SupplierItemSerializer):
 
 
 class InventoryMatchSerializer(ManagedInventorySerializer):
+    """PATCH management/inventory/<item>: the item's line and status (S3: mall.variants writes them). part set is Vincular: the line's
+    Reference for the item's code (found or created) and a waiting code applied; part null unlinks it, only as pending and with no
+    units held by a quotation or an order; a status alone keeps its Reference. A unificada line is refused. The supplier's Account is
+    locked first, like every writer of its items."""
     class Meta(ManagedInventorySerializer.Meta):
         read_only_fields = [field for field in ManagedInventorySerializer.Meta.fields if field not in ['part', 'matching_status']]
 
     def validate(self, data):
         if set(self.initial_data) - {'part', 'matching_status'}:
             raise serializers.ValidationError('Desde aquí solo se modifica el vínculo con el catálogo y su estado.')
-        part = data.get('part', self.instance.part)
+        part = data['part'] if 'part' in data else self.instance.part
         status = data.get('matching_status', self.instance.matching_status)
-        if part and part.merged_into_id:
+        if part and (part.merged_into_id or part.estado == 'unificada'):
             raise serializers.ValidationError({'part': 'Selecciona el SKU principal; este SKU ya fue unificado.'})
         if status == 'matched' and not part:
             raise serializers.ValidationError({'part': 'Selecciona un repuesto para aprobar la coincidencia.'})
+        if 'part' in data and part is None and status != 'pending':
+            raise serializers.ValidationError({'matching_status': 'Un artículo sin SKU queda pendiente: envía matching_status pending.'})
         return data
 
     @transaction.atomic
     def update(self, instance, validated_data):
+        from . import variants
+        from .request_models import StockReservation
+        # The lock order of every writer of a supplier's items: its Account, then the line, then the item.
+        Account.objects.select_for_update().get(pk=instance.supplier_id)
         assigned = validated_data.get('part')
         if assigned:
             assigned = Part.objects.select_for_update().get(pk=assigned.pk)
-            if assigned.merged_into_id:
+            if assigned.merged_into_id or assigned.estado == 'unificada':
                 raise serializers.ValidationError({'part': 'Selecciona el SKU principal; este SKU ya fue unificado.'})
-            validated_data['part'] = assigned
         instance = SupplierItem.objects.select_for_update().get(pk=instance.pk)
-        # Recheck after locking, since a supplier sync can change the mapping.
-        if validated_data.get('matching_status', instance.matching_status) == 'matched' and not validated_data.get('part', instance.part):
-            raise serializers.ValidationError({'part': 'Selecciona un repuesto para aprobar la coincidencia.'})
-        for field, value in validated_data.items():
-            setattr(instance, field, value)
-        instance.save(update_fields=[*validated_data.keys(), 'updated_at'])
+        status = validated_data.get('matching_status', instance.matching_status)
+        user = self.context['request'].user
+        try:
+            if 'part' in validated_data and assigned is None:
+                if StockReservation.objects.filter(item=instance, status='open').exists():
+                    raise serializers.ValidationError({'part': 'Este artículo tiene unidades apartadas por una cotización o un pedido: '
+                                                               'libéralas antes de desvincularlo.'})
+                variants.detach(instance)
+            elif assigned is not None:
+                variants.vincular(instance, assigned, status=status, actor=user)
+            else:
+                # Only the status: the item keeps its Reference (a line outside the catalog never counts it in stock).
+                if status == 'matched' and not instance.part_id:
+                    raise serializers.ValidationError({'part': 'Selecciona un repuesto para aprobar la coincidencia.'})
+                if instance.part_id and not instance.reference_id:
+                    variants.ensure_attached(instance, actor=user)
+                instance.matching_status = variants.status_for(instance.part, status) if instance.part_id else status
+                instance.save(update_fields=['matching_status', 'updated_at'])
+        except variants.VariantConflict as error:
+            raise serializers.ValidationError({'part': error.message})
         from .matching_engine import remember
         from .matching_queue import enqueue_matching
         if instance.matching_status == 'matched' and instance.part_id:
-            remember(instance, instance.part, self.context['request'].user)
+            remember(instance, instance.part, user)
         enqueue_matching()
         return instance
 

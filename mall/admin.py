@@ -54,6 +54,8 @@ class ReferenceAdminForm(forms.ModelForm):
         data = super().clean()
         if data.get('estado') == 'retirada' and not self.instance.pk:
             self.add_error('estado', 'Una referencia nueva no puede estar retirada.')
+        elif data.get('estado') == 'retirada' and self.instance.estado != 'retirada' and self.instance.variants.exists():
+            self.add_error('estado', f'{self.instance} {references.VARIANTS_HANG}')  # S3: items hang from it
         elif data.get('part') and data.get('code'):
             estado = data.get('estado') or 'declarado'
             try:
@@ -175,9 +177,11 @@ class BrandAliasAdmin(admin.ModelAdmin):
 
 @admin.register(SupplierItem)
 class SupplierItemAdmin(admin.ModelAdmin):
-    list_display = ['supplier', 'supplier_invent_id', 'codigo', 'part', 'matching_status']
+    # The line and its Reference are mall.variants' (S3): Vincular from Inventario moves an item; here only its status changes.
+    list_display = ['supplier', 'supplier_invent_id', 'codigo', 'part', 'reference', 'matching_status']
     list_filter = ['matching_status', 'supplier']
-    readonly_fields = ['supplier', 'supplier_invent_id', 'codigo', 'brand', 'description', 'source', 'reported_quantity', 'reserved_quantity', 'updated_at']
+    readonly_fields = ['supplier', 'supplier_invent_id', 'part', 'reference', 'codigo', 'brand', 'codigo_pendiente', 'brand_pendiente',
+                       'description', 'source', 'reported_quantity', 'reserved_quantity', 'updated_at']
     def has_add_permission(self, request):
         return False
     def has_delete_permission(self, request, obj=None):

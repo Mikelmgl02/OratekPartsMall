@@ -2,7 +2,8 @@
 settings keep the outside services off, guard the network and never drop a real database, (S1) every Part.objects filter on active,
 merged_into or the SKU goes through mall.lines, and (S2a) nothing deletes a Reference outside mall.references, no new code names
 PartCode or reaches codes through a codes__ join outside the reviewed allowlist, no bulk write of lines or References happens
-outside their choke points (mall.lines, mall.references), and (S5) a subgrupo's grupo is read by its FK, not by its text."""
+outside their choke points (mall.lines, mall.references), (S5) a subgrupo's grupo is read by its FK, not by its text, and (S3) a
+variant's line and Reference are written by mall.variants."""
 import ast
 import io
 import re
@@ -373,3 +374,51 @@ grupo_nombre(part.part_type)
 values_list('part_type__grupo__nombre', flat=True)
 """
         self.assertEqual(grupo_text_reads(source), [2, 3, 4, 5])
+
+
+# --- S3: a variant's line and Reference are written by mall.variants ---------------------------------------------------------------
+
+VARIANT_FIELDS = {'part', 'part_id', 'reference', 'reference_id'}
+VARIANT_WRITERS = {Path('variants.py')}
+# Reviewed elsewhere: the S3 backfill's bulk attach and its rollback, and S2b's rollback, which unhooks items before S3's tighten.
+VARIANT_ALLOWED = {'refactor/s3_variants.py': 2, 'refactor/s2b_main_refs.py': 2}
+
+
+def variant_writes(source):
+    """[line] of each queryset update or bulk_update of SupplierItem that writes its line or its Reference."""
+    rows = []
+    for node in ast.walk(ast.parse(source)):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in ('update', 'bulk_update')):
+            continue
+        if 'SupplierItem' not in chain_names(node.func.value):
+            continue
+        if node.func.attr == 'update':
+            hit = any(keyword.arg in VARIANT_FIELDS for keyword in node.keywords)
+        else:
+            fields = node.args[1] if len(node.args) > 1 else next((k.value for k in node.keywords if k.arg == 'fields'), None)
+            hit = isinstance(fields, (ast.List, ast.Tuple)) and any(isinstance(item, ast.Constant) and item.value in VARIANT_FIELDS
+                                                                    for item in fields.elts)
+        if hit:
+            rows.append(node.lineno)
+    return rows
+
+
+class VariantGuardTests(SimpleTestCase):
+    def test_a_variants_line_and_reference_are_written_by_mall_variants(self):
+        """SupplierItem.part follows its Reference (I4; from 0078 a composite foreign key): attach, vincular, follow and rehang write
+        both together. A queryset update of either elsewhere would leave an item on a line its Reference is not on."""
+        found = Counter(str(relative) for relative, path in app_modules() if relative not in VARIANT_WRITERS
+                        for _ in variant_writes(path.read_text(encoding='utf-8')))
+        over = {module: count for module, count in found.items() if count > VARIANT_ALLOWED.get(module, 0)}
+        self.assertEqual(over, {}, 'Escrituras de SupplierItem.part o reference fuera de mall.variants.')
+
+    def test_the_scan_finds_each_form(self):
+        source = """
+SupplierItem.objects.filter(part_id__in=ids).update(part=target)
+m.SupplierItem.objects.filter(pk=pk).update(reference_id=1, part_id=2)
+SupplierItem.objects.bulk_update(items, ['reference', 'part'])
+SupplierItem.objects.filter(pk=pk).update(reserved_quantity=1)
+SupplierItem.objects.bulk_update(items, ['matching_status'])
+Part.objects.filter(pk=pk).update(part_type=None)
+"""
+        self.assertEqual(variant_writes(source), [2, 3, 4])

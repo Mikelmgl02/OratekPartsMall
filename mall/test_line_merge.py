@@ -16,7 +16,7 @@ from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 from rest_framework.test import APITestCase
 
-from . import line_merge, references
+from . import line_merge, references, variants
 from .catalog_assistant_models import CatalogAssistantJob, CatalogAssistantSuggestion
 from .catalog_split import split_catalog_part, split_plan
 from .catalog_split_models import CatalogSeparation, CatalogSplit
@@ -27,7 +27,8 @@ from .oem_reference_models import PartOEMLink
 from .refactor import s2b_main_refs
 from .supplier_import_models import SupplierInventoryImportJob
 from .technical_models import PartType, PartSpecification, TechnicalField, TechnicalTemplate
-from .test_factories import Fresh, make_library_number, make_line, make_reference, make_supplier, make_user, make_variant
+from .test_factories import (Fresh, make_library_number, make_line, make_reference, make_supplier, make_user, make_variant,
+                             unhook_variants)
 from .test_main_references import broken_invariants
 
 
@@ -241,9 +242,12 @@ class SplitLegacyTests(TestCase):
     def legacy_merge(self, target, source, items=()):
         """What merge_catalog_parts did before S2b: the source's codes and stock move, its codigo becomes a brandless alias of the
         target, the source becomes unificada (by queryset, so no shim runs), and the merge records codes, items and images."""
+        unhook_variants([main(source)])  # before S3 items hung from lines only
         references.purge([main(source).pk])
         alias = Reference.objects.create(part=target, code=source.sku, brand='')
         SupplierItem.objects.filter(pk__in=[item.pk for item in items]).update(part=target)
+        for item in SupplierItem.objects.filter(pk__in=[item.pk for item in items]):
+            variants.ensure_attached(item)  # what S3's backfill does with them since
         Part.objects.filter(pk=source.pk).update(merged_into=target, estado='unificada', active=False)
         CatalogMerge.objects.create(actor=self.root, target=target, summary={}, sources=[{'id': str(source.pk), 'sku': source.sku, 'codes': [],
                                     'items': [str(item.pk) for item in items], 'images': []}])
@@ -339,6 +343,7 @@ class CompactDuplicateTests(Fresh, TestCase):
         split = CatalogSplit.objects.create(target=self.left, actor=self.root)
         CatalogSeparation.objects.create(first_id=line_merge.pair(self.left.pk, self.right.pk)[0],
                                          second_id=line_merge.pair(self.left.pk, self.right.pk)[1], split=split)
+        unhook_variants()  # before the S2b backfill no item hangs from a Reference (S3 came later)
         references.purge(Reference.all_objects.filter(is_main=True).values_list('pk', flat=True))  # before the backfill: no mains
         self.before = sorted(Reference.all_objects.values_list('pk', 'part_id', 'code', 'brand', 'estado', 'is_main', 'printed_forms'))
 

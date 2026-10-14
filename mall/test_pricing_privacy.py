@@ -411,5 +411,6 @@ class PricingPrivacyTests(APITestCase):
             self.assertNotIn(model, admin.site._registry)
         self.assertEqual(SupplierItemSerializer.Meta.fields, ['id', 'supplier_invent_id', 'part', 'codigo', 'brand', 'description', 'references',
                                                               'matching_status', 'source', 'reported_quantity', 'reserved_quantity',
-                                                              'available_quantity', 'updated_at'])
+                                                              'available_quantity', 'updated_at', 'reference', 'codigo_pendiente',
+                                                              'brand_pendiente'])
         self.assertEqual(ManagedInventorySerializer.Meta.fields, SupplierItemSerializer.Meta.fields + ['supplier', 'supplier_name', 'part_name', 'part_sku'])

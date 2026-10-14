@@ -108,3 +108,27 @@ def migration_module(migration, app='mall'):
 def run_migration_function(migration, name, app='mall'):
     """Call a migration's RunPython function (forwards or backwards) the way migrate does: historical models, default database."""
     return getattr(migration_module(migration, app), name)(historical_apps(migration, app), SimpleNamespace(connection=connection))
+
+
+VARIANT_CONSTRAINTS = ('variant_line_follows_reference', 'variant_reference_iff_line', 'variant_unattached_is_pending')  # 0078's
+
+
+def drop_variant_constraints():
+    """0078's constraints, inside a test's transaction (they come back when it rolls back): the state before S3's tighten."""
+    with connection.cursor() as cursor:
+        cursor.execute('SET CONSTRAINTS ALL IMMEDIATE')
+        present = connection.introspection.get_constraints(cursor, 'mall_supplieritem')
+        for name in VARIANT_CONSTRAINTS:
+            if name in present:
+                cursor.execute(f'ALTER TABLE mall_supplieritem DROP CONSTRAINT {name}')
+
+
+def unhook_variants(refs=None):
+    """The state before S3 for a test of an earlier stage: no supplier item hangs from a Reference (of refs, or any); 0078's constraints
+    are dropped first, in the test's transaction, since an item on a line without its Reference breaks them."""
+    from .models import SupplierItem
+    drop_variant_constraints()
+    rows = SupplierItem.objects.filter(reference__isnull=False)
+    if refs is not None:
+        rows = rows.filter(reference_id__in=[getattr(ref, 'pk', ref) for ref in refs])
+    return rows.update(reference=None)

@@ -244,11 +244,13 @@ class ReferenceQuerySet(models.QuerySet):
 
 
 class LiveReferenceManager(models.Manager.from_queryset(ReferenceQuerySet)):
-    """Reference.objects, and so every line's `codes` and their prefetches: the References that are not retirada. Readers skip retired
-    rows through it; Reference.all_objects reads every row (mall.references, the stage CLIs, the admin). A filter that reaches codes
-    through a relation (codes__code=...) joins every row instead, so it names the live estados too (mall.references.live_q)."""
+    """Reference.objects, and so every line's `codes` and their prefetches: the References that are not retirada, and not a supplier's
+    own interno code (S3: one supplier's name for the line, which no other supplier, client or matching pass may read; a line's main
+    stays even when interno). Readers skip those rows through it; Reference.all_objects reads every row (mall.references,
+    mall.variants, the stage CLIs, the admin). A filter that reaches codes through a relation (codes__code=...) joins every row instead,
+    so it names the same rows too (mall.references.live_q)."""
     def get_queryset(self):
-        return super().get_queryset().filter(estado__in=REFERENCE_LIVE)
+        return super().get_queryset().filter(estado__in=REFERENCE_LIVE).exclude(tipo='interno', is_main=False)
 
 
 class AllReferenceManager(models.Manager.from_queryset(ReferenceQuerySet)):
@@ -336,6 +338,9 @@ class Reference(models.Model):
             # mall.references.ensure_mains keeps until S10).
             models.UniqueConstraint(fields=['part'], condition=Q(is_main=True) & ~Q(estado='retirada'), name='reference_one_main_per_line'),
             models.CheckConstraint(condition=~(Q(is_main=True) & Q(estado='retirada')), name='reference_main_not_retired'),
+            # From 0077 (S3's expand): the target of the composite foreign key that keeps each variant on its Reference's line
+            # (variant_line_follows_reference, 0078).
+            models.UniqueConstraint(fields=['id', 'part'], name='reference_id_line'),
         ]
         indexes = [models.Index(fields=['clave'], name='reference_clave_idx'), models.Index(fields=['part', 'is_main'], name='reference_part_main_idx')]
 
@@ -488,26 +493,61 @@ class Alternate(models.Model):
         constraints = [models.UniqueConstraint(fields=["part", "replacement"], name="unique_alternate"), models.CheckConstraint(condition=~Q(part=models.F("replacement")), name="different_alternate")]
 
 class SupplierItem(models.Model):
+    # A variant (inventory refactor S3): a supplier's item hangs from one Reference of its line, and part is always that Reference's
+    # line (mall.variants.attach is the only writer of both; from 0078 a composite foreign key keeps them in step, so moving a
+    # Reference moves its variants). reference stays nullable for good (OD21): an item no code places yet waits without one, pending.
+    # A code change that cannot apply on its own waits in codigo_pendiente/brand_pendiente (status review, out of stock: OD7) while
+    # codigo and brand keep what order and cesta lines were made with.
+    CALIDADES = [('original', 'Original'), ('oes', 'OES (equipo original)'), ('alternativo', 'Alternativo')]
+    CONDICIONES = [('nuevo', 'Nuevo'), ('remanufacturado', 'Remanufacturado')]
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False, verbose_name='ID')
     supplier = models.ForeignKey(Account, on_delete=models.PROTECT, verbose_name='proveedor')
     supplier_invent_id = models.CharField(max_length=120, verbose_name='ID de inventario del proveedor')
     part = models.ForeignKey(Part, on_delete=models.PROTECT, null=True, blank=True, related_name="supplier_items", verbose_name='repuesto del catálogo')
+    reference = models.ForeignKey(Reference, on_delete=models.PROTECT, null=True, blank=True, related_name='variants', db_index=False,
+                                  verbose_name='referencia', help_text='El código de la línea del que cuelga este artículo.')
     codigo = models.CharField(max_length=120, verbose_name='código del repuesto')
     brand = models.CharField(max_length=120, verbose_name='marca')
+    codigo_pendiente = models.CharField(max_length=120, null=True, blank=True, verbose_name='código pendiente',
+                                        help_text='El código nuevo que envió el proveedor y que espera revisión.')
+    brand_pendiente = models.CharField(max_length=120, null=True, blank=True, verbose_name='marca pendiente',
+                                       help_text='La marca nueva que envió el proveedor y que espera revisión.')
     description = models.TextField(blank=True, verbose_name='descripción')
     references = models.JSONField(default=list, blank=True, verbose_name='referencias declaradas por el proveedor')
     matching_status = models.CharField(max_length=20, choices=[("pending", "Pendiente"), ("matched", "Vinculado"), ("review", "Por revisar")], default="pending", verbose_name='estado de coincidencia')
     source = models.CharField(max_length=20, choices=[("upload", "Carga manual"), ("apiag", "apiag-cloud")], verbose_name='origen')
     reported_quantity = models.PositiveIntegerField(default=0, verbose_name='existencias reportadas')
     reserved_quantity = models.PositiveIntegerField(default=0, verbose_name='unidades reservadas')
+    # What the supplier says about this variant (rule 10; filled from S3.2): optional, '' when unknown.
+    material = models.CharField(max_length=120, blank=True, default='', db_default='', verbose_name='material')
+    origen = models.CharField(max_length=120, blank=True, default='', db_default='', verbose_name='país de origen')
+    garantia = models.CharField(max_length=120, blank=True, default='', db_default='', verbose_name='garantía')
+    calidad = models.CharField(max_length=12, choices=CALIDADES, blank=True, default='', db_default='', verbose_name='calidad')
+    condicion = models.CharField(max_length=16, choices=CONDICIONES, blank=True, default='', db_default='', verbose_name='condición')
+    unidades_por_empaque = models.PositiveSmallIntegerField(null=True, blank=True, verbose_name='unidades por empaque')
+    field_sources = models.JSONField(default=dict, blank=True, db_default={}, verbose_name='origen de cada campo')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='última actualización')
     class Meta:
         verbose_name = 'artículo del proveedor'
         verbose_name_plural = 'artículos del proveedor'
         constraints = [models.UniqueConstraint(fields=["supplier", "supplier_invent_id"], name="unique_supplier_invent")]
+        indexes = [models.Index(fields=['reference', 'part'], name='variant_reference_line_idx'),
+                   models.Index(fields=['supplier', 'codigo'], name='variant_supplier_codigo_idx')]
     @property
     def available_quantity(self) -> int:
         return max(0, self.reported_quantity - self.reserved_quantity)
+    @classmethod
+    def from_db(cls, db, field_names, values):
+        instance = super().from_db(db, field_names, values)
+        instance._hung = (instance.__dict__.get('part_id'), instance.__dict__.get('reference_id'))  # what save() compares against
+        return instance
+    def save(self, *args, **kwargs):
+        # Transition shim until S10 (plan §1.4): code that writes part without a Reference (old code, tests) gets the line's Reference
+        # for the item's code attached here, and a part changed under an unchanged Reference is a Vincular (mall.variants.follow_item).
+        from .variants import follow_item
+        follow_item(self, kwargs)
+        super().save(*args, **kwargs)
+        self._hung = (self.__dict__.get('part_id'), self.__dict__.get('reference_id'))
 
 class StockEntry(models.Model):
     item = models.ForeignKey(SupplierItem, on_delete=models.PROTECT, related_name="ledger", verbose_name='artículo del proveedor')

@@ -32,8 +32,9 @@ from .models import Account, Membership, StockEntry
 
 log = logging.getLogger(__name__)
 
-FIELDS = ('codigo', 'brand', 'description', 'references')
-FIELD_LABELS = {'codigo': 'Código', 'brand': 'Marca', 'description': 'Descripción', 'references': 'Referencias'}
+FIELDS = ('codigo', 'brand', 'description', 'references', 'codigo_pendiente', 'brand_pendiente')
+FIELD_LABELS = {'codigo': 'Código', 'brand': 'Marca', 'description': 'Descripción', 'references': 'Referencias',
+                'codigo_pendiente': 'Código pendiente de revisión', 'brand_pendiente': 'Marca pendiente de revisión'}
 PRECEDENCE = {'created': 3, 'withdrawn': 2, 'updated': 1, 'stock': 0}  # what a change says when one run touches an item twice
 REASONS = {'retired': 'Retirado en apiag-cloud', 'refused': 'Datos de apiag-cloud no válidos', 'unseen': 'Ya no se publica en apiag-cloud'}
 ORIGINS = {'quotation': 'Cotización confirmada', 'excel': 'Carga Excel', 'apiag': 'apiag-cloud', 'manual': 'Actualización manual'}

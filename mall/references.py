@@ -10,9 +10,10 @@ history (Reference.objects and every line's `codes` leave retired rows out, so r
     validate(code, brand, line)  the brandless reservation and the one-live-line rule, under the clave's advisory lock
     check(tipo, estado, ...)     what a Reference's columns must agree on (a dispute says why, interno ⇔ supplier), as 0074's CHECKs
     ensure_brand(spelling)       every brand a Reference carries is a Brand nombre or alias (Appendix C, I12): add() and update() call it
-    brandless_q(clave, brand)    the rows a (clave, brand) is reserved against; live_q() the live estados through a relation
+    brandless_q(clave, brand)    the rows a (clave, brand) is reserved against; live_q() what readers see, through a relation
     clave(code)                  the database's generated mall_partcode.clave, in Python
     cite(ref, text)              upsert the ReferenceSource a reference_source text names (A3)
+    find(code, brand, supplier)  the live Reference a (code, brand) belongs to, as rules 1 and 2 look it up (S3)
 
 The main Reference (S2b). Every live line (any estado but unificada) has exactly one main Reference, not retired, whose code is the
 line's codigo (Part.sku) and whose tipo the line's tipo mirrors (oem → OEM, aftermarket → AFTERMARKET, interno and otro → UNKNOWN;
@@ -28,6 +29,13 @@ is_OEM = tipo == 'OEM' until S10). This module is the only writer of is_main and
     move(refs, line)             References to another line, never as its main (merges)
     main_of(line), mains_of(ids) the live main of a line, of several
     bulk_mains(lines)            built mains for lines inserted in bulk (mall.lines.bulk_create_lines saves them)
+
+Variants (S3). A supplier's item hangs from one Reference (SupplierItem.reference, written by mall.variants only) and sits on its line:
+a Reference that moves to another line (update(part=...), move) takes its variants along (mall.variants.follow, and from 0078 the
+composite foreign key), and retire() refuses a Reference variants still hang from (ReferenceHasVariants, 409: move or separate them
+first), so no removal path ends in a ProtectedError. A Reference made for one supplier's code that is not the line's code is interno,
+scoped to that supplier: readers never see it (Reference.objects, a line's codes and live_q leave it out, unless it is a line's main),
+this module and mall.variants read it through Reference.all_objects, and only that supplier's items match it (own_interno_q).
 
 Until S10 Part.save() keeps the main in step for the code that writes sku, is_OEM or merged_into directly (follow_line): a line
 inserted without a main gets one, a renamed line's main moves to its new codigo (the old main stays as one of its References), a line
@@ -86,6 +94,15 @@ class ReferenceConflict(ValidationError):
         return ' '.join(str(item) for item in self.detail) if isinstance(self.detail, list) else str(self.detail)
 
 
+class ReferenceHasVariants(ReferenceConflict):
+    """retire() refused: supplier items hang from the Reference (S3). 409, so every removal path shows the message."""
+    status_code = 409
+    default_code = 'conflict'
+
+
+VARIANTS_HANG = 'tiene artículos de proveedor: muévelos o sepáralos antes de quitarla.'
+
+
 def _models():
     from .models import Reference, ReferenceSource
     return Reference, ReferenceSource
@@ -141,9 +158,15 @@ def pair_tipo(ref):
 
 
 def live_q(prefix=''):
-    """The References that are not retired, through a relation when prefix names one ('codes__', 'part__codes__'): a join reaches
-    every row, unlike Reference.objects and a line's codes."""
-    return Q(**{f'{prefix}estado__in': LIVE})
+    """The References readers see (Reference.objects: not retired, and not a supplier's interno code unless it is a line's main),
+    through a relation when prefix names one ('codes__', 'part__codes__'): a join reaches every row, unlike Reference.objects and a
+    line's codes."""
+    return Q(**{f'{prefix}estado__in': LIVE}) & ~Q(**{f'{prefix}tipo': 'interno', f'{prefix}is_main': False})
+
+
+def own_interno_q(supplier, prefix=''):
+    """A supplier's own interno codes (S3), which only that supplier's items match, through a relation when prefix names one."""
+    return Q(**{f'{prefix}estado__in': LIVE, f'{prefix}tipo': 'interno', f'{prefix}supplier_id': getattr(supplier, 'pk', supplier)})
 
 
 def brandless_q(key, brand='', prefix=''):
@@ -171,7 +194,7 @@ def conflicts(code, brand='', *, line=None, supplier=None, estado='declarado', e
     if estado not in EXCLUSIVE:
         return Reference.objects.none()
     key, brand = clave(code_key(code)), brand_key(brand)
-    rows = Reference.objects.filter(clave=key, estado__in=EXCLUSIVE)
+    rows = Reference.all_objects.filter(clave=key, estado__in=EXCLUSIVE)  # interno codes too: they clash with their own supplier's
     if exclude is not None:
         rows = rows.exclude(pk=getattr(exclude, 'pk', exclude))
     line_id = getattr(line, 'pk', line)
@@ -203,6 +226,30 @@ def validate(code, brand='', *, line=None, supplier=None, estado='declarado', ex
         raise ReferenceConflict(f'{f"{other.brand} " if other.brand else ""}{other.code} ya es una referencia de este SKU.', other)
     raise ReferenceConflict(f'El código {code} ya pertenece a otro SKU ({other.part.sku}). Si son equivalentes, usa Agrupar SKU para '
                             'unificarlos primero.', other)
+
+
+def find(code, brand='', *, supplier=None):
+    """The live Reference a (code, brand) belongs to, as rules 1 and 2 look it up (S3, for a supplier's code change; S6's resolve
+    builds on it): the supplier's own interno code first (its brand, then none), then the exclusive public (clave, brand), then the
+    brandless (clave, ''); a brandless code joins the one line its clave sits on. None when nothing holds it, or a brandless code
+    whose clave sits on two or more lines (a person decides). A Reference in disputa never takes a variant."""
+    Reference, _ = _models()
+    key, brand = clave(code_key(code)), brand_key(brand)
+    supplier_id = getattr(supplier, 'pk', supplier)
+    rows = list(Reference.all_objects.filter(clave=key, estado__in=EXCLUSIVE).order_by('-is_main', 'pk'))
+
+    def same(a):  # spaces collapsed, as mall.variants.same_brand compares a variant's brand
+        return ' '.join(a.split()) == ' '.join(brand.split())
+    if supplier_id is not None:
+        own = [row for row in rows if row.supplier_id == supplier_id]
+        found = next((row for row in own if same(row.brand)), None) or next((row for row in own if not row.brand), None)
+        if found is not None:
+            return found
+    public = [row for row in rows if row.supplier_id is None]
+    found = next((row for row in public if same(row.brand)), None)
+    if found is not None or brand:
+        return found or next((row for row in public if not row.brand), None)
+    return public[0] if len({row.part_id for row in public}) == 1 else None
 
 
 # --- writes --------------------------------------------------------------------------------------------------------------------------
@@ -281,7 +328,7 @@ def bulk_create(references, *, batch_size=500, actor=None, serialized=False):
             lock(*keys)
         held = {}
         for start in range(0, len(keys), 2000):
-            for row in Reference.objects.filter(clave__in=keys[start:start + 2000], estado__in=EXCLUSIVE).select_related('part').order_by('pk'):
+            for row in Reference.all_objects.filter(clave__in=keys[start:start + 2000], estado__in=EXCLUSIVE).select_related('part').order_by('pk'):
                 held.setdefault(row.clave, []).append(row)
         seen = set()
         for ref in references:
@@ -381,7 +428,7 @@ def adopt_insert(ref):
     if not ref.part_id or ref.is_main or ref.estado not in EXCLUSIVE:
         return False
     key = clave(ref.code)
-    holders = list(Reference.objects.filter(clave=key, brand=ref.brand, supplier_id=ref.supplier_id, estado__in=EXCLUSIVE)
+    holders = list(Reference.all_objects.filter(clave=key, brand=ref.brand, supplier_id=ref.supplier_id, estado__in=EXCLUSIVE)
                    .select_related('part').order_by('pk')[:2])
     main = next((row for row in holders if row.part_id == ref.part_id and row.is_main), None)
     if main is None:
@@ -476,6 +523,9 @@ def update(ref, *, actor=None, **fields):
             setattr(ref, name, value)
         names = [name[:-3] if name in ('part_id', 'supplier_id', 'reemplazado_por_id') else name for name in changed]
         ref.save(update_fields=names)
+        if 'part_id' in changed:  # its variants go with it (S3; the composite foreign key does it too from 0078)
+            from .variants import follow
+            follow([ref.pk])
         if 'reference_source' in changed and ref.reference_source:
             cite(ref, ref.reference_source, actor)
         if ref.is_main and {'tipo', 'ref_type'} & set(changed):  # the line's tipo mirrors its main (I11)
@@ -483,12 +533,13 @@ def update(ref, *, actor=None, **fields):
     return ref
 
 
-def retire(refs, *, actor=None, replaced_by=None, reason='', allow_main=False):
+def retire(refs, *, actor=None, replaced_by=None, reason='', allow_main=False, allow_variants=False):
     """Take References off their line: estado retirada (readers skip them), reemplazado_por when another Reference replaces it, who
     and why in detail['retired']. One save() each, so the matching queue and the OEM library mirror follow (the mirror drops the
     source an OEM alterno backed, and keeps the number). Accepts a Reference, its id, a list or a queryset (of any manager). Returns
     how many were retired; retired ones are left as they are. The main of a live line is refused (ReferenceConflict: give the line
-    another main first, set_main), unless allow_main, for a caller that gives it one in the same transaction."""
+    another main first, set_main), unless allow_main, for a caller that gives it one in the same transaction. A Reference supplier
+    items hang from is refused (ReferenceHasVariants, 409; S3), unless allow_variants (a line merged by a direct write)."""
     Reference, _ = _models()
     if refs is None:
         return 0
@@ -505,6 +556,12 @@ def retire(refs, *, actor=None, replaced_by=None, reason='', allow_main=False):
         if held is not None:
             raise ReferenceConflict(f'{held.code} es el código principal del SKU {held.part.sku}: dale otro código principal antes de '
                                     'retirarlo.', held)
+        if not allow_variants and rows:
+            from .variants import hanging
+            hung = hanging(rows).values_list('reference_id', flat=True).first()
+            if hung is not None:
+                row = next(row for row in rows if row.pk == hung)
+                raise ReferenceHasVariants(f'{row} {VARIANTS_HANG}', row)
         for row in rows:
             row.estado, row.is_main = 'retirada', False
             if replaced_id is not None and replaced_id != row.pk:
@@ -690,7 +747,7 @@ def retire_main_of_merged(line):
     line it went into can hold its codigo."""
     Reference, _ = _models()
     rows = Reference.objects.filter(part_id=line.pk, is_main=True)
-    return retire(rows, reason='Línea unificada en otra', allow_main=True) if rows.exists() else 0
+    return retire(rows, reason='Línea unificada en otra', allow_main=True, allow_variants=True) if rows.exists() else 0
 
 
 def _bump(rows, **values):
@@ -942,21 +999,27 @@ def absorb_into(ref, line, *, actor=None, reason='', tipo=None):
     Reference, _ = _models()
     with transaction.atomic():
         ref = Reference.all_objects.select_for_update().get(pk=getattr(ref, 'pk', ref))
-        retire(ref, actor=actor, reason=reason or 'Absorbida por otra línea', allow_main=True)
+        retire(ref, actor=actor, reason=reason or 'Absorbida por otra línea', allow_main=True, allow_variants=True)
         kept, added = add(line, ref.code, ref.brand, tipo=tipo or ref.tipo, actor=actor)
         if kept.pk != ref.pk:
             _bump(Reference.all_objects.filter(pk=ref.pk), reemplazado_por=kept.pk)
+            from .variants import rehang
+            rehang([ref.pk], kept)  # its variants hang from the Reference that replaces it (S3)
     return kept, added
 
 
 def move(refs, line, *, actor=None):
     """Move References (ids, rows or a queryset) to another line, never as its main: a merge carries a source's codes, its former main
-    among them, onto the line it joins. One UPDATE (no signals, like the merge before S2b). Returns how many moved."""
+    among them, onto the line it joins. One UPDATE (no signals, like the merge before S2b); their variants go with them (S3). Returns
+    how many moved."""
     Reference, _ = _models()
     ids = list(refs.values_list('pk', flat=True)) if hasattr(refs, 'values_list') else [getattr(ref, 'pk', ref) for ref in refs]
     if not ids:
         return 0
-    return _bump(Reference.all_objects.filter(pk__in=ids), part_id=getattr(line, 'pk', line), is_main=False)
+    moved = _bump(Reference.all_objects.filter(pk__in=ids), part_id=getattr(line, 'pk', line), is_main=False)
+    from .variants import follow
+    follow(ids)  # their variants go with them (S3; the composite foreign key does it too from 0078)
+    return moved
 
 
 def bulk_mains(lines, *, actor=None):

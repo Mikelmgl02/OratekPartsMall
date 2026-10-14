@@ -116,11 +116,10 @@ class RenameTests(TestCase):
         line = make_line('JSON-1', name='JSON-1')
         make_reference(line, 'JSON-ALT', brand='GMB', tipo='aftermarket')
         make_reference(line, 'JSON-OEM-12345', brand='TOYOTA', tipo='oem')
-        make_reference(line, 'JSON-INT', tipo='interno', supplier=make_supplier('JSON PROVEEDOR'))
+        make_reference(line, 'JSON-INT', tipo='interno', supplier=make_supplier('JSON PROVEEDOR'))  # its supplier's alone (S3): not shown
         data = storefront_codes(self.client, 'JSON-1')
         self.assertEqual(sorted((c['code'], c['brand'], c['kind'], c['ref_type']) for c in data),
-                         [('JSON-ALT', 'GMB', 'manufacturer', 'company'), ('JSON-INT', '', 'alias', 'unknown'),
-                          ('JSON-OEM-12345', 'TOYOTA', 'oem', 'oem')])
+                         [('JSON-ALT', 'GMB', 'manufacturer', 'company'), ('JSON-OEM-12345', 'TOYOTA', 'oem', 'oem')])
 
 
 class TipoPairTests(TestCase):

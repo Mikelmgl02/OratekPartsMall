@@ -20,7 +20,9 @@ from rest_framework.views import APIView
 from .lines import all_lines, on_storefront
 from .models import Account, Part, Reference, SupplierItem
 from .serializers import InventorySerializer
-from .services import ingest_inventory, initial_match
+from .services import ingest_inventory
+from .variants import outcome
+from .references import live_q, own_interno_q
 from .stock_reservations import open_reservations, settle
 from .supplier_import_models import SupplierInventoryImportBatch, SupplierInventoryImportJob
 from .views import account_for
@@ -165,10 +167,12 @@ def stock_plan(supplier, rows, *, lock=False):
         items.update((item.supplier_invent_id, item) for item in query)
     wanted = set(codes)
     # The live References that keep another spelling (printed_forms: a duplicate spelling S2a retired, 13780-61J00-NP-) match it too.
-    aliases.extend(alias for alias in Reference.objects.exclude(printed_forms=[]).order_by('pk') if wanted & set(alias.printed_forms))
+    # A supplier's own interno codes (S3) match its items too, as services.matching_part does.
+    shown = Reference.all_objects.filter(live_q() | own_interno_q(supplier))
+    aliases.extend(alias for alias in shown.exclude(printed_forms=[]).order_by('pk') if wanted & set(alias.printed_forms))
     for offset in range(0, len(codes), 2000):
         chunk = codes[offset:offset + 2000]
-        query = Reference.objects.filter(code__in=chunk).exclude(pk__in=[alias.pk for alias in aliases]).order_by('pk')
+        query = shown.filter(code__in=chunk).exclude(pk__in=[alias.pk for alias in aliases]).order_by('pk')
         aliases.extend(query)
         query = all_lines().filter(sku__in=chunk).order_by('pk')  # every estado: matching below takes only the lines on sale
         parts.update((part.pk, part) for part in query)
@@ -186,7 +190,7 @@ def stock_plan(supplier, rows, *, lock=False):
         alias_ids = sorted(alias.pk for alias in aliases)
         aliases = []
         for offset in range(0, len(alias_ids), 2000):
-            aliases.extend(Reference.objects.select_for_update().filter(pk__in=alias_ids[offset:offset + 2000]).order_by('pk'))
+            aliases.extend(Reference.all_objects.select_for_update().filter(pk__in=alias_ids[offset:offset + 2000]).order_by('pk'))
         # Supplier rows in global pk order too, the order a deal confirmation locks them in. Callers hold the supplier's account lock,
         # which every item creator takes, so no row can appear between the read above and these locks.
         item_ids = sorted(item.pk for item in items.values())
@@ -227,7 +231,10 @@ def stock_plan(supplier, rows, *, lock=False):
         direction = 'credit' if difference > 0 else 'debit' if difference < 0 else 'none'
         matches = {part_id for brand, part_id in matching.get(data['codigo'], []) if brand in ['', data['brand']]}
         match_id = next(iter(matches)) if len(matches) == 1 else None
-        part_id, status = initial_match(item, data, parts.get(match_id))
+        # What the import will do (mall.variants.outcome, read-only): a code change that keeps the item on its line applies on its
+        # own; any other waits in codigo_pendiente, out of stock, while the code stays.
+        plan = outcome(item, data, parts.get(match_id))
+        part_id, status = plan.part_id, plan.status
         action = 'create' if not item else 'update' if any(getattr(item, field) != data[field] for field in ['codigo', 'brand', 'description', 'references']) or difference else 'unchanged'
         summary['valid_rows'] += 1
         summary[{'create': 'created_items', 'update': 'updated_items', 'unchanged': 'unchanged_items'}[action]] += 1
@@ -239,7 +246,8 @@ def stock_plan(supplier, rows, *, lock=False):
         preview.append({'row': row['row'], **data, 'current_quantity': current, 'uploaded_quantity': data['quantity'],
                         'direction': direction, 'movement_quantity': abs(difference), 'new_quantity': data['quantity'],
                         'matching_status': status, 'part_id': str(part_id) if part_id else None,
-                        'part_sku': part.sku if part else None, 'action': action, 'reserved': reserved})
+                        'part_sku': part.sku if part else None, 'action': action, 'reserved': reserved,
+                        'codigo_pendiente': plan.pending[0], 'brand_pendiente': plan.pending[1]})
         if reserved:
             # Confirmed deals hold units of this item: the supplier says whether the new count already discounts them.
             summary['reserved_rows'] += 1
@@ -253,14 +261,19 @@ def stock_plan(supplier, rows, *, lock=False):
                                              'in_transit_at': reservation.order.in_transit_at.isoformat() if reservation.order.in_transit_at else None,
                                              'delivered_at': reservation.order.delivered_at.isoformat() if reservation.order.delivered_at else None}
                                             for reservation in orders]})
-        if status != 'matched':
+        if plan.rule == 'pendiente':
+            warnings.append({'row': row['row'], 'column': COLUMNS['codigo'], 'message':
+                             f'El código cambió de {item.codigo} a {data["codigo"]}: el cambio queda pendiente de revisión y el artículo sale '
+                             'del catálogo de clientes hasta que se apruebe.'})
+        elif status != 'matched':
             warnings.append({'row': row['row'], 'column': COLUMNS['codigo'], 'message':
                              'El código requiere revisión antes de aparecer en el catálogo de clientes.' if status == 'review' else
                              'Se buscará una coincidencia automáticamente al terminar la carga; las dudas quedarán para revisión.'})
     snapshot = {
         'items': sorted((str(item.pk), item.supplier_invent_id, item.codigo, item.brand, item.description,
                          item.source, item.reported_quantity, item.reserved_quantity, str(item.part_id),
-                         item.matching_status, item.updated_at.isoformat(), item.references) for item in items.values()),
+                         item.matching_status, item.updated_at.isoformat(), item.references, item.reference_id,
+                         item.codigo_pendiente, item.brand_pendiente) for item in items.values()),
         'parts': sorted((str(part.pk), part.sku, part.description, part.active, str(part.merged_into_id)) for part in parts.values()),
         'codes': sorted((alias.pk, str(alias.part_id), alias.brand, alias.code) for alias in aliases),
         'reservations': sorted((str(reservation.pk), reservation.quantity) for orders in held.values() for reservation in orders),

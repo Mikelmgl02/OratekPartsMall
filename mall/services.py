@@ -5,15 +5,18 @@ from rest_framework.exceptions import ValidationError
 from django.db.models import Q
 from .lines import storefront_lines
 from .models import Account, InventoryUpdate, StockEntry, SupplierItem
-from .references import live_q
+from .references import live_q, own_interno_q
 from .matching_queue import enqueue_matching
 
-def matching_part(codigo, brand):
+def matching_part(codigo, brand, supplier=None):
     # A live code matches as printed or as another spelling it keeps (printed_forms: a duplicate spelling S2a retired, 13780-61J00-NP-);
-    # a retired code matches nothing.
+    # a retired code matches nothing. A supplier's own interno code (S3) matches that supplier's items only.
+    shown = live_q('codes__')
+    if supplier is not None:
+        shown = shown | own_interno_q(supplier, 'codes__')
     matches = list(storefront_lines().filter(
-        Q(sku=codigo) | Q(live_q('codes__'), codes__code=codigo, codes__brand__in=[brand, ''])
-        | Q(live_q('codes__'), codes__printed_forms__contains=[codigo], codes__brand__in=[brand, ''])
+        Q(sku=codigo) | Q(shown, codes__code=codigo, codes__brand__in=[brand, ''])
+        | Q(shown, codes__printed_forms__contains=[codigo], codes__brand__in=[brand, ''])
     ).distinct()[:2])
     # Ambiguous legacy code mappings require review instead of arbitrary matching.
     return matches[0] if len(matches) == 1 else None
@@ -21,7 +24,9 @@ def matching_part(codigo, brand):
 @transaction.atomic
 def ingest_inventory(*, supplier, actor, data, queue_matching=True, recorder=None):
     """Create or update one supplier item from a load and move its count; recorder (mall.inventory_history.Recorder) keeps what changed
-    for the supplier's ledger."""
+    for the supplier's ledger. The one path of Excel, the API and apiag-cloud: an exact match attaches the item to its line's Reference
+    (mall.variants), and an attached item's code change applies on its own when it keeps the item on its line, or waits in
+    codigo_pendiente (review, out of stock) while codigo and brand stay."""
     # Serialize writes per supplier, including creation and idempotency checks.
     Account.objects.select_for_update().get(pk=supplier.pk)
     digest = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
@@ -40,13 +45,16 @@ def ingest_inventory(*, supplier, actor, data, queue_matching=True, recorder=Non
     if 'description' not in data:
         data = {**data, 'description': item.description}
     from .part_references import normalize_references
+    from . import variants
     data = {**data, 'references': normalize_references(data.get('references', item.references))}
     changed = created or any(getattr(item, field) != data[field] for field in ['codigo', 'brand', 'description', 'references'])
-    match = matching_part(data['codigo'], data['brand'])
-    item.part_id, item.matching_status = initial_match(None if created else item, data, match)
+    if not created:
+        variants.ensure_attached(item, actor=actor)  # an item a queryset or the code before S3 left on a line without its Reference
+    match = matching_part(data['codigo'], data['brand'], supplier)
+    # The variant's line and Reference, and a code change applied on its own or left waiting (mall.variants: rule 5b, OD5, OD7).
+    plan = variants.outcome(None if created else item, data, match)
     delta = data['quantity'] - item.reported_quantity
-    item.codigo = data['codigo']
-    item.brand = data['brand']
+    variants.carry_out(item, plan, actor=actor)
     item.description = data.get('description', '')
     item.references = data['references']
     item.reported_quantity = data['quantity']

@@ -103,9 +103,11 @@ class PartSerializer(serializers.ModelSerializer):
         list_serializer_class = PartListSerializer
 
 class SupplierItemSerializer(serializers.ModelSerializer):
+    # reference: the line's Reference the item hangs from (S3); codigo_pendiente/brand_pendiente: a code change waiting for review.
     class Meta:
         model = SupplierItem
-        fields = ['id', 'supplier_invent_id', 'part', 'codigo', 'brand', 'description', 'references', 'matching_status', 'source', 'reported_quantity', 'reserved_quantity', 'available_quantity', 'updated_at']
+        fields = ['id', 'supplier_invent_id', 'part', 'codigo', 'brand', 'description', 'references', 'matching_status', 'source', 'reported_quantity', 'reserved_quantity', 'available_quantity', 'updated_at',
+                  'reference', 'codigo_pendiente', 'brand_pendiente']
         read_only_fields = fields
 
 class SupplierStockSerializer(SupplierItemSerializer):

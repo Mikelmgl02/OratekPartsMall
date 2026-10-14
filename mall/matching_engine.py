@@ -78,9 +78,13 @@ def part_row(part):
 
 
 def item_row(item):
-    return {'id': str(item.pk), 'supplier': str(item.supplier_id), 'supplier_invent_id': item.supplier_invent_id,
-            'sku': item.codigo, 'brand': item.brand, 'description': item.description, 'references': item.references,
-            'part_id': str(item.part_id or ''), 'matching_status': item.matching_status}
+    row = {'id': str(item.pk), 'supplier': str(item.supplier_id), 'supplier_invent_id': item.supplier_invent_id,
+           'sku': item.codigo, 'brand': item.brand, 'description': item.description, 'references': item.references,
+           'part_id': str(item.part_id or ''), 'matching_status': item.matching_status}
+    # A code change waiting for review (S3): only then, so the other cases' fingerprints stay as they were.
+    if getattr(item, 'codigo_pendiente', None) is not None or getattr(item, 'brand_pendiente', None) is not None:
+        row.update(codigo_pendiente=item.codigo_pendiente, brand_pendiente=item.brand_pendiente)
+    return row
 
 
 def references(text):
@@ -450,8 +454,18 @@ def save_case(*, key, kind, sources, candidates, target='', method='', reason=''
 
 
 def remember(item, part, actor):
-    SupplierCodeMapping.objects.update_or_create(supplier_id=item.supplier_id, code=normalized_reference(item.codigo), brand=item.brand,
+    """A supplier's code confirmed on a line: a ReferenceSource(proveedor) on the Reference the item hangs from (S3), and the legacy
+    SupplierCodeMapping the matching reads until S6, which the source cites ('Código aprendido · <proveedor> · <fecha>', as S2b's
+    backfill turned the earlier ones into sources)."""
+    mapping, _ = SupplierCodeMapping.objects.update_or_create(supplier_id=item.supplier_id, code=normalized_reference(item.codigo), brand=item.brand,
         defaults={'part': part, 'description': item.description, 'actor': actor})
+    if item.reference_id and item.part_id == getattr(part, 'pk', part):
+        from . import references
+        citation = f'Código aprendido · {item.supplier.name} · {mapping.created_at.date().isoformat()}'
+        references.cite(item.reference, citation, actor if getattr(actor, 'pk', None) else None, kind='proveedor',
+                        detail={'legacy': 'SupplierCodeMapping', 'mapping': mapping.pk, 'supplier': str(item.supplier_id),
+                                'code': mapping.code, 'brand': mapping.brand})
+    return mapping
 
 
 @transaction.atomic
@@ -473,8 +487,13 @@ def apply_item(case, target, *, actor=None, automatic=False):
         return
     if automatic and item.part_id and str(item.part_id) != target['id']:
         return  # A changed supplier code cannot silently move historical stock to another part.
-    item.part, item.matching_status = part, 'matched'
-    item.save(update_fields=['part', 'matching_status'])
+    if automatic and (item.codigo_pendiente is not None or item.brand_pendiente is not None):
+        return  # a code change waiting for review is only proposed (S3), never applied on its own
+    from .variants import VariantConflict, vincular
+    try:
+        vincular(item, part, status='matched', actor=actor)  # the line's Reference for its code, a waiting code applied (S3)
+    except VariantConflict as error:
+        raise ValidationError(error.message)
     remember(item, part, actor)
     # A supplier's own code remains on its stock item and scoped mapping.
     # Only catalog management can approve universal cross-references.
@@ -491,10 +510,14 @@ def reconcile_items(index, *, stats=None):
     from .supplier_import_models import SupplierInventoryImportJob
     busy = SupplierInventoryImportJob.objects.filter(status='importing', expires_at__gt=timezone.now()).values_list('supplier_id', flat=True)
     items = SupplierItem.objects.exclude(supplier_id__in=busy).exclude(matching_status='matched').select_related('supplier')
+    from .variants import pending_view
     for item in items.iterator(chunk_size=500):
         if stats is not None:
             stats['supplier_examined'] = stats.get('supplier_examined', 0) + 1
-        candidates, method, strong, reason, evidence = index.resolve_case(item)
+        # An item whose code change waits is resolved by its new code (codigo_pendiente) and only proposed (S3).
+        subject = pending_view(item)
+        candidates, method, strong, reason, evidence = index.resolve_case(subject)
+        strong = strong and subject is item
         unmatched = not candidates
         if method == NO_CODE_EVIDENCE:
             if item.part_id:

@@ -19,8 +19,9 @@ A merge (merge_lines), in one transaction:
   copied), and Separar brings it back. A code waiting in disputa for this merge ("... caso de unificación") is declarado again once no
   other line holds its key. A key another line holds (the brandless reservation, I5) or a source code that is another line's codigo
   refuses the merge.
-- Variants follow their lines until S3 (SupplierItem.part); images and favourites move without duplicates; PartOEMLink (catalog and
-  sku_name) is re-pointed without duplicates, its citations merged; historical Alternates are re-pointed. Specs and applications on a
+- Variants follow their References (S3: mall.variants; from 0078 the composite foreign key moves them with each Reference), and an
+  absorbed Reference's variants re-hang from the Reference that replaces it; images and favourites move without duplicates;
+  PartOEMLink (catalog and sku_name) is re-pointed without duplicates, its citations merged; historical Alternates are re-pointed. Specs and applications on a
   source refuse the merge, as before (S6 relaxes it).
 - Dependents: open OEMReviewCase rows of the sources are resolved ("línea unificada"), pending OEMAutoCandidate rows excluded, pending
   CatalogAssistantSuggestion rows dismissed; order lines, cesta lines, identity changes, verdicts, usage and import issues stay as
@@ -34,7 +35,9 @@ A merge (merge_lines), in one transaction:
   favourites, links and dependents, so Separar gives back exactly that. Codigos never change here (UNIQUE(sku) until S4): the wrappers
   run prefer_oem afterwards when they want to.
 
-A split (split_line) brings back the lines a superuser picks, each with the References, variants and images assigned to it. A line's
+A split (split_line) brings back the lines a superuser picks, each with the References, variants and images assigned to it. A
+variant goes where its Reference goes (S3): one assigned elsewhere re-hangs from that line's Reference of its key, and is refused when
+that line has none. A line's
 former main always comes back as its main: the row the merge recorded, or for a merge made before S2b the brandless alias of its
 codigo, which was its main then; one absorbed comes back from retirada; either waits in disputa when another line keeps its key. A
 code the merge put back to declarado returns to disputa while another line still holds its key. Favourites, links and dependents come back, the absorbed spellings and copied
@@ -181,22 +184,26 @@ def service_actor():
 def same_key(ref, line_id):
     """The live Reference of the line with ref's key (clave, brand, supplier), or None."""
     m = _models()
-    return (m.Reference.objects.select_for_update().filter(part_id=line_id, clave=references.clave(ref.code), brand=ref.brand,
-                                                            supplier_id=ref.supplier_id).exclude(pk=ref.pk).order_by('pk').first())
+    return (m.Reference.all_objects.select_for_update().filter(part_id=line_id, clave=references.clave(ref.code), brand=ref.brand,
+                                                                supplier_id=ref.supplier_id, estado__in=references.LIVE)
+            .exclude(pk=ref.pk).order_by('pk').first())
 
 
 def absorb(ref, line, *, actor=None, reason=''):
     """A Reference (a source line's main, say) whose key the line already holds: it stays on its line as retirada, replaced by the
     line's Reference of that key (reemplazado_por), whose printed_forms gain its spelling and which gets copies of its sources; Separar
-    brings it back (split_line). Before S3 the variants hang from lines, so nothing else moves. Used by merge_lines, and from S4 by
-    references.add for a key a referencia line holds. Returns {'ref', 'into', 'estado', 'dispute_note', 'spelling', 'sources'}."""
+    brings it back (split_line). Its variants re-hang from that Reference (S3: they keep their status). Used by merge_lines, and from
+    S4 by references.add for a key a referencia line holds. Returns {'ref', 'into', 'estado', 'dispute_note', 'spelling', 'sources',
+    'variants'}."""
     m = _models()
+    from .variants import rehang
     with transaction.atomic():
         ref = m.Reference.all_objects.select_for_update().get(pk=getattr(ref, 'pk', ref))
         kept = same_key(ref, getattr(line, 'pk', line))
         if kept is None:
             raise references.ReferenceConflict(f'{ref.code} no tiene en el SKU de destino una referencia con su clave.')
         record = {'ref': ref.pk, 'into': kept.pk, 'estado': ref.estado, 'dispute_note': ref.dispute_note, 'spelling': None, 'sources': []}
+        record['variants'] = rehang([ref.pk], kept)
         references.retire(ref, actor=actor, replaced_by=kept, reason=reason or 'Absorbida por otra línea', allow_main=True)
         if ref.code != kept.code and ref.code not in kept.printed_forms and len(kept.printed_forms) < references.MAX_PRINTED:
             references.add_spelling(kept, ref.code)
@@ -287,10 +294,16 @@ def merge_lines(target, sources, *, actor, reason='', automatic=False, assistant
         retired_ids = source_ids | {child.pk for child in children}
         participants = retired_ids | {target.pk}
         owner = {source.pk: source for source in sources} | {child.pk: locked[child.merged_into_id] for child in children}
-        # References: their claves' advisory locks, then the rows (plan §1.6.5).
-        live = list(m.Reference.objects.filter(part_id__in=participants).order_by('pk'))
+        # An item on a source with no Reference yet (written before S3's backfill) hangs from its line's Reference for its code first,
+        # so it moves with the rest and Separar gives it back.
+        from .variants import ensure_attached
+        for item in m.SupplierItem.objects.filter(part_id__in=retired_ids, reference__isnull=True).order_by('pk'):
+            ensure_attached(item, actor=actor)
+        # References (interno codes too: they go with their line), their claves' advisory locks, then the rows (plan §1.6.5).
+        rows = m.Reference.all_objects.filter(part_id__in=participants, estado__in=references.LIVE)
+        live = list(rows.order_by('pk'))
         references.lock(*{row.clave for row in live})
-        live = list(m.Reference.objects.select_for_update().filter(part_id__in=participants).order_by('pk'))
+        live = list(rows.select_for_update().order_by('pk'))
         incoming = [row for row in live if row.part_id in retired_ids]
         # One Reference per key on the merged line: the target's, else the surest incoming one (a source's main before its other
         # codes); the others of that key are absorbed into it.
@@ -328,7 +341,7 @@ def merge_lines(target, sources, *, actor, reason='', automatic=False, assistant
             entry = brought[owner[row.part_id].pk]
             if row.is_main and row.part_id in source_ids:
                 entry['main'] = row.pk
-            elif not row.is_main:
+            elif not row.is_main and row.tipo != 'interno':  # a supplier's interno code is no alterno (S3); it moves all the same
                 entry['codes'].append({'brand': row.brand, 'code': row.code})
         summary = {'target_created': target_created, 'merged_skus': len(sources), 'codes_transferred': 0, 'sku_aliases_created': 0,
                    'supplier_items_relinked': 0, 'historical_alternates_updated': 0, 'historical_alternates_removed': 0,
@@ -369,11 +382,12 @@ def merge_lines(target, sources, *, actor, reason='', automatic=False, assistant
         summary['references_moved'] = len(moving)
         summary['references_absorbed'] = len(absorbed_rows)
 
-        # Variants (until S3 they hang from lines), images, favourites, links, historical alternates.
+        # Variants (they went with their References above, S3), images, favourites, links, historical alternates.
         for item in items:
             if item.part_id in retired_ids:
                 brought[owner[item.part_id].pk]['items'].append(str(item.pk))
-        summary['supplier_items_relinked'] = m.SupplierItem.objects.filter(part_id__in=retired_ids).update(part=target)
+        summary['supplier_items_relinked'] = sum(1 for item in items if item.part_id in retired_ids)
+        settle_variants(retired_ids, target, actor)
         summary['images_transferred'] = move_images(retired_ids, target, brought, owner)
         summary['favorites_moved'] = move_favorites(retired_ids, target, brought, owner)
         summary['links_moved'] = move_links(retired_ids, target, brought, owner, PartOEMLink)
@@ -408,6 +422,18 @@ def merge_lines(target, sources, *, actor, reason='', automatic=False, assistant
         from .lines import touch_visible
         touch_visible(target, stamp)
     return merge
+
+
+def settle_variants(retired_ids, target, actor):
+    """Variants still on a merged line once its References moved: one with no Reference yet (written before S3's backfill) hangs from
+    the target's Reference for its code (mall.variants.vincular, its status kept); one whose Reference stayed behind follows the
+    target the same way. Returns how many."""
+    m = _models()
+    from .variants import vincular
+    left = list(m.SupplierItem.objects.select_for_update().filter(part_id__in=retired_ids).order_by('pk'))
+    for item in left:
+        vincular(item, target, status=item.matching_status, actor=actor)
+    return len(left)
 
 
 def merge_alternates(source_ids, target):
@@ -826,16 +852,23 @@ def split_line(target_id, restore, *, actor, reason=''):
         summary = {'restored_skus': len(restored), 'codes_moved': 0, 'aliases_removed': len(removed), 'items_moved': 0, 'images_moved': 0,
                    'links_moved': 0, 'links_shared': 0, 'target_retired': False, 'mains_returned': 0, 'references_revived': 0,
                    'favorites_returned': 0}
+        # A supplier's interno codes (left out of the plan's code list, S3) go where every variant hanging from them goes.
+        assigned = {key: pk for pk in plan for key in plan[pk]['items']}
+        for ref in m.Reference.all_objects.filter(part=target, tipo='interno', is_main=False, estado__in=references.LIVE).order_by('pk'):
+            hung = {str(pk) for pk in m.SupplierItem.objects.filter(reference_id=ref.pk).values_list('pk', flat=True)}
+            places = {assigned.get(key) for key in hung}
+            if hung and len(places) == 1 and None not in places:
+                plan[places.pop()]['codes'].append(ref.pk)
         for part in restored:
             moves = plan[str(part.pk)]
-            references.move(moves['codes'], part, actor=actor)
-            m.SupplierItem.objects.filter(pk__in=moves['items']).update(part=part)
+            references.move(moves['codes'], part, actor=actor)  # their variants go with them (S3)
             m.PartImage.objects.filter(pk__in=moves['images']).update(part=part)
             summary['codes_moved'] += len(moves['codes'])
             summary['items_moved'] += len(moves['items'])
             summary['images_moved'] += len(moves['images'])
         if removed:  # retired, never deleted (mall.references)
-            references.retire(removed, actor=actor, reason='Separar SKU: un alias que la unificación creó para un SKU restaurado')
+            references.retire(removed, actor=actor, reason='Separar SKU: un alias que la unificación creó para un SKU restaurado',
+                              allow_variants=True)  # their variants re-hang below (place_split_variants)
         for part in [target, *restored]:
             gallery = list(m.PartImage.objects.filter(part=part).order_by('position', 'created_at', 'pk'))
             for position, image in enumerate(gallery):
@@ -858,6 +891,7 @@ def split_line(target_id, restore, *, actor, reason=''):
             restore_dependents(entry, part)
         links = rehome_catalog_links(target, restored)
         summary['links_moved'], summary['links_shared'] = links['moved'], links['shared']
+        place_split_variants(target, restored, items, plan)
 
         # A parent SKU the grouping created and the split leaves empty has nothing to identify: it retires, which also keeps the worker
         # from proposing the same parent again (mall.matching_engine.catalog_families blocks inactive bases).
@@ -878,6 +912,29 @@ def split_line(target_id, restore, *, actor, reason=''):
         from .lines import touch_visible
         touch_visible([target, *restored])
     return {'split': split, 'target': target, 'restored': restored, 'summary': summary}
+
+
+def place_split_variants(target, restored, items, plan):
+    """S3: a variant goes where its Reference went. One assigned to a line its Reference did not go to, or whose Reference the split
+    retired (an alias that does not return), re-hangs from that line's Reference of its key (an absorbed one that came back, a former
+    main), and the split is refused when that line has none: the Reference has to go with it."""
+    m = _models()
+    from .variants import hang, reference_for
+    wanted = {key: pk for pk in plan for key in plan[pk]['items']}
+    lines = {str(target.pk): target, **{str(part.pk): part for part in restored}}
+    now = {str(row['pk']): row for row in m.SupplierItem.objects.filter(pk__in=list(items)).values('pk', 'part_id', 'reference_id',
+                                                                                                   'reference__estado')}
+    for key, item in items.items():
+        destination = lines[wanted.get(key, str(target.pk))]
+        row = now.get(key)
+        if row is None or (row['part_id'] == destination.pk and row['reference__estado'] != 'retirada'):
+            continue
+        ref, _ = reference_for(destination, item.codigo, item.brand, item.supplier_id)
+        if ref is None:
+            where = lines.get(str(row['part_id']))
+            raise refuse(f'El artículo {item.codigo} ({item.supplier_invent_id}) cuelga de una referencia que queda en '
+                         f'{where.sku if where else "otro SKU"}: pasa esa referencia con él a {destination.sku}, o deja el artículo con ella.')
+        hang([row['pk']], ref)
 
 
 def references_live_estados():

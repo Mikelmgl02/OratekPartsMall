@@ -646,7 +646,7 @@ def write(result, log, run, user, hook=None):
             continue
         if not ReferenceSource.objects.filter(reference_id=ref_id, kind=MAPPING_KIND, citation=citation).exists():
             sources.append(ReferenceSource(reference_id=ref_id, kind=MAPPING_KIND, citation=citation, detail=detail, created_by=user))
-    held = set(Reference.objects.filter(tipo='interno', estado__in=EXCLUSIVE).values_list('clave', 'brand', 'supplier_id'))
+    held = set(Reference.all_objects.filter(tipo='interno', estado__in=EXCLUSIVE).values_list('clave', 'brand', 'supplier_id'))
     fresh = []
     for mapping, ref, citation, detail in internos:
         key = (references.clave(ref.code), ref.brand, uuid.UUID(mapping['supplier']))
@@ -681,6 +681,22 @@ def applied_lines():
         elif action in ('rollback', 'delete'):
             rows.pop(key, None)
     return rows
+
+
+def variants_on(ids):
+    """The References of ids supplier items hang from (S3's SupplierItem.reference; none on a database before 0077)."""
+    from django.db import connection
+    from ..models import SupplierItem
+    with connection.cursor() as cursor:
+        if 'reference_id' not in {c.name for c in connection.introspection.get_table_description(cursor, 'mall_supplieritem')}:
+            return set()
+    return set(SupplierItem.objects.filter(reference_id__in=list(ids)).values_list('reference_id', flat=True))
+
+
+def s3_tightened():
+    from django.db import connection
+    with connection.cursor() as cursor:
+        return 'variant_reference_iff_line' in connection.introspection.get_constraints(cursor, 'mall_supplieritem')
 
 
 def first_apply_at():
@@ -735,8 +751,16 @@ def undo(log, run, *, landed_at=None):
     created = [int(pk) for pk, chain in refs.items() if chain[0]['action'] == 'create']
     if created:
         free = set(Reference._base_manager.filter(pk__in=created, reemplaza__isnull=True).values_list('pk', flat=True))
+        hung = variants_on(free)
         for pk in sorted(set(created) - free):
             changed.append(f'referencia {pk}: otra la nombra como reemplazo, se deja')
+        if hung and s3_tightened():
+            for pk in sorted(hung):
+                changed.append(f'referencia {pk}: tiene artículos de proveedor (deshaz S3 primero: 0078 aplicada), se deja')
+            free -= hung
+        elif hung:  # before S3's tighten an item may wait on its line without a Reference, as it did before S3
+            from ..models import SupplierItem
+            SupplierItem.objects.filter(reference_id__in=hung).update(reference=None)
         purged = references.purge(sorted(free))
         deleted += purged
         for pk in sorted(free):
@@ -790,6 +814,14 @@ def code_mains(log, run, *, landed_at, skip, changed):
     doomed = [row for row in doomed if row.pk not in named]
     for pk in sorted(named):
         changed.append(f'referencia {pk}: principal que otra nombra como reemplazo, queda como referencia')
+    hung = variants_on([row.pk for row in doomed])
+    if hung and s3_tightened():
+        for pk in sorted(hung):
+            changed.append(f'referencia {pk}: principal con artículos de proveedor (deshaz S3 primero: 0078 aplicada), queda como referencia')
+        doomed = [row for row in doomed if row.pk not in hung]
+    elif hung:  # before S3's tighten an item may wait on its line without a Reference, as it did before S3
+        from ..models import SupplierItem
+        SupplierItem.objects.filter(reference_id__in=hung).update(reference=None)
     deleted = references.purge([row.pk for row in doomed])
     for row in doomed:
         log.append({**run, 'model': 'mall.Reference', 'id': row.pk, 'action': 'delete', 'role': 'code_main', 'line': str(row.part_id),

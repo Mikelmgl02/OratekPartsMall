@@ -26,6 +26,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from . import references
 from .management import IsSuperuser, ManagedPartSerializer, catalog_queryset, with_merged_counts
 from .media_serializers import PartImageSerializer
 from .lines import all_lines, catalog_lines
@@ -75,8 +76,11 @@ def split_plan(target):
         code.suggested, code.alias_of = owners.code(code)
         code.alias_returns = bool(code.alias_of) and code_returns(code, by_id[code.alias_of], history)
     items = list(SupplierItem.objects.filter(part=target).select_related('supplier').order_by('supplier__name', 'codigo', 'pk'))
+    going = {code.pk: code.suggested for code in codes}
     for item in items:
-        item.suggested = owners.item(item)
+        # A variant goes where its Reference goes (S3). One on the target's main, or on a supplier's interno code (left out of the code
+        # list), goes where its own code says: a collapsed spelling by the variant's own codigo (B16), an interno code with its items.
+        item.suggested = going[item.reference_id] if item.reference_id in going else owners.item(item)
     images = list(target.images.order_by('position', 'created_at', 'pk'))
     for image in images:
         image.suggested = owners.image(image)

@@ -433,8 +433,11 @@ def link(proposal, rows, part, user, action):
         case = cases.get(item.pk)
         if case is None or case.status not in CANDIDATE_CASES:
             raise ProposalConflict(f'El artículo {item.codigo} ({item.supplier_invent_id}) ya tiene SKU candidatos en Agrupación inteligente: actualiza la lista.')
-        item.part, item.matching_status = part, 'matched'
-        item.save(update_fields=['part', 'matching_status', 'updated_at'])
+        from .variants import VariantConflict, vincular
+        try:
+            vincular(item, part, status='matched', actor=user)  # the line's Reference for its code (S3), found or created
+        except VariantConflict as error:
+            raise ProposalConflict(f'El artículo {item.codigo} ({item.supplier_invent_id}): {error.message}')
         remember(item, part, user)
         case.status, case.target_sku = 'applied', part.sku
         case.save(update_fields=['status', 'target_sku', 'updated_at'])
