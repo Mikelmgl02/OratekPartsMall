@@ -868,8 +868,8 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .basket-grid-quantity input { width:52px; }
 .basket-grid .basket-page-remove { padding:6px 8px; }
 .basket-grid .ag-row.basket-grid-stale { background:#fdf6f4; }
-/* Cotizaciones (the client's orders grid) gets 500px more than the shop's 1500px. */
-.client-requests-page .section-container.basket-page-container { width:min(2000px,calc(100% - 48px)); }
+/* Cotizaciones (the client's orders grid) and Actividad (its ledgers) get 500px more than the shop's 1500px. */
+.client-requests-page .section-container.basket-page-container, .client-activity-page .section-container.basket-page-container { width:min(2000px,calc(100% - 48px)); }
 .client-request-navigation { display:flex; gap:8px; align-items:center; margin:0 0 25px; padding-bottom:17px; border-bottom:1px solid #dfe5d8; }
 .client-request-navigation button { display:flex; align-items:center; gap:9px; padding:12px 17px; border-radius:8px; color:#748663; background:#e9eee2; font-size:12px; }
 .client-request-navigation button[aria-current="page"] { background:#28392c; color:#fff; }
