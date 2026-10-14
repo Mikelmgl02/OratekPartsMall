@@ -21,6 +21,7 @@ from .models import Account, CatalogIdentityChange, Part, PartCode, PartImage, S
 from .oem_finder_models import OEMApplyHalt, OEMFinderChange, OEMFinderRun, OEMReviewCase
 from .services import ingest_inventory
 from .technical_models import PartSpecification, PartType, TechnicalField, TechnicalTemplate
+from .test_factories import make_catalog
 from .test_oem_finder import Fresh
 from .views import catalog_parts
 
@@ -37,7 +38,7 @@ FLAG, RENAME, CONFIRMED = 'AUTO_FLAG_CURRENT', 'AUTO_RENAME_BASE', 'STRONG_PENDI
 
 
 def create_catalog(rows=CATALOG):
-    return {sku: Part.objects.create(sku=sku, name=sku, description=description) for sku, description in rows}
+    return make_catalog(rows)
 
 
 class Catalog(Fresh):

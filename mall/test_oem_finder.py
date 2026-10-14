@@ -9,7 +9,6 @@ from django.db import connection
 from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 
-from . import catalog_suffixes as cs
 from . import oem_finder as of
 from .catalog_suffix_models import CatalogCodeSuffix
 from .catalog_suffixes import SuffixTable, fixture_rows
@@ -17,6 +16,7 @@ from .matching_queue import MATCHING_LOCK, matching_lock
 from .matching_worker import process_queue
 from .models import Account, CatalogImportJob, Part, PartCode, SupplierItem, User
 from .oem_finder_models import OEMFinderRun, OEMReviewCase
+from .test_factories import Fresh, make_catalog  # Fresh: the OEM modules import it from here
 
 # Representative rows from the prototype samples, plus the class members the lexicon needs (>= 5 other keys = strong).
 CATALOG = [
@@ -241,17 +241,7 @@ class CanonicalFormTests(SimpleTestCase):
 
 
 def create_catalog(rows=CATALOG):
-    return {sku: Part.objects.create(sku=sku, name=sku, description=description) for sku, description in rows}
-
-
-class Fresh:
-    def setUp(self):
-        cs.invalidate()
-        super().setUp()
-
-    def tearDown(self):
-        cs.invalidate()
-        super().tearDown()
+    return make_catalog(rows)
 
 
 class ReviewCaseTests(Fresh, TestCase):

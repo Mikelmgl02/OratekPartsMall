@@ -7,23 +7,24 @@ from django.db import close_old_connections, connection
 from django.utils import timezone
 from rest_framework.test import APIClient, APITestCase, APITransactionTestCase
 
-from .models import Account, InventoryUpdate, Membership, Part, PartCode, Role, StockEntry, SupplierItem, User
+from .models import Account, InventoryUpdate, Membership, Part, Role, StockEntry, SupplierItem, User
 from .request_models import ClientRequestSubmission, SupplierRequest, SupplierRequestLine
 from .services import ingest_inventory
+from .test_factories import make_account, make_client, make_line, make_reference, make_supplier, make_user, make_variant
 
 
 class SupplierRequestWorkflowTests(APITestCase):
     def setUp(self):
-        self.buyer = User.objects.create_user('request-buyer', 'request-buyer@example.invalid', 'Request938!')
-        self.seller_a = User.objects.create_user('request-seller-a', 'request-seller-a@example.invalid', 'Request938!')
-        self.seller_b = User.objects.create_user('request-seller-b', 'request-seller-b@example.invalid', 'Request938!')
-        self.root = User.objects.create_superuser('request-root', 'request-root@example.invalid', 'Request938!')
-        self.client_account = self.account('CLIENTE ORIGINAL', 'client_business', self.buyer)
-        self.supplier_a = self.account('PROVEEDOR A', 'supplier_retail', self.seller_a)
-        self.supplier_b = self.account('PROVEEDOR B', 'supplier_wholesale', self.seller_b)
-        self.part = Part.objects.create(sku='58411-1R000', name='TAMBOR ORIGINAL', description='DESCRIPCION ORIGINAL')
+        self.buyer = make_user('request-buyer', password='Request938!')
+        self.seller_a = make_user('request-seller-a', password='Request938!')
+        self.seller_b = make_user('request-seller-b', password='Request938!')
+        self.root = make_user('request-root', password='Request938!', superuser=True)
+        self.client_account = make_client('CLIENTE ORIGINAL', self.buyer)
+        self.supplier_a = make_supplier('PROVEEDOR A', self.seller_a)
+        self.supplier_b = make_supplier('PROVEEDOR B', self.seller_b, role='supplier_wholesale')
+        self.part = make_line('58411-1R000', name='TAMBOR ORIGINAL', description='DESCRIPCION ORIGINAL')
         for code in ['58411-1R000-G', '58411-1R000-KSM']:
-            PartCode.objects.create(part=self.part, code=code)
+            make_reference(self.part, code)
         self.item_a = self.item(self.supplier_a, self.seller_a, 'A-001', '58411-1R000-G', 10)
         self.item_a.reserved_quantity = 2
         self.item_a.save()
@@ -32,16 +33,10 @@ class SupplierRequestWorkflowTests(APITestCase):
         self.client.force_authenticate(self.buyer)
 
     def account(self, name, role, user):
-        account = Account.objects.create(name=name)
-        account.roles.add(Role.objects.get(code=role))
-        Membership.objects.create(user=user, account=account)
-        return account
+        return make_account(name, role, user)
 
     def item(self, account, actor, stable_id, code, quantity):
-        return ingest_inventory(supplier=account, actor=actor,
-                                data={'update_id': f'seed-{stable_id}', 'supplier_invent_id': stable_id,
-                                      'codigo': code, 'brand': 'KSM', 'description': f'TAMBOR {stable_id}',
-                                      'source': 'upload', 'quantity': quantity})
+        return make_variant(account, stable_id, code, quantity, actor=actor, brand='KSM', description=f'TAMBOR {stable_id}')
 
     def url(self, account=None):
         return f'/api/v1/accounts/{(account or self.client_account).pk}/requests/'
