@@ -511,19 +511,20 @@ def catalog_families():
 
 @transaction.atomic
 def apply_family(case, *, actor, automatic=False, selected_target=None):
+    """Approve a catalog case (a family, a reference, a compact duplicate or a shared OEM number): the merge it proposes, through
+    merge_catalog_parts and mall.line_merge.merge_lines, if its lines are still as the case saw them."""
+    from . import line_merge
     from .catalog_grouping import merge_catalog_parts
-    # Acquire affected suppliers before catalog locks, consistent with ingestion.
     ids = [s['id'] for s in case.sources]
-    accounts = SupplierItem.objects.filter(part_id__in=ids).values_list('supplier_id', flat=True)
-    list(Account.objects.select_for_update().filter(pk__in=accounts).order_by('pk'))
     target = selected_target or case.candidates[0]
     lock_ids = ids + ([target['id']] if target.get('id') else [])
-    current = {str(p.pk): part_row(p) for p in Part.objects.select_for_update().filter(pk__in=lock_ids).order_by('pk')}
+    # The suppliers of every line involved, then the lines (plan §1.6.5, the order of ingestion); refused while one is importing.
+    locked = line_merge.lock_lines(lock_ids)
+    current = {str(pk): part_row(part) for pk, part in locked.items() if str(pk) in lock_ids}
     if any(current.get(s['id']) != s for s in case.sources):
         raise ValidationError('La familia cambió. Actualiza el análisis.')
     if target.get('id'):
-        current_target = Part.objects.select_for_update().get(pk=target['id'])
-        if part_row(current_target) != target:
+        if current.get(target['id']) != target:
             raise ValidationError('El SKU padre cambió. Actualiza el análisis.')
     elif all_lines().filter(sku=case.target_sku).exists():
         raise ValidationError('El SKU padre ya existe. Actualiza el análisis.')
@@ -534,8 +535,8 @@ def apply_family(case, *, actor, automatic=False, selected_target=None):
     for field in ['category', 'subcategory']:
         values = {s.get(field) for s in case.sources if s.get(field)}
         taxonomy[field] = target.get(field) or (next(iter(values)) if len(values) == 1 else '')
-    result = merge_catalog_parts(actor=actor, target_sku=target['sku'],
-        source_skus=[s['sku'] for s in case.sources], create_target=not target.get('id'), **taxonomy)
+    result = merge_catalog_parts(actor=actor, target_sku=target['sku'], source_skus=[s['sku'] for s in case.sources],
+                                 create_target=not target.get('id'), automatic=automatic, **taxonomy)  # mall.line_merge.merge_lines
     locked.status = 'applied'
     locked.target_sku = target['sku']
     locked.save(update_fields=['status', 'target_sku', 'updated_at'])

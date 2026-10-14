@@ -1,6 +1,5 @@
-"""Reviewed grouping for catalog entries that have already been imported."""
+"""Reviewed grouping for catalog entries that have already been imported: Agrupar SKU, a thin wrapper over mall.line_merge."""
 from django.db import IntegrityError, transaction
-from django.db.models import Q, Max
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
 from rest_framework import serializers
@@ -10,9 +9,8 @@ from rest_framework.views import APIView
 
 from .management import IsSuperuser, ManagedPartSerializer, UppercaseCharField
 from .lines import all_lines, create_line, on_storefront, storefront_lines
-from . import references
-from .models import Alternate, CatalogMerge, Part, PartImage, Reference, SupplierItem
-from .wishlist import merge_wishlists
+from . import line_merge
+from .models import Part, Reference
 from .catalog_families import family_candidates, supplier_base
 
 
@@ -34,44 +32,19 @@ class CatalogMergeRequest(serializers.Serializer):
         return data
 
 
-def _merge_alternates(source_ids, target):
-    """Keep historical relationships without introducing self-links or duplicates."""
-    affected = list(Alternate.objects.select_for_update().filter(
-        Q(part_id__in=source_ids) | Q(replacement_id__in=source_ids)).order_by('pk'))
-    affected_ids = {row.pk for row in affected}
-    resulting = {}
-    for row in affected:
-        pair = (target.pk if row.part_id in source_ids else row.part_id,
-                target.pk if row.replacement_id in source_ids else row.replacement_id)
-        if pair[0] != pair[1]:
-            resulting.setdefault(pair, []).append(row)
-    existing = {}
-    for pair in resulting:
-        relation = Alternate.objects.select_for_update().filter(part_id=pair[0], replacement_id=pair[1]).exclude(pk__in=affected_ids).first()
-        if relation:
-            existing[pair] = relation
-    # Remove the old links before inserting the deduplicated replacement pairs.
-    # This avoids unique-constraint conflicts when two old links converge.
-    Alternate.objects.filter(pk__in=affected_ids).delete()
-    for pair, rows in resulting.items():
-        old = existing.get(pair)
-        notes = list(dict.fromkeys(note for note in [old.notes if old else '', *(row.notes for row in rows)] if note))
-        if old:
-            note = '\n'.join(notes)
-            if old.notes != note:
-                old.notes = note
-                old.save(update_fields=['notes'])
-        else:
-            Alternate.objects.create(part_id=pair[0], replacement_id=pair[1], notes='\n'.join(notes))
-    return len(affected), len(affected) - len(set(resulting) - set(existing))
-
-
 @transaction.atomic
-def merge_catalog_parts(*, actor, target_sku, source_skus, category='', subcategory='', create_target=False, assistant_job=None):
-    """Preserve the canonical UUID, supplier identities, and every stock entry."""
+def merge_catalog_parts(*, actor, target_sku, source_skus, category='', subcategory='', create_target=False, assistant_job=None,
+                        automatic=False):
+    """Agrupar SKU (and the matching worker's families, the catalog assistant): the SKUs a superuser reviewed, by codigo, merged through
+    mall.line_merge.merge_lines, which keeps the canonical UUID, supplier identities and every stock entry. Here: the request's rules
+    (a target and sources on sale, a parent created from its family when asked), then the reviewed taxonomy, the company codes of the
+    sources and prefer_oem on the target."""
     requested = {target_sku, *source_skus}
-    # Every estado: the exact rows the SKUs name, so the checks below refuse a merged or retired one by name.
-    parts = {part.sku: part for part in all_lines(Part.objects.select_for_update()).filter(sku__in=requested).order_by('pk')}
+    # Every estado: the exact rows the SKUs name, so the checks below refuse a merged or retired one by name. Supplier accounts are
+    # locked before the lines (mall.line_merge.lock_lines).
+    found = list(all_lines().filter(sku__in=requested).values_list('pk', flat=True))
+    locked = line_merge.lock_lines(found)
+    parts = {part.sku: part for part in locked.values() if part.sku in requested}
     missing = sorted(requested - set(parts) - ({target_sku} if create_target else set()))
     if missing:
         raise ValidationError({'detail': f'Estos SKU ya no están en el catálogo: {", ".join(missing)}.'})
@@ -103,77 +76,16 @@ def merge_catalog_parts(*, actor, target_sku, source_skus, category='', subcateg
             raise ValidationError({'detail': f'El SKU {sku} está inactivo. Actívalo antes de unificarlo.'})
         else:
             sources.append(source)
-    summary = {'target_created': created_target, 'merged_skus': len(sources), 'codes_transferred': 0, 'sku_aliases_created': 0,
+    summary = {'target_created': created_target, 'merged_skus': 0, 'codes_transferred': 0, 'sku_aliases_created': 0,
                'supplier_items_relinked': 0, 'historical_alternates_updated': 0, 'historical_alternates_removed': 0}
     if assistant_job:
         summary['assistant_job'] = str(assistant_job)
     merge = None
     if sources:
-        source_ids = {part.pk for part in sources}
-        # Technical sheets and fitment claims require review before retiring an
-        # identity. Never silently drop them or broaden compatibility by union.
-        from .models import PartSpecification, ItemApplication
-        if PartSpecification.objects.filter(part_id__in=source_ids).exists() or ItemApplication.objects.filter(part_id__in=source_ids).exists():
-            raise ValidationError('Los SKU de origen tienen fichas técnicas o aplicaciones. Revisa y conserva esos datos en el SKU principal antes de vaciar las fichas de origen y unificarlos.')
-        # Flatten older merges if their current canonical SKU is now a source.
-        # No merge chain is exposed to matching or catalog management.
-        children = list(Part.objects.select_for_update().filter(merged_into_id__in=source_ids).order_by('pk'))
-        retired_ids = source_ids | {part.pk for part in children}
-        participant_ids = retired_ids | {target.pk}
-        source_codes = list(Reference.objects.select_for_update().filter(part_id__in=retired_ids).order_by('pk'))  # live: retired ones stay as history
-        # A source's main (S2b) is its codigo: absorbed below as the target's alias of it, so it is not one of the codes it brings.
-        source_mains = {row.part_id: row for row in source_codes if row.is_main}
-        source_codes = [row for row in source_codes if not row.is_main]
-        incoming = {(row.brand, row.code) for row in source_codes} | {('', part.sku) for part in sources}
-        identifiers = {code for _, code in incoming}
-        # A neutral alias reserves the code across brands, matching the same
-        # rules used by normal catalog management and supplier matching.
-        for row in Reference.objects.select_for_update().filter(code__in=identifiers).exclude(part_id__in=participant_ids).order_by('pk'):
-            if any(row.code == code and (not brand or not row.brand or brand == row.brand) for brand, code in incoming):
-                raise ValidationError({'detail': f'El código {row.code} pertenece a otro SKU. Corrige su asignación antes de unificar.'})
-        other_skus = all_lines(Part.objects.select_for_update()).filter(sku__in=identifiers).exclude(pk__in=participant_ids).exclude(merged_into=target).order_by('pk')
-        collision = other_skus.first()
-        if collision:
-            raise ValidationError({'detail': f'El código {collision.sku} identifica otro SKU. Corrige su asignación antes de unificar.'})
-        # What each source brings (its earlier merges' rows included), kept on the merge so Separar SKU can give it back exactly.
-        owner = {part.pk: str(part.pk) for part in sources} | {part.pk: str(part.merged_into_id) for part in children}
-        brought = {str(part.pk): {'codes': [], 'items': [], 'images': []} for part in sources}
-        for row in source_codes:
-            brought[owner[row.part_id]]['codes'].append({'brand': row.brand, 'code': row.code})
-        # A source's main (S2b) comes along as one of the target's References, never as a second main.
-        summary['codes_transferred'] = references.move(source_codes, target, actor=actor)
-        for source in sources:  # each source's codigo stays a neutral alias of the target (mall.references: ReferenceConflict is a 400)
-            main = source_mains.get(source.pk)
-            if main is not None:  # it stays on the source as retirada, replaced by the alias (Separar brings it back)
-                alias, created = references.absorb_into(main, target, actor=actor, reason=f'Agrupado en {target.sku}',
-                                                        tipo='oem' if source.is_OEM else None)
-            else:
-                alias, created = references.add(target, source.sku, '', tipo='oem' if source.is_OEM else 'otro', actor=actor)
-            if source.is_OEM and alias.ref_type == 'unknown':
-                references.update(alias, ref_type='oem', actor=actor)
-            summary['sku_aliases_created'] += int(created)
-        # Only the catalog link changes. Inventory ID, codigo, brand, stock
-        # counters, matching status, timestamps and ledger remain intact.
-        for pk, part_id in SupplierItem.objects.select_for_update().filter(part_id__in=retired_ids).order_by('pk').values_list('pk', 'part_id'):
-            brought[owner[part_id]]['items'].append(str(pk))
-        summary['supplier_items_relinked'] = SupplierItem.objects.filter(part_id__in=retired_ids).update(part=target)
-        updated, removed = _merge_alternates(retired_ids, target)
-        summary['historical_alternates_updated'] = updated
-        summary['historical_alternates_removed'] = removed
-        merge_wishlists(retired_ids, target)
-        # Preserve every photo and its immutable storage key when combining SKU.
-        maximum = target.images.aggregate(value=Max('position'))['value']
-        position = maximum + 1 if maximum is not None else 0
-        images = list(PartImage.objects.filter(part_id__in=retired_ids).order_by('part_id', 'position', 'created_at', 'id'))
-        for offset, image in enumerate(images):
-            brought[owner[image.part_id]]['images'].append(str(image.pk))
-            image.part = target
-            image.position = position + offset
-        PartImage.objects.bulk_update(images, ['part', 'position'])
-        summary['images_transferred'] = len(images)
-        Part.objects.filter(pk__in=retired_ids).update(active=False, merged_into=target, estado='unificada')  # the pair moves together (mall.lines)
-        merge = CatalogMerge.objects.create(actor=actor, target=target,
-                                           sources=[{'id': str(part.pk), 'sku': part.sku, **brought[str(part.pk)]} for part in sources], summary=summary)
+        merge = line_merge.merge_lines(target, sources, actor=actor, automatic=automatic, assistant_job=assistant_job,
+                                       target_created=created_target, reason='family' if automatic else 'agrupar_sku')
+        summary = merge.summary
+        target.refresh_from_db()
     metadata_fields = []
     for field, value in [('category', category), ('subcategory', subcategory)]:
         if value and getattr(target, field) != value:
@@ -182,7 +94,7 @@ def merge_catalog_parts(*, actor, target_sku, source_skus, category='', subcateg
     if metadata_fields:
         target.save(update_fields=metadata_fields)
     from .catalog_identity import company_base_code, prefer_oem
-    for source in sources:  # a company-suffix source's company code stays with the target (its codigo came as an alias above)
+    for source in sources:  # a company-suffix source's company code stays with the target (its codigo came along as a Reference)
         if not source.is_OEM:
             company_base_code(target, source.sku, actor)
     target = prefer_oem(target, actor=actor, confirm_current=True)

@@ -315,16 +315,18 @@ class RetireTests(APITestCase):
         back, _ = references.add(self.line, '17801-30070', 'TOYOTA', ref_type='oem', source=ALGO)
         self.assertEqual((back.pk, number.sources.get().detail['part_codes'][0]['id']), (ref.pk, ref.pk))  # it backs the number again
 
-    def test_merging_keeps_the_sources_codigo_as_an_alias_and_a_split_retires_it(self):
+    def test_merging_keeps_the_sources_codigo_as_a_reference_and_a_split_moves_it_back(self):
         from .catalog_split import split_catalog_part
         target, source = make_line('SPL-1'), make_line('SPL-1-GMB')
+        first = references.main_of(source)
         merge_catalog_parts(actor=self.root, target_sku='SPL-1', source_skus=['SPL-1-GMB'])
         alias = Reference.objects.get(part=target, code='SPL-1-GMB')
-        self.assertEqual((alias.brand, alias.tipo, alias.created_by), ('', 'otro', self.root))
+        self.assertEqual((alias.pk, alias.brand, alias.tipo, alias.is_main), (first.pk, '', 'otro', False))  # the source's main moved (S2b)
         split_catalog_part(actor=self.root, target_id=target.pk, restore=[{'id': str(source.pk), 'codes': [], 'items': [], 'images': []}])
-        self.assertEqual(Reference.all_objects.get(pk=alias.pk).estado, 'retirada')
+        back = Reference.objects.get(pk=alias.pk)
+        self.assertEqual((back.part_id, back.is_main, back.estado), (source.pk, True, 'declarado'))  # moved back, never retired
         merge_catalog_parts(actor=self.root, target_sku='SPL-1', source_skus=['SPL-1-GMB'])
-        self.assertEqual(Reference.objects.get(part=target, code='SPL-1-GMB').pk, alias.pk)  # merged again: the same alias comes back
+        self.assertEqual(Reference.objects.get(part=target, code='SPL-1-GMB').pk, alias.pk)  # merged again: the same row
 
 
 class ReferenceAdminTests(TestCase):

@@ -1,0 +1,971 @@
+"""Merging OEM lines and taking them apart again (inventory refactor S2b, plan §3 S2b): the only writer of a line's merged_into, and of
+what a merge moves between lines. Agrupar SKU (mall.catalog_grouping.merge_catalog_parts), the matching worker's families
+(mall.matching_engine.apply_family) and Separar SKU (mall.catalog_split.split_catalog_part) are thin wrappers over it, and so is the
+S2b backfill's compact-duplicate pass (s2b_compact_duplicates, OD4).
+
+    merge_lines(target, sources, *, actor, reason, automatic)   the sources become unificada in target with everything they hold
+    split_line(target, restore, *, actor, reason)               Separar: lines come back out of target with what each brought
+    absorb(ref, line, *, actor, reason)                         a Reference whose key the line already holds: retired onto that one
+    keep_apart(lines, *, actor, case, split)                    CatalogSeparation pairs: never merged on their own again
+    separated_pairs(ids), apart(a, b)                           the pairs kept apart, checked on canonical lines
+    lock_lines(ids)                                             the lock order: supplier Accounts, then lines (plan §1.6.5)
+
+A merge (merge_lines), in one transaction:
+- Locks the supplier Accounts of every variant involved by id, then the lines by id, then their References, then the SupplierItems;
+  it refuses while one of those suppliers is importing (the lock gap the UI merge had).
+- References: every live Reference of a source (and of the lines merged into it before: depth 1) moves to the target as non-main; its
+  former main among them. One whose key (clave, brand, supplier) the target already holds is absorbed instead (absorb): it stays on
+  its source as retirada, replaced by the target's (reemplazado_por, its spelling joining the target's printed_forms, its sources
+  copied), and Separar brings it back. A code waiting in disputa for this merge ("... caso de unificación") is declarado again once no
+  other line holds its key. A key another line holds (the brandless reservation, I5) or a source code that is another line's codigo
+  refuses the merge.
+- Variants follow their lines until S3 (SupplierItem.part); images and favourites move without duplicates; PartOEMLink (catalog and
+  sku_name) is re-pointed without duplicates, its citations merged; historical Alternates are re-pointed. Specs and applications on a
+  source refuse the merge, as before (S6 relaxes it).
+- Dependents: open OEMReviewCase rows of the sources are resolved ("línea unificada"), pending OEMAutoCandidate rows excluded, pending
+  CatalogAssistantSuggestion rows dismissed; order lines, cesta lines, identity changes, verdicts, usage and import issues stay as
+  history. Scalars: the target wins and its blanks are filled when the sources agree on a value (field_sources says where from).
+- Estado of the target: publicada if any line is publicada; otherwise preparación if a line outside the catalog (not retirada) holds
+  variants; otherwise retirada, then rechazada, then referencia (a retired line's variants are its catalog stock, S3: two retired lines
+  stay retired). The sources become unificada; lines merged into them are flattened onto the target.
+- automatic=True (the worker, the S2b pass) refuses lines kept apart (CatalogSeparation, on canonical lines) and records the merge
+  under the matching service's account, as the worker's merges are (Unificados, origen automático), with who asked for it.
+- CatalogMerge records, per source, the References it moved or absorbed and their ids, its former main, its codes, variants, images,
+  favourites, links and dependents, so Separar gives back exactly that. Codigos never change here (UNIQUE(sku) until S4): the wrappers
+  run prefer_oem afterwards when they want to.
+
+A split (split_line) brings back the lines a superuser picks, each with the References, variants and images assigned to it. A line's
+former main always comes back as its main: the row the merge recorded, or for a merge made before S2b the brandless alias of its
+codigo, which was its main then; one absorbed comes back from retirada; either waits in disputa when another line keeps its key. A
+code the merge put back to declarado returns to disputa while another line still holds its key. Favourites, links and dependents come back, the absorbed spellings and copied
+sources leave the target, and a collapsed spelling (two codigos with one compact code) splits by the variant's own codigo (B16). The
+lines brought back are kept apart from the target and from each other (CatalogSeparation).
+"""
+import json
+
+from django.db import transaction
+from django.db.models import Max, Q
+from django.utils import timezone
+from rest_framework.exceptions import ValidationError
+
+from . import references
+
+SERVICE_ACCOUNT = 'motionpartes-matching-service'  # the matching worker's actor (mall.matching_worker)
+COMPACT_DUPLICATE = 'compact_duplicate'
+SHARED_OEM_NUMBER = 'shared_oem_number'
+KEEP_APART_METHODS = (COMPACT_DUPLICATE, SHARED_OEM_NUMBER)  # catalog cases whose dismissal keeps their lines apart
+MERGE_DISPUTE = 'caso de unificación'  # how the note of a code two lines hold ends until a merge decides (S2b)
+METHODS = {'base_and_spec': 'Mismo código base y la misma descripción', 'catalog_reference': 'Su código era alterno de este SKU',
+           'family_review': 'Familia revisada en Agrupación inteligente', COMPACT_DUPLICATE: 'El mismo código compacto (S2b)',
+           'agrupar_sku': 'Agrupar SKU', 'family': 'Familia del servicio de coincidencias'}
+SCALARS = ('description', 'category', 'subcategory', 'aplicaciones_texto')  # filled on the target when its own is blank
+CATALOG = ('publicada', 'retirada')
+ESTADO_AFTER = ('retirada', 'rechazada', 'referencia')
+
+
+def refuse(message):
+    return ValidationError({'detail': message})
+
+
+def jsonable(value):
+    """A record as the JSON columns store it (ids as text where they are UUIDs)."""
+    return json.loads(json.dumps(value, default=str))
+
+
+def _models():
+    from . import models
+    return models
+
+
+# --- lines kept apart ----------------------------------------------------------------------------------------------------------------
+
+def pair(a, b):
+    """Two line ids in CatalogSeparation order."""
+    return tuple(sorted((str(a), str(b))))
+
+
+def separated_pairs(part_ids=None):
+    """{(id, id): when} for the lines kept apart (CatalogSeparation: Separar SKU, or a compact_duplicate or shared_oem_number case
+    dismissed), each pair also under its lines' canonical lines, so a pair kept apart stays apart after either joins another line (plan
+    §2). With part_ids, only the pairs touching them. Reads only the pair columns, so it works on a database before 0075."""
+    from .catalog_split_models import CatalogSeparation
+    from .lines import canonical_ids
+    rows = list(CatalogSeparation.objects.values_list('first_id', 'second_id', 'created_at'))
+    canonical = canonical_ids({pk for first, second, _ in rows for pk in (first, second)}) if rows else {}
+    found = {}
+    for first, second, when in rows:
+        for a, b in ((first, second), (canonical.get(str(first), first), canonical.get(str(second), second))):
+            if str(a) != str(b):
+                key = pair(a, b)
+                found[key] = min(found[key], when) if key in found else when
+    if part_ids is not None:
+        ids = {str(pk) for pk in part_ids}
+        found = {key: when for key, when in found.items() if ids & set(key)}
+    return found
+
+
+def apart(a, b, pairs=None):
+    """Whether two lines are kept apart, on their canonical lines."""
+    from .lines import canonical_id
+    pairs = separated_pairs() if pairs is None else pairs
+    return pair(a, b) in pairs or pair(canonical_id(a) or a, canonical_id(b) or b) in pairs
+
+
+def kept_apart_among(ids, pairs=None):
+    """The pairs of these lines that are kept apart (sorted), on their canonical lines."""
+    from .lines import canonical_ids
+    ids = sorted({str(pk) for pk in ids})
+    pairs = separated_pairs() if pairs is None else pairs
+    canonical = canonical_ids(ids)
+    found = []
+    for index, a in enumerate(ids):
+        for b in ids[index + 1:]:
+            if pair(a, b) in pairs or pair(canonical.get(a, a), canonical.get(b, b)) in pairs:
+                found.append(pair(a, b))
+    return found
+
+
+def keep_apart(line_ids, *, actor=None, split=None, case=None, reason=''):
+    """Write the CatalogSeparation pairs of these lines (each pair once; lines that are one line already are skipped): a Separar SKU
+    split, or a case a person decided to keep apart. Returns how many pairs were written."""
+    from .catalog_split_models import CatalogSeparation
+    from .lines import canonical_ids
+    ids = sorted({str(pk) for pk in line_ids if pk})
+    canonical = canonical_ids(ids)
+    known = set(CatalogSeparation.objects.filter(Q(first_id__in=ids) | Q(second_id__in=ids)).values_list('first_id', 'second_id'))
+    known = {pair(a, b) for a, b in known}
+    wanted = sorted({pair(a, b) for index, a in enumerate(ids) for b in ids[index + 1:]
+                     if canonical.get(a, a) != canonical.get(b, b)} - known)
+    rows = [CatalogSeparation(first_id=a, second_id=b, split=split, case=case, reason=(reason or '')[:40],
+                              actor=actor if getattr(actor, 'pk', None) else None) for a, b in wanted]
+    CatalogSeparation.objects.bulk_create(rows)
+    return len(rows)
+
+
+# --- locks ---------------------------------------------------------------------------------------------------------------------------
+
+def importing(supplier_ids):
+    from .supplier_import_models import SupplierInventoryImportJob
+    return SupplierInventoryImportJob.objects.filter(supplier_id__in=supplier_ids, status='importing', expires_at__gt=timezone.now()).exists()
+
+
+def lock_lines(ids):
+    """Take the locks of a merge or a split in the plan's order (§1.6.5): the supplier Accounts of every variant on these lines and on
+    the lines merged into them, by id, then the lines by id. Refuses while one of those suppliers is importing. Returns {id: Part}."""
+    m = _models()
+    ids = {getattr(pk, 'pk', pk) for pk in ids if pk}
+    family = ids | set(m.Part.objects.filter(merged_into_id__in=ids).values_list('pk', flat=True))
+    suppliers = sorted(set(m.SupplierItem.objects.filter(part_id__in=family).values_list('supplier_id', flat=True)))
+    list(m.Account.objects.select_for_update().filter(pk__in=suppliers).order_by('pk').values_list('pk', flat=True))
+    if importing(suppliers):
+        raise refuse('Un proveedor de estos SKU está importando su inventario. Espera a que termine y vuelve a intentarlo.')
+    return {part.pk: part for part in m.Part.objects.select_for_update().filter(pk__in=family).order_by('pk')}
+
+
+def service_actor():
+    from django.contrib.auth import get_user_model
+    actor, _ = get_user_model().objects.get_or_create(username=SERVICE_ACCOUNT, defaults={
+        'email': 'matching-service@motionpartes.invalid', 'is_active': False})
+    return actor
+
+
+# --- absorb --------------------------------------------------------------------------------------------------------------------------
+
+def same_key(ref, line_id):
+    """The live Reference of the line with ref's key (clave, brand, supplier), or None."""
+    m = _models()
+    return (m.Reference.objects.select_for_update().filter(part_id=line_id, clave=references.clave(ref.code), brand=ref.brand,
+                                                            supplier_id=ref.supplier_id).exclude(pk=ref.pk).order_by('pk').first())
+
+
+def absorb(ref, line, *, actor=None, reason=''):
+    """A Reference (a source line's main, say) whose key the line already holds: it stays on its line as retirada, replaced by the
+    line's Reference of that key (reemplazado_por), whose printed_forms gain its spelling and which gets copies of its sources; Separar
+    brings it back (split_line). Before S3 the variants hang from lines, so nothing else moves. Used by merge_lines, and from S4 by
+    references.add for a key a referencia line holds. Returns {'ref', 'into', 'estado', 'dispute_note', 'spelling', 'sources'}."""
+    m = _models()
+    with transaction.atomic():
+        ref = m.Reference.all_objects.select_for_update().get(pk=getattr(ref, 'pk', ref))
+        kept = same_key(ref, getattr(line, 'pk', line))
+        if kept is None:
+            raise references.ReferenceConflict(f'{ref.code} no tiene en el SKU de destino una referencia con su clave.')
+        record = {'ref': ref.pk, 'into': kept.pk, 'estado': ref.estado, 'dispute_note': ref.dispute_note, 'spelling': None, 'sources': []}
+        references.retire(ref, actor=actor, replaced_by=kept, reason=reason or 'Absorbida por otra línea', allow_main=True)
+        if ref.code != kept.code and ref.code not in kept.printed_forms and len(kept.printed_forms) < references.MAX_PRINTED:
+            references.add_spelling(kept, ref.code)
+            record['spelling'] = ref.code
+        for source in m.ReferenceSource.objects.filter(reference_id=ref.pk).order_by('pk'):
+            copy, created = references.cite(kept, source.citation, actor, kind=source.kind, detail={**source.detail, 'absorbed_from': ref.pk})
+            if created:
+                record['sources'].append(copy.pk)
+    return record
+
+
+# --- merge ---------------------------------------------------------------------------------------------------------------------------
+
+def merged_estado(lines, with_variants):
+    """The estado of a merge's target (the plan's matrix): publicada if any line is; else preparación if a line outside the catalog
+    holds variants; else retirada, rechazada, referencia, in that order; else (lines in preparación without variants) preparación."""
+    estados = {line.estado for line in lines}
+    if 'publicada' in estados:
+        return 'publicada'
+    if any(line.estado not in CATALOG for line in with_variants):
+        return 'preparacion'
+    return next((estado for estado in ESTADO_AFTER if estado in estados), 'preparacion')
+
+
+def merge_dispute(ref):
+    """Whether a Reference waits in disputa for a merge (the note S2b's backfill and references.dispute_note_for write)."""
+    return ref.estado == 'disputa' and (ref.dispute_note or '').rstrip(' .').endswith(MERGE_DISPUTE)
+
+
+def _codigo_holder(code, participants, target):
+    """Another line, outside the merge, whose codigo is this code (every estado: UNIQUE(sku) until S4)."""
+    from .lines import all_lines
+    return (all_lines().filter(sku__iexact=references.code_key(code)).exclude(pk__in=participants).exclude(merged_into=target)
+            .order_by('pk').first())
+
+
+def merge_lines(target, sources, *, actor, reason='', automatic=False, assistant_job=None, target_created=False):
+    """Merge `sources` (Parts, live, not merged) into `target` (a live Part): see the module's docstring. The caller has validated what
+    it asked (Agrupar SKU's rules); this takes the locks again, refuses what would break the catalog (ValidationError with a detail)
+    and returns the CatalogMerge, or None when every source was already merged into target."""
+    m = _models()
+    from .lines import refuse_unificada
+    from .oem_reference_models import PartOEMLink
+    source_ids = [getattr(source, 'pk', source) for source in sources]
+    target_id = getattr(target, 'pk', target)
+    if target_id in source_ids:
+        raise refuse('El SKU principal no puede incluirse entre los SKU por unificar.')
+    if len(set(source_ids)) != len(source_ids):
+        raise refuse('No repitas los SKU por unificar.')
+    with transaction.atomic():
+        locked = lock_lines([target_id, *source_ids])
+        target = locked.get(target_id)
+        if target is None:
+            raise refuse('El SKU principal ya no está en el catálogo.')
+        refuse_unificada(target)
+        sources, missing = [], []
+        for pk in source_ids:
+            source = locked.get(pk)
+            if source is None:
+                missing.append(str(pk))
+            elif source.merged_into_id == target.pk:
+                continue
+            elif source.merged_into_id or source.estado == 'unificada':
+                raise refuse(f'El SKU {source.sku} ya fue unificado con otro SKU. Revisa el catálogo actual.')
+            else:
+                sources.append(source)
+        if missing:
+            raise refuse('Uno de los SKU por unificar ya no está en el catálogo.')
+        if not sources:
+            return None
+        ids = [target.pk, *(source.pk for source in sources)]
+        if automatic:
+            kept = kept_apart_among(ids)
+            if kept:
+                skus = {str(line.pk): line.sku for line in [target, *sources]}
+                a, b = kept[0]
+                raise refuse(f'{skus.get(a, a)} y {skus.get(b, b)} se mantienen separados (Separar SKU o un caso descartado): '
+                             'una persona decide si agruparlos.')
+            requested_by, actor = getattr(actor, 'username', '') or '', (actor if getattr(actor, 'username', '') == SERVICE_ACCOUNT
+                                                                         else service_actor())
+        else:
+            requested_by = getattr(actor, 'username', '') or ''
+        source_ids = {source.pk for source in sources}
+        if m.PartSpecification.objects.filter(part_id__in=source_ids).exists() or m.ItemApplication.objects.filter(part_id__in=source_ids).exists():
+            raise refuse('Los SKU de origen tienen fichas técnicas o aplicaciones. Revisa y conserva esos datos en el SKU principal antes de '
+                         'vaciar las fichas de origen y unificarlos.')
+        children = [line for line in locked.values() if line.merged_into_id in source_ids]
+        retired_ids = source_ids | {child.pk for child in children}
+        participants = retired_ids | {target.pk}
+        owner = {source.pk: source for source in sources} | {child.pk: locked[child.merged_into_id] for child in children}
+        # References: their claves' advisory locks, then the rows (plan §1.6.5).
+        live = list(m.Reference.objects.filter(part_id__in=participants).order_by('pk'))
+        references.lock(*{row.clave for row in live})
+        live = list(m.Reference.objects.select_for_update().filter(part_id__in=participants).order_by('pk'))
+        incoming = [row for row in live if row.part_id in retired_ids]
+        # One Reference per key on the merged line: the target's, else the surest incoming one (a source's main before its other
+        # codes); the others of that key are absorbed into it.
+        claimed = {(row.clave, row.brand, row.supplier_id): row for row in live if row.part_id == target.pk}
+        absorbed_rows, moving = [], []
+        for row in sorted(incoming, key=lambda row: (references.ESTADO_RANK.get(row.estado, 9), not row.is_main, row.pk)):
+            key = (row.clave, row.brand, row.supplier_id)
+            (absorbed_rows if key in claimed else moving).append(row)
+            claimed.setdefault(key, row)
+        moving.sort(key=lambda row: row.pk)
+        # The brandless reservation (I5): a key moving to the target must not clash with one another line holds; a code another
+        # line's codigo is would make the merged line answer for that line.
+        for row in moving:
+            clash = (references.conflicts(row.code, row.brand, supplier=row.supplier_id, estado=row.estado)
+                     .exclude(part_id__in=participants).order_by('pk').first())
+            if clash is not None:
+                raise refuse(f'El código {row.code} pertenece a otro SKU. Corrige su asignación antes de unificar.')
+        for row in incoming:
+            holder = _codigo_holder(row.code, participants, target)
+            if holder is not None:
+                raise refuse(f'El código {holder.sku} identifica otro SKU. Corrige su asignación antes de unificar.')
+        for source in sources:
+            holder = _codigo_holder(source.sku, participants, target)
+            if holder is not None:  # a source's codigo another line holds as its codigo too (a spelling UNIQUE(sku) let through)
+                raise refuse(f'El código {holder.sku} identifica otro SKU. Corrige su asignación antes de unificar.')
+        items = list(m.SupplierItem.objects.select_for_update().filter(part_id__in=participants).order_by('pk'))
+
+        brought = {source.pk: {'id': str(source.pk), 'sku': source.sku, 'estado': source.estado, 'codes': [], 'items': [], 'images': [],
+                               'references': [], 'main': None, 'absorbed': [], 'undisputed': [], 'favorites': {'moved': [], 'dropped': []},
+                               'links': [], 'children': [], 'dependents': {}} for source in sources}
+        for child in children:
+            brought[child.merged_into_id]['children'].append(str(child.pk))
+        mains = {row.part_id: row for row in incoming if row.is_main}
+        for row in incoming:
+            entry = brought[owner[row.part_id].pk]
+            if row.is_main and row.part_id in source_ids:
+                entry['main'] = row.pk
+            elif not row.is_main:
+                entry['codes'].append({'brand': row.brand, 'code': row.code})
+        summary = {'target_created': target_created, 'merged_skus': len(sources), 'codes_transferred': 0, 'sku_aliases_created': 0,
+                   'supplier_items_relinked': 0, 'historical_alternates_updated': 0, 'historical_alternates_removed': 0,
+                   'references_moved': 0, 'references_absorbed': 0, 'reason': reason or '', 'automatic': bool(automatic),
+                   'requested_by': requested_by}
+        if assistant_job:
+            summary['assistant_job'] = str(assistant_job)
+
+        # References: the moves, then the absorbs (into rows that may have just moved), then the disputes the merge settles.
+        moved_ids = [row.pk for row in moving]
+        came_from = {row.pk: owner[row.part_id].pk for row in moving}
+        references.move(moved_ids, target, actor=actor)
+        for row in absorbed_rows:
+            record = absorb(row, target, actor=actor, reason=f'Agrupado en {target.sku}')
+            kept = m.Reference.objects.filter(pk=record['into']).first()
+            if kept is not None and merge_dispute(kept) and not references.conflicts(
+                    kept.code, kept.brand, line=target.pk, supplier=kept.supplier_id, estado='declarado', exclude=kept.pk).exists():
+                record['into_undisputed'] = {'estado': kept.estado, 'dispute_note': kept.dispute_note}  # it waited for the absorbed one
+                references.update(kept, estado='declarado', dispute_note='', actor=actor)
+            brought[owner[row.part_id].pk]['absorbed'].append(record)
+        for row in moving:
+            brought[owner[row.part_id].pk]['references'].append(row.pk)
+            if not row.is_main:
+                summary['codes_transferred'] += 1
+        summary['sku_aliases_created'] = sum(1 for row in moving if row.is_main and row.part_id in source_ids)
+        for row in m.Reference.objects.filter(pk__in=moved_ids).order_by('pk'):
+            if merge_dispute(row) and not references.conflicts(row.code, row.brand, line=target.pk, supplier=row.supplier_id,
+                                                               estado='declarado', exclude=row.pk).exists():
+                before = {'ref': row.pk, 'estado': row.estado, 'dispute_note': row.dispute_note}
+                references.update(row, estado='declarado', dispute_note='', actor=actor)
+                brought[came_from[row.pk]]['undisputed'].append(before)
+        for source in sources:  # a line inserted before the backfill has no main: its codigo stays a neutral alias of the target
+            if source.pk not in mains:
+                alias, created = references.add(target, source.sku, '', tipo='oem' if source.is_OEM else 'otro', actor=actor)
+                if created:
+                    brought[source.pk]['references'].append(alias.pk)
+                    summary['sku_aliases_created'] += 1
+        summary['references_moved'] = len(moving)
+        summary['references_absorbed'] = len(absorbed_rows)
+
+        # Variants (until S3 they hang from lines), images, favourites, links, historical alternates.
+        for item in items:
+            if item.part_id in retired_ids:
+                brought[owner[item.part_id].pk]['items'].append(str(item.pk))
+        summary['supplier_items_relinked'] = m.SupplierItem.objects.filter(part_id__in=retired_ids).update(part=target)
+        summary['images_transferred'] = move_images(retired_ids, target, brought, owner)
+        summary['favorites_moved'] = move_favorites(retired_ids, target, brought, owner)
+        summary['links_moved'] = move_links(retired_ids, target, brought, owner, PartOEMLink)
+        updated, removed = merge_alternates(retired_ids, target)
+        summary['historical_alternates_updated'], summary['historical_alternates_removed'] = updated, removed
+        settle_dependents(sources, target, brought, actor)
+
+        # Scalars, estado, the sources.
+        before_estado = target.estado
+        filled = fill_scalars(target, sources)
+        stocked = {item.part_id for item in items}
+        estado = merged_estado([target, *sources], [line for line in [target, *sources] if line.pk in stocked])
+        stamp = timezone.now()
+        m.Part.objects.filter(pk__in=retired_ids).update(active=False, merged_into=target, estado='unificada', updated_at=stamp)
+        merge = m.CatalogMerge.objects.create(actor=actor, target=target, sources=jsonable([brought[source.pk] for source in sources]),
+                                              summary=jsonable(summary))
+        fields = []
+        if filled:
+            target.field_sources = {**(target.field_sources or {}), **{field: {'source': 'merge', 'from': sku, 'merge': str(merge.pk)}
+                                                                       for field, (_, sku) in filled.items()}}
+            fields += [*filled, 'field_sources']
+        if estado != target.estado:
+            from .lines import stage_estado
+            fields += stage_estado(target, estado, user=None if automatic else actor)
+        if fields:
+            target.save(update_fields=fields)
+        summary['estado'] = {'before': before_estado, 'after': target.estado}
+        summary['filled'] = {field: before for field, (before, _) in filled.items()}
+        summary['target_version'] = target.version
+        merge.summary = jsonable(summary)
+        m.CatalogMerge.objects.filter(pk=merge.pk).update(summary=merge.summary)
+        from .lines import touch_visible
+        touch_visible(target, stamp)
+    return merge
+
+
+def merge_alternates(source_ids, target):
+    """Historical Alternate links follow the merge without self-links or duplicates. Returns (affected, removed)."""
+    from .models import Alternate
+    affected = list(Alternate.objects.select_for_update().filter(
+        Q(part_id__in=source_ids) | Q(replacement_id__in=source_ids)).order_by('pk'))
+    affected_ids = {row.pk for row in affected}
+    resulting = {}
+    for row in affected:
+        pair = (target.pk if row.part_id in source_ids else row.part_id,
+                target.pk if row.replacement_id in source_ids else row.replacement_id)
+        if pair[0] != pair[1]:
+            resulting.setdefault(pair, []).append(row)
+    existing = {}
+    for pair in resulting:
+        relation = Alternate.objects.select_for_update().filter(part_id=pair[0], replacement_id=pair[1]).exclude(pk__in=affected_ids).first()
+        if relation:
+            existing[pair] = relation
+    # Remove the old links before inserting the deduplicated replacement pairs.
+    # This avoids unique-constraint conflicts when two old links converge.
+    Alternate.objects.filter(pk__in=affected_ids).delete()
+    for pair, rows in resulting.items():
+        old = existing.get(pair)
+        notes = list(dict.fromkeys(note for note in [old.notes if old else '', *(row.notes for row in rows)] if note))
+        if old:
+            note = '\n'.join(notes)
+            if old.notes != note:
+                old.notes = note
+                old.save(update_fields=['notes'])
+        else:
+            Alternate.objects.create(part_id=pair[0], replacement_id=pair[1], notes='\n'.join(notes))
+    return len(affected), len(affected) - len(set(resulting) - set(existing))
+
+
+def move_images(retired_ids, target, brought, owner):
+    """The sources' photos go to the end of the target's gallery (their storage keys never change); one the target already shows
+    (the same file) stays where it is."""
+    m = _models()
+    maximum = m.PartImage.objects.filter(part=target).aggregate(value=Max('position'))['value']
+    position = maximum + 1 if maximum is not None else 0
+    shown = set(m.PartImage.objects.filter(part=target).values_list('image', flat=True))
+    images = [image for image in m.PartImage.objects.filter(part_id__in=retired_ids).order_by('part_id', 'position', 'created_at', 'id')
+              if image.image.name not in shown]
+    for offset, image in enumerate(images):
+        brought[owner[image.part_id].pk]['images'].append(str(image.pk))
+        image.part, image.position = target, position + offset
+    m.PartImage.objects.bulk_update(images, ['part', 'position'])
+    return len(images)
+
+
+def move_favorites(retired_ids, target, brought, owner):
+    """One favourite per user on the target, with its first save date (mall.wishlist.merge_wishlists); what moved and whose favourite
+    was a duplicate are recorded, so Separar gives them back."""
+    m = _models()
+    from .wishlist import merge_wishlists
+    rows = list(m.WishlistItem.objects.filter(part_id__in=retired_ids | {target.pk}).order_by('saved_at', 'pk').values_list('pk', 'user_id', 'part_id'))
+    kept = {}
+    for pk, user, part in rows:
+        kept.setdefault(user, (pk, part))
+    for pk, user, part in rows:
+        if part in retired_ids:
+            entry = brought[owner[part].pk]['favorites']
+            if kept[user][0] == pk:
+                entry['moved'].append(pk)
+            else:
+                entry['dropped'].append(user)
+        elif kept[user][0] != pk and kept[user][1] in retired_ids:  # the target's own, younger than a source's that takes its place
+            brought[owner[kept[user][1]].pk]['favorites'].setdefault('target_dropped', []).append(user)
+    merge_wishlists(retired_ids, target)
+    return sum(len(entry['favorites']['moved']) for entry in brought.values())
+
+
+def move_links(retired_ids, target, brought, owner, PartOEMLink):
+    """The sources' OEM number links (catalog and sku_name) go to the target; one the target already has gains their citations."""
+    have = {(link.reference_id, link.source): link for link in PartOEMLink.objects.select_for_update().filter(part=target)}
+    moved = 0
+    for link in PartOEMLink.objects.select_for_update().filter(part_id__in=retired_ids, source__in=['catalog', 'sku_name']).order_by('pk'):
+        existing = have.get((link.reference_id, link.source))
+        if existing is not None:
+            citations = list(dict.fromkeys([*existing.citations, *link.citations]))
+            if citations != existing.citations:
+                existing.citations = citations
+                existing.save(update_fields=['citations'])
+            continue  # the source keeps its own (a unificada line's links are read by nothing; Separar finds it there)
+        source = owner[link.part_id].pk
+        link.part = target
+        link.save(update_fields=['part'])
+        have[(link.reference_id, link.source)] = link
+        brought[source]['links'].append(link.pk)
+        moved += 1
+    return moved
+
+
+def settle_dependents(sources, target, brought, actor):
+    """What hangs from a source and only means something on a line of its own: its open OEM review case is resolved ("línea
+    unificada"), its pending automatic OEM candidate excluded, its pending assistant suggestions dismissed. The values before are
+    recorded, so Separar puts them back."""
+    from .catalog_assistant_models import CatalogAssistantSuggestion
+    from .oem_finder_models import OEMAutoCandidate, OEMReviewCase
+    now = timezone.now()
+    for source in sources:
+        entry = brought[source.pk]['dependents']
+        case = OEMReviewCase.objects.filter(part=source, status='review').first()
+        if case is not None:
+            entry['oem_review'] = {'id': case.pk, 'status': case.status}
+            case.status, case.decided_at = 'resolved', now
+            case.decided_by = actor if getattr(actor, 'pk', None) else None
+            case.decision = {**(case.decision or {}), 'action': 'resolved', 'reason': 'línea unificada', 'into': str(target.pk)}
+            case.save(update_fields=['status', 'decided_at', 'decided_by', 'decision', 'updated_at'])
+        candidate = OEMAutoCandidate.objects.filter(part=source, status='pending').first()
+        if candidate is not None:
+            entry['oem_auto'] = {'id': candidate.pk, 'status': candidate.status, 'reason': candidate.reason, 'note': candidate.note}
+            candidate.status, candidate.reason, candidate.note = 'excluded', 'merged', f'Línea unificada en {target.sku}'[:300]
+            candidate.save(update_fields=['status', 'reason', 'note', 'updated_at'])
+        pending = list(CatalogAssistantSuggestion.objects.filter(source=source, status='pending').values_list('pk', flat=True))
+        if pending:
+            entry['suggestions'] = pending
+            CatalogAssistantSuggestion.objects.filter(pk__in=pending).update(status='dismissed')
+
+
+def restore_dependents(entry, line):
+    """Put back what settle_dependents changed on a line Separar brings back, where nothing changed it since."""
+    from .catalog_assistant_models import CatalogAssistantSuggestion
+    from .oem_finder_models import OEMAutoCandidate, OEMReviewCase
+    dependents = entry.get('dependents') or {}
+    case = dependents.get('oem_review')
+    if case:
+        OEMReviewCase.objects.filter(pk=case['id'], part=line, status='resolved', decision__reason='línea unificada').update(
+            status=case['status'], decided_at=None, decided_by=None, decision={}, updated_at=timezone.now())
+    candidate = dependents.get('oem_auto')
+    if candidate:
+        OEMAutoCandidate.objects.filter(pk=candidate['id'], part=line, status='excluded', reason='merged').update(
+            status=candidate['status'], reason=candidate['reason'], note=candidate['note'], updated_at=timezone.now())
+    if dependents.get('suggestions'):
+        CatalogAssistantSuggestion.objects.filter(pk__in=dependents['suggestions'], source=line, status='dismissed').update(status='pending')
+
+
+def fill_scalars(target, sources):
+    """{field: (target's blank before, the source sku it came from)} for the target's blank SCALARS the sources agree on; set on
+    target (unsaved)."""
+    filled = {}
+    for field in SCALARS:
+        if (getattr(target, field) or '').strip():
+            continue
+        values = {}
+        for source in sources:
+            if (getattr(source, field) or '').strip():
+                values.setdefault((getattr(source, field) or '').strip(), source.sku)
+        if len(values) == 1:
+            value, sku = next(iter(values.items()))
+            filled[field] = (getattr(target, field) or '', sku)
+            setattr(target, field, value)
+    return filled
+
+
+# --- what each row most likely belonged to (Separar SKU's plan) ----------------------------------------------------------------------
+
+def merge_history(target, children):
+    """({merged line id: what its merge recorded}, merges): when, by whom, automatic or reviewed, why, and what the line brought: the
+    alternos, stock rows and photos the merge recorded (merges since Separar SKU), or the alternos in the matching worker's snapshot
+    (codes None when nothing recorded them); since S2b also the References it moved (references), its former main (main), those
+    absorbed (absorbed), the codes put back to declarado (undisputed), favourites, links, dependents and its estado. The latest merge
+    of each line is the one that counts (merged, split, merged again)."""
+    m = _models()
+    ids = {str(child.pk) for child in children}
+    merges = list(m.CatalogMerge.objects.filter(target_id__in=[target.pk, *ids]).select_related('actor').order_by('created_at', 'pk'))
+    decisions = {}
+    if merges:
+        for decision in m.MatchingDecision.objects.filter(evidence__merge_id__in=[str(merge.pk) for merge in merges]):
+            decisions[str(decision.evidence.get('merge_id'))] = decision
+    history = {}
+    for merge in merges:
+        decision = decisions.get(str(merge.pk))
+        snapshots = {str(row.get('id')): row for row in decision.evidence.get('sources') or []} if decision else {}
+        method = (decision.evidence.get('method') or '') if decision else ((merge.summary or {}).get('reason') or '')
+        automatic = merge.actor.username == SERVICE_ACCOUNT
+        for source in merge.sources:
+            pk = str(source.get('id'))
+            if pk not in ids:
+                continue
+            recorded = source if 'codes' in source else snapshots.get(pk)
+            history[pk] = {'merged_at': merge.created_at, 'merged_by': merge.actor.username, 'automatic': automatic,
+                           'method': METHODS.get(method, method) if method else 'Agrupar SKU', 'merge': str(merge.pk),
+                           'codes': [{'brand': code.get('brand', ''), 'code': code.get('code', '')} for code in recorded.get('codes', [])] if recorded else None,
+                           'items': [str(item) for item in source.get('items', [])], 'images': [str(image) for image in source.get('images', [])],
+                           's2b': 'references' in source, 'references': [int(pk) for pk in source.get('references', [])],
+                           'main': source.get('main'), 'absorbed': list(source.get('absorbed') or []),
+                           'undisputed': list(source.get('undisputed') or []), 'favorites': source.get('favorites') or {},
+                           'links': list(source.get('links') or []), 'dependents': source.get('dependents') or {},
+                           'estado': source.get('estado') or 'publicada'}
+    return history, merges
+
+
+def code_returns(code, child, history):
+    """Whether a grouped SKU's own code, filed on the canonical SKU, goes back to that SKU when it is restored: when the SKU had it before
+    the merge (a brand-suffixed SKU files its code as a brand alterno). Otherwise it is retired: the SKU code identifies the part again.
+    The SKU's former main always goes back, as its main (main_row)."""
+    from .catalog_identity import company_reference
+    snapshot = history.get(str(child.pk), {}).get('codes')
+    return {'brand': code.brand, 'code': code.code} in snapshot if snapshot is not None else bool(company_reference(child.sku))
+
+
+def main_row(child, codes, history):
+    """The target's Reference (of codes, {id: row}, the target's non-main ones) that comes back as the child's main: the one its merge
+    recorded (S2b; None when the merge absorbed it: it comes back from retirada on the child), or, for a merge made before S2b, the
+    brandless alias of the child's codigo, which was its main then (the exact spelling first)."""
+    entry = history.get(str(child.pk), {})
+    if entry.get('s2b'):
+        if entry.get('main') is not None:
+            return codes.get(entry['main'])
+        recorded = [codes[pk] for pk in entry.get('references', []) if pk in codes]  # the alias a line without a main left
+        found = [code for code in recorded if code.clave == references.clave(child.sku) and not code.brand]
+        return found[0] if found else None
+    key = references.clave(child.sku)
+    found = sorted((code for code in codes.values() if code.clave == key and not code.brand and code.supplier_id is None),
+                   key=lambda code: (code.code != child.sku, code.pk))
+    return found[0] if found else None
+
+
+class Owners:
+    """The restored line a row most likely came from ('' for the canonical line). A row the merge recorded goes to the line that brought
+    it, and a code a snapshot lists to the line merged first (its first owner); otherwise a stock row goes to the line its supplier code
+    names and a photo to the line in its storage path. A collapsed spelling (the target and a child, or two children, with one compact
+    code: 13780-75F00 and 13780-75F00_) splits by the exact codigo (B16)."""
+
+    def __init__(self, children, history, target=None):
+        from .catalog_families import normalized_reference
+        from .catalog_identity import company_reference
+        late = timezone.now()
+        ordered = sorted(children, key=lambda child: (history.get(str(child.pk), {}).get('merged_at') or late, child.sku))
+        self.ids = [str(child.pk) for child in ordered]
+        numbers = [normalized_reference(child.sku) for child in ordered] + ([normalized_reference(target.sku)] if target is not None else [])
+        self.collapsed = {number for number in numbers if numbers.count(number) > 1}
+        self.exact = {references.code_key(child.sku): str(child.pk) for child in ordered}
+        self.skus = {}
+        for child in ordered:
+            self.skus.setdefault(normalized_reference(child.sku), str(child.pk))
+        self.snapshot, self.numbers, self.company, self.company_numbers, self.items, self.images, self.refs = {}, {}, {}, {}, {}, {}, {}
+        for child in ordered:
+            pk = str(child.pk)
+            entry = history.get(pk, {})
+            for item in entry.get('items') or []:
+                self.items.setdefault(item, pk)
+            for image in entry.get('images') or []:
+                self.images.setdefault(image, pk)
+            for ref in entry.get('references') or []:
+                self.refs.setdefault(int(ref), pk)
+            for code in entry.get('codes') or []:
+                self.snapshot.setdefault((code['brand'], code['code']), pk)
+                self.numbers.setdefault(normalized_reference(code['code']), pk)
+            # A supplier-suffixed SKU code (0110-ACA30-SPK) names its brand's own code: the merge filed it as a brand alterno.
+            info = company_reference(child.sku)
+            if info:
+                number = normalized_reference(info['code'])
+                self.company.setdefault((info['brand'], number), pk)
+                self.company_numbers[number] = pk if number not in self.company_numbers else ''
+
+    def by_number(self, number, code):
+        """The child a code names through its compact code; a collapsed one only by its exact spelling."""
+        if number in self.collapsed:
+            return self.exact.get(references.code_key(code), '')
+        return self.skus.get(number, '')
+
+    def code(self, code):
+        """(owner, alias_of): alias_of is the restored line whose own code this alterno is."""
+        from .catalog_families import normalized_reference
+        number = normalized_reference(code.code)
+        alias = self.by_number(number, code.code)
+        if alias:
+            return alias, alias
+        return self.refs.get(code.pk) or self.snapshot.get((code.brand, code.code)) or self.company.get((code.brand, number), ''), ''
+
+    def item(self, item):
+        from .catalog_families import normalized_reference
+        if str(item.pk) in self.items:
+            return self.items[str(item.pk)]
+        number = normalized_reference(item.codigo)
+        brand = (item.brand or '').strip().upper()
+        if number in self.collapsed:
+            return self.exact.get(references.code_key(item.codigo), '')
+        return (self.skus.get(number) or self.numbers.get(number) or self.company.get((brand, number))
+                or ('' if brand else self.company_numbers.get(number, '')))
+
+    def image(self, image):
+        name = image.image.name or ''
+        return self.images.get(str(image.pk)) or next((pk for pk in self.ids if f'/{pk}/' in name), '')
+
+
+def rehome_catalog_links(target, restored):
+    """A supplier catalog tied the canonical SKU to an OEM number because its code or an alterno matched the catalog item (the item's
+    code closes each citation; the number is the link's). Each link goes to the restored SKUs that hold those codes now; it stays on the
+    canonical SKU when that one holds them too (shared) or nobody does."""
+    from .catalog_families import normalized_reference
+    from .oem_reference_models import PartOEMLink
+    m = _models()
+    links = list(PartOEMLink.objects.select_for_update().filter(part=target, source='catalog').select_related('reference').order_by('pk'))
+    if not links:
+        return {'moved': 0, 'shared': 0}
+    keys = {part.pk: {normalized_reference(part.sku), *map(normalized_reference, m.Reference.objects.filter(part=part).values_list('code', flat=True))}
+            for part in [target, *restored]}
+    held = set(PartOEMLink.objects.filter(source='catalog', part__in=restored).values_list('part_id', 'reference_id'))
+    moved = shared = 0
+    for link in links:
+        wanted = {normalized_reference(link.reference.code)} | {normalized_reference(cite.rsplit(' · ', 1)[-1]) for cite in link.citations if ' · ' in cite}
+        owners = [part for part in restored if keys[part.pk] & wanted]
+        if not owners:
+            continue
+        PartOEMLink.objects.bulk_create([PartOEMLink(part=part, reference_id=link.reference_id, source='catalog', citations=link.citations)
+                                         for part in owners if (part.pk, link.reference_id) not in held])
+        if keys[target.pk] & wanted:
+            shared += 1
+        else:
+            link.delete()
+            moved += 1
+    return {'moved': moved, 'shared': shared}
+
+
+# --- split ---------------------------------------------------------------------------------------------------------------------------
+
+def split_line(target_id, restore, *, actor, reason=''):
+    """Separar SKU: bring back the lines merged into target that restore names ([{'id', 'codes': [Reference ids], 'items': [variant
+    ids], 'images': [image ids]}]), each with the rows assigned to it and its former main (see the module's docstring), all or nothing.
+    Returns {'split', 'target', 'restored': [Part], 'summary'}."""
+    m = _models()
+    from .catalog_families import normalized_reference
+    from .catalog_split_models import CatalogSplit
+    from .oem_reference_models import PartOEMLink
+    with transaction.atomic():
+        # Supplier accounts first, then the catalog rows: the lock order of stock imports and merges.
+        suppliers = sorted(set(m.SupplierItem.objects.filter(part_id=target_id).values_list('supplier_id', flat=True)))
+        list(m.Account.objects.select_for_update().filter(pk__in=suppliers).order_by('pk').values_list('pk', flat=True))
+        if importing(suppliers):
+            raise refuse('Un proveedor de este SKU está importando su inventario. Espera a que termine y vuelve a intentarlo.')
+        target = m.Part.objects.select_for_update().filter(pk=target_id).first()
+        if target is None or target.merged_into_id:
+            raise refuse('Este SKU ya no está en el catálogo o se agrupó en otro. Vuelve a cargar el inventario.')
+        children = {str(part.pk): part for part in m.Part.objects.select_for_update().filter(merged_into=target).order_by('pk')}
+        wanted = {}
+        for entry in restore:
+            pk = str(entry['id'])
+            if pk not in children:
+                raise refuse(f'Uno de los SKU ya no está agrupado en {target.sku}. Vuelve a cargar la separación.')
+            if pk in wanted:
+                raise refuse('No repitas un SKU por separar.')
+            wanted[pk] = entry
+        # The claves of the target's codes before their rows (mall.references' advisory locks); the target's main is its SKU: it stays.
+        references.lock(*m.Reference.objects.filter(part=target, is_main=False).values_list('clave', flat=True),
+                        *(references.clave(children[pk].sku) for pk in wanted))
+        codes = {code.pk: code for code in m.Reference.objects.select_for_update().filter(part=target, is_main=False).order_by('pk')}
+        items = {str(item.pk): item for item in m.SupplierItem.objects.select_for_update().filter(part=target).order_by('pk')}
+        images = {str(image.pk): image for image in m.PartImage.objects.select_for_update().filter(part=target).order_by('pk')}
+        plan = {pk: {'codes': [], 'items': [], 'images': []} for pk in wanted}
+        taken = {}
+        for pk, entry in wanted.items():
+            for kind, rows, keys in (('codes', codes, entry.get('codes', [])), ('items', items, map(str, entry.get('items', []))),
+                                     ('images', images, map(str, entry.get('images', [])))):
+                for key in keys:
+                    if key not in rows:
+                        raise refuse(f'{target.sku} cambió desde que abriste la separación. Vuelve a cargarla.')
+                    if taken.setdefault((kind, key), pk) != pk:
+                        raise refuse('Cada alterno, existencia o imagen va a un solo SKU.')
+                    if key not in plan[pk][kind]:
+                        plan[pk][kind].append(key)
+        history, merges = merge_history(target, list(children.values()))
+        owners = Owners(list(children.values()), history, target)
+        mains = {pk: main_row(children[pk], codes, history) for pk in wanted}
+        main_ids = {row.pk: pk for pk, row in mains.items() if row is not None}
+        target_number, removed = normalized_reference(target.sku), []
+        for code in codes.values():
+            number, claimed = normalized_reference(code.code), taken.get(('codes', code.pk))
+            alias = main_ids.get(code.pk) or owners.by_number(number, code.code)
+            if alias:
+                # A grouped line's own code is that line's and never passes to another. It stays on the canonical line while its line
+                # stays grouped; its former main goes back as its main, any other alias of it goes back when it had it (code_returns)
+                # and is retired otherwise, so the worker never sees it as an alterno of the canonical line.
+                if claimed and claimed != alias:
+                    raise refuse(f'{code.code} es el código de {children[alias].sku}: no puede pasar a otro SKU.')
+                if alias not in wanted:
+                    continue
+                if main_ids.get(code.pk) == alias or code_returns(code, children[alias], history):
+                    if not claimed:
+                        plan[alias]['codes'].append(code.pk)
+                else:
+                    if claimed:
+                        plan[alias]['codes'].remove(code.pk)
+                    removed.append(code)
+            elif claimed and number == target_number and number not in owners.collapsed:
+                raise refuse(f'{code.code} es el código de {target.sku}: cámbialo en Editar antes de pasarlo a otro SKU.')
+        for pk in wanted:
+            clash = (m.Reference.objects.filter(code=children[pk].sku, estado__in=references.EXCLUSIVE)
+                     .exclude(part_id__in=[target.pk, *wanted]).select_related('part').first())
+            if clash:
+                raise refuse(f'{children[pk].sku} es alterno de {clash.part.sku}. Corrige esa asignación antes de separarlo.')
+
+        restored = [children[pk] for pk in wanted]
+        destination = {code_pk: children[pk].sku for pk in wanted for code_pk in plan[pk]['codes']}
+        # Former mains and the codes their merge put back to declarado come back all the same, in disputa when another line keeps
+        # their key (settle_returned).
+        returning = set(main_ids) | {record['ref'] for pk in wanted for record in history.get(pk, {}).get('undisputed') or []}
+        for part in restored:  # a moved code must not clash on its new line with a code left elsewhere (the brandless reservation, I5)
+            moving = [codes[pk] for pk in plan[str(part.pk)]['codes']]
+            for code in moving:
+                if code.pk in returning:
+                    continue
+                clash = (references.conflicts(code.code, code.brand, line=part.pk, supplier=code.supplier_id, estado=code.estado)
+                         .exclude(pk__in=[row.pk for row in [*moving, *removed]]).select_related('part').first())  # removed ones retire
+                if clash:
+                    where = destination.get(clash.pk) or clash.part.sku
+                    raise refuse(f'{code.code} quedaría en {part.sku} con la clave de {clash}, que queda en {where} (un código sin marca vale '
+                                 'para todas las marcas). Pasa los dos al mismo SKU o corrige uno en Editar antes de separar.')
+
+        summary = {'restored_skus': len(restored), 'codes_moved': 0, 'aliases_removed': len(removed), 'items_moved': 0, 'images_moved': 0,
+                   'links_moved': 0, 'links_shared': 0, 'target_retired': False, 'mains_returned': 0, 'references_revived': 0,
+                   'favorites_returned': 0}
+        for part in restored:
+            moves = plan[str(part.pk)]
+            references.move(moves['codes'], part, actor=actor)
+            m.SupplierItem.objects.filter(pk__in=moves['items']).update(part=part)
+            m.PartImage.objects.filter(pk__in=moves['images']).update(part=part)
+            summary['codes_moved'] += len(moves['codes'])
+            summary['items_moved'] += len(moves['items'])
+            summary['images_moved'] += len(moves['images'])
+        if removed:  # retired, never deleted (mall.references)
+            references.retire(removed, actor=actor, reason='Separar SKU: un alias que la unificación creó para un SKU restaurado')
+        for part in [target, *restored]:
+            gallery = list(m.PartImage.objects.filter(part=part).order_by('position', 'created_at', 'pk'))
+            for position, image in enumerate(gallery):
+                image.position = position
+            m.PartImage.objects.bulk_update(gallery, ['position'])
+        target_main = references.main_of(target, lock=True)
+        for part in restored:
+            entry = history.get(str(part.pk), {})
+            if target_main is not None and part.sku in target_main.printed_forms:  # a collapsed spelling goes back with its line (B16)
+                target_main = references.update(target_main, printed_forms=[form for form in target_main.printed_forms if form != part.sku],
+                                                actor=actor)
+            summary['references_revived'] += revive_absorbed(part, entry, actor)
+            return_links(part, target, entry, PartOEMLink)
+            estado = entry.get('estado') if entry.get('estado') in references_live_estados() else 'publicada'
+            part.merged_into, part.estado, part.active = None, estado, estado == 'publicada'
+            part._main_followed = True  # its main is set just below
+            part.save(update_fields=['active', 'merged_into', 'estado'])  # its name links follow (mall.oem_links.part_saved)
+            summary['mains_returned'] += settle_returned(part, entry, mains[str(part.pk)], actor)
+            summary['favorites_returned'] += return_favorites(part, target, entry)
+            restore_dependents(entry, part)
+        links = rehome_catalog_links(target, restored)
+        summary['links_moved'], summary['links_shared'] = links['moved'], links['shared']
+
+        # A parent SKU the grouping created and the split leaves empty has nothing to identify: it retires, which also keeps the worker
+        # from proposing the same parent again (mall.matching_engine.catalog_families blocks inactive bases).
+        created = any(merge.target_id == target.pk and merge.summary.get('target_created') for merge in merges)
+        retired = bool(created and target.active and not m.Part.objects.filter(merged_into=target).exists()
+                       and not m.Reference.objects.filter(part=target, is_main=False).exists()
+                       and not m.SupplierItem.objects.filter(part=target).exists() and not m.PartImage.objects.filter(part=target).exists())
+        if retired:
+            target.active, target.estado = False, 'retirada'
+            target.save(update_fields=['active', 'estado'])
+        summary['target_retired'] = retired
+        split = CatalogSplit.objects.create(target=target, actor=actor, reason=(reason or '').strip(), summary=summary,
+                                            restored=[{'id': str(part.pk), 'sku': part.sku} for part in restored],
+                                            moved={'parts': {pk: {'codes': plan[pk]['codes'], 'items': plan[pk]['items'], 'images': plan[pk]['images']} for pk in plan},
+                                                   'aliases_removed': [{'brand': code.brand, 'code': code.code} for code in removed],
+                                                   'mains': {pk: (row.pk if row is not None else None) for pk, row in mains.items()}})
+        keep_apart([str(target.pk), *wanted], actor=actor, split=split, reason='separar')
+        from .lines import touch_visible
+        touch_visible([target, *restored])
+    return {'split': split, 'target': target, 'restored': restored, 'summary': summary}
+
+
+def references_live_estados():
+    from .lines import LIVE
+    return LIVE
+
+
+def revive_absorbed(part, entry, actor):
+    """The References a merge absorbed from this line come back from retirada (the estado they had, or disputa when another line
+    keeps their key), their spellings leave the target's Reference and the sources copied onto it go. Returns how many came back."""
+    m = _models()
+    count = 0
+    for record in entry.get('absorbed') or []:
+        ref = m.Reference.all_objects.select_for_update().filter(pk=record['ref'], part=part, estado='retirada').first()
+        if ref is None:
+            continue
+        kept = m.Reference.all_objects.select_for_update().filter(pk=record['into']).first()
+        if kept is not None and record.get('spelling') and record['spelling'] in kept.printed_forms:
+            kept = references.update(kept, printed_forms=[form for form in kept.printed_forms if form != record['spelling']], actor=actor)
+        if kept is not None and record.get('into_undisputed') and kept.estado in references.EXCLUSIVE:
+            kept = references.update(kept, estado='disputa', dispute_note=record['into_undisputed']['dispute_note'], actor=actor)
+        if record.get('sources'):
+            m.ReferenceSource.objects.filter(pk__in=record['sources'], reference_id=record['into']).delete()
+        if record.get('estado') == 'disputa' and record.get('dispute_note'):  # it waited in disputa: it does again, with its note
+            references.update(ref, estado='disputa', dispute_note=record['dispute_note'], actor=actor)
+            count += 1
+            continue
+        estado = record.get('estado') if record.get('estado') in references.EXCLUSIVE else 'declarado'
+        try:
+            with transaction.atomic():
+                references.update(ref, estado=estado, actor=actor)
+        except references.ReferenceConflict as error:
+            holder = error.reference or kept
+            references.update(ref, estado='disputa', dispute_note=references.dispute_note_for(ref.code, holder), actor=actor)
+        count += 1
+    return count
+
+
+def dispute_if_held(ref, actor, note=''):
+    """A Reference back on its line that another line keeps the key of (the brandless reservation, I5) waits in disputa, with `note`
+    or one naming that line. Returns the Reference."""
+    if ref.estado not in references.EXCLUSIVE:
+        return ref
+    clash = (references.conflicts(ref.code, ref.brand, line=ref.part_id, supplier=ref.supplier_id, estado=ref.estado, exclude=ref.pk)
+             .select_related('part').order_by('pk').first())
+    if clash is None:
+        return ref
+    return references.update(ref, estado='disputa', dispute_note=note or references.dispute_note_for(ref.code, clash), actor=actor)
+
+
+def settle_returned(part, entry, row, actor):
+    """After Separar moved a line's rows back: the codes its merge put back to declarado wait in disputa again (with their note) when
+    another line still holds their key, and its former main is its main again (return_main). Returns 1 when a former main came back."""
+    m = _models()
+    notes = {record['ref']: record.get('dispute_note') or '' for record in entry.get('undisputed') or []}
+    for ref in m.Reference.objects.filter(pk__in=list(notes), part=part, estado__in=references.EXCLUSIVE).order_by('pk'):
+        dispute_if_held(ref, actor, notes[ref.pk])
+    return return_main(part, row, actor)
+
+
+def return_main(part, row, actor):
+    """The line's former main is its main again (a row moved back, or one revived from retirada), in disputa when another line keeps
+    its key; a line without one gets a new one (mall.references.ensure_main). Returns 1 when a former main came back."""
+    m = _models()
+    if row is not None:
+        row = m.Reference.all_objects.get(pk=row.pk)
+    if row is None or row.estado == 'retirada' or row.part_id != part.pk:
+        row = (m.Reference.objects.filter(part=part, clave=references.clave(part.sku), supplier__isnull=True)
+               .order_by(references.exact_first(part.sku), 'pk').first())
+    if row is not None:
+        row = dispute_if_held(row, actor)
+    if row is not None and row.code == part.sku:
+        references.set_main(part, row, actor=actor, reason='Separar SKU')
+        return 1
+    references.ensure_main(part, actor=actor)
+    return int(row is not None)
+
+
+def return_favorites(part, target, entry):
+    """The favourites the merge moved go back to the line, and those it dropped as a user's duplicate come back. Returns how many."""
+    m = _models()
+    favorites = entry.get('favorites') or {}
+    count = 0
+    for row in m.WishlistItem.objects.filter(pk__in=favorites.get('moved') or [], part=target):
+        if not m.WishlistItem.objects.filter(user_id=row.user_id, part=part).exists():
+            m.WishlistItem.objects.filter(pk=row.pk).update(part=part)
+            count += 1
+    for user in favorites.get('dropped') or []:
+        _, created = m.WishlistItem.objects.get_or_create(user_id=user, part=part)
+        count += int(created)
+    for user in favorites.get('target_dropped') or []:  # the target's own favourite, which the source's took the place of
+        m.WishlistItem.objects.get_or_create(user_id=user, part=target)
+    return count
+
+
+def return_links(part, target, entry, PartOEMLink):
+    """The OEM number links the merge moved go back to the line (one it already has again is left on the target)."""
+    for link in PartOEMLink.objects.select_for_update().filter(pk__in=entry.get('links') or [], part=target):
+        if not PartOEMLink.objects.filter(part=part, reference_id=link.reference_id, source=link.source).exists():
+            link.part = part
+            link.save(update_fields=['part'])

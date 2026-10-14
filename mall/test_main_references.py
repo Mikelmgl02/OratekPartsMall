@@ -245,18 +245,17 @@ class MarkTests(Fresh, TestCase):
 
 
 class MergeTests(TestCase):
-    def test_a_merge_absorbs_the_source_main_and_a_split_brings_it_back(self):
+    def test_a_merge_moves_the_source_main_and_a_split_brings_it_back_as_its_main(self):
         actor = make_user('merge-root', superuser=True)
         target, source = make_line('58411-07000', description='TAMBOR'), make_line('58411-07000-K', description='TAMBOR')
         first = main(source)
         merge_catalog_parts(actor=actor, target_sku=target.sku, source_skus=[source.sku])
         first.refresh_from_db()
-        alias = Reference.objects.get(part=target, code='58411-07000-K')
-        self.assertEqual((first.estado, first.reemplazado_por_id, alias.is_main, main(target).code), ('retirada', alias.pk, False, '58411-07000'))
+        self.assertEqual((first.part_id, first.estado, first.is_main, main(target).code), (target.pk, 'declarado', False, '58411-07000'))
         self.assertEqual(broken_invariants(), {})
         from .catalog_split import split_catalog_part
-        split_catalog_part(actor=actor, target_id=target.pk, restore=[{'id': str(source.pk), 'codes': [alias.pk], 'items': [], 'images': []}])
-        self.assertEqual(main(source).code, '58411-07000-K')
+        split_catalog_part(actor=actor, target_id=target.pk, restore=[{'id': str(source.pk), 'codes': [first.pk], 'items': [], 'images': []}])
+        self.assertEqual(main(source).pk, first.pk)
         self.assertEqual(broken_invariants(), {})
 
 

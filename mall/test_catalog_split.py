@@ -65,13 +65,16 @@ class CatalogSplitTests(APITestCase):
         response = self.split(parent, self.restore(self.plan(parent), '58411-08000-K'))
         self.assertEqual(response.status_code, 200, response.content)
         body = response.json()
-        self.assertEqual((body['summary']['codes_moved'], body['summary']['items_moved'], body['summary']['aliases_removed']), (1, 1, 1))
+        # KX-100 and its former main (the alias the merge filed), which comes back as its main: nothing is retired (S2b)
+        self.assertEqual((body['summary']['codes_moved'], body['summary']['items_moved'], body['summary']['aliases_removed'],
+                          body['summary']['mains_returned']), (2, 1, 0, 1))
         self.assertEqual(body['target']['merged_count'], 2)
         part = Part.objects.get(sku='58411-08000-K')
         self.assertEqual((part.active, part.merged_into_id), (True, None))
         self.assertEqual(list(part.codes.filter(is_main=False).values_list('code', flat=True)), ['KX-100'])
         self.assertEqual(list(part.supplier_items.values_list('codigo', flat=True)), ['58411-08000-K'])
         self.assertFalse(parent.codes.filter(code='58411-08000-K').exists())  # the alias the merge filed leaves with its SKU
+        self.assertEqual(part.codes.get(is_main=True).code, '58411-08000-K')  # as its main again
         self.assertTrue(CatalogSeparation.objects.filter(first_id=pair(part.pk, parent.pk)[0], second_id=pair(part.pk, parent.pk)[1]).exists())
         self.assertEqual(CatalogSplit.objects.get().restored, [{'id': str(part.pk), 'sku': '58411-08000-K'}])
         with matching_work():
@@ -162,8 +165,12 @@ class CatalogSplitTests(APITestCase):
         SupplierItem.objects.filter(pk=item.pk).update(part=other, matching_status='matched')  # a code that names neither SKU
         merged = self.client.post(f'{URL}grouping/merge/', {'target_sku': main.sku, 'source_skus': [other.sku]}, format='json')
         self.assertEqual(merged.status_code, 200, merged.content)
-        self.assertEqual(CatalogMerge.objects.get().sources, [{'id': str(other.pk), 'sku': 'DF-4512', 'codes': [{'brand': 'GMB', 'code': 'GD-4512'}],
-                                                              'items': [str(item.pk)], 'images': []}])
+        recorded = CatalogMerge.objects.get().sources
+        self.assertEqual([{key: entry[key] for key in ('id', 'sku', 'codes', 'items', 'images')} for entry in recorded],
+                         [{'id': str(other.pk), 'sku': 'DF-4512', 'codes': [{'brand': 'GMB', 'code': 'GD-4512'}], 'items': [str(item.pk)], 'images': []}])
+        moved = PartCode.objects.filter(pk__in=recorded[0]['references'])  # since S2b the References themselves, its former main among them
+        self.assertEqual(sorted(moved.values_list('code', flat=True)), ['DF-4512', 'GD-4512'])
+        self.assertEqual(PartCode.objects.get(pk=recorded[0]['main']).code, 'DF-4512')
         plan = self.plan(main)
         self.assertEqual(plan['children'][0]['codes'], [{'brand': 'GMB', 'code': 'GD-4512'}])
         self.assertEqual({code['code']: code['suggested'] for code in plan['codes']}['GD-4512'], str(other.pk))

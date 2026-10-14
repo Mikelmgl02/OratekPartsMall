@@ -11,6 +11,7 @@ from .management import IsSuperuser
 from .matching_models import MatchingQueue, MatchingCase, MatchingDecision
 from .matching_queue import enqueue_matching, matching_work
 from .matching_engine import apply_item, apply_family, part_row
+from .line_merge import KEEP_APART_METHODS, keep_apart
 from .lines import lines_by_codigo, on_storefront
 from .models import CatalogImportJob
 
@@ -145,8 +146,12 @@ class MatchingReview(APIView):
                     raise MatchingConflict()
                 locked.status = 'dismissed'
                 locked.save(update_fields=['status', 'updated_at'])
-                MatchingDecision.objects.create(case=locked, actor=request.user, action='dismissed',
-                    evidence={'sources': case.sources, 'candidates': case.candidates, 'fingerprint': case.fingerprint})
+                evidence = {'sources': case.sources, 'candidates': case.candidates, 'fingerprint': case.fingerprint}
+                if locked.kind == 'catalog' and locked.method in KEEP_APART_METHODS:
+                    # Mantener separados (S2b): the lines of a compact_duplicate or shared_oem_number case never merge on their own.
+                    lines = [row.get('id') for row in [*case.sources, *case.candidates] if row.get('id')]
+                    evidence['separated'] = keep_apart(lines, actor=request.user, case=locked, reason=locked.method)
+                MatchingDecision.objects.create(case=locked, actor=request.user, action='dismissed', evidence=evidence)
         else:
             target_sku = data.get('target_sku') or case.target_sku
             try:
