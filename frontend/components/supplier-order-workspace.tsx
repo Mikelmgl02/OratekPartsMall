@@ -32,7 +32,7 @@ export type WorkspaceControl = {
   tab: 'quote' | 'chat' | 'history'; setTab: (tab: 'quote' | 'chat' | 'history') => void;
   viewing: number | null; setViewing: (index: number | null) => void; reached: number; lookingBack: boolean;
   canDecide: boolean; stockWarnings: number; suggestedPrice?: (line: Deal['lines'][number]) => ReactNode;
-  editorMounted: boolean; revising: boolean; startPricing: () => void; startRevising: () => void; closeEditor: () => void;
+  editorMounted: boolean; revising: boolean; startPricing: () => void | Promise<void>; startRevising: () => void; closeEditor: () => void;
   draft: { key: string; draft: QuoteDraft | null } | null; draftKey: string; draftPath: string; retryDraft: () => Promise<void>; pricingRevision: number;
   onDraftChange: (persisted: boolean, draft: QuoteDraft) => void; hasDraft: boolean; publishBlocked: boolean;
   pairProfile?: DraftProfile; priceListCode?: string; profileOpen: boolean; setProfileOpen: (open: boolean) => void; profileSaved: () => void;
@@ -44,7 +44,8 @@ export type WorkspaceControl = {
 // Solicitudes, the order, its status, the client and date, the stages), the lines as one grid that fills the page (Líneas; the editor takes
 // its place while the quotation is prepared), Conversación and Actividad beside it, and a sidebar with the summary and total, the next step,
 // the client's terms and the actions stacked at its foot. The conversations panel and the client keep DealDetail's own layout.
-export default function SupplierOrderWorkspace({ c }: { c: WorkspaceControl }) {
+// embedded: in the conversations panel, beside its chat: no back link (the panel has its own) and no Conversación (the chat is beside it).
+export default function SupplierOrderWorkspace({ c, embedded = false }: { c: WorkspaceControl; embedded?: boolean }) {
   const { account, deal, busy, tab, setTab, lookingBack } = c;
   // The editor puts its draft, total, terms and alerts in the sidebar, and its send button with the actions.
   const [aside, setAside] = useState<HTMLDivElement | null>(null);
@@ -59,22 +60,22 @@ export default function SupplierOrderWorkspace({ c }: { c: WorkspaceControl }) {
   const editing = c.editorMounted && !lookingBack;
   const hold = deal && current ? deal.stock_hold : null, held = hold && `${hold.units} ${hold.units === 1 ? 'unidad' : 'unidades'}`;
   const head = <header className="order-ws-head">
-    <Link className="order-ws-back" href={supplierRequestsHref(account.id)} aria-label="Volver a solicitudes"><ArrowLeft size={15}/>Solicitudes</Link>
+    {!embedded && <Link className="order-ws-back" href={supplierRequestsHref(account.id)} aria-label="Volver a solicitudes"><ArrowLeft size={15}/>Solicitudes</Link>}
     <div className="order-ws-title">
-      <h1>Orden {deal?.reference || c.reference || ''}</h1>
+      {embedded ? <h2>{deal?.reference || c.reference || ''}</h2> : <h1>Orden {deal?.reference || c.reference || ''}</h1>}
       {deal && <DealStatusBadge status={deal.status} onClick={() => c.setViewing(null)}/>}
       {deal && <small>{deal.client.name} · {day(deal.created_at)}</small>}
     </div>
     {deal && <DealStages deal={deal} viewing={stage} onView={index => c.setViewing(index === c.reached ? null : index)}/>}
   </header>;
-  return <section className="deal-order-content order-ws" aria-label={`Orden ${deal?.reference || c.reference || 'del cliente'}`}>
+  return <section className={`deal-order-content order-ws${embedded ? ' embedded' : ''}`} aria-label={`Orden ${deal?.reference || c.reference || 'del cliente'}`}>
     {head}
     {c.error && <div className="notice error" role="alert"><span>{c.error}</span><button type="button" disabled={busy} onClick={c.dismissError}>Actualizar acuerdo</button></div>}
     {!deal && !c.error && <div className="supplier-request-detail-loading" role="status"><span className="sr-only">Cargando orden…</span><div className="skeleton-block"/><div className="skeleton-block"/></div>}
     {deal && <div className="order-ws-body">
       <div className="order-ws-main">
         <nav className="deal-tabs" aria-label="Secciones del acuerdo">{([['quote', 'Líneas', Handshake], ['chat', 'Conversación', MessageSquare], ['history', 'Actividad', History]] as const)
-          .map(([value, label, Icon]) => <button type="button" key={value} className={tab === value ? 'selected' : ''} aria-pressed={tab === value}
+          .filter(([value]) => !(embedded && value === 'chat')).map(([value, label, Icon]) => <button type="button" key={value} className={tab === value ? 'selected' : ''} aria-pressed={tab === value}
             title={value === 'quote' && c.hasDraft ? 'Hay un borrador de cotización guardado' : undefined} onClick={() => setTab(value)}>
             <Icon size={15}/>{label}{value === 'quote' && c.hasDraft && <span className="deal-tab-dot" aria-hidden="true"/>}</button>)}
           {tab === 'quote' && !editing && <div className="order-ws-tools">
@@ -95,9 +96,9 @@ export default function SupplierOrderWorkspace({ c }: { c: WorkspaceControl }) {
             : <div className="quotation-grid-loading" aria-busy="true"><LoaderCircle size={18} className="spin"/>Cargando borrador de cotización…</div>}</div>}
         </div>
         {/* Kept mounted, so refreshes and a message being written survive the tabs. */}
-        <div className="order-ws-panel chat" hidden={tab !== 'chat'}>
+        {!embedded && <div className="order-ws-panel chat" hidden={tab !== 'chat'}>
           <DealChat account={account} orderId={c.orderId} reference={deal.reference} active={tab === 'chat'} supplier insert={c.chatInsert} compact/>
-        </div>
+        </div>}
         {tab === 'history' && <div className="order-ws-panel history">
           {stage > 0 && <QuoteChanges deal={deal} renderVersion={version => <QuoteView quote={version} historical/>}/>}
           {deal.quotation && <QuoteTrace key={deal.quotation.id} path={`/api/market/accounts/${account.id}/requests/${c.orderId}/quotations/${deal.quotation.id}/trace`} currency={deal.quotation.currency}/>}
@@ -106,7 +107,8 @@ export default function SupplierOrderWorkspace({ c }: { c: WorkspaceControl }) {
       </div>
       <aside className="order-ws-side" aria-label="Resumen de la orden">
         {c.notice && !lookingBack && <div className="notice success" role="status">{c.notice}</div>}
-        {!editing && <section className="deal-quote order-ws-summary" aria-label={quote ? `Cotización vigente v${quote.revision}` : 'Artículos solicitados'}>
+        {/* While a new version is prepared, the one the client has stays in view; before the first, the editor's total says it all. */}
+        {(!editing || quote) && <section className="deal-quote order-ws-summary" aria-label={quote ? `Cotización vigente v${quote.revision}` : 'Artículos solicitados'}>
           <div className="deal-quote-heading"><div><h3>{quote ? `Cotización v${quote.revision}` : 'Artículos solicitados'}</h3>
             <small>{!quote ? 'Por cotizar' : agreedAt ? `Acordada · ${date(agreedAt)}` : `Enviada por el proveedor · ${date(quote.supplier_confirmed_at)}`}</small>
             {quote && !agreedAt && <div className="deal-handshake-parties">
@@ -136,7 +138,7 @@ export default function SupplierOrderWorkspace({ c }: { c: WorkspaceControl }) {
         {deal.notes && <div className="deal-terms"><h4>Notas del cliente</h4><p>{deal.notes}</p></div>}
         <div className="order-ws-actions">
           {!lookingBack && <>
-            {['reviewed', 'adjustment'].includes(deal.status) && !c.editorMounted && <button type="button" className="button primary" onClick={event => { if (event.detail < 2) c.startPricing(); }}>Preparar cotización<FileText size={16}/></button>}
+            {['pending', 'reviewed', 'adjustment'].includes(deal.status) && !c.editorMounted && <button type="button" className="button primary" disabled={busy} onClick={event => { if (event.detail < 2) void c.startPricing(); }}>Preparar cotización<FileText size={16}/></button>}
             {c.canDecide && deal.status === 'quoted' && !c.revising && <button type="button" className="button primary" disabled={busy} onClick={event => { if (event.detail < 2) c.startRevising(); }}><Pencil size={15}/>Editar cotización</button>}
             <div ref={setActions} className="order-ws-slot"/>
             {deal.status === 'adjustment' && deal.quotation && <button type="button" className="button soft" disabled={busy || c.publishBlocked} onClick={() => void c.act('return_quote', { quotation_id: deal.quotation!.id })}>Devolver la misma cotización para confirmar<Send size={15}/></button>}

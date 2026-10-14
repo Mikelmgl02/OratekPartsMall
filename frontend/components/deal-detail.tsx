@@ -196,7 +196,12 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   // The supplier page's Cerrar editor: the closing editor's last edits are saved on their way out, so opening it again reads the draft anew
   // (not the one first loaded); read on reopening, after that save went out.
   const reloadDraft = useRef(false);
-  const reopenPricing = () => { if (reloadDraft.current) { reloadDraft.current = false; setDraftLoad(null); setLiveDraft(null); } startPricing(); };
+  // A pending order (opened from the conversations panel, which never opens it for review by itself) is opened for review first.
+  const reopenPricing = async () => {
+    if (deal?.status === 'pending') await load(true);
+    if (reloadDraft.current) { reloadDraft.current = false; setDraftLoad(null); setLiveDraft(null); }
+    startPricing();
+  };
   const reviseButton = <button type="button" className="button primary small" disabled={busy} onClick={() => {
     setRevising(true); startPricing();
     // The editor opens under the sent version: bring it up (its loading placeholder first, while the draft loads).
@@ -225,7 +230,7 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   const events = deal && <ol className="deal-events">{deal.events?.length ? deal.events.map(event => <li key={event.id}><span>{date(event.created_at)} · {event.account_name} · {event.actor_name}</span><p>{event.description}</p></li>) : <li>Esta orden se creó antes de habilitar el registro de actividad.</li>}</ol>;
   const content = <>
     <div className={`deal-detail ${embedded ? 'deal-sheet' : ''}`}>
-      {error && <div className="notice error" role="alert"><span>{error}</span><button type="button" disabled={busy} onClick={() => { setError(''); void load(!deal); }}>Actualizar acuerdo</button></div>}
+      {error && <div className="notice error" role="alert"><span>{error}</span><button type="button" disabled={busy} onClick={() => { setError(''); void load(!deal && !embedded); }}>Actualizar acuerdo</button></div>}
       {!deal && !error && <div className="supplier-request-detail-loading" role="status"><span className="sr-only">Cargando orden…</span><div className="skeleton-block"/><div className="skeleton-block"/></div>}
       {deal && <>
         <header className="deal-sheet-head">
@@ -294,22 +299,28 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
       </>}
     </div>
   </>;
+  // The supplier's order, on its page or in the conversations panel beside the chat, is the workspace: one grid of lines and a sidebar
+  // (supplier-order-workspace.tsx). The client's keeps the document below.
+  const workspace = supplier && <SupplierOrderWorkspace embedded={embedded} c={{
+    account, orderId, reference, deal, error, busy, notice, reload: open => void load(open), act,
+    // Retrying a failed first load opens the order for review only on its page, as the first load does (the panel only looks at it).
+    dismissError: () => { setError(''); void load(!deal && !embedded); },
+    tab, setTab, viewing, setViewing, reached, lookingBack, canDecide, stockWarnings, suggestedPrice: priced ? suggestedPrice : undefined,
+    editorMounted, revising, startPricing: reopenPricing, startRevising: () => { setRevising(true); reopenPricing(); },
+    closeEditor: () => { reloadDraft.current = true; setEditing(false); setRevising(false); },
+    draft: draftLoad, draftKey, draftPath, retryDraft, pricingRevision, onDraftChange: (persisted, next) => { setHasDraft(persisted); setLiveDraft({ key: draftKey, draft: next }); },
+    hasDraft, publishBlocked, pairProfile, priceListCode: loaded?.pricing.price_list?.code, profileOpen, setProfileOpen, profileSaved,
+    afterMode, setAfterMode, chatInsert, events,
+    copyToChat: text => { if (embedded) { onCopyToChat?.(text); return; } setChatInsert({ text, id: Date.now() }); setTab('chat'); },
+  }}/>;
+  if (embedded && supplier) return <section className="deal-embedded supplier" aria-label="Documento de la orden">{workspace}</section>;
   if (embedded) return <section className="deal-embedded" aria-label="Documento de la orden">
     {content}
     {profileOpen && deal && <Modal wide title={`Perfil comercial · ${deal.client.name}`} className="client-profile-modal" onClose={() => setProfileOpen(false)}>
       <ClientPricingProfile account={account} clientId={deal.client.id} embedded onSaved={profileSaved}/>
     </Modal>}
   </section>;
-  // The supplier's order page lays the same order out as a workspace: one grid of lines and a sidebar (supplier-order-workspace.tsx).
-  if (supplier) return <SupplierOrderWorkspace c={{
-    account, orderId, reference, deal, error, busy, notice, reload: open => void load(open), dismissError: () => { setError(''); void load(!deal); }, act,
-    tab, setTab, viewing, setViewing, reached, lookingBack, canDecide, stockWarnings, suggestedPrice: priced ? suggestedPrice : undefined,
-    editorMounted, revising, startPricing: reopenPricing, startRevising: () => { setRevising(true); reopenPricing(); },
-    closeEditor: () => { reloadDraft.current = true; setEditing(false); setRevising(false); },
-    draft: draftLoad, draftKey, draftPath, retryDraft, pricingRevision, onDraftChange: (persisted, next) => { setHasDraft(persisted); setLiveDraft({ key: draftKey, draft: next }); },
-    hasDraft, publishBlocked, pairProfile, priceListCode: loaded?.pricing.price_list?.code, profileOpen, setProfileOpen, profileSaved,
-    afterMode, setAfterMode, chatInsert, copyToChat: text => { setChatInsert({ text, id: Date.now() }); setTab('chat'); }, events,
-  }}/>;
+  if (supplier) return workspace;
   return <Modal title={`Orden ${reference}`} wide className="deal-modal supplier-request-modal" onClose={() => { if (!inFlight.current) onClose?.(); }}>{content}</Modal>;
 }
 

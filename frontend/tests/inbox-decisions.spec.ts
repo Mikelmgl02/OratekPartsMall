@@ -154,11 +154,19 @@ test('a pending order is rejected without a quotation', async ({ page }) => {
   expect(actions.at(-1)).not.toHaveProperty('quotation_id');
 });
 
-test('a supplier sets prices in the panel: viewing never opens the order, Fijar precios does and shows the editor', async ({ page }) => {
+test('a supplier prepares the quotation in the panel: viewing never opens the order, Preparar cotización does and the lines become the editor', async ({ page }) => {
   const { document, reviews } = await panel(page, 'supplier', 'pending', false);
-  await expect(document.getByRole('group', { name: 'Decisiones', exact: true }).getByRole('button', { name: 'Fijar precios', exact: true })).toBeVisible();
+  await expect(document.getByRole('region', { name: 'Artículos de la orden', exact: true })).toBeVisible();  // the lines, one grid beside the chat
+  await expect(document.getByRole('button', { name: 'Preparar cotización', exact: true })).toBeVisible();
   expect(reviews).toEqual([]);  // looking at it in the panel does not lock the client's items
-  await document.getByRole('button', { name: 'Fijar precios', exact: true }).click();
+  // The header's Cotizaciones hides the order's column, and shows it again as it was.
+  const { conversations } = { conversations: page.getByRole('dialog', { name: 'Conversaciones', exact: true }) };
+  const toggle = conversations.getByRole('button', { name: 'Cotizaciones', exact: true }).first();
+  await toggle.click();
+  await expect(conversations.locator('.inbox-side')).toBeHidden();
+  await toggle.click();
+  await expect(document.getByRole('button', { name: 'Preparar cotización', exact: true })).toBeVisible();
+  await document.getByRole('button', { name: 'Preparar cotización', exact: true }).click();
   await expect.poll(() => reviews).toEqual(['POST']);
   await expect(document.locator('.quotation-grid[aria-label="Artículos de la cotización"]')).toBeVisible();
   await expect(document.getByRole('button', { name: /Confirmar y enviar cotización/ })).toBeVisible();
@@ -168,7 +176,7 @@ test('a supplier edits a sent quotation on the go, until the client confirms it'
   const { document } = await panel(page, 'supplier', 'quoted', true);
   await expect(document).toContainText('Enviaste la cotización v1. Mientras el cliente no la confirme, puedes editarla y enviarle una nueva versión.');
   await expect(document.locator('.quotation-grid[aria-label="Artículos de la cotización"]')).toHaveCount(0);  // the editor opens only when asked
-  await document.getByRole('group', { name: 'Decisiones', exact: true }).getByRole('button', { name: 'Editar cotización', exact: true }).click();
+  await document.getByRole('button', { name: 'Editar cotización', exact: true }).click();
   await expect(document.locator('.quotation-grid[aria-label="Artículos de la cotización"]')).toBeVisible();
   await expect(document.getByRole('button', { name: /Confirmar y enviar cotización/ })).toBeVisible();
   await expect(document.getByRole('region', { name: 'Cotización vigente v1', exact: true })).toContainText('USD 61.75');  // still what the client sees
@@ -185,18 +193,20 @@ test('the stages: those reached open read-only, those ahead stay locked, the ? e
   await expect(items.nth(2)).toContainText('Acordada, bloqueada');
   await expect(document.getByRole('note', { name: 'Siguiente paso', exact: true })).toHaveText(
     'En espera · para pasar a Acordada: Enviaste la cotización v1. Mientras el cliente no la confirme, puedes editarla y enviarle una nueva versión.');
-  const decisions = document.getByRole('group', { name: 'Decisiones', exact: true });
-  await expect(decisions.getByRole('button', { name: 'Editar cotización', exact: true })).toBeVisible();
+  const revise = document.getByRole('button', { name: 'Editar cotización', exact: true });
+  const lines = document.getByRole('region', { name: 'Artículos de la orden', exact: true });
+  await expect(revise).toBeVisible();
+  await expect(lines.getByRole('columnheader', { name: 'Precio', exact: true })).toBeVisible();  // the quotation on the order's lines
   // Sin cotizar, read-only: what was asked for, with no decisions; the order is still Cotizada.
   await items.nth(0).getByRole('button').click();
   await expect(document.getByRole('status').filter({ hasText: 'Estás viendo una etapa anterior (Sin cotizar); la orden está en Cotizada.' })).toBeVisible();
-  await expect(decisions).toHaveCount(0);
-  await expect(document.getByRole('table', { name: 'Artículos de la orden', exact: true })).toBeVisible();
+  await expect(revise).toHaveCount(0);
+  await expect(lines.getByRole('columnheader', { name: 'Precio', exact: true })).toHaveCount(0);
   await expect(document.getByRole('note', { name: 'Siguiente paso', exact: true })).toHaveCount(0);
   // The status badge next to the reference brings it back to the current stage.
-  await conversations.locator('.inbox-doc-title').getByRole('button', { name: 'Cotizada · por confirmar', exact: true }).click();
-  await expect(document.getByRole('table', { name: 'Líneas de la cotización v1', exact: true })).toBeVisible();
-  await expect(decisions.getByRole('button', { name: 'Editar cotización', exact: true })).toBeVisible();
+  await conversations.locator('.order-ws-title').getByRole('button', { name: 'Cotizada · por confirmar', exact: true }).click();
+  await expect(lines.getByRole('columnheader', { name: 'Precio', exact: true })).toBeVisible();
+  await expect(revise).toBeVisible();
   // The ? lists the numbered stages: the current one, the locked ones, who acts.
   await stages.getByRole('button', { name: '¿Qué significa cada etapa?', exact: true }).click();
   const help = page.getByRole('dialog', { name: 'Etapas de la orden', exact: true });
@@ -229,11 +239,11 @@ test('a long order: the document lists its items in a dense grid, and Ampliar se
   const many = Array.from({ length: 12 }, (_, index) => ({ ...line, id: `44444444-4444-4444-8444-${String(index).padStart(12, '0')}`, codigo: `COD-${index}`, sku: `SKU-${index}`,
     description: index === 5 ? 'BOMBA DE AGUA' : 'TAMBOR', stock: index === 7 ? null : { ...line.stock!, shortfall: index === 3 ? 2 : 0 } }));
   const { document } = await panel(page, 'supplier', 'pending', false, many);
-  const items = document.getByRole('table', { name: 'Artículos de la orden', exact: true });
-  await expect(items.getByRole('row')).toHaveCount(13);  // the heading and every item, without scrolling inside
+  const items = document.getByRole('region', { name: 'Artículos de la orden', exact: true });
+  await expect(items.locator('.ag-row')).toHaveCount(12);  // every item
   await expect(items.getByRole('columnheader')).toHaveText(['Código', 'Descripción', 'Disp', 'Pedido']);
-  await expect(items.getByRole('row').filter({ hasText: 'COD-3' })).toContainText('faltan 2');
-  await expect(items.getByRole('row').filter({ hasText: 'COD-7' })).toContainText('?revisar');
+  await expect(items.locator('.ag-row').filter({ hasText: 'COD-3' })).toContainText('faltan 2');
+  await expect(items.locator('.ag-row').filter({ hasText: 'COD-7' })).toContainText('?revisar');
   await document.getByRole('button', { name: 'Ampliar la tabla', exact: true }).click();
   const large = page.getByRole('dialog', { name: 'ORD-0123 · Artículos solicitados', exact: true });
   const grid = large.getByRole('region', { name: 'Artículos de la orden', exact: true });
@@ -297,18 +307,17 @@ test.describe('on a touch screen', () => {
   });
 });
 
-// After the handshake the Decisiones offer only the order's next step, and the step's confirmation opens in the document (whose own step
-// buttons stay out of the panel, so each name is there once).
+// After the handshake the supplier's actions offer only the order's next step, each name once, and the step's confirmation opens with them.
 const agreed = { handshaked_at: stamp, quotation: { ...quote, client_confirmed_at: stamp }, quotations: [{ ...quote, client_confirmed_at: stamp }],
   agreement: { quotation_id: quote.id, units: 5, total: '61.75', lines: [{ order_line_id: lineId, codigo: '58411-1R000-G', description: 'TAMBOR', agreed: 5, missing: 0,
     pending_missing: 0, final: 5, unit_price: '12.35', total: '61.75' }] } } as Partial<Deal>;
 
-test('after the handshake the supplier’s Decisiones offer one next step at a time, with no duplicate names', async ({ page }) => {
+test('after the handshake the supplier’s actions offer one next step at a time, with no duplicate names', async ({ page }) => {
   const { document, actions } = await panel(page, 'supplier', 'handshaked', true, [line], agreed);
-  const decisions = document.getByRole('group', { name: 'Decisiones', exact: true });
+  const decisions = document.locator('.order-ws-actions');
+  const steps = ['Marcar como procesando', 'Marcar en camino', 'Marcar como entregado'];
   const once = async (names: string[]) => {
-    await expect(decisions.getByRole('button')).toHaveText(names);
-    for (const name of names) await expect(document.getByRole('button', { name, exact: true })).toHaveCount(1);
+    for (const name of steps) await expect(document.getByRole('button', { name, exact: true })).toHaveCount(names.includes(name) ? 1 : 0);
   };
   await once(['Marcar como procesando']);
   await expect(document.getByRole('button', { name: 'Marcar como entregado', exact: true })).toHaveCount(0);  // Procesando first
@@ -327,14 +336,14 @@ test('after the handshake the supplier’s Decisiones offer one next step at a t
   await decisions.getByRole('button', { name: 'Marcar como entregado', exact: true }).click();
   await document.getByRole('button', { name: 'Sí, marcar entregado', exact: true }).click();
   await expect.poll(() => actions.at(-1)).toMatchObject({ action: 'deliver', expected_version: 5 });
-  await expect(decisions.getByRole('button')).toHaveCount(0);  // now the client's to confirm
+  await once([]);  // now the client's to confirm
   await expect(document.locator('.deal-outcome.delivered')).toContainText('Entregado · esperando al cliente');
   expect(actions.map(action => action.action)).toEqual(['process', 'ship', 'deliver']);
 });
 
 test('a change made elsewhere clears what the panel said about its own last step and closes an open confirmation', async ({ page }) => {
   const { document, change } = await panel(page, 'supplier', 'handshaked', true, [line], agreed);
-  const decisions = document.getByRole('group', { name: 'Decisiones', exact: true });
+  const decisions = document.locator('.order-ws-actions');
   await decisions.getByRole('button', { name: 'Marcar como procesando', exact: true }).click();
   await document.getByRole('button', { name: 'Sí, marcar procesando', exact: true }).click();
   const notice = document.getByRole('status').filter({ hasText: 'Orden marcada como Procesando.' });
@@ -345,7 +354,8 @@ test('a change made elsewhere clears what the panel said about its own last step
   await expect(document.locator('.deal-outcome.in_transit')).toContainText('En camino');
   await expect(notice).toHaveCount(0);
   await expect(document.getByRole('button', { name: 'Sí, va en camino', exact: true })).toHaveCount(0);
-  await expect(decisions.getByRole('button')).toHaveText(['Marcar como entregado']);
+  await expect(decisions.getByRole('button', { name: 'Marcar como entregado', exact: true })).toHaveCount(1);
+  await expect(decisions.getByRole('button', { name: 'Marcar en camino', exact: true })).toHaveCount(0);
 });
 
 test('the client confirms Recibido from the panel’s Decisiones once the supplier marked Entregado', async ({ page }) => {

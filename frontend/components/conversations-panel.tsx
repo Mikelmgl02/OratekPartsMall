@@ -174,7 +174,8 @@ export default function ConversationsPanel({ initial, onClose, onShowing }: { in
       const chosen = beforeWide.current ?? current;
       beforeWide.current = chosen;
       const room = widthOf() - 9;
-      const side = mode === 'pricing' ? Math.max(chosen.side, (room - CHAT_MIN) * 0.62) : room - CHAT_BESIDE;
+      // The supplier prices in the order's own grid now: pricing gets the document's room too (the chat keeps what fits its composer).
+      const side = room - CHAT_BESIDE;
       return { ...current, listOpen: false, sideOpen: true, side: clamp(Math.max(chosen.side, side), SIDE_MIN, room - CHAT_MIN) };
     });
   }, []);  // eslint-disable-line react-hooks/exhaustive-deps
