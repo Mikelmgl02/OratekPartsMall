@@ -271,10 +271,16 @@ def rule_of(line, own, makers, tags):
     return '', 'otro', 6
 
 
+def messy_spelling(sku):
+    """A twin spelling a load left behind: an underscore anywhere, or a trailing separator (16546-18000_, 16546-S0100-, MB-120389_)."""
+    return '_' in sku or bool(re.search(r'[-.\s/]$', sku))
+
+
 def keeper_key(line, stats, ref_count):
+    # The clean spelling keeps the group (owner, 2026-10-14): the merge moves the other lines' stock onto it, so nothing is lost.
     stock, orders = stats.get(line['pk'], (0, 0))
-    return (line['estado'] != 'publicada', -stock, -orders, -ref_count.get(line['pk'], 0), bool(re.search(r'[-_]$', line['sku'])),
-            line['sku'], str(line['pk']))
+    return (line['estado'] != 'publicada', messy_spelling(line['sku']), -stock, -orders, -ref_count.get(line['pk'], 0), line['sku'],
+            str(line['pk']))
 
 
 def clashes(brand, other_brand):

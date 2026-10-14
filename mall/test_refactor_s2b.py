@@ -184,3 +184,19 @@ class BackfillTests(Fresh, TestCase):
             code, out = self.run_cli('--apply', '--user', self.root.username)
         self.assertEqual(code, 1)
         self.assertIn('0073–0075', out)
+
+
+class KeeperTests(TestCase):
+    """The clean spelling keeps a compact-duplicate group even with less stock (the owner, 2026-10-14)."""
+
+    def test_the_clean_spelling_wins_over_stock_and_a_published_line_over_both(self):
+        line = lambda pk, sku, estado='publicada': {'pk': pk, 'sku': sku, 'estado': estado}
+        stats = {1: (2, 0), 2: (9, 3), 3: (0, 0)}
+        clean, messy, retired = line(1, '16546-18000'), line(2, '16546-18000_'), line(3, '16546-18000', 'retirada')
+        order = sorted([messy, retired, clean], key=lambda row: s2b_main_refs.keeper_key(row, stats, {}))
+        self.assertEqual([row['pk'] for row in order], [1, 2, 3])
+        for sku in ('16546-S0100-', 'MB-120389_', '13780-79201_', '11115-54073.'):
+            self.assertTrue(s2b_main_refs.messy_spelling(sku), sku)
+        for sku in ('16546-18000', '11115-54073.AS', '04111-54220/280-AS'):
+            self.assertFalse(s2b_main_refs.messy_spelling(sku), sku)
+
