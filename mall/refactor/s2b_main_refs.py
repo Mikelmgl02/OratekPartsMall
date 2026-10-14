@@ -43,9 +43,15 @@ live database --apply and --rollback need the S0.11 guard (mall.refactor.guard).
 before, to mall.refactor.output.manifest_path('s2b') before the transaction commits. The dry run also works before 0073 and 0075 are
 applied (References read as 0073 leaves them, lines as UNKNOWN): a simulation; a rehearsal copy gives the real numbers.
 
---rollback (plan S2b): the merge hook's rollback first (Separar, newest first), then the mains and interno References it created are
-deleted (nothing hangs from them before S3), its sources and cases deleted, the reused rows, the codes it put in disputa and the lines'
-tipo and is_OEM put back, each unless it changed since (listed). Reverse 0076 first when it is applied.
+--rollback (plan S2b): the merge hook's rollback first (Separar, newest first; a merge whose lines went on into another line stays,
+listed, with what it recorded), then the mains and interno References it created are deleted (nothing hangs from them before S3), its
+sources and cases deleted, the reused rows, the codes it put in disputa and the lines' tipo and is_OEM put back, each unless it changed
+since (listed); last, the mains the S2b code made after landing (--landed-at, else the first apply's start) on a line's codigo are
+deleted and every other main left is unmarked, so the code before S2b lists none of them as an alterno. Order (rollback rungs 2-3 of
+plan §1.3): reverse 0076 (it refuses while 0076 is applied), --rollback, revert the code, restart the workers; reverse 0075 last, if
+at all. Never revert the code alone once the backfill ran: the code before S2b moves a source's main onto its merge target (two mains)
+and writes is_OEM without tipo (0076's line_oem_iff_tipo). Until the code is reverted, mall.references.ensure_mains stays idle (more
+than BACKFILL_PENDING_LINES lines without a main), so the worker does not make them again.
 """
 import argparse
 import hashlib
@@ -465,13 +471,17 @@ def shared_numbers(lines, mains, live_refs, groups, absorbed):
         root = find(next(iter(found)))
         grouped[root]['lines'] |= found
         grouped[root]['numbers'].add(code_of[ref_id])
+    from ..line_merge import kept_apart_among, separated_pairs
     merge_sets = [set(group['lines']) for group in groups]
     stats = line_stats(sorted({pk for group in grouped.values() for pk in group['lines']}))
+    pairs = separated_pairs()  # reads only the pair columns: works before 0075 too
     out = []
     for group in grouped.values():
         members = {str(pk) for pk in group['lines']}
         if any(members <= merge_set for merge_set in merge_sets):
             continue  # a merge group (part B) decides these lines
+        if pairs and len(kept_apart_among(members, pairs)) == len(members) * (len(members) - 1) // 2:
+            continue  # every pair kept apart (a shared_oem_number case dismissed, Separar SKU): a person decided
         own = [pk for pk in group['lines'] if compact(lines[pk]['sku']) in group['numbers']]
         keeper = own[0] if len(own) == 1 else min(group['lines'], key=lambda pk: keeper_key(lines[pk], stats, {}))
         out.append({'lines': sorted(members), 'numbers': sorted(group['numbers']), 'keeper': str(keeper), 'keeper_sku': lines[keeper]['sku']})
@@ -535,6 +545,7 @@ def write(result, log, run, user, hook=None):
     from django.utils import timezone
     from .. import references
     from ..matching_engine import part_row, save_case
+    from ..matching_models import MatchingCase
     from ..models import Part, Reference, ReferenceSource
     lines, mains, now = result['lines'], result['mains'], timezone.now()
     counts = Counter()
@@ -597,16 +608,23 @@ def write(result, log, run, user, hook=None):
     for group in result['shared']:
         if set(group['lines']) & absorbed:
             continue
+        digest = hashlib.sha256('|'.join(group['lines']).encode()).hexdigest()[:24]
+        existing = MatchingCase.objects.filter(key=f'catalog:shared:{digest}').first()
+        if existing is not None and existing.status not in ('review', 'unmatched'):
+            counts['shared_decided'] += 1  # a person decided it (a catch-up run): never reopened here
+            continue
         rows = {pk: part_row(part) for pk, part in ((str(p.pk), p) for p in Part._base_manager.filter(pk__in=group['lines']).prefetch_related('codes'))}
         sources = [rows[pk] for pk in group['lines'] if pk != group['keeper']]
-        digest = hashlib.sha256('|'.join(group['lines']).encode()).hexdigest()[:24]
         case = save_case(key=f'catalog:shared:{digest}', kind='catalog', sources=sources, candidates=[rows[group['keeper']]],
                          target=group['keeper_sku'], method=SHARED_METHOD,
                          reason=(f'Estos SKU llevan los mismos números OEM ({", ".join(group["numbers"][:6])}'
                                  f'{"…" if len(group["numbers"]) > 6 else ""}). Si son el mismo repuesto, agrúpalos en {group["keeper_sku"]}; '
                                  'si no, mantenlos separados.'))
-        log.append({**run, 'model': 'matching.MatchingCase', 'id': case.pk, 'action': 'create', 'after': {'key': case.key, 'method': SHARED_METHOD}})
-        counts['shared_cases'] += 1
+        if existing is None:  # only a case this run created is its rollback's to delete
+            log.append({**run, 'model': 'matching.MatchingCase', 'id': case.pk, 'action': 'create', 'after': {'key': case.key, 'method': SHARED_METHOD}})
+            counts['shared_cases'] += 1
+        else:
+            counts['shared_kept'] += 1
     sources, internos = [], []
     for mapping in result['mappings']:
         ref_id = mapping['reference'] or (mains[uuid.UUID(mapping['main_of'])]['ref'] if mapping['main_of'] else None)
@@ -659,8 +677,22 @@ def applied_lines():
     return rows
 
 
-def undo(log, run):
-    """Put back what the applies on this database did: {'restored', 'deleted', 'changed': [...], 'hook': ...}."""
+def first_apply_at():
+    """When the first apply on this database started (its manifest's run line), or None."""
+    from django.utils.dateparse import parse_datetime
+    times = [line.get('at') for line in manifest_lines() if line.get('stage') == STAGE and line.get('database') == current_database()
+             and line.get('action') == 'run' and line.get('mode') == 'apply' and line.get('at')]
+    return parse_datetime(min(times)) if times else None
+
+
+def undo(log, run, *, landed_at=None):
+    """Put back what the applies on this database did: {'restored', 'deleted', 'changed': [...], 'hook': ..., 'purged', 'unmarked'}.
+
+    Then the mains the S2b code made outside the manifest (create_line, the Part.save shim, ensure_mains, Separar, set_main): the code
+    before S2b would list them as alternos. A main created since S2b landed (landed_at, else the first apply's start) whose code is
+    its line's codigo and that nothing names as its replacement is deleted (mall.references.purge; before S3 nothing else hangs from a
+    Reference); every other main left becomes a plain Reference again (is_main false). The References of a merge the hook could not
+    undo are left as they are (listed)."""
     from django.db.models import F
     from django.utils import timezone
     from .. import references
@@ -676,6 +708,9 @@ def undo(log, run):
     if rollback_hook is not None:
         hook_result = rollback_hook(log=log, run=run, lines=[line for line in manifest_lines() if line.get('stage') == STAGE
                                                              and line.get('database') == current_database() and line.get('hook')])
+    kept = {int(pk) for pk in (hook_result or {}).get('kept') or []}  # a merge left in place keeps what it recorded
+    for pk in sorted(kept & {int(pk) for pk in by_model.get('mall.Reference', {})}):
+        changed.append(f'referencia {pk}: es de una unificación que se deja, se deja')
     for pk, chain in by_model.get('mall.ReferenceSource', {}).items():
         source = ReferenceSource.objects.filter(pk=pk).first()
         if source is not None:
@@ -690,7 +725,7 @@ def undo(log, run):
         case.delete()
         deleted += 1
         log.append({**run, 'model': 'matching.MatchingCase', 'id': pk, 'action': 'delete', 'before': chain[-1]['after']})
-    refs = by_model.get('mall.Reference', {})
+    refs = {pk: chain for pk, chain in by_model.get('mall.Reference', {}).items() if int(pk) not in kept}
     created = [int(pk) for pk, chain in refs.items() if chain[0]['action'] == 'create']
     if created:
         free = set(Reference._base_manager.filter(pk__in=created, reemplaza__isnull=True).values_list('pk', flat=True))
@@ -732,7 +767,36 @@ def undo(log, run):
         Part._base_manager.filter(pk=pk).update(**first)
         restored += 1
         log.append({**run, 'model': 'mall.Part', 'id': pk, 'action': 'rollback', 'before': last, 'after': first})
-    return {'restored': restored, 'deleted': deleted, 'changed': changed, 'hook': hook_result}
+    purged, unmarked = code_mains(log, run, landed_at=landed_at or first_apply_at(), skip=kept, changed=changed)
+    return {'restored': restored, 'deleted': deleted, 'changed': changed, 'hook': hook_result, 'purged': purged, 'unmarked': unmarked}
+
+
+def code_mains(log, run, *, landed_at, skip, changed):
+    """The mains left once the manifest is undone (made by the S2b code): (deleted, unmarked), see undo()."""
+    from django.db.models import F
+    from django.utils import timezone
+    from .. import references
+    from ..models import Reference
+    rows = list(Reference._base_manager.filter(is_main=True).exclude(pk__in=skip).select_related('part').order_by('pk'))
+    doomed = [row for row in rows if landed_at is not None and row.created_at is not None and row.created_at >= landed_at
+              and row.code == row.part.sku]
+    named = set(Reference._base_manager.filter(reemplazado_por__in=[row.pk for row in doomed]).values_list('reemplazado_por', flat=True))
+    doomed = [row for row in doomed if row.pk not in named]
+    for pk in sorted(named):
+        changed.append(f'referencia {pk}: principal que otra nombra como reemplazo, queda como referencia')
+    deleted = references.purge([row.pk for row in doomed])
+    for row in doomed:
+        log.append({**run, 'model': 'mall.Reference', 'id': row.pk, 'action': 'delete', 'role': 'code_main', 'line': str(row.part_id),
+                    'before': recorded({'code': row.code, 'brand': row.brand, 'tipo': row.tipo, 'estado': row.estado, 'is_main': True,
+                                        'created_at': row.created_at})})
+    gone = {row.pk for row in doomed}
+    left = [row.pk for row in rows if row.pk not in gone]
+    for start in range(0, len(left), CHUNK):
+        Reference._base_manager.filter(pk__in=left[start:start + CHUNK]).update(is_main=False, version=F('version') + 1, updated_at=timezone.now())
+    for pk in left:
+        log.append({**run, 'model': 'mall.Reference', 'id': pk, 'action': 'rollback', 'role': 'code_main', 'before': {'is_main': True},
+                    'after': {'is_main': False}})
+    return deleted, len(left)
 
 
 # --- run ------------------------------------------------------------------------------------------------------------------------------
@@ -791,8 +855,9 @@ def report(result):
             'tipos': len(result['tipos']), 'compact': result.get('hook_plan') or {}}
 
 
-def run(*, apply=False, rollback=False, username=None, report_path=None, stdout=None, hook=None):
-    """Plan, and with apply write it, or with rollback undo the applies on this database. None when a write is refused."""
+def run(*, apply=False, rollback=False, username=None, report_path=None, stdout=None, hook=None, landed_at=None):
+    """Plan, and with apply write it, or with rollback undo the applies on this database (landed_at: when the S2b code landed, for
+    the mains it made; the first apply's start when None). None when a write is refused."""
     from django.contrib.auth import get_user_model
     from django.db import transaction
     from django.utils import timezone
@@ -824,7 +889,7 @@ def run(*, apply=False, rollback=False, username=None, report_path=None, stdout=
         log = []
         with transaction.atomic():
             if rollback:
-                result = {'mode': 'rollback', **undo(log, run_line)}
+                result = {'mode': 'rollback', **undo(log, run_line, landed_at=landed_at)}
             else:
                 if apply:  # every line locked, so the plan and its writes see the same rows
                     list(Part._base_manager.select_for_update().order_by('pk').values_list('pk', flat=True))
@@ -845,6 +910,11 @@ def run(*, apply=False, rollback=False, username=None, report_path=None, stdout=
         if rollback:
             stdout.write(f"Rollback · S2b: {result['restored']} filas restauradas · {result['deleted']} borradas · "
                          f"{len(result['changed'])} cambiadas después (se dejan)\n")
+            hooked = result.get('hook') or {}
+            stdout.write(f"  unificaciones separadas {hooked.get('split', 0)} · casos borrados {hooked.get('cases', 0)} · principales del código "
+                         f"borradas {result.get('purged', 0)} · desmarcadas {result.get('unmarked', 0)}\n")
+            for line in hooked.get('changed') or []:
+                stdout.write(f'  {line}\n')
             for line in result['changed'][:40]:
                 stdout.write(f'  {line}\n')
         if result.get('manifest'):
@@ -873,6 +943,8 @@ def main(argv=None, stdout=None):
     parser.add_argument('--user', help='Usuario que figura como autor (obligatorio con --apply; opcional con --rollback).')
     parser.add_argument('--report', help='Escribe en esta ruta (JSON) los grupos, los casos, los códigos aprendidos y las listas.')
     parser.add_argument('--json', action='store_true', help='Imprime también el resultado en JSON.')
+    parser.add_argument('--landed-at', help='Con --rollback: cuándo aterrizó el código de S2b (ISO 8601, T_D5); las principales que el código '
+                                            'creó desde entonces se borran. Por defecto, el inicio del primer --apply.')
     options = parser.parse_args(argv)
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
     import django
@@ -880,7 +952,15 @@ def main(argv=None, stdout=None):
     from .guard import require_freeze
     require_freeze(options.apply or options.rollback)
     stdout = stdout or sys.stdout
-    result = run(apply=options.apply, rollback=options.rollback, username=options.user, report_path=options.report, stdout=stdout)
+    landed_at = None
+    if options.landed_at:
+        from django.utils.dateparse import parse_datetime
+        landed_at = parse_datetime(options.landed_at)
+        if landed_at is None:
+            stdout.write(f'--landed-at no es una fecha ISO 8601: {options.landed_at}\n')
+            return 1
+    result = run(apply=options.apply, rollback=options.rollback, username=options.user, report_path=options.report, stdout=stdout,
+                 landed_at=landed_at)
     if result is not None and options.json:
         stdout.write(json.dumps(result, ensure_ascii=False, default=str) + '\n')
     return 0 if result is not None else 1

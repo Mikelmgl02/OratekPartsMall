@@ -3,7 +3,8 @@
 # the main Reference). The References need nothing more: is_main and their other columns came with 0073. The tighten
 # migration 0076 adds one main per line, the main never retired and the transition CHECK is_OEM = (tipo = 'OEM').
 # Part B (mall.line_merge): a CatalogSeparation may come from a dismissed case instead of a split, so its split loses its NOT NULL and it
-# gains the case, who decided and why (nullable, or with a database default), which the code before S2b never writes.
+# gains the case, who decided and why (nullable, or with a database default), which the code before S2b never writes. Reversing this
+# migration drops tipo, case, actor and reason and leaves split nullable (the pairs a dismissed case wrote stay, kept apart).
 
 import django.db.models.deletion
 from django.conf import settings
@@ -25,11 +26,17 @@ class Migration(migrations.Migration):
             field=models.CharField(choices=[('OEM', 'OEM'), ('AFTERMARKET', 'Posventa'), ('UNKNOWN', 'Sin clasificar')], db_default='UNKNOWN',
                                    db_index=True, default='UNKNOWN', max_length=12, verbose_name='tipo'),
         ),
-        migrations.AlterField(
-            model_name='catalogseparation',
-            name='split',
-            field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='separations',
-                                    to='mall.catalogsplit'),
+        # Dropping the NOT NULL is never undone in the database: a case dismissed under S2b writes pairs with no split, which reversing
+        # this migration would otherwise refuse (SET NOT NULL), and the code before S2b reads only the pair columns.
+        migrations.SeparateDatabaseAndState(
+            state_operations=[migrations.AlterField(
+                model_name='catalogseparation',
+                name='split',
+                field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='separations',
+                                        to='mall.catalogsplit'),
+            )],
+            database_operations=[migrations.RunSQL('ALTER TABLE mall_catalogseparation ALTER COLUMN split_id DROP NOT NULL',
+                                                   reverse_sql=migrations.RunSQL.noop)],
         ),
         migrations.AddField(
             model_name='catalogseparation',

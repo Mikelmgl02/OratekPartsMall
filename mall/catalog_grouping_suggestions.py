@@ -65,13 +65,13 @@ class CatalogGroupingList(APIView):
                          'source_skus': [source['sku'] for source in source_rows], 'source_count': len(sources),
                          'reason': ('Crear SKU padre a partir del código base común. ' if proposed else 'SKU base completo y sufijos de proveedor. ') + 'Revisa la equivalencia antes de agrupar.',
                          'warnings': family['warnings'], 'needs_review': True})
-        for code in PartCode.objects.filter(part_id__in=member_rows).order_by('code'):
+        for code in PartCode.objects.filter(part_id__in=member_rows, is_main=False).order_by('code'):  # a line's main is its SKU (S2b)
             member_rows[str(code.part_id)]['codes'].append({'brand': code.brand, 'code': code.code, 'ref_type': code.ref_type, 'reference_source': code.reference_source})
         if rows:
             references = Q()
             for row in rows:
                 references |= Q(code__startswith=row['target_sku'] + '-')
-            for code in PartCode.objects.filter(references).select_related('part'):
+            for code in PartCode.objects.filter(references, is_main=False).select_related('part'):  # a main is its line's own SKU
                 for row in rows:
                     if code.code.startswith(row['target_sku'] + '-') and str(code.part_id) not in {
                         row['target']['id'], *[item['id'] for item in row['sources']]

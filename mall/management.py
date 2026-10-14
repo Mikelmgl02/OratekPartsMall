@@ -275,6 +275,8 @@ class ManagedPartSerializer(serializers.ModelSerializer):
     def validate_sku(self, sku):
         if len(sku) > 120:
             raise serializers.ValidationError('El SKU es el código principal de la línea: no puede superar 120 caracteres.')
+        if self.instance is not None and sku == self.instance.sku:
+            return sku  # unchanged (Editar always sends it): a main waiting in disputa for a merge case still saves its other edits
         parts = all_lines().filter(sku__iexact=sku)  # every estado: UNIQUE(sku) holds every line, merged ones too, until S4
         codes = Reference.objects.filter(code=sku)  # live References: a retired code no longer names its line
         held = references.conflicts(sku, '', line=self.instance)  # its key, brandless: the main reserves it for every brand (S2b)

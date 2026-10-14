@@ -20,7 +20,7 @@ FIELD_COLUMNS = {
     'category': 'CATEGORIA', 'subcategory': 'SUBCATEGORIA',
 }
 FIELD_LIMITS = {
-    'sku': 200, 'name': 200, 'description': 10000, 'code': 120,
+    'sku': 120, 'name': 200, 'description': 10000, 'code': 120,  # a SKU is its line's main Reference (S2b): 120
     'brand': 120, 'active': 10, 'category': 120, 'subcategory': 120,
 }
 

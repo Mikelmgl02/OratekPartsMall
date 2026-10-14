@@ -133,13 +133,26 @@ def prefer_oem(part, *, actor=None, selected=None, confirm_current=False):
     if rename_conflicts(part, target.code):
         if selected:
             raise ValidationError('El OEM ya identifica otro SKU. Usa Agrupar SKU para revisar y conservar todos sus vínculos.')
+        holder = codigo_owner(part, target.code)
+        if holder is not None:  # the OEM is another catalog line's codigo: a person decides through a merge case (S2b, set_main)
+            references.open_main_case(part, holder, target, 'OEM preferido')
         return part
     try:
-        references.set_main(part, target, actor=actor, reason='OEM preferido')
+        references.set_main(part, target, actor=actor, reason='OEM preferido', open_case=not selected)
     except references.MainConflict:
         if selected:
             raise ValidationError('El OEM ya identifica otro SKU. Usa Agrupar SKU para revisar y conservar todos sus vínculos.')
     return part
+
+
+def codigo_owner(part, code):
+    """The catalog line (publicada or retirada, not merged) whose codigo is this code under any punctuation, other than part and the
+    lines merged into it, or None."""
+    key = normalized_reference(code)
+    if not key:
+        return None
+    rows = catalog_lines().filter(sku__iregex=reference_pattern(key)).exclude(pk=part.pk).order_by('pk')
+    return next((line for line in rows if normalized_reference(line.sku) == key), None)
 
 
 def classify_company_main(part, actor=None):

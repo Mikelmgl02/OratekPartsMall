@@ -56,8 +56,8 @@ class ImportRequest(serializers.Serializer):
             row, column, code = item['row'], item['column'], item['value']
             if type(row) is not int or row < 2 or column not in ('SKU', 'CODIGO_ALTERNO'):
                 raise serializers.ValidationError('La fila o columna de la corrección no es válida.')
-            if not isinstance(code, str) or not code.strip() or len(code.strip()) > (200 if column == 'SKU' else 120):
-                raise serializers.ValidationError('Ingresa un código de texto dentro de la longitud permitida.')
+            if not isinstance(code, str) or not code.strip() or len(code.strip()) > 120:  # a SKU is its line's main Reference (S2b): 120 too
+                raise serializers.ValidationError('Ingresa un código de texto dentro de la longitud permitida (120 caracteres).')
             if (row, column) in seen:
                 raise serializers.ValidationError('No repitas una corrección para la misma celda.')
             seen.add((row, column))
@@ -246,8 +246,10 @@ def read_excel(raw, *, include_warnings=False, include_recovery=False, include_r
                         bad = True
                     else:
                         values[key] = flag in ['SI', 'TRUE', '1']
-                elif len(text) > {'sku': 200, 'name': 200, 'description': 10000, 'brand': 120, 'code': 120, 'category': 120, 'subcategory': 120}[key]:
-                    error(number, column, 'El valor supera la longitud permitida.')
+                elif len(text) > {'sku': 120, 'name': 200, 'description': 10000, 'brand': 120, 'code': 120, 'category': 120, 'subcategory': 120}[key]:
+                    # The SKU is the line's main Reference since S2b, whose code holds 120 (Crear SKU says the same).
+                    error(number, column, 'El SKU es el código principal de la línea: no puede superar 120 caracteres.' if key == 'sku'
+                          else 'El valor supera la longitud permitida.')
                     bad = True
                 else:
                     values[key] = text

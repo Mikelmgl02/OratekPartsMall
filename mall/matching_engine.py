@@ -165,9 +165,23 @@ def noise_words():
     return words
 
 
+def main_alias(part):
+    """A line's branded main (S2b) as a code row, or None. part_row leaves the main out (the codigo already is the row's sku, and a
+    case's fingerprint must not move when the line gets its main), but its brand still says whose code the codigo is: a maker's OEM
+    number (an OEM line is no unbranded master then) or a company's own code (GMB GWT-41A, X-FEB under FEBEST), as the branded alterno
+    with the same code said before S2b."""
+    from .references import main_in
+    main = main_in(part.codes.all())
+    if main is None or not main.brand:
+        return None
+    return {'code': main.code, 'brand': main.brand, 'kind': main.kind, 'ref_type': main.ref_type, 'reference_source': main.reference_source}
+
+
 class MatchIndex:
     def __init__(self):
-        self.parts = {str(p.pk): part_row(p) for p in storefront_lines().prefetch_related('codes')}
+        lines = list(storefront_lines().prefetch_related('codes'))
+        self.parts = {str(p.pk): part_row(p) for p in lines}
+        self.mains = {str(p.pk): alias for p in lines if (alias := main_alias(p)) is not None}
         self.by_sku = {p['sku']: p for p in self.parts.values()}
         self.codes = defaultdict(set)
         self.literal_codes = defaultdict(set)
@@ -179,10 +193,11 @@ class MatchIndex:
         self.unbranded_oem_masters = defaultdict(set)
         self.typed_codes = defaultdict(set)
         for row in self.parts.values():
+            aliases = self.aliases(row)
             if row.get('is_OEM'):
                 normalized = normalized_reference(row['sku'])
                 self.oem_codes[normalized].add(row['id'])
-                if not any(c['ref_type'] == 'oem' and c['brand'] and normalized_reference(c['code']) == normalized for c in row['codes']):
+                if not any(c['ref_type'] == 'oem' and c['brand'] and normalized_reference(c['code']) == normalized for c in aliases):
                     self.unbranded_oem_masters[normalized].add(row['id'])
             self.codes[(normalized_reference(row['sku']), '')].add(row['id'])
             self.literal_codes[(row['sku'], '')].add(row['id'])
@@ -192,7 +207,7 @@ class MatchIndex:
             self.base[normalized_reference(base)].add(row['id'])
             for word in set(re.findall(r'[A-Z0-9]{3,}', description(row['description']))):
                 self.words[word].add(row['id'])
-            for alias in row['codes']:
+            for alias in aliases:
                 normalized = normalized_reference(alias['code'])
                 self.codes[(normalized, alias['brand'])].add(row['id'])
                 self.literal_codes[(alias['code'], alias['brand'])].add(row['id'])
@@ -216,6 +231,11 @@ class MatchIndex:
                     self.portable[(normalized_reference(mapping.code), mapping.brand, description(mapping.description))].add(str(part.pk))
         self.noise = None
         self.common = {}
+
+    def aliases(self, row):
+        """A line's codes as matching reads them: its alternos and its branded main (main_alias)."""
+        main = self.mains.get(row['id'])
+        return row['codes'] + [main] if main else row['codes']
 
     def common_words(self, supplier_id):
         """Any word in more than 5% of one supplier's items (and in more than 20 of them): its vehicle models (FX11, GS11, PHEV...),
@@ -605,7 +625,7 @@ def reconcile_catalog_references(actor):
             owner = index.parts[next(iter(targets))]
             oem = source.get('is_OEM') or any(ref['ref_type'] == 'oem' and ref['brand'] and ref['reference_source']
                       and normalized_reference(ref['code']) == normalized_reference(source['sku'])
-                      for ref in owner['codes'])
+                      for ref in index.aliases(owner))
             if oem:
                 preferred.setdefault(owner['id'], (owner, set(), set()))[1].add(source['id'])
                 preferred[owner['id']][2].add(source['id'])
@@ -649,6 +669,7 @@ def create_supplier_families():
     Never manufacture a parent from one unrecognized code, a generic description,
     or two contradictory applications. Individual supplier IDs remain children.
     """
+    from . import references as reference_rules
     groups = defaultdict(list)
     from .supplier_import_models import SupplierInventoryImportJob
     busy = set(SupplierInventoryImportJob.objects.filter(
@@ -663,24 +684,30 @@ def create_supplier_families():
     for base, items in groups.items():
         if len({i.codigo for i in items}) < 2 or not all(same_spec(i.description, items[0].description) for i in items):
             continue
-        if all_lines().filter(Q(sku=base) | Q(sku__in=[i.codigo for i in items])).exists() or PartCode.objects.filter(code=base).exists():
+        # A key another line holds (S2b: any spelling of it, a brandless one reserving it for every brand) is that line's: no parent.
+        if (all_lines().filter(Q(sku=base) | Q(sku__in=[i.codigo for i in items])).exists() or PartCode.objects.filter(code=base).exists()
+                or reference_rules.conflicts(base, '').exists()):
             continue
-        with transaction.atomic():
-            # Recheck under supplier locks before creating anything; no network calls here.
-            list(Account.objects.select_for_update().filter(pk__in={i.supplier_id for i in items}).order_by('pk'))
-            locked = list(SupplierItem.objects.select_for_update().filter(pk__in=[i.pk for i in items]).order_by('pk'))
-            if sorted([item_row(i) for i in items], key=lambda r:r['id']) != sorted([item_row(i) for i in locked], key=lambda r:r['id']):
-                continue
-            case_key = f'seed:{base}'
-            sources = sorted([item_row(i) for i in items], key=lambda r:r['id'])
-            case = save_case(key=case_key, kind='seed', sources=sources, candidates=[], target=base, method='base_and_spec',
-                             reason='Varios códigos de proveedor comparten código base y especificaciones completas.')
-            if case.status == 'dismissed':
-                continue
-            part = create_line(base, origen='proveedor', name=base, description=items[0].description.upper())  # from supplier codes
-            # Matching the children is done by the same resolver, with an audit per item.
-            case.status = 'applied'
-            case.save(update_fields=['status'])
-            MatchingDecision.objects.create(case=case, action='created_parent', evidence={'sources': sources, 'target': part_row(part)})
-            created += 1
+        try:
+            with transaction.atomic():
+                # Recheck under supplier locks before creating anything; no network calls here.
+                list(Account.objects.select_for_update().filter(pk__in={i.supplier_id for i in items}).order_by('pk'))
+                locked = list(SupplierItem.objects.select_for_update().filter(pk__in=[i.pk for i in items]).order_by('pk'))
+                if sorted([item_row(i) for i in items], key=lambda r:r['id']) != sorted([item_row(i) for i in locked], key=lambda r:r['id']):
+                    continue
+                case_key = f'seed:{base}'
+                sources = sorted([item_row(i) for i in items], key=lambda r:r['id'])
+                case = save_case(key=case_key, kind='seed', sources=sources, candidates=[], target=base, method='base_and_spec',
+                                 reason='Varios códigos de proveedor comparten código base y especificaciones completas.')
+                if case.status == 'dismissed':
+                    continue
+                # strict: a key taken meanwhile refuses the parent (and its case rolls back) instead of a main left in disputa.
+                part = create_line(base, origen='proveedor', name=base, description=items[0].description.upper(), strict=True)
+                # Matching the children is done by the same resolver, with an audit per item.
+                case.status = 'applied'
+                case.save(update_fields=['status'])
+                MatchingDecision.objects.create(case=case, action='created_parent', evidence={'sources': sources, 'target': part_row(part)})
+                created += 1
+        except reference_rules.ReferenceConflict:
+            continue
     return created

@@ -204,6 +204,23 @@ class ApplyRevertTests(Catalog, TestCase):
         self.assertEqual(oa.revert_run(run.pk)['reverted'], 10)
         self.assertFalse(Part.objects.filter(is_OEM=True).exists() or PartCode.objects.filter(ref_type='oem').exists())
 
+    def test_a_flag_applied_before_s2b_reverts_once_the_backfill_made_its_row_the_main(self):
+        sku = '48654-30030'
+        run = self.canary(FLAG)['run']
+        link, part = self.link(sku), self.part(sku)
+        flagged = references.main_of(part)
+        self.assertEqual((flagged.code, flagged.brand, flagged.tipo), (sku, 'TOYOTA', 'oem'))
+        # As the code before S2b left it: no main in the undo and no brandless row of the codigo (the S2b backfill's rule 1 then made
+        # the flagged branded row the line's main).
+        OEMFinderChange.objects.filter(pk=link.pk).update(undo={key: value for key, value in link.undo.items() if key != 'main'})
+        references.purge(part.codes.filter(code=sku, brand='').values_list('pk', flat=True))
+        result = oa.revert_run(run.pk, actor=self.root, part=part.pk)
+        self.assertEqual((result['reverted'], result['skipped']), (1, []))
+        part = self.part(sku)
+        main = references.main_of(part)
+        self.assertEqual((part.sku, part.is_OEM, main.code, main.brand, main.tipo), (sku, False, sku, '', 'otro'))
+        self.assertEqual(PartCode.all_objects.get(pk=flagged.pk).estado, 'retirada')
+
     def test_rename_base_round_trip(self):
         self.round_trip('54830-2H000-MOBIS', RENAME, '54830-2H000', 'rename_base', 'strong-MOBIS')
 

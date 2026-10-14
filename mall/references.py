@@ -254,6 +254,8 @@ def build(line, code, brand='', *, tipo=None, ref_type=None, estado=None, suppli
     estado = estado or default_estado(source)
     if estado == 'retirada':
         raise ReferenceConflict('Una referencia nueva no puede estar retirada.')
+    if len(code_key(code)) > 120:  # Reference.code holds 120: a bulk path (a line's main from a long SKU) is refused here, not by the database
+        raise ReferenceConflict(f'El código {code_key(code)[:40]}… supera 120 caracteres.')
     check(tipo, estado, supplier, dispute_note)
     fields = {'part' if hasattr(line, 'pk') else 'part_id': line, 'supplier' if hasattr(supplier, 'pk') else 'supplier_id': supplier}
     return Reference(code=code_key(code), brand=brand_key(brand), tipo=tipo, ref_type=REF_TYPE_OF[tipo], estado=estado,
@@ -676,6 +678,10 @@ def follow_line(line, before, *, adding=False, fields=None, using=None):
     retyped = (fields is None or {'tipo', 'is_OEM'} & set(fields)) and before.get('tipo') not in (None, values.get('tipo'))
     if not (adding or renamed or back or retyped) or not is_live(line):
         return None
+    if retyped and not (adding or renamed or back) and main_of(line) is None:
+        # Only the tipo moved on a line the S2b backfill has not reached (0075 left every line UNKNOWN, and pair_line_tipo puts an OEM
+        # line's tipo back in step with is_OEM on a full save): the backfill makes its main by the plan's rules, not this shim.
+        return None
     return ensure_main(line, line_wins=bool(retyped and not renamed))
 
 
@@ -797,16 +803,40 @@ def codigo_holder(line, code):
     return all_lines().filter(sku__iexact=code_key(code)).exclude(pk=line.pk).order_by('pk').first()
 
 
+MAIN_CASE_METHOD = 'main_codigo'
+
+
+def covering_case(line_ids):
+    """A legacy catalog case (any status) whose lines include all of these (compact_duplicate, shared_oem_number, main_codigo...), or
+    None: such a pair already waits for a person, or one decided it."""
+    from .matching_models import MatchingCase
+    rows = MatchingCase.objects.filter(kind='catalog')
+    for pk in {str(getattr(line, 'pk', line)) for line in line_ids}:
+        rows = rows.filter(Q(sources__contains=[{'id': pk}]) | Q(candidates__contains=[{'id': pk}]))
+    return rows.order_by('pk').first()
+
+
 def open_main_case(line, holder, ref, reason=''):
-    """A legacy catalog case (method main_codigo) asking whether a line that wants holder's codigo as its main is holder's part: today's
-    Agrupación inteligente approves it as a merge into holder, or keeps the two apart."""
+    """A legacy catalog case (method main_codigo) asking whether a line whose main (or the one it wants) has a key holder holds is
+    holder's part: today's Agrupación inteligente approves it as a merge into holder, and dismissing it keeps the two apart
+    (mall.line_merge.KEEP_APART_METHODS). A case this pair already has, decided or not, is returned as it is (a person's decision is
+    never reopened here), and so is nothing (None) for lines kept apart."""
+    from .line_merge import apart
     from .matching_engine import part_row, save_case
+    from .matching_models import MatchingCase
     from .models import Part
+    key = f'catalog:main:{line.pk}:{holder.pk}'
+    existing = MatchingCase.objects.filter(key=key).first() or covering_case([line, holder])
+    if existing is not None:
+        return existing
+    if apart(line.pk, holder.pk):
+        return None
     source, target = (Part.objects.prefetch_related('codes').get(pk=pk) for pk in (line.pk, holder.pk))
-    return save_case(key=f'catalog:main:{line.pk}:{holder.pk}', kind='catalog', sources=[part_row(source)], candidates=[part_row(target)],
-                     target=holder.sku, method='main_codigo',
-                     reason=(f'{reason}: ' if reason else '') + f'{source.sku} quiere como código principal {ref.code}, que es el SKU de '
-                            f'{holder.sku}. Si son el mismo repuesto, agrúpalos; si no, mantenlos separados.')
+    what = f'que es el SKU de {holder.sku}' if code_key(holder.sku) == ref.code else f'cuya clave ya es de {holder.sku}'
+    return save_case(key=key, kind='catalog', sources=[part_row(source)], candidates=[part_row(target)], target=holder.sku,
+                     method=MAIN_CASE_METHOD,
+                     reason=(f'{reason}: ' if reason else '') + f'{source.sku} quiere como código principal {ref.code}, {what}. Si son el '
+                            'mismo repuesto, agrúpalos; si no, mantenlos separados.')
 
 
 def set_main(line, ref, actor=None, reason='', *, open_case=False):
@@ -891,6 +921,8 @@ def retype_main(line, tipo, *, brand=None, actor=None, reason=''):
                     pass
         if main.tipo != tipo:
             values.update(tipo=tipo, ref_type=REF_TYPE_OF[tipo])
+        if values.get('brand'):
+            ensure_brand(values['brand'], tipo)  # every brand a Reference carries is a Brand nombre or alias (I12), as add() does
         if values:
             _bump(Reference.all_objects.filter(pk=main.pk), **values)
             for name, value in values.items():
@@ -952,22 +984,54 @@ def bulk_mains(lines, *, actor=None):
     return built
 
 
+BACKFILL_PENDING_LINES = 1000  # more live lines than this without a main on their codigo: mall.refactor.s2b_main_refs has not run
+FAILED_MAINS = set()             # lines ensure_main refused in this process (a person fixes them): left out of later passes
+
+
 def ensure_mains(*, limit=500, actor=None):
     """ensure_main on up to `limit` live lines without a main on their codigo (lines inserted by a path that skipped it, or renamed by
-    a queryset update): the matching worker runs it on every pass until S10. Before mall.refactor.s2b_main_refs has created the first
-    mains it does nothing (status 'backfill_pending'), so the backfill's brand rules decide every line. Returns {'status', 'lines'}."""
-    Reference, _ = _models()
+    a queryset update), then a merge case (open_main_case) for each live line whose main waits in disputa with no case about it yet:
+    the matching worker runs it on every pass until S10. While more than BACKFILL_PENDING_LINES live lines have no main on their
+    codigo (before mall.refactor.s2b_main_refs, or after its --rollback with this code still deployed) it does nothing (status
+    'backfill_pending'), so the backfill's brand rules and its manifest decide every line. A line ensure_main refuses (a key it cannot
+    hold, a code too long) is logged, counted in 'failed' and left out of this process's later passes, so one line never stops
+    matching. Returns {'status', 'lines', 'failed', 'cases'}."""
+    import logging
+    from django.db import DatabaseError
     from django.db.models import Exists, OuterRef
     from .lines import LIVE, catalog_lines
     from .models import Part
-    if not Reference.objects.filter(is_main=True).exists():
-        return {'status': 'backfill_pending', 'lines': 0}
+    Reference, _ = _models()
     on_codigo = Reference.objects.filter(part_id=OuterRef('pk'), is_main=True, code=OuterRef('sku'))
-    ids = list(catalog_lines(LIVE).annotate(main_ok=Exists(on_codigo)).filter(main_ok=False).order_by('pk').values_list('pk', flat=True)[:limit])
-    done = 0
+    missing = catalog_lines(LIVE).annotate(main_ok=Exists(on_codigo)).filter(main_ok=False)
+    if missing[:BACKFILL_PENDING_LINES + 1].count() > BACKFILL_PENDING_LINES:
+        logging.getLogger(__name__).info('ensure_mains: más de %s líneas sin principal; espera a mall.refactor.s2b_main_refs.',
+                                         BACKFILL_PENDING_LINES)
+        return {'status': 'backfill_pending', 'lines': 0, 'failed': 0, 'cases': 0}
+    ids = list(missing.exclude(pk__in=FAILED_MAINS).order_by('pk').values_list('pk', flat=True)[:limit])
+    done = failed = cases = 0
     for pk in ids:
-        with transaction.atomic():
-            line = Part.objects.select_for_update().filter(pk=pk).first()
-            if line is not None and ensure_main(line, actor=actor) is not None:
-                done += 1
-    return {'status': 'ok', 'lines': done}
+        try:
+            with transaction.atomic():
+                line = Part.objects.select_for_update().filter(pk=pk).first()
+                if line is not None and ensure_main(line, actor=actor) is not None:
+                    done += 1
+        except (ReferenceConflict, DatabaseError) as error:
+            FAILED_MAINS.add(pk)
+            failed += 1
+            logging.getLogger(__name__).warning('ensure_mains: la línea %s no puede tener su principal: %s', pk,
+                                                getattr(error, 'message', None) or error)
+    disputed = (Reference.objects.filter(is_main=True, estado='disputa', supplier__isnull=True, part__in=catalog_lines(LIVE))
+                .exclude(part_id__in=FAILED_MAINS).select_related('part').order_by('pk')[:limit])
+    for ref in disputed:
+        holder = (conflicts(ref.code, ref.brand, line=ref.part_id, estado='declarado').exclude(part_id=ref.part_id)
+                  .select_related('part').order_by('pk').first())
+        if holder is None or covering_case([ref.part_id, holder.part_id]) is not None:
+            continue
+        try:
+            with transaction.atomic():
+                cases += int(open_main_case(ref.part, holder.part, ref, 'Código en disputa') is not None)
+        except DatabaseError as error:
+            FAILED_MAINS.add(ref.part_id)
+            logging.getLogger(__name__).warning('ensure_mains: no se pudo abrir el caso de %s: %s', ref.part.sku, error)
+    return {'status': 'ok', 'lines': done, 'failed': failed, 'cases': cases}

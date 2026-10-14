@@ -192,7 +192,7 @@ def plan(data):
             printed_by[(manufacturer_name(job.brand), compact(item['brand_code']))].add(item['brand_code'])
             for xr in item.get('cross_refs', []):
                 printed_by[(manufacturer_name(xr.get('brand') or ''), compact(xr.get('code') or ''))].add(item['brand_code'])
-    for code in (PartCode.objects.filter(catalog_q(prefix='part__'), ref_type='company', reference_source__icontains=prefix)
+    for code in (PartCode.objects.filter(catalog_q(prefix='part__'), ref_type='company', reference_source__icontains=prefix, is_main=False)
                  .select_related('part').order_by('part__sku', 'brand', 'code')):
         key = (manufacturer_name(code.brand), compact(code.code))
         mine = sorted(job.items[n]['brand_code'] for n in items_of.get(str(code.part_id), ()))

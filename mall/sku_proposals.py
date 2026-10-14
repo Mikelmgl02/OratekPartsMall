@@ -556,8 +556,8 @@ def edit(proposal_id, user, expected_version, data):
         previous_oem = remembered_oem(proposal)   # before this edit's own OEM fields (the drawer clears them when it ticks «código interno»)
         if 'sku' in data:
             sku = clean(str(data['sku'] or ''))
-            if not sku or len(sku) > 200:
-                raise ValidationError({'sku': 'Escribe el SKU (hasta 200 caracteres).'})
+            if not sku or len(sku) > 120:  # the line's main Reference (S2b) holds 120, as Crear SKU says
+                raise ValidationError({'sku': 'Escribe el SKU (hasta 120 caracteres).'})
             if sku != proposal.sku:
                 proposal.sku = sku
                 changed.add('sku')

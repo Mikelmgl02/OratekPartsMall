@@ -223,16 +223,18 @@ def main_snapshot(part):
     return {'id': main.pk, 'code': main.code, 'brand': main.brand, 'tipo': main.tipo} if main else None
 
 
-def restore_main(part, undo, previous_sku, actor, reason):
+def restore_main(part, undo, previous_sku, actor, reason, exclude=()):
     """Give the line back the main (and so the codigo) it had before an apply: the main the undo recorded (brought back if it was
-    retired since), else the line's Reference with the old SKU as code (an apply before S2b), added when it is gone."""
-    wanted, ref = undo.get('main'), None
-    if wanted:
+    retired since), else the line's Reference with the old SKU as code (an apply before S2b), added brandless when it is gone. exclude:
+    the References the revert retires next (what the run created), never the main given back: before S2b a FLAG apply created the
+    branded OEM row of the codigo, which the S2b backfill made the line's main."""
+    wanted, ref, exclude = undo.get('main'), None, set(exclude)
+    if wanted and wanted['id'] not in exclude:
         ref = Reference.all_objects.filter(pk=wanted['id'], part=part).first()
         if ref is not None and ref.estado == 'retirada':
             ref, _ = references.add(part, ref.code, ref.brand, tipo=ref.tipo, actor=actor)
     if ref is None:
-        ref = (part.codes.filter(code=previous_sku, supplier__isnull=True).order_by('pk').first()
+        ref = (part.codes.filter(code=previous_sku, supplier__isnull=True).exclude(pk__in=exclude).order_by('pk').first()
                or references.add(part, previous_sku, '', tipo='otro', actor=actor)[0])
     current = references.main_of(part)
     if current is None or current.pk != ref.pk:
@@ -595,7 +597,7 @@ def revert_link(link_id, actor):
         kept = [] if rename else exact_listed(part.sku)
         why = f'Deshecho el buscador OEM (corrida {link.run_id})'
         # The main as it was first (S2b: the codigo follows it back), so the References the run created are no longer the main.
-        restore_main(part, undo, change.previous_sku, actor, why)
+        restore_main(part, undo, change.previous_sku, actor, why, exclude={r['id'] for r in delete})
         references.retire([r['id'] for r in delete], actor=actor, reason=why)
         for pk, before in restore:  # one save each, not a queryset update: the OEM reference library follows the Reference signals
             references.update(Reference.objects.get(pk=pk), actor=actor, **{k: before[k] for k in CODE_KEYS[1:]})

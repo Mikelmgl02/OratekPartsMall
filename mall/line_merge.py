@@ -54,7 +54,8 @@ from . import references
 SERVICE_ACCOUNT = 'motionpartes-matching-service'  # the matching worker's actor (mall.matching_worker)
 COMPACT_DUPLICATE = 'compact_duplicate'
 SHARED_OEM_NUMBER = 'shared_oem_number'
-KEEP_APART_METHODS = (COMPACT_DUPLICATE, SHARED_OEM_NUMBER)  # catalog cases whose dismissal keeps their lines apart
+MAIN_CODIGO = 'main_codigo'  # mall.references.open_main_case: a main whose key another line holds
+KEEP_APART_METHODS = (COMPACT_DUPLICATE, SHARED_OEM_NUMBER, MAIN_CODIGO)  # catalog cases whose dismissal keeps their lines apart
 MERGE_DISPUTE = 'caso de unificación'  # how the note of a code two lines hold ends until a merge decides (S2b)
 METHODS = {'base_and_spec': 'Mismo código base y la misma descripción', 'catalog_reference': 'Su código era alterno de este SKU',
            'family_review': 'Familia revisada en Agrupación inteligente', COMPACT_DUPLICATE: 'El mismo código compacto (S2b)',
@@ -164,9 +165,14 @@ def lock_lines(ids):
 
 
 def service_actor():
+    """The matching service's account (mall.matching_worker), created as the worker does when an automatic merge runs first: inactive
+    and with no usable password, or the worker refuses to run ('Matching service identity must be disabled')."""
     from django.contrib.auth import get_user_model
-    actor, _ = get_user_model().objects.get_or_create(username=SERVICE_ACCOUNT, defaults={
+    actor, created = get_user_model().objects.get_or_create(username=SERVICE_ACCOUNT, defaults={
         'email': 'matching-service@motionpartes.invalid', 'is_active': False})
+    if created:
+        actor.set_unusable_password()
+        actor.save(update_fields=['password'])
     return actor
 
 
@@ -507,7 +513,8 @@ def settle_dependents(sources, target, brought, actor):
         entry = brought[source.pk]['dependents']
         case = OEMReviewCase.objects.filter(part=source, status='review').first()
         if case is not None:
-            entry['oem_review'] = {'id': case.pk, 'status': case.status}
+            entry['oem_review'] = {'id': case.pk, 'status': case.status, 'decision': case.decision or {},
+                                   'decided_at': case.decided_at.isoformat() if case.decided_at else None, 'decided_by': case.decided_by_id}
             case.status, case.decided_at = 'resolved', now
             case.decided_by = actor if getattr(actor, 'pk', None) else None
             case.decision = {**(case.decision or {}), 'action': 'resolved', 'reason': 'línea unificada', 'into': str(target.pk)}
@@ -529,9 +536,11 @@ def restore_dependents(entry, line):
     from .oem_finder_models import OEMAutoCandidate, OEMReviewCase
     dependents = entry.get('dependents') or {}
     case = dependents.get('oem_review')
-    if case:
+    if case:  # what it held before the merge (a merge recorded before S2b's review fixes kept only id and status)
+        from django.utils.dateparse import parse_datetime
         OEMReviewCase.objects.filter(pk=case['id'], part=line, status='resolved', decision__reason='línea unificada').update(
-            status=case['status'], decided_at=None, decided_by=None, decision={}, updated_at=timezone.now())
+            status=case['status'], decided_at=parse_datetime(case['decided_at']) if case.get('decided_at') else None,
+            decided_by_id=case.get('decided_by'), decision=case.get('decision') or {}, updated_at=timezone.now())
     candidate = dependents.get('oem_auto')
     if candidate:
         OEMAutoCandidate.objects.filter(pk=candidate['id'], part=line, status='excluded', reason='merged').update(
@@ -1079,18 +1088,40 @@ def s2b_compact_duplicates(groups, *, apply, actor, run, log):
         if not apply:
             out['cases'].append(compact_case_key(group['clave']))
             continue
+        from .matching_models import MatchingCase
+        existing = MatchingCase.objects.filter(key=compact_case_key(group['clave'])).first()
+        if existing is not None and existing.status not in ('review', 'unmatched'):
+            out['cases'].append(str(existing.pk))  # a person decided it already (a catch-up run): never reopened here
+            continue
         case = open_compact_case(group, why)
         out['cases'].append(str(case.pk))
-        log.append({**run, 'hook': True, 'model': 'matching.MatchingCase', 'id': str(case.pk), 'action': 'create',
-                    'after': {'key': case.key, 'method': COMPACT_DUPLICATE, 'guard': guard}})
+        if existing is None:  # only a case this run created is its rollback's to delete
+            log.append({**run, 'hook': True, 'model': 'matching.MatchingCase', 'id': str(case.pk), 'action': 'create',
+                        'after': {'key': case.key, 'method': COMPACT_DUPLICATE, 'guard': guard}})
     return out
+
+
+def merge_reference_ids(merge):
+    """Every Reference id a CatalogMerge recorded: what its sources brought (moved), their former mains, the ones absorbed and the
+    target's rows they were absorbed into."""
+    ids = set()
+    for entry in merge.sources or []:
+        ids |= {int(pk) for pk in entry.get('references') or []}
+        if entry.get('main') is not None:
+            ids.add(int(entry['main']))
+        for record in entry.get('absorbed') or []:
+            ids |= {int(record[key]) for key in ('ref', 'into') if record.get(key) is not None}
+    return ids
 
 
 def s2b_rollback(*, log, run, lines):
     """The backfill's --rollback hands this the hook's manifest lines first: each merge it made is split again (Separar, newest
     first: every line comes back with what it brought and its main), and the split, its separations and the merge are deleted, the
     keeper's estado and the blanks the merge filled are put back where nothing changed them since; each case it opened is deleted
-    while still in review. Returns {'split', 'cases', 'changed': [...]}."""
+    while still in review. A merge is undone only when every line it brought is either still merged into its keeper (split here) or
+    already back on its own; one whose lines went on into another line (that line was merged later), or whose split fails, stays with
+    its record, listed, and the References it recorded are returned in 'kept' so the backfill's own rollback leaves them as they are.
+    Returns {'split', 'cases', 'changed': [...], 'kept': [Reference ids]}."""
     m = _models()
     from .catalog_split_models import CatalogSplit
     from .matching_models import MatchingCase
@@ -1103,7 +1134,8 @@ def s2b_rollback(*, log, run, lines):
             chains[key] = line
         elif line.get('action') in ('delete', 'rollback'):
             chains.pop(key, None)
-    result = {'split': 0, 'cases': 0, 'changed': []}
+    result = {'split': 0, 'cases': 0, 'changed': [], 'kept': []}
+    kept = set()
     merges = [line for (model, _), line in chains.items() if model == 'mall.CatalogMerge']
     for line in sorted(merges, key=lambda line: (line.get('at', ''), lines.index(line)), reverse=True):
         merge = m.CatalogMerge.objects.select_related('target', 'actor').filter(pk=line['id']).first()
@@ -1111,6 +1143,14 @@ def s2b_rollback(*, log, run, lines):
             result['changed'].append(f"unificación {line['id']}: ya no existe")
             continue
         target = merge.target
+        where = dict(m.Part._base_manager.filter(pk__in=[entry['id'] for entry in merge.sources]).values_list('pk', 'merged_into_id'))
+        elsewhere = [entry.get('sku') or entry['id'] for entry in merge.sources
+                     if where.get(uuid.UUID(str(entry['id']))) not in (None, target.pk)]
+        if elsewhere or target.merged_into_id:
+            result['changed'].append(f"unificación {line['id']} en {target.sku}: sus líneas están en otro SKU "
+                                     f"({', '.join(elsewhere) or target.sku}); se deja, Separar SKU la deshace")
+            kept |= merge_reference_ids(merge)
+            continue
         try:
             with transaction.atomic():
                 restore = []
@@ -1118,8 +1158,8 @@ def s2b_rollback(*, log, run, lines):
                 items = {str(pk) for pk in m.SupplierItem.objects.filter(part=target).values_list('pk', flat=True)}
                 images = {str(pk) for pk in m.PartImage.objects.filter(part=target).values_list('pk', flat=True)}
                 for entry in merge.sources:
-                    if not m.Part.objects.filter(pk=entry['id'], merged_into=target).exists():
-                        continue
+                    if where.get(uuid.UUID(str(entry['id']))) != target.pk:
+                        continue  # already back on its own (Separar SKU after the apply)
                     restore.append({'id': entry['id'], 'codes': [pk for pk in entry.get('references', []) if pk in codes],
                                     'items': [pk for pk in entry.get('items', []) if pk in items],
                                     'images': [pk for pk in entry.get('images', []) if pk in images]})
@@ -1145,6 +1185,7 @@ def s2b_rollback(*, log, run, lines):
                 merge.delete()
         except Exception as error:  # noqa: BLE001  (one merge that cannot be split stays, listed; the rest roll back)
             result['changed'].append(f"unificación {line['id']} en {target.sku}: no se pudo separar ({detail_text(error)})")
+            kept |= merge_reference_ids(merge)
             continue
         result['split'] += 1
         log.append({**run, 'hook': True, 'model': 'mall.CatalogMerge', 'id': line['id'], 'action': 'delete', 'before': line.get('after', {})})
@@ -1158,4 +1199,5 @@ def s2b_rollback(*, log, run, lines):
         case.delete()
         result['cases'] += 1
         log.append({**run, 'hook': True, 'model': 'matching.MatchingCase', 'id': pk, 'action': 'delete', 'before': line.get('after', {})})
+    result['kept'] = sorted(kept)
     return result

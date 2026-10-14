@@ -226,10 +226,11 @@ class EnsureMainsTests(TestCase):
     def test_nothing_happens_before_the_backfill_then_lines_without_a_main_get_one(self):
         lines = [make_line(f'ENS-{n}') for n in range(3)]
         references.purge(Reference.all_objects.values_list('pk', flat=True))
-        self.assertEqual(references.ensure_mains(), {'status': 'backfill_pending', 'lines': 0})
+        with patch.object(references, 'BACKFILL_PENDING_LINES', 2):  # more lines without a main than that: the backfill has not run
+            self.assertEqual(references.ensure_mains(), {'status': 'backfill_pending', 'lines': 0, 'failed': 0, 'cases': 0})
         references.ensure_main(lines[0])
         Part.objects.filter(pk=lines[0].pk).update(sku='ENS-RENAMED')  # estado: a rename the shim never saw
-        self.assertEqual(references.ensure_mains(), {'status': 'ok', 'lines': 3})
+        self.assertEqual(references.ensure_mains(), {'status': 'ok', 'lines': 3, 'failed': 0, 'cases': 0})
         self.assertEqual(main(lines[0]).code, 'ENS-RENAMED')
         self.assertEqual(broken_invariants(), {})
 
