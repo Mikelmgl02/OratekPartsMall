@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ColDef } from 'ag-grid-community';
 import type { CustomCellRendererProps } from 'ag-grid-react';
-import { ArrowLeft, ArrowUpRight, BadgeCheck, CheckCircle2, ClipboardList, LockKeyhole, RefreshCw, Search, TriangleAlert, X } from 'lucide-react';
+import { ArrowUpRight, BadgeCheck, CheckCircle2, ClipboardList, LockKeyhole, RefreshCw, Search, TriangleAlert, X } from 'lucide-react';
 import { Account } from '@/lib/types';
 import type { ClientRequestSummary, RequestStatusFilter, RequestSubmissionResult } from '@/lib/request-types';
 import { receiptHint } from '@/lib/deal-types';
@@ -14,14 +14,12 @@ import ServerGrid from './server-grid';
 
 const dateLabel = (value: string) => new Date(value).toLocaleString('es-PA', { timeZone: 'America/Panama', dateStyle: 'medium', timeStyle: 'short' });
 // initialStatus: the filter it opens on (the Recibido reminder's Ver todas opens Por recibir).
-export default function ClientRequests({ account, draftCount, onDraft, onCatalog, receipt, initialStatus }: {
-  account?: Account; draftCount: number; onDraft: () => void; onCatalog: () => void; receipt?: RequestSubmissionResult; initialStatus?: RequestStatusFilter;
+export default function ClientRequests({ account, draftCount, onDraft, receipt, initialStatus }: {
+  account?: Account; draftCount: number; onDraft: () => void; receipt?: RequestSubmissionResult; initialStatus?: RequestStatusFilter;
 }) {
   const canView = !!account?.capabilities.includes('client');
   return <main className="basket-page client-requests-page" aria-label="Solicitudes enviadas"><div className="section-container basket-page-container">
-    <button type="button" className="basket-page-back" onClick={onCatalog}><ArrowLeft size={16}/>Volver al catálogo</button>
     <ClientRequestNavigation selected="sent" count={draftCount} canViewSent={canView} onDraft={onDraft} onSent={() => {}}/>
-    <div className="basket-page-heading"><div><span className="eyebrow">TUS SOLICITUDES</span><h1>Órdenes enviadas</h1><p>Sigue cada orden desde su envío hasta que confirmes que la recibiste.</p></div></div>
     {receipt && <div className="notice success client-request-receipt" role="status"><CheckCircle2 size={18}/><div><strong>Solicitud enviada</strong><p>Los artículos enviados salieron de la cesta y quedaron guardados aquí.</p>{receipt.requests.map(row => <p key={row.id}>{row.supplier.name} · {row.reference}</p>)}</div></div>}
     {canView && account ? <SentRequestList key={account.id} account={account} initialStatus={initialStatus}/> : <div className="notice">Inicia sesión y selecciona una cuenta con rol de cliente para consultar sus solicitudes enviadas.</div>}
   </div></main>;

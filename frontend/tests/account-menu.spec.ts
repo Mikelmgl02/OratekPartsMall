@@ -74,7 +74,7 @@ test('list destinations close the menu and navigate to favorites, requests and t
   await page.goto('/');
   for (const [name, destination, heading] of [
     ['Mis favoritos 2','favoritos','Mis favoritos'],
-    ['Mis solicitudes','solicitudes','Órdenes enviadas'],
+    ['Mis solicitudes','solicitudes','Órdenes de TALLER UNO'],
     ['Historial de compras','compras','Historial de compras'],
     ['Mi cesta','cesta','Tu cesta'],
   ]) {
@@ -136,7 +136,7 @@ test('purchase history survives reload and browser back, and keeps quotations in
   await expect(page.getByRole('heading', {name:'Historial de compras', exact:true})).toBeVisible();
   await page.getByRole('button', {name:'Ver mis solicitudes', exact:true}).click();
   await expect(page).toHaveURL(/vista=solicitudes/);
-  await expect(page.getByRole('heading', {name:'Órdenes enviadas', exact:true})).toBeVisible();
+  await expect(page.getByRole('heading', {name:'Órdenes de TALLER UNO', exact:true})).toBeVisible();
   await page.goBack();
   await expect(page.getByRole('heading', {name:'Historial de compras', exact:true})).toBeVisible();
   await switchAccount(page, supplier.id);

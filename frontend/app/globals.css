@@ -848,6 +848,8 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .supplier-ledger .debit>.round-icon { background:#fff0e8; }
 .basket-page { background:#f2f4ef; min-height:calc(100dvh - 180px); padding:28px 0 62px; }
 .basket-page-container { min-width:0; }
+/* Cotizaciones (the client's orders grid) gets 500px more than the shop's 1500px. */
+.client-requests-page .section-container.basket-page-container { width:min(2000px,calc(100% - 48px)); }
 .client-request-navigation { display:flex; gap:8px; align-items:center; margin:0 0 25px; padding-bottom:17px; border-bottom:1px solid #dfe5d8; }
 .client-request-navigation button { display:flex; align-items:center; gap:9px; padding:12px 17px; border-radius:8px; color:#748663; background:#e9eee2; font-size:12px; }
 .client-request-navigation button[aria-current="page"] { background:#28392c; color:#fff; }
