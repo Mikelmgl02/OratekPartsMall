@@ -28,22 +28,37 @@ class MigrationGuardTests(TestCase):
 
 
 class MigrationImportTests(SimpleTestCase):
-    # The upload storage of 0019's and 0057's file fields; the refactor leaves mall.media_storage alone.
-    ALLOWED = {'mall.media_storage'}
+    # What a migration may import from the app: the upload storage of 0019's and 0057's file fields (the refactor leaves
+    # mall.media_storage alone) and the lock timeout every expand, tighten and contract migration of the refactor starts with (plan
+    # §1.2). Both may import only Django, which the second test holds them to.
+    ALLOWED = {'mall.media_storage', 'mall.refactor.migration_ops'}
+
+    def imported(self, path, package):
+        """The app modules a file imports, relative imports resolved against its package; `from mall.refactor import migration_ops`
+        counts as mall.refactor.migration_ops."""
+        found = []
+        for node in ast.walk(ast.parse(path.read_text(encoding='utf-8'))):
+            if isinstance(node, ast.Import):
+                found.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                parts = package.split('.')
+                base = '.'.join([*parts[:len(parts) - node.level + 1], node.module or ''] if node.level else [node.module or '']).strip('.')
+                names = [f'{base}.{alias.name}' for alias in node.names]
+                found.extend(names if base not in self.ALLOWED and all(name in self.ALLOWED for name in names) else [base])
+        return [module for module in found if module.split('.')[0] == 'mall']
 
     def test_migrations_import_no_app_code(self):
         """The test database replays every migration, so one that imports a module the refactor rewrites stops it from building."""
-        found = {}
-        for path in sorted(MIGRATIONS.glob('[0-9]*.py')):
-            for node in ast.walk(ast.parse(path.read_text(encoding='utf-8'))):
-                if isinstance(node, ast.ImportFrom):
-                    modules = ['.' * node.level + (node.module or '')]
-                elif isinstance(node, ast.Import):
-                    modules = [alias.name for alias in node.names]
-                else:
-                    continue
-                found.setdefault(path.name, []).extend(m for m in modules if (m.startswith('.') or m.split('.')[0] == 'mall') and m not in self.ALLOWED)
+        found = {path.name: [m for m in self.imported(path, 'mall.migrations') if m not in self.ALLOWED]
+                 for path in sorted(MIGRATIONS.glob('[0-9]*.py'))}
         self.assertEqual({name: modules for name, modules in found.items() if modules}, {})
+
+    def test_what_migrations_may_import_imports_only_django(self):
+        for module in sorted(self.ALLOWED):
+            path = MIGRATIONS.parent.parent / (module.replace('.', '/') + '.py')
+            if path.exists():  # migration_ops comes with S0.11
+                with self.subTest(module):
+                    self.assertEqual(self.imported(path, module.rpartition('.')[0]), [])
 
 
 class NetworkGuardTests(SimpleTestCase):
@@ -66,3 +81,4 @@ class NetworkGuardTests(SimpleTestCase):
         self.assertEqual(opened, [('10.4.0.7', 5432), '/run/postgresql/.s.PGSQL.5432'])
         self.assertEqual(blocked, [('104.20.29.242', 443)] * 2)
         self.assertEqual(stderr.getvalue().count('104.20.29.242:443'), 1)
+
