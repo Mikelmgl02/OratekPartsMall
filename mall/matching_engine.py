@@ -19,6 +19,7 @@ from django.db.models import Q
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 from .catalog_families import normalized_reference, supplier_base, application, family_candidates
+from .catalog_suffixes import HEAD_SYN
 from .models import Account, Part, PartCode, SupplierItem, SupplierCodeMapping, MatchingCase, MatchingDecision
 from .matching_queue import matching_work
 from .oem_links import reach_index, same_make
@@ -68,16 +69,65 @@ def references(text):
         if len(normalized_reference(m)) >= 8}
 
 
+SIDES = {**dict.fromkeys(['IZQ', 'IZQUIERDO', 'IZQUIERDA', 'LH', 'LEFT'], ('side', 'left')),
+         **dict.fromkeys(['DER', 'DERECHO', 'DERECHA', 'RH', 'RIGHT'], ('side', 'right')),
+         **dict.fromkeys(['DEL', 'DELANTERO', 'DELANTERA', 'FRONT'], ('axle', 'front')),
+         **dict.fromkeys(['TRAS', 'TRASERO', 'TRASERA', 'REAR'], ('axle', 'rear'))}
+JOINED_SIDES = {**SIDES, 'L': ('side', 'left'), 'R': ('side', 'right')}  # L/R only counts written as a pair
+JOINERS = {'/', '&', '+', '-', 'Y', 'O', 'E'}
+KIT_WORDS = {'KIT', 'JUEGO', 'SET', 'PAR'}
+SET_WORDS = {'JUEGO', 'SET'}           # pads and shoes are always sold as a set: «SET 4 PCS» or «JUEGO» is not a kit for them
+SOLD_AS_SET = {'PASTILLA', 'ZAPATA'}
+TYPE_NOUNS = {'TAMBOR', 'DISCO', 'PASTILLA', 'ZAPATA', 'FILTRO', 'BUJIA', 'AMORTIGUADOR', 'ROTULA'}
+PLURALS = {'TAMBORES': 'TAMBOR', 'DISCOS': 'DISCO', 'PASTILLAS': 'PASTILLA', 'ZAPATAS': 'ZAPATA', 'FILTROS': 'FILTRO',
+           'BUJIAS': 'BUJIA', 'AMORTIGUADORES': 'AMORTIGUADOR', 'AMORTS': 'AMORT', 'ROTULAS': 'ROTULA'}
+
+
+def type_noun(word):
+    """A description word as a part-type noun, through the plural and the ERP abbreviations (AMORTIGUADOR = AMORT)."""
+    word = PLURALS.get(word, word)
+    return HEAD_SYN.get(word, word)
+
+
+TYPES = {type_noun(word) for word in TYPE_NOUNS}
+
+
+def sides(text):
+    """The sides and axles a description names. A pair written together («LH/RH», «L/R», «IZQ Y DER», «DEL/TRAS») is a part
+    for either one, so it names neither."""
+    tokens = re.findall(r'[A-Z0-9]+|[/&+-]', re.sub(r'\b([LR])/H\b', r'\1H', text))
+    either = set()
+    for i in range(len(tokens) - 2):
+        first, second = JOINED_SIDES.get(tokens[i]), JOINED_SIDES.get(tokens[i + 2])
+        if first and second and tokens[i + 1] in JOINERS and first[0] == second[0] and first != second:
+            either |= {i, i + 2}
+    return {SIDES[token] for i, token in enumerate(tokens) if token in SIDES and i not in either}
+
+
+def part_types(words):
+    """The part types a description names. A type after DE or PARA that follows another one only qualifies it
+    (PASTILLA FRENO DE DISCO is a pad)."""
+    found, previous = set(), ''
+    for word in words:
+        noun = type_noun(word)
+        if noun in TYPES and not (found and previous in {'DE', 'P', 'PARA'}):
+            found.add(noun)
+        previous = word
+    return found
+
+
 def spec_conflict(a, b):
     """Detect explicit contradictions; missing specifications are not evidence."""
     a, b = description(a), description(b)
-    pairs = [({'IZQ', 'IZQUIERDO', 'IZQUIERDA', 'LH', 'LEFT'}, {'DER', 'DERECHO', 'DERECHA', 'RH', 'RIGHT'}),
-             ({'DEL', 'DELANTERO', 'DELANTERA', 'FRONT'}, {'TRAS', 'TRASERO', 'TRASERA', 'REAR'})]
-    wa, wb = set(re.findall(r'\w+', a)), set(re.findall(r'\w+', b))
-    if bool(wa & {'KIT', 'JUEGO', 'SET', 'PAR'}) != bool(wb & {'KIT', 'JUEGO', 'SET', 'PAR'}):
+    la, lb = re.findall(r'\w+', a), re.findall(r'\w+', b)
+    wa, wb = set(la), set(lb)
+    ta, tb = part_types(la), part_types(lb)
+    kit = KIT_WORDS - (SET_WORDS if (ta | tb) & SOLD_AS_SET else set())
+    if bool(wa & kit) != bool(wb & kit):
         return True
-    for left, right in pairs:
-        if (wa & left and wb & right) or (wa & right and wb & left):
+    sb = sides(b)
+    for first in sides(a):
+        if any(first[0] == second[0] and first != second for second in sb):
             return True
     for pattern in [r'\b\d+(?:[.,]\d+)?\s*(?:MM|CM|V|W)\b', r'\b\d+\s*(?:DIENTES|ESTRIAS|HUECOS)\b']:
         va, vb = set(re.findall(pattern, a)), set(re.findall(pattern, b))
@@ -87,8 +137,7 @@ def spec_conflict(a, b):
     _, years_b = application({'description': b})
     if years_a and years_b and max(years_a[0], years_b[0]) > min(years_a[1], years_b[1]):
         return True
-    types = {'TAMBOR', 'DISCO', 'PASTILLA', 'ZAPATA', 'FILTRO', 'BUJIA', 'AMORTIGUADOR', 'ROTULA'}
-    if wa & types and wb & types and wa & types != wb & types:
+    if ta and tb and ta != tb:
         return True
     return False
 

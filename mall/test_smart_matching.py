@@ -1,12 +1,12 @@
 from datetime import timedelta
 from unittest.mock import patch
-from django.test import override_settings
+from django.test import SimpleTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APITestCase
 from .models import (Account, Part, PartCode, User, SupplierItem, StockEntry, InventoryUpdate,
                      MatchingCase, MatchingDecision, MatchingQueue, SupplierCodeMapping, CatalogMerge)
 from .services import ingest_inventory
-from .matching_engine import MatchIndex, reconcile_items, reconcile_catalog, create_supplier_families, item_row, part_row
+from .matching_engine import MatchIndex, reconcile_items, reconcile_catalog, create_supplier_families, item_row, part_row, spec_conflict
 from .matching_worker import process_queue, analyze_ambiguous
 from .matching_queue import enqueue_matching, matching_work
 
@@ -242,3 +242,50 @@ class SmartMatchingTests(APITestCase):
         self.assertEqual(result['ai_eligible'], 1)
         self.assertEqual(result['ai_status'], 'failed')
         self.assertEqual(result['ai_analyzed'], 0)
+
+    def test_code_evidence_still_goes_to_review_and_pads_sold_as_a_set_link_by_code(self):
+        Part.objects.create(sku='0446502220', description='PASTILLA FRENO DEL TOYOTA HILUX')
+        Part.objects.create(sku='04465 02220', description='PASTILLA FRENO DEL TOYOTA HILUX')
+        pads = Part.objects.create(sku='04465-0K290', description='PASTILLA FRENO DEL TOYOTA HILUX')
+        shared = self.ingest('04465-02220', description='PASTILLA FRENO DEL')
+        reconcile_items(MatchIndex())
+        case = MatchingCase.objects.get(item=shared)
+        self.assertEqual((case.status, case.method), ('review', 'conflicting_references'))  # its code is two SKUs': a person decides
+        # «SET 4 PCS» on pads is how they are sold, not a kit: the code links it.
+        item = self.ingest('044650K290', description='PASTILLA FRENO SET 4 PCS', stable='SET')
+        reconcile_items(MatchIndex())
+        item.refresh_from_db()
+        self.assertEqual((item.part_id, MatchingCase.objects.get(item=item).method), (pads.pk, 'known_code'))
+
+
+class SpecConflictTests(SimpleTestCase):
+    """The false positives the matching map found (§3.4) and the contradictions that must still block."""
+
+    def test_a_part_for_either_side_contradicts_neither(self):
+        self.assertFalse(spec_conflict('FAROL LH/RH KAIYI X3', 'FAROL LH KAIYI X3'))
+        self.assertFalse(spec_conflict('FAROL RH-LH', 'FAROL DERECHO'))
+        self.assertFalse(spec_conflict('FARO L/R', 'FARO RH'))
+        self.assertFalse(spec_conflict('ESPEJO IZQ Y DER', 'ESPEJO DERECHO'))
+        self.assertFalse(spec_conflict('AMORT DEL/TRAS', 'AMORT TRAS'))
+        self.assertFalse(spec_conflict('FARO DEL-IZQ/DER', 'FARO DEL DER'))
+        self.assertTrue(spec_conflict('FAROL LH', 'FAROL RH'))
+        self.assertTrue(spec_conflict('FARO L/H', 'FARO R/H'))
+        self.assertTrue(spec_conflict('FAROL LH/RH DEL', 'FAROL TRAS'))
+        self.assertTrue(spec_conflict('FARO DEL-IZQ', 'FARO TRAS'))
+
+    def test_pads_and_shoes_sold_as_a_set_are_not_a_kit(self):
+        self.assertFalse(spec_conflict('PASTILLA FRENO SET 4 PCS', 'PASTILLA FRENO DEL'))
+        self.assertFalse(spec_conflict('JUEGO PASTILLAS DEL', 'PASTILLA FRENO DEL'))
+        self.assertFalse(spec_conflict('ZAPATA FRENO JUEGO', 'ZAPATAS FRENO TRAS'))
+        self.assertTrue(spec_conflict('BUJIA SET 4 PCS', 'BUJIA IRIDIUM'))
+        self.assertTrue(spec_conflict('KIT PASTILLAS Y DISCOS', 'PASTILLA FRENO'))
+        self.assertTrue(spec_conflict('KIT PASTILLA FRENO', 'PASTILLA FRENO'))
+
+    def test_type_nouns_read_plurals_and_erp_abbreviations(self):
+        self.assertFalse(spec_conflict('AMORT DEL', 'AMORTIGUADOR DEL'))
+        self.assertFalse(spec_conflict('AMORTIGUADORES DEL', 'AMORT DEL'))
+        self.assertFalse(spec_conflict('PASTILLA FRENO DE DISCO', 'PASTILLA FRENO DEL'))
+        self.assertTrue(spec_conflict('AMORT DEL', 'ROTULA DEL'))
+        self.assertTrue(spec_conflict('PASTILLAS FRENO', 'DISCO FRENO'))
+        self.assertTrue(spec_conflict('DISCO FRENO 200 MM', 'DISCO FRENO 220 MM'))
+        self.assertTrue(spec_conflict('TAMBOR KIA PICANTO 04-11', 'TAMBOR KIA PICANTO 15-20'))
