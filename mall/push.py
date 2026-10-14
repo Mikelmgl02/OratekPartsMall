@@ -9,6 +9,7 @@ toast already announced it."""
 import json
 import logging
 import threading
+import time
 
 from django.conf import settings
 from django.db import connection, transaction
@@ -26,6 +27,7 @@ from .models import Account, Membership
 log = logging.getLogger(__name__)
 TTL = 24 * 3600  # a push nobody could receive within a day is no longer news
 GONE = (404, 410)
+SENDER = 'notification-sender'  # the name of the dispatch threads, which a stopping worker waits for (drain)
 
 
 def push_enabled():
@@ -38,7 +40,17 @@ def dispatch(job):
             job()
         finally:
             connection.close()  # the thread's own connection
-    threading.Thread(target=run, daemon=True).start()
+    threading.Thread(target=run, daemon=True, name=SENDER).start()
+
+
+def drain(seconds):
+    """Waits up to `seconds` in all for the dispatch threads still sending (a worker about to exit: as daemon threads, the interpreter
+    would cut them off). Returns how many are still running."""
+    deadline = time.monotonic() + seconds
+    for thread in threading.enumerate():
+        if thread.name == SENDER and thread is not threading.current_thread():
+            thread.join(max(deadline - time.monotonic(), 0))
+    return sum(1 for thread in threading.enumerate() if thread.name == SENDER and thread.is_alive())
 
 
 def other_side(order, account_id, actor_id):

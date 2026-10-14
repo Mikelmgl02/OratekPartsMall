@@ -5,10 +5,13 @@ import tempfile
 import time
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import Mock, patch
+import threading
+from django.db import connection, transaction
 from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
-from .matching_runner import (HEARTBEAT_MAX_AGE, POLL_SECONDS, PROBATION_SECONDS, STOP, STOP_DEADLINE_SECONDS, Heartbeat, Stop, WorkerStopping,
-                              checkpoint, healthcheck, main, run)
+from .matching_runner import (DRAIN_SECONDS, HEARTBEAT_MAX_AGE, POLL_SECONDS, PROBATION_SECONDS, STOP, STOP_DEADLINE_SECONDS, Heartbeat, Stop,
+                              WorkerStopping, checkpoint, healthcheck, main, no_cut, run)
 from .models import User
+from .push import SENDER, dispatch, drain
 
 
 class StopLoop(Exception):
@@ -285,9 +288,21 @@ class RunnerFreezeAndStopTests(RunnerTestMixin, SimpleTestCase):
             seen.append(signal.getsignal(signal.SIGTERM) == STOP.handle)
             signal.raise_signal(signal.SIGINT)  # with the default handler this would be a KeyboardInterrupt
             seen.append(STOP.requested)
-        self.loop(process_queue, Mock(side_effect=AssertionError('must exit, not sleep')), signals=True)
+        with patch('mall.push.drain', return_value=0) as drained:
+            self.loop(process_queue, Mock(side_effect=AssertionError('must exit, not sleep')), signals=True)
         self.assertEqual(seen, [True, True])
         self.assertEqual({number: signal.getsignal(number) for number in before}, before)
+        drained.assert_called_once_with(DRAIN_SECONDS)  # the notifications the last pass started may finish first
+
+    def test_at_exit_the_notifications_still_sending_get_their_time(self):
+        release = threading.Event()
+        dispatch(release.wait)
+        with redirect_stderr(io.StringIO()) as err, patch('mall.matching_runner.DRAIN_SECONDS', 0.05):
+            run(Mock(return_value=None), once=True, signals=True, sleep=Mock())
+        self.assertIn('1 notification send still running at exit.', err.getvalue())
+        release.set()
+        self.assertEqual(drain(5), 0)
+        self.assertFalse(any(thread.name == SENDER for thread in threading.enumerate()))
 
     def test_a_second_signal_does_not_wait(self):
         STOP.handle(signal.SIGTERM)
@@ -309,7 +324,7 @@ class StopDeadlineTests(SimpleTestCase):
         now = [100.0]
         stop = Stop(clock=lambda: now[0])
         execute = Mock(return_value='rows')
-        outside, inside = {'connection': Mock(in_atomic_block=False)}, {'connection': Mock(in_atomic_block=True)}
+        outside, inside = ({'connection': Mock(in_atomic_block=atomic, run_commit_hooks_on_set_autocommit_on=False)} for atomic in (False, True))
         self.assertEqual(stop.on_query(execute, 'SELECT 1', None, False, outside), 'rows')
         stop.handle(signal.SIGTERM)
         now[0] += STOP_DEADLINE_SECONDS - 1
@@ -320,6 +335,29 @@ class StopDeadlineTests(SimpleTestCase):
             stop.on_query(execute, 'SELECT 2', None, False, outside)
         self.assertEqual(stop.on_query(execute, 'UPDATE lease', None, False, outside), 'rows')  # giving the lease back still runs
         self.assertEqual([call.args[0] for call in execute.call_args_list], ['SELECT 1', 'SELECT 1', 'UPDATE x', 'UPDATE lease'])
+
+    def test_commit_hooks_and_no_cut_blocks_are_never_cut(self):
+        now = [100.0]
+        stop = Stop(clock=lambda: now[0])
+        execute = Mock(return_value='rows')
+        hooks = {'connection': Mock(in_atomic_block=False, run_commit_hooks_on_set_autocommit_on=True)}
+        outside = {'connection': Mock(in_atomic_block=False, run_commit_hooks_on_set_autocommit_on=False)}
+        stop.handle(signal.SIGTERM)
+        now[0] += STOP_DEADLINE_SECONDS + 1
+        self.assertEqual(stop.on_query(execute, 'UPDATE queue', None, False, hooks), 'rows')  # an on_commit hook: the notice goes out
+        with stop.no_cut(), stop.no_cut():
+            self.assertEqual(stop.on_query(execute, 'UPDATE lease', None, False, outside), 'rows')
+        with self.assertRaises(WorkerStopping):
+            stop.on_query(execute, 'SELECT 2', None, False, outside)
+        self.assertEqual(stop.shield, 0)
+
+    def test_no_cut_still_lets_a_checkpoint_stop_the_pass(self):
+        STOP.reset()
+        self.addCleanup(STOP.reset)
+        STOP.handle(signal.SIGTERM)
+        with self.assertRaises(WorkerStopping), no_cut():
+            checkpoint()
+        self.assertEqual(STOP.shield, 0)
 
     def test_main_installs_the_handlers_for_the_service_and_manual_passes(self):
         with patch('django.setup'), patch('mall.matching_worker.process_queue'), patch('mall.matching_runner.run') as runner:
@@ -332,3 +370,24 @@ class StopDeadlineTests(SimpleTestCase):
                 module.main([])
             self.assertTrue(runner.call_args.kwargs['signals'], module.__name__)
         self.assertEqual(runner.call_args.kwargs['idle_under'], ('all',))  # quote-holds
+
+
+class StopDeadlineCommitHookTests(TransactionTestCase):
+    """Django runs on_commit hooks after the outermost atomic block, outside it: the deadline cut waits until they are done."""
+
+    def test_the_hooks_of_a_committed_unit_run_whole_and_the_next_query_is_cut(self):
+        now = [100.0]
+        stop = Stop(clock=lambda: now[0])
+        stop.handle(signal.SIGTERM)
+        hooks = []
+        def notice(label):
+            hooks.append((label, connection.in_atomic_block, User.objects.count()))
+        with connection.execute_wrapper(stop.on_query):
+            with transaction.atomic():
+                User.objects.create_user('hook-user', 'hook-user@example.invalid', 'HookUser938!')
+                transaction.on_commit(lambda: notice('push'))
+                transaction.on_commit(lambda: notice('email'))
+                now[0] += STOP_DEADLINE_SECONDS  # the deadline passes while the unit commits
+            self.assertEqual(hooks, [('push', False, 1), ('email', False, 1)])
+            with self.assertRaises(WorkerStopping):
+                User.objects.count()

@@ -8,7 +8,7 @@ from django.db import transaction
 from django.utils import timezone
 from .matching_models import MatchingQueue, MatchingCase
 from .matching_queue import matching_lock, matching_work
-from .matching_runner import WorkerStopping, checkpoint
+from .matching_runner import WorkerStopping, checkpoint, no_cut
 from .matching_engine import (MatchIndex, create_supplier_families, reconcile_catalog,
                               reconcile_items)
 from .catalog_classification import call_provider, provider_configuration, ClassificationProviderError
@@ -105,6 +105,7 @@ def _process_queue(*, force=False, use_ai=True):
         checkpoint()  # a stop signal or the catalog freeze ends the pass here, between two stages
         MatchingQueue.objects.filter(pk=1, lease=lease).update(stage=value)
     try:
+        checkpoint()  # a freeze that began while the lease was being taken: no stage starts
         with matching_work():
             # Nullable actor is used for automated actions; catalog merging keeps
             # its existing audit FK, attributed to a non-login service identity.
@@ -135,13 +136,15 @@ def _process_queue(*, force=False, use_ai=True):
                 stage('proposals')
                 summary['proposals'] = proposals_stage()
             stage('ai')
-            summary['ai_analyzed'] = analyze_ambiguous(stats=summary) if use_ai else 0
+            with no_cut():  # one request, already paid for once it answers: its suggestions are saved whole
+                summary['ai_analyzed'] = analyze_ambiguous(stats=summary) if use_ai else 0
             summary['review'] = MatchingCase.objects.filter(status='review').count()
             summary['unmatched'] = MatchingCase.objects.filter(status='unmatched').count()
             summary['oem_skus'] = Part.objects.filter(active=True, merged_into__isnull=True, is_OEM=True).count()
             summary['non_oem_skus'] = Part.objects.filter(active=True, merged_into__isnull=True, is_OEM=False).count()
-        MatchingQueue.objects.filter(pk=1, lease=lease).update(completed=revision, lease=None, lease_until=None,
-            finished_at=timezone.now(), summary=summary, error='', stage='completed')
+        with no_cut():  # the stop deadline never lands between the last stage and the pass's record
+            MatchingQueue.objects.filter(pk=1, lease=lease).update(completed=revision, lease=None, lease_until=None,
+                finished_at=timezone.now(), summary=summary, error='', stage='completed')
         return summary
     except WorkerStopping:
         # Stopped between stages: what they committed stays, the lease goes back at once and the next pass starts over.
@@ -149,7 +152,8 @@ def _process_queue(*, force=False, use_ai=True):
         raise
     except Exception:
         logger.exception('Matching pipeline failed; committed stock and matching decisions are retained.')
-        MatchingQueue.objects.filter(pk=1, lease=lease).update(lease=None, lease_until=timezone.now() + timedelta(seconds=60),
-            stage='failed',
-            error='No se pudo completar el análisis. Se reintentará automáticamente; las existencias guardadas se conservan.')
+        with no_cut():
+            MatchingQueue.objects.filter(pk=1, lease=lease).update(lease=None, lease_until=timezone.now() + timedelta(seconds=60),
+                stage='failed',
+                error='No se pudo completar el análisis. Se reintentará automáticamente; las existencias guardadas se conservan.')
         raise

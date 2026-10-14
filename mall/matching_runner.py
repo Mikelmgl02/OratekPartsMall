@@ -2,20 +2,25 @@
 
 The loop here also runs the apiag-sync and quote-holds services. While the catalog freeze is on (mall.maintenance) it idles instead of
 starting a pass, and SIGTERM/SIGINT (docker compose stop or restart, Ctrl-C) stop it cleanly: the pass in progress finishes its current
-unit (a matching stage, an apiag-cloud page, an order's hold), gives its lease back and the process exits."""
+unit (a matching stage, an apiag-cloud page, an order's hold), gives its lease back, the notifications it started are sent and the
+process exits."""
 import argparse
 import os
 import signal
 import sys
 import time
 import traceback
+from contextlib import contextmanager
 from pathlib import Path
 
 POLL_SECONDS, MAX_BACKOFF_SECONDS, PROBATION_SECONDS = 5, 60, 60
 FREEZE_LEVELS = ('catalog', 'all')
-# Seconds after a stop signal before a pass that has not reached a checkpoint is cut at its next query outside a transaction (a unit
-# already begun still commits or rolls back whole). Below the services' stop_grace_period (60 s), after which Docker kills them.
+# Seconds after a stop signal before a pass that has not reached a checkpoint is cut at its next query outside a transaction and outside
+# commit hooks (a unit already begun still commits or rolls back whole, and its notices still go out). With DRAIN_SECONDS, below the
+# services' stop_grace_period (60 s; 120 s for matching, whose AI request alone may take 90 s), after which Docker kills them.
 STOP_DEADLINE_SECONDS = 40
+# At exit, how long the notifications the last pass started (push, email, WhatsApp, realtime: mall.push.dispatch threads) may still take.
+DRAIN_SECONDS = 15
 # Beats come from every loop pass and every completed query inside a pass, so the longest healthy
 # silence is one AI request (90 s socket timeout) or a row-lock wait behind a web request (120 s
 # gunicorn timeout), not the pass itself (30-minute lease). Keep this well above both.
@@ -60,15 +65,16 @@ class WorkerStopping(BaseException):
 
 class Stop:
     """The runner's stop state. The signal handler only sets a flag; the pass notices it at its next checkpoint() (mall.matching_worker
-    between stages, mall.apiag_sync between pages) or, STOP_DEADLINE_SECONDS later, at its next query outside a transaction. Each pass
-    raises WorkerStopping at most once, so the code that gives the lease back can still query."""
+    between stages, mall.apiag_sync between pages, mall.stock_reservations between orders) or, STOP_DEADLINE_SECONDS later, at its next
+    query outside a transaction, commit hooks and no_cut(). Each pass raises WorkerStopping at most once, so the code that gives the lease
+    back can still query."""
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock
         self.reset()
 
     def reset(self):
-        self.signal, self.requested_at, self.raised, self.idle_under = None, None, False, ()
+        self.signal, self.requested_at, self.raised, self.idle_under, self.shield = None, None, False, (), 0
 
     @property
     def requested(self):
@@ -100,11 +106,23 @@ class Stop:
             raise WorkerStopping(reason)
 
     def on_query(self, execute, sql, params, many, context):
-        if (self.requested and not self.raised and self.clock() - self.requested_at >= STOP_DEADLINE_SECONDS
-                and not context['connection'].in_atomic_block):
+        connection = context['connection']
+        # Never inside a transaction (it commits or rolls back whole), the on_commit hooks Django runs right after one (the page's matching
+        # request, an order's notices: Django keeps run_commit_hooks_on_set_autocommit_on set while they run, and a BaseException there
+        # drops the hooks after it) or a no_cut() block.
+        if (self.requested and not self.raised and not self.shield and self.clock() - self.requested_at >= STOP_DEADLINE_SECONDS
+                and not connection.in_atomic_block and not connection.run_commit_hooks_on_set_autocommit_on):
             self.raised = True
             raise WorkerStopping('signal')
         return execute(sql, params, many, context)
+
+    @contextmanager
+    def no_cut(self):
+        self.shield += 1
+        try:
+            yield
+        finally:
+            self.shield -= 1
 
     def sleep(self, seconds):
         """time.sleep that a stop signal cuts short (it looks at the flag every second)."""
@@ -122,6 +140,12 @@ def checkpoint():
     STOP.checkpoint()
 
 
+def no_cut():
+    """A block the stop deadline never cuts: the bookkeeping that gives a lease back or records a pass, a paid AI answer being saved.
+    A checkpoint() inside it still stops the pass."""
+    return STOP.no_cut()
+
+
 def healthcheck(path=None, max_age=None):
     path, max_age = path or heartbeat_path(), float(max_age or os.environ.get('MATCHING_HEARTBEAT_MAX_AGE') or HEARTBEAT_MAX_AGE)
     try:
@@ -135,7 +159,8 @@ def healthcheck(path=None, max_age=None):
 
 def run(process_queue, *, once=False, force=False, use_ai=True, heartbeat=None, sleep=None, idle_under=FREEZE_LEVELS, signals=False):
     """The service loop. idle_under: the freeze levels it waits out (quote-holds only 'all'). signals: install the SIGTERM/SIGINT handlers
-    (the services and manual passes do; tests drive STOP directly)."""
+    and, before the process exits, wait up to DRAIN_SECONDS for the notifications still being sent (the services and manual passes do;
+    tests drive STOP directly)."""
     STOP.reset()
     previous = {number: signal.signal(number, STOP.handle) for number in (signal.SIGTERM, signal.SIGINT)} if signals else {}
     STOP.idle_under = tuple(idle_under)
@@ -145,6 +170,20 @@ def run(process_queue, *, once=False, force=False, use_ai=True, heartbeat=None, 
         STOP.idle_under = ()
         for number, handler in previous.items():
             signal.signal(number, handler)
+    if signals:
+        drain(DRAIN_SECONDS)  # after the handlers are restored: another signal now ends the process at once
+
+
+def drain(seconds):
+    """The notification threads (daemon threads: the interpreter would cut them off at exit) get up to `seconds` to finish."""
+    try:
+        from .push import drain as drain_senders
+        left = drain_senders(seconds)
+    except Exception:
+        traceback.print_exc()
+        return
+    if left:
+        print(f'{left} notification {"send" if left == 1 else "sends"} still running at exit.', file=sys.stderr, flush=True)
 
 
 def loop(process_queue, *, once, force, use_ai, heartbeat, sleep):

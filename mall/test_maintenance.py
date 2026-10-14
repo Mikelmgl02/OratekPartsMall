@@ -6,6 +6,7 @@ import os
 import signal
 import sys
 import tempfile
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,9 +15,12 @@ from django.db import connection
 from django.db.migrations.writer import OperationWriter
 from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import URLPattern, URLResolver, get_resolver
+from django.utils import timezone
 from rest_framework.test import APITestCase
 
-from . import link_oem_numbers, mark_exact_oem, oem_finder_revert, supplier_catalog_replace
+from . import link_oem_numbers, mark_exact_oem, oem_finder_revert, stock_reservations, supplier_catalog_replace
+from . import test_deals as deal_tests
+from . import test_stock_reservations as reservation_tests
 from .apiag_models import ApiagConnection
 from .apiag_sync import process_due
 from .apiag_sync_models import ApiagSync
@@ -26,9 +30,11 @@ from .maintenance import (ALL_DETAIL, BIBLIOTECA_DETAIL, CATALOG_DETAIL, CATALOG
 from .matching_models import MatchingQueue
 from .matching_runner import STOP, WorkerStopping
 from .matching_worker import process_queue
-from .models import Account, Membership, Part, Role, SupplierItem, User, WishlistItem
+from .models import Account, DealEvent, Membership, Part, Role, SupplierItem, User, WishlistItem
+from .pricing_models import SupplierPricingSettings
 from .refactor.guard import live_database, refusal
 from .refactor.migration_ops import LockTimeout
+from .request_models import StockReservation
 from .test_apiag_sync import FakeApiag
 
 ID = '00000000-0000-4000-8000-000000000001'
@@ -293,6 +299,83 @@ class ApiagStopTests(WorkerStopMixin, APITestCase):
         sync.refresh_from_db()
         self.assertEqual((sync.stage, sync.since), ('completed', self.apiag.clock.isoformat()))
         self.assertEqual(SupplierItem.objects.filter(supplier=self.supplier, reported_quantity=2).count(), 3)
+
+    def test_a_freeze_that_begins_mid_pull_ends_it_after_its_page_until_it_is_lifted(self):
+        STOP.idle_under = ('catalog', 'all')  # as the apiag-sync runner sets it
+        fetch = self.apiag.__call__
+        def frozen(*args, **kwargs):
+            self.freeze('catalog')  # written while the first page is on its way
+            return fetch(*args, **kwargs)
+        with patch('mall.apiag_sync.apiag_client.get', frozen), self.assertRaises(WorkerStopping) as stopped:
+            process_due()
+        self.assertEqual(str(stopped.exception), 'freeze')
+        sync = ApiagSync.objects.get(connection=self.connection)
+        self.assertEqual((sync.lease, sync.lease_until, sync.stage, sync.since, sync.completed), (None, None, 'idle', '', 0))
+        self.assertEqual(SupplierItem.objects.filter(supplier=self.supplier).count(), 1)  # the first page stays
+        self.freeze(None)
+        STOP.raised = False  # the loop's next pass
+        self.assertEqual(process_due()['mode'], 'full')
+        self.assertEqual(SupplierItem.objects.filter(supplier=self.supplier, reported_quantity=2).count(), 3)
+
+
+class QuoteHoldsStopTests(WorkerStopMixin, APITestCase):
+    """quote-holds releases each lapsed order in its own transaction and stops between two orders: on SIGTERM, or when the level-all
+    freeze begins. The catalog freeze does not stop it."""
+    deal_setUp = deal_tests.DealWorkflowTests.setUp
+    account = deal_tests.DealWorkflowTests.account
+    item = deal_tests.DealWorkflowTests.item
+    url = deal_tests.DealWorkflowTests.url
+    payload = deal_tests.DealWorkflowTests.payload
+    submit = deal_tests.DealWorkflowTests.submit
+    stock_snapshot = deal_tests.DealWorkflowTests.stock_snapshot
+    order = deal_tests.DealWorkflowTests.order
+    review = deal_tests.DealWorkflowTests.review
+    action = deal_tests.DealWorkflowTests.action
+    drafted = deal_tests.DealWorkflowTests.drafted
+    quote = deal_tests.DealWorkflowTests.quote
+    sent = reservation_tests.StockReservationTests.sent
+
+    def setUp(self):
+        super().setUp()
+        self.deal_setUp()
+        SupplierItem.objects.filter(pk=self.item_a.pk).update(reserved_quantity=0)
+        SupplierPricingSettings.objects.create(supplier=self.supplier_a, quote_hold_days=2)
+        self.orders = [self.sent()[0], self.sent()[0]]
+        StockReservation.objects.filter(status='open').update(expires_at=timezone.now() - timedelta(minutes=1))
+        STOP.idle_under = ('all',)  # as the quote-holds runner sets it
+        self.stopped = None
+
+    def expire_while(self, during):
+        """expire_due with `during` run as the first order releases its first hold -> the orders released, the orders still holding."""
+        release, calls = stock_reservations.release, []
+        def releasing(*args, **kwargs):
+            if not calls:
+                during()
+            calls.append(1)
+            return release(*args, **kwargs)
+        with patch('mall.stock_reservations.release', releasing):
+            try:
+                stock_reservations.expire_due()
+            except WorkerStopping as stopped:
+                self.stopped = str(stopped)
+        released = set(DealEvent.objects.filter(kind='hold_expired').values_list('order_id', flat=True))
+        holding = set(StockReservation.objects.filter(status='open').values_list('order_id', flat=True))
+        return released, holding
+
+    def test_a_stop_signal_ends_the_pass_after_the_order_it_is_releasing(self):
+        released, holding = self.expire_while(lambda: STOP.handle(signal.SIGTERM))
+        self.assertEqual((self.stopped, len(released), len(holding)), ('signal', 1, 1))
+        self.assertEqual(released | holding, {order.pk for order in self.orders})
+        self.assertEqual(StockReservation.objects.filter(order_id__in=released, status='open').count(), 0)  # that order released whole
+        self.assertEqual(StockReservation.objects.filter(order_id__in=holding, status='open').count(), 2)
+
+    def test_the_catalog_freeze_does_not_stop_it(self):
+        released, holding = self.expire_while(lambda: self.freeze('catalog'))
+        self.assertEqual((self.stopped, len(released), holding), (None, 2, set()))
+
+    def test_the_level_all_freeze_stops_it_between_orders(self):
+        released, holding = self.expire_while(lambda: self.freeze('all'))
+        self.assertEqual((self.stopped, len(released), len(holding)), ('freeze', 1, 1))
 
 
 class CliGuardTests(FreezeFolderMixin, TestCase):

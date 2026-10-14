@@ -35,7 +35,7 @@ from . import apiag_client
 from .apiag_models import ApiagConnection
 from .apiag_sync_models import ApiagSucursal, ApiagSync, SupplierItemBranchStock
 from .apiag_tokens import TokenUnreadable, token
-from .matching_runner import WorkerStopping, checkpoint
+from .matching_runner import WorkerStopping, checkpoint, no_cut
 from .models import Account, SupplierItem
 from .serializers import InventorySerializer
 from .services import ingest_inventory
@@ -373,23 +373,26 @@ def process_due(*, force=False, use_ai=True):
         raise
     except SyncFailed as failure:
         permanent = failure.status in PERMANENT
-        fenced.update(completed=revision, lease=None, lease_until=None, stage='paused' if permanent else 'failed',
-                      finished_at=timezone.now(), error=failure.message, error_code=failure.status, failures=F('failures') + 1,
-                      next_run_at=None if permanent else timezone.now() + min(interval() * 2 ** min(sync.failures, 6), MAX_BACKOFF),
-                      **({'since': ''} if failure.resync else {}))
+        with no_cut():  # the lease always goes back, even past the stop deadline
+            fenced.update(completed=revision, lease=None, lease_until=None, stage='paused' if permanent else 'failed',
+                          finished_at=timezone.now(), error=failure.message, error_code=failure.status, failures=F('failures') + 1,
+                          next_run_at=None if permanent else timezone.now() + min(interval() * 2 ** min(sync.failures, 6), MAX_BACKOFF),
+                          **({'since': ''} if failure.resync else {}))
         return {'apiag_sync': str(sync.connection.account_id), 'error': failure.status}
     except Exception:
-        fenced.update(completed=revision, lease=None, lease_until=None, stage='failed', finished_at=timezone.now(),
-                      error='La sincronización falló de forma inesperada; se intentará de nuevo.', error_code='unexpected',
-                      failures=F('failures') + 1, next_run_at=timezone.now() + min(interval() * 2 ** min(sync.failures, 6), MAX_BACKOFF))
+        with no_cut():
+            fenced.update(completed=revision, lease=None, lease_until=None, stage='failed', finished_at=timezone.now(),
+                          error='La sincronización falló de forma inesperada; se intentará de nuevo.', error_code='unexpected',
+                          failures=F('failures') + 1, next_run_at=timezone.now() + min(interval() * 2 ** min(sync.failures, 6), MAX_BACKOFF))
         raise
     finished = timezone.now()
-    fenced.update(completed=revision, lease=None, lease_until=None, stage='completed', finished_at=finished, last_success_at=now,
-                  since=str(summary['server_time'])[:40], sucursales_version=str(summary['sucursales_version'])[:40],
-                  server_url=sync.connection.server_url, summary=summary, progress={}, error='', error_code='', failures=0,
-                  next_run_at=finished + interval(),
-                  **({'last_full_at': now, 'last_day_at': now} if summary['mode'] == 'full' else {}),
-                  **({'last_day_at': now} if summary['mode'] == 'day' else {}))
+    with no_cut():
+        fenced.update(completed=revision, lease=None, lease_until=None, stage='completed', finished_at=finished, last_success_at=now,
+                      since=str(summary['server_time'])[:40], sucursales_version=str(summary['sucursales_version'])[:40],
+                      server_url=sync.connection.server_url, summary=summary, progress={}, error='', error_code='', failures=0,
+                      next_run_at=finished + interval(),
+                      **({'last_full_at': now, 'last_day_at': now} if summary['mode'] == 'full' else {}),
+                      **({'last_day_at': now} if summary['mode'] == 'day' else {}))
     return {'apiag_sync': str(sync.connection.account_id), 'mode': summary['mode'], **summary['counts']}
 
 

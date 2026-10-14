@@ -120,8 +120,9 @@ services:
       dockerfile: Dockerfile
     command: ["python", "-m", "mall.matching_runner"]
     environment: *api_environment
-    # SIGTERM lets the pass finish its stage, give its lease back and exit (mall.matching_runner); after this, Docker kills it.
-    stop_grace_period: 60s
+    # SIGTERM lets the pass finish its stage, give its lease back and exit (mall.matching_runner); after this, Docker kills it. Above
+    # the AI request (90 s timeout) that may be in flight, plus the notifications the runner waits for at exit.
+    stop_grace_period: 120s
     volumes:
       - .:/app
     depends_on:
@@ -168,7 +169,7 @@ services:
       dockerfile: Dockerfile
     command: ["python", "-m", "mall.quote_holds_runner"]
     environment: *api_environment
-    stop_grace_period: 60s  # SIGTERM: the pass finishes the order it is releasing, then the runner exits
+    stop_grace_period: 60s  # SIGTERM: the pass finishes the order it is releasing and its notices go out, then the runner exits
     volumes:
       - .:/app
     depends_on:

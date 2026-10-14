@@ -200,12 +200,14 @@ def expire_due(now=None):
     """Quotations whose hold lapsed while the client decided: their units are free again (the quotation stays; a later confirmation checks
     the stock and reserves again). Each order in its own transaction, in the lock order (the order row first). Returns the orders released."""
     from django.db import transaction
+    from .matching_runner import checkpoint
     from .models import DealEvent, SupplierRequest
     now = now or timezone.now()
     due = list(StockReservation.objects.filter(status='open', expires_at__lte=now, order__handshaked_at__isnull=True)
                .values_list('order_id', flat=True).distinct().order_by('order_id'))
     expired = 0
     for order_id in due:
+        checkpoint()  # in the quote-holds service, a stop signal or the level-all freeze ends the pass here, between two orders
         with transaction.atomic():
             order = SupplierRequest.objects.select_for_update(of=('self',)).get(pk=order_id)
             if order.handshaked_at:
