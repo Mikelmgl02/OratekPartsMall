@@ -19,6 +19,8 @@ def main(argv=None, stdout=None):
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
     import django
     django.setup()
+    from .refactor.guard import require_freeze
+    require_freeze()  # a revert renames SKUs back
     from .oem_apply import SKIP_LABELS, apply_tables_ready, revert_run, service_user
     from .oem_finder import matching_lock
     from .oem_finder_models import OEMFinderRun

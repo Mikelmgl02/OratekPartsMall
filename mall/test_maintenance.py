@@ -1,5 +1,6 @@
-"""Ops safety of the refactor's deploy windows (S0.11): the catalog write freeze and the workers' clean stop. The runner loop itself is
-tested in test_matching_runner."""
+"""Ops safety of the refactor's deploy windows (S0.11): the catalog write freeze, the workers' clean stop, the CLIs' live-database guard
+and the migrations' lock timeout. The runner loop itself is tested in test_matching_runner."""
+import io
 import json
 import signal
 import tempfile
@@ -7,10 +8,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cryptography.fernet import Fernet
+from django.db import connection
+from django.db.migrations.writer import OperationWriter
 from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import URLPattern, URLResolver, get_resolver
 from rest_framework.test import APITestCase
 
+from . import link_oem_numbers, mark_exact_oem, oem_finder_revert, supplier_catalog_replace
 from .apiag_models import ApiagConnection
 from .apiag_sync import process_due
 from .apiag_sync_models import ApiagSync
@@ -21,6 +25,8 @@ from .matching_models import MatchingQueue
 from .matching_runner import STOP, WorkerStopping
 from .matching_worker import process_queue
 from .models import Account, Membership, Part, Role, SupplierItem, User, WishlistItem
+from .refactor.guard import live_database, refusal
+from .refactor.migration_ops import LockTimeout
 from .test_apiag_sync import FakeApiag
 
 ID = '00000000-0000-4000-8000-000000000001'
@@ -285,3 +291,74 @@ class ApiagStopTests(WorkerStopMixin, APITestCase):
         sync.refresh_from_db()
         self.assertEqual((sync.stage, sync.since), ('completed', self.apiag.clock.isoformat()))
         self.assertEqual(SupplierItem.objects.filter(supplier=self.supplier, reported_quantity=2).count(), 3)
+
+
+class CliGuardTests(FreezeFolderMixin, TestCase):
+    def live(self):
+        return override_settings(LIVE_DATABASE_NAME=connection.settings_dict['NAME'])
+
+    def test_only_the_live_database_needs_the_freeze(self):
+        self.assertFalse(live_database())  # the test database has its own name
+        self.assertIsNone(refusal())
+        with self.live():
+            self.assertEqual(live_database(), connection.vendor == 'postgresql')
+            if connection.vendor != 'postgresql':
+                return
+            self.assertIn('sin el congelamiento del catálogo', refusal())
+            self.assertIn(str(self.folder / 'freeze'), refusal())
+            self.assertIsNone(refusal(applying=False))  # a dry run needs nothing
+            self.freeze('catalog')
+            self.assertIsNone(refusal())
+            (self.folder / 'freeze').unlink()
+            (self.folder / 'biblioteca').touch()  # the Biblioteca switch is not the catalog freeze
+            self.assertIsNotNone(refusal())
+
+    def test_the_catalog_clis_refuse_apply_on_the_live_database_until_it_is_frozen(self):
+        if connection.vendor != 'postgresql':
+            self.skipTest('The live database is PostgreSQL.')
+        Part.objects.create(sku='16100-79445', name='Bomba')
+        with self.live():
+            for main, argv in [(link_oem_numbers.main, ['--apply']), (mark_exact_oem.main, ['--apply']),
+                               (supplier_catalog_replace.main, ['--apply', '/nonexistent.json']),
+                               (oem_finder_revert.main, ['--run', '1'])]:
+                with self.assertRaises(SystemExit) as refused:
+                    main(argv, stdout=io.StringIO())
+                self.assertIn('sin el congelamiento del catálogo', str(refused.exception.code), argv)
+            out = io.StringIO()
+            link_oem_numbers.main(['--dry-run'], stdout=out)
+            self.assertIn('Simulación', out.getvalue())
+            self.freeze('catalog')
+            out = io.StringIO()
+            link_oem_numbers.main(['--apply'], stdout=out)
+            self.assertIn('Aplicado', out.getvalue())
+
+
+class LockTimeoutTests(TestCase):
+    def test_it_sets_the_lock_timeout_for_the_migration_transaction(self):
+        operation = LockTimeout('5s')
+        self.assertEqual(operation.deconstruct(), ('LockTimeout', ('5s',), {}))
+        self.assertEqual((operation.describe(), operation.migration_name_fragment, operation.reversible),
+                         ('Wait at most 5s for table locks', 'lock_timeout', True))
+        if connection.vendor != 'postgresql':
+            return
+        with connection.schema_editor(collect_sql=True, atomic=True) as editor:
+            operation.database_forwards('mall', editor, None, None)
+            operation.database_backwards('mall', editor, None, None)
+        self.assertEqual(editor.collected_sql, ["SET LOCAL lock_timeout = '5s';"] * 2)
+        with connection.schema_editor(collect_sql=True, atomic=False) as editor:
+            LockTimeout('750ms').database_forwards('mall', editor, None, None)
+        self.assertEqual(editor.collected_sql, ["SET lock_timeout = '750ms';"])
+        with connection.schema_editor(atomic=True) as editor:
+            operation.database_forwards('mall', editor, None, None)
+            with connection.cursor() as cursor:
+                cursor.execute('SHOW lock_timeout')
+                self.assertEqual(cursor.fetchone()[0], '5s')
+
+    def test_only_a_postgresql_duration_is_accepted_and_migrations_can_name_it(self):
+        for value in ['5s', '500ms', '1min', 2000]:
+            LockTimeout(value)
+        for value in ["5s'; DROP TABLE mall_part; --", '5 s', '', 'forever']:
+            with self.assertRaises(ValueError):
+                LockTimeout(value)
+        source, imports = OperationWriter(LockTimeout('5s'), indentation=0).serialize()
+        self.assertEqual((source, imports), ("mall.refactor.migration_ops.LockTimeout(\n    timeout='5s',\n),", {'import mall.refactor.migration_ops'}))

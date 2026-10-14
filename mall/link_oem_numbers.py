@@ -19,6 +19,8 @@ def main(argv=None, stdout=None):
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
     import django
     django.setup()
+    from .refactor.guard import require_freeze
+    require_freeze(options.apply)
     from .oem_links import refresh_name_links, tables_ready
     stdout = stdout or sys.stdout
     if not tables_ready():

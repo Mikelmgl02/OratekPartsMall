@@ -18,6 +18,8 @@ DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": BASE_DI
 
 if os.getenv("POSTGRES_DB"):
     DATABASES = {"default": {"ENGINE": "django.db.backends.postgresql", "NAME": os.environ["POSTGRES_DB"], "USER": os.getenv("POSTGRES_USER", "partsmall"), "PASSWORD": os.getenv("POSTGRES_PASSWORD", ""), "HOST": os.getenv("POSTGRES_HOST", "localhost"), "PORT": os.getenv("POSTGRES_PORT", "5432")}}
+# The live database (the stage and catalog CLIs refuse --apply on it without the freeze; a rehearsal or test database is another name).
+LIVE_DATABASE_NAME = os.getenv("LIVE_DATABASE_NAME", "partsmall")
 # The main checkout: BASE_DIR, or the repository a .claude/worktrees/<name> checkout belongs to, so code run from a worktree sees the
 # same freeze. MAINTENANCE_DIR holds the freeze files (mall.maintenance): /app/.maintenance in the containers.
 MAIN_CHECKOUT = BASE_DIR.parents[2] if (BASE_DIR.parent.name, BASE_DIR.parent.parent.name) == ("worktrees", ".claude") else BASE_DIR

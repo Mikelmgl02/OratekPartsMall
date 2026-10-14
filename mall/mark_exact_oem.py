@@ -23,6 +23,8 @@ def main(argv=None, stdout=None):
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
     import django
     django.setup()
+    from .refactor.guard import require_freeze
+    require_freeze(options.apply)
     from .catalog_identity import mark_exact_matches
     from .oem_apply import service_user
     stdout = stdout or sys.stdout

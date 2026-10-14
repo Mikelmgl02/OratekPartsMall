@@ -100,6 +100,8 @@ def main(argv=None, stdout=None):
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
     import django
     django.setup()
+    from .refactor.guard import require_freeze
+    require_freeze(options.apply)
     result = run(apply=options.apply, report_path=options.report, stdout=stdout)
     sys.exit(0 if result is not None else 1)
 

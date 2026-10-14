@@ -264,6 +264,8 @@ def main(argv=None, stdout=None):
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
     import django
     django.setup()
+    from .refactor.guard import require_freeze
+    require_freeze(options.apply)
     result = run(options.file, apply=options.apply, report_dir=options.report, username=options.user, stdout=stdout)
     if result is not None:
         (stdout or sys.stdout).write(json.dumps(result, ensure_ascii=False) + '\n')

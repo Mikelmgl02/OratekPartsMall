@@ -1570,6 +1570,8 @@ def main(argv=None, stdout=None):
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
     import django
     django.setup()
+    from .refactor.guard import require_freeze
+    require_freeze(options.apply_auto and not options.read_only)  # the dry run only rewrites the review queue
     out = stdout or sys.stdout
     log = sys.stderr if options.json == '-' else out
     if options.dry_run and not options.read_only and not tables_ready():
