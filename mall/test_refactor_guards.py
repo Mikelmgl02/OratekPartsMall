@@ -222,8 +222,8 @@ LEGACY_ALLOWED = {
 }
 BULK_METHODS = {'bulk_create', 'bulk_update'}
 BULK_CHOKE_POINTS = {Path('lines.py'), Path('references.py')}
-# Bulk writes of lines elsewhere, reviewed: the catalog assistant's taxonomy (category, subcategory, part_type; S5's lane).
-BULK_ALLOWED = {'catalog_assistant.py': 1}
+# Bulk writes of lines elsewhere, reviewed: none since S5 moved the catalog assistant's taxonomy writes to mall.lines.bulk_update_lines.
+BULK_ALLOWED = {}
 
 
 def docstrings(tree):

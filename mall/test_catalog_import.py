@@ -287,6 +287,22 @@ class CatalogImportTests(APITestCase):
         self.assertEqual(Part.objects.count(), 501)
         self.assertEqual(Part.objects.get(sku='CATEG-0500').category, '')
 
+    def test_categoria_and_subcategoria_compare_against_the_lines_subgrupo(self):
+        """S5: the columns compare against the line's subgrupo by its FK, and a changed SUBCATEGORIA names the subgrupo in the grupo the
+        line already has."""
+        line = Part.objects.create(sku='CATEG-FK', category='FRENOS', subcategory='DISCOS')
+        Part.objects.filter(pk=line.pk).update(category='TEXTO VIEJO')  # text out of step: the FK decides
+        columns = ['SKU', 'CATEGORIA', 'SUBCATEGORIA']
+        preview = self.upload(self.excel([['CATEG-FK', 'frenos', 'discos']], columns)).data
+        self.assertEqual((preview['summary']['unchanged_skus'], preview['preview'][0]['category']), (1, 'FRENOS'))
+        preview = self.upload(self.excel([['CATEG-FK', 'pastillas']], ['SKU', 'SUBCATEGORIA'])).data
+        self.assertEqual((preview['preview'][0]['action'], preview['preview'][0]['category'], preview['preview'][0]['subcategory']),
+                         ('update', 'FRENOS', 'PASTILLAS'))
+        self.assertEqual(self.client.post(f"{self.url}jobs/{preview['job_id']}/", {'batch_index': 0}).status_code, 200)
+        line.refresh_from_db()
+        self.assertEqual((line.part_type.grupo.nombre, line.part_type.name, line.category, line.subcategory),
+                         ('FRENOS', 'PASTILLAS', 'FRENOS', 'PASTILLAS'))
+
     def test_real_catalog_scale_can_be_previewed_without_a_row_cap(self):
         from .catalog_import import read_excel
         raw = self.excel([[f'SCALE-{index:05}'] for index in range(33320)])

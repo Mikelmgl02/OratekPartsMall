@@ -1,5 +1,6 @@
 """The OEM line's lifecycle (inventory refactor S1): the only writer of Part.estado, origen and the decision fields, and the querysets
-the readers take lines from, each with an explicit estado decision.
+the readers take lines from, each with an explicit estado decision. From S5 it also writes a line's subgrupo (set_subgrupo: part_type
+and, until S10, the grupo and subgrupo text that follow it).
 
     referencia   a number of the OEM library with no product yet (S4)
     preparacion  a new product being prepared from supplier items (Productos nuevos, S6)
@@ -373,6 +374,36 @@ def set_estado(line, estado, *, user=None, reason='', note='', at=None):
     """Move a line (already locked by the caller when it matters) to another estado and save it (stage_estado). Returns the line."""
     line.save(update_fields=stage_estado(line, estado, user=user, reason=reason, note=note, at=at))
     return line
+
+
+SUBGRUPO_FIELDS = ['part_type', 'category', 'subcategory']
+
+
+def set_subgrupo(lines, part_type, *, grupo='', subgrupo=''):
+    """Give loaded lines (a Part or several) a subgrupo without saving them, and return the fields to write. Until S10 the text columns
+    category and subcategory are the subgrupo's: its grupo's nombre and its name (mall.technical_data). With no subgrupo (None) they hold
+    the partial classification given, normalized: a grupo typed without a subgrupo yet, blank by default. A writer that resolves text
+    goes through mall.technical_data.bind_part_types, which calls this."""
+    from .models import Part
+    from .technical_data import grupo_nombre, normalized_label
+    lines = [lines] if isinstance(lines, Part) else list(lines)
+    text = (grupo_nombre(part_type), part_type.name) if part_type is not None else (normalized_label(grupo), normalized_label(subgrupo))
+    for line in lines:
+        line.part_type = part_type
+        line.category, line.subcategory = text
+    return list(SUBGRUPO_FIELDS)
+
+
+def project_subgrupos(part_types):
+    """After a subgrupo moved to another grupo or was renamed: its lines' text follows it (one UPDATE per subgrupo). Returns how many
+    lines changed."""
+    from .models import Part
+    from .technical_data import grupo_nombre
+    count = 0
+    for part_type in part_types:
+        count += (Part.objects.filter(part_type=part_type).exclude(category=grupo_nombre(part_type), subcategory=part_type.name)
+                  .update(category=grupo_nombre(part_type), subcategory=part_type.name))
+    return count
 
 
 def touch_visible(lines, at=None):

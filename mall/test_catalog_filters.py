@@ -79,6 +79,23 @@ class CatalogFilterTests(APITestCase):
         searched = self.client.get(self.url, {'include_facets': '1', 'search': 'OIL'}).data
         self.assertEqual(searched['facets']['category'], [{'value': 'FILTROS', 'label': 'FILTROS', 'count': 1}])
 
+    def test_groups_and_subgroups_read_each_lines_subgrupo_by_its_fk(self):
+        """S5: the filters and facets keep their text parameters but read each line's subgrupo (its grupo's nombre and its name); a line
+        with no subgrupo counts by its text, a partial classification."""
+        disc = self.part('DISC')
+        Part.objects.filter(pk=disc.pk).update(category='TEXTO VIEJO', subcategory='OTRO')  # text out of step: the FK decides
+        Part.objects.create(sku='HALF', description='REPUESTO', category='FRENOS')
+        facets = self.client.get(self.url, {'include_facets': '1'}).data['facets']
+        self.assertEqual({row['value']: row['count'] for row in facets['category']}, {'FRENOS': 2})
+        self.assertEqual([(row['value'], row['label'], row['count']) for row in facets['subcategory']], [('', 'Sin subgrupo', 1), ('DISCOS', 'DISCOS', 1)])
+        rows = self.client.get(self.url, {'category': 'FRENOS', 'subcategory': 'DISCOS'}).data['results']
+        self.assertEqual([row['sku'] for row in rows], ['DISC'])
+        self.assertEqual(self.client.get(self.url, {'category': 'TEXTO VIEJO'}).data['count'], 0)
+        grupo = disc.part_type.grupo
+        grupo.nombre = 'FRENADO'
+        grupo.save()
+        self.assertEqual(self.client.get(self.url, {'category': 'FRENADO'}).data['count'], 1)
+
     def test_facets_exclude_inactive_merged_and_ineligible_supplier_records(self):
         part = self.part('CANONICAL')
         inactive = self.part('INACTIVE', category='HIDDEN')

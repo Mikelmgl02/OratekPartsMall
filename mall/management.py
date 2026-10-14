@@ -252,7 +252,7 @@ class ManagedPartSerializer(serializers.ModelSerializer):
     category = UppercaseCharField(max_length=120, required=False, allow_blank=True)
     subcategory = UppercaseCharField(max_length=120, required=False, allow_blank=True)
     codes = ManagedCodeSerializer(many=True, required=False)
-    part_type = serializers.PrimaryKeyRelatedField(queryset=PartType.objects.all(), required=False, allow_null=True)
+    part_type = serializers.PrimaryKeyRelatedField(queryset=PartType.objects.select_related('grupo'), required=False, allow_null=True)
     stock_record_count = serializers.IntegerField(read_only=True, default=0)
     merged_count = serializers.IntegerField(read_only=True, default=0, help_text='SKU agrupados en este SKU (Separar SKU los devuelve).')
 
@@ -276,8 +276,9 @@ class ManagedPartSerializer(serializers.ModelSerializer):
         if 'brand' in self.initial_data:
             raise serializers.ValidationError({'brand': 'El SKU interno no lleva marca. La marca es opcional en cada código equivalente.'})
         if 'part_type' in data:
+            from .technical_data import grupo_nombre
             part_type = data['part_type']
-            expected = {'category': part_type.category if part_type else '', 'subcategory': part_type.name if part_type else ''}
+            expected = {'category': grupo_nombre(part_type) if part_type else '', 'subcategory': part_type.name if part_type else ''}
             if any(key in data and data[key] != value for key, value in expected.items()):
                 raise serializers.ValidationError('El grupo y subgrupo deben corresponder al tipo de repuesto seleccionado.')
             data.update(expected)
@@ -607,13 +608,14 @@ class CatalogBulkEdit(SuperuserMixin, APIView):
     def post(self, request):
         from django.core.exceptions import ValidationError as DjangoValidationError
         from .category_suggestions import normalized, taxonomy
+        from .technical_data import classification
         data = BulkEditRequest(data=request.data)
         data.is_valid(raise_exception=True)
         rows = data.validated_data['rows']
         if not rows or len(rows) > MAX_BULK_ROWS:
             raise serializers.ValidationError({'rows': f'Envía entre 1 y {MAX_BULK_ROWS} SKU.'})
         known = {(normalized(category), normalized(subcategory)): (category, subcategory) for category, subcategory in taxonomy()}
-        parts = {part.pk: part for part in catalog_lines().filter(pk__in=[row['id'] for row in rows])}  # the grid's lines
+        parts = {part.pk: part for part in catalog_lines().filter(pk__in=[row['id'] for row in rows]).select_related('part_type__grupo')}  # the grid's lines
         elsewhere = {part.pk: part for part in catalog_lines(('referencia', 'preparacion', 'rechazada')).filter(
             pk__in=[row['id'] for row in rows if row['id'] not in parts])}
         errors, saved = [], []
@@ -629,7 +631,8 @@ class CatalogBulkEdit(SuperuserMixin, APIView):
                     errors.append({'id': row['id'], 'sku': '', 'detail': 'El SKU ya no está en el catálogo o se agrupó en otro.'})
                     continue
                 if 'category' in fields or 'subcategory' in fields:
-                    pair = (fields.get('category', part.category), fields.get('subcategory', part.subcategory))
+                    current = classification(part)  # the line's subgrupo by its FK (S5)
+                    pair = (fields.get('category', current[0]), fields.get('subcategory', current[1]))
                     if any(pair):
                         match = known.get((normalized(pair[0]), normalized(pair[1])))
                         if match is None:

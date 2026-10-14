@@ -10,6 +10,7 @@ import re
 import unicodedata
 from datetime import timedelta
 
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from .catalog_assistant_models import CategorySuggestionCache
@@ -159,9 +160,11 @@ def local_category(row):
 
 
 def taxonomy():
-    # Existing PartTypes win for accent/case differences; no fuzzy type merging.
+    """The grupo / subgrupo pairs to choose from: the rules' and the existing subgrupos', each by its grupo's FK (S5; until 0082 the text
+    of a subgrupo with no grupo yet). Existing subgrupos win for accent/case differences; no fuzzy type merging."""
     pairs = {(normalized(c), normalized(s)): (c, s) for c, s in [*[(c, s) for c, s, _ in RULES], *ADDITIONAL_TYPES]}
-    for category, name in PartType.objects.order_by('category', 'name').values_list('category', 'name'):
+    subgrupos = PartType.objects.annotate(grupo_nombre=Coalesce('grupo__nombre', 'category')).order_by('grupo_nombre', 'name')
+    for category, name in subgrupos.values_list('grupo_nombre', 'name'):
         pairs[(normalized(category), normalized(name))] = (category, name)
     return sorted(pairs.values())
 

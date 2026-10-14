@@ -15,12 +15,12 @@ from rest_framework.views import APIView
 
 from .catalog_assistant_models import CatalogAssistantJob, CatalogAssistantSuggestion, CategorySuggestionCache
 from .category_suggestions import CATEGORY_BATCH_SIZE, classify_categories
-from .technical_data import bind_part_types
+from .technical_data import bind_part_types, classification as subgrupo_of
 from .catalog_classification import (AI_BATCH_SIZE, PROVIDER_TIMEOUT, ClassificationConflict,
     ClassificationUnavailable, call_provider, candidate_context, provider_configuration, validate_suggestions)
 from .catalog_grouping import merge_catalog_parts
 from .management import IsSuperuser, UppercaseCharField
-from .lines import storefront_lines
+from .lines import SUBGRUPO_FIELDS, bulk_update_lines, storefront_lines
 from .models import CatalogMerge, Part
 from .references import live_q
 
@@ -249,8 +249,9 @@ def apply(user, pk, decisions, offset):
             raise ValidationError('Indica un grupo para la subclasificación propuesta.')
         normalized.append((suggestion, value))
         requested_skus.update([source, target])
-    parts = {part.sku: part for part in storefront_lines(Part.objects.select_for_update()).filter(sku__in=requested_skus).order_by('pk')
-             .prefetch_related('codes')}
+    # Each line with its subgrupo, which the review compares against by the FK (S5); only the lines are locked.
+    parts = {part.sku: part for part in storefront_lines(Part.objects.select_for_update(of=('self',))).filter(sku__in=requested_skus)
+             .select_related('part_type__grupo').order_by('pk').prefetch_related('codes')}
     proposed_parents = {value['target_sku']: suggestion.context[value['target_sku']] for suggestion, value in normalized
                         if suggestion.context[value['target_sku']].get('proposed_parent')}
     if requested_skus - set(parts) - set(proposed_parents):
@@ -275,9 +276,9 @@ def apply(user, pk, decisions, offset):
         classification = (value['category'], value['subcategory'])
         if target in targets and targets[target]['classification'] != classification:
             raise ValidationError('Las propuestas del mismo SKU de destino deben compartir grupo y subgrupo.')
+        current = dict(zip(['category', 'subcategory'], subgrupo_of(parts[target]) if target in parts else ('', '')))
         for field in ['category', 'subcategory']:
-            current = getattr(parts[target], field) if target in parts else ''
-            if value[field] and current != suggestion.context[target][field] and current != value[field]:
+            if value[field] and current[field] != suggestion.context[target][field] and current[field] != value[field]:
                 raise ClassificationConflict(f'La clasificación de {target} cambió. Analiza el SKU otra vez para conservar la edición más reciente.')
         entry = targets.setdefault(target, {'sources': [], 'classification': classification})
         if source != target:
@@ -292,16 +293,15 @@ def apply(user, pk, decisions, offset):
                 raise ClassificationConflict(f'Las descripciones de la familia {target} cambiaron. Crea un análisis nuevo.')
         else:
             part = parts[target]
-            fields = []
-            for field, value in [('category', category), ('subcategory', subcategory)]:
-                if value and getattr(part, field) != value:
+            current = dict(zip(['category', 'subcategory'], subgrupo_of(part)))
+            chosen = {field: value for field, value in [('category', category), ('subcategory', subcategory)] if value}
+            if any(current[field] != value for field, value in chosen.items()):
+                for field, value in {**current, **chosen}.items():  # the half left blank stays the line's own (its subgrupo's)
                     setattr(part, field, value)
-                    fields.append(field)
-            if fields:
                 changed_parts.append(part)
-    if changed_parts:
+    if changed_parts:  # the chosen grupo / subgrupo names the subgrupo, found or created, and mall.lines writes it with its text
         bind_part_types(changed_parts)
-        Part.objects.bulk_update(changed_parts, ['category', 'subcategory', 'part_type'])
+        bulk_update_lines(changed_parts, SUBGRUPO_FIELDS)
     invalidate_keys = []
     for suggestion, value in normalized:
         if any(value[field] != suggestion.proposal[field] for field in ['category', 'subcategory']):

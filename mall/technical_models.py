@@ -6,8 +6,27 @@ from django.db.models import Q
 from django.db.models.functions import Lower
 
 
-class PartType(models.Model):
+class Grupo(models.Model):
+    """A grupo of the catalog's taxonomy (FRENOS, FILTROS...); its subgrupos are the PartTypes (inventory refactor S5). One per name,
+    ignoring case: mall.technical_data.grupo_for finds or creates it."""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    nombre = models.CharField(max_length=120, verbose_name='grupo')
+
+    class Meta:
+        ordering = ['nombre']
+        verbose_name = 'grupo'
+        verbose_name_plural = 'grupos'
+        constraints = [models.UniqueConstraint(Lower('nombre'), name='grupo_nombre_unique')]
+
+    def __str__(self):
+        return self.nombre
+
+
+class PartType(models.Model):
+    """A subgrupo: a kind of part within its grupo, with its TechnicalTemplate (1:1). Until S10 `category` keeps the grupo's nombre as
+    text: save() and the writers of mall.technical_data keep the two in step, and the code before S5 only knows the text."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    grupo = models.ForeignKey(Grupo, on_delete=models.PROTECT, null=True, blank=True, related_name='subgrupos', verbose_name='grupo')
     category = models.CharField(max_length=120, verbose_name='grupo')
     name = models.CharField(max_length=120, verbose_name='subgrupo')
 
@@ -17,6 +36,27 @@ class PartType(models.Model):
 
     def __str__(self):
         return f'{self.category} / {self.name}'
+
+    @classmethod
+    def from_db(cls, db, field_names, values):
+        instance = super().from_db(db, field_names, values)
+        instance._loaded_grupo = (instance.__dict__.get('category'), instance.__dict__.get('grupo_id'))  # what save() compares against
+        return instance
+
+    def refresh_from_db(self, using=None, fields=None, from_queryset=None):
+        super().refresh_from_db(using=using, fields=fields, from_queryset=from_queryset)
+        self._loaded_grupo = (self.__dict__.get('category'), self.__dict__.get('grupo_id'))
+
+    def save(self, *args, **kwargs):
+        """The grupo and its text move together (mall.technical_data.pair_grupo): a subgrupo saved with only the text, as the code
+        before S5 and old tests write it, finds or creates its grupo."""
+        from .technical_data import pair_grupo
+        pair_grupo(self, using=kwargs.get('using') or self._state.db or 'default')
+        fields = kwargs.get('update_fields')
+        if fields is not None and {'category', 'grupo'} & set(fields):
+            kwargs['update_fields'] = set(fields) | {'category', 'grupo'}
+        super().save(*args, **kwargs)
+        self._loaded_grupo = (self.__dict__.get('category'), self.__dict__.get('grupo_id'))
 
 
 class TechnicalTemplate(models.Model):

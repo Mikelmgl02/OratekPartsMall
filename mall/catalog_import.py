@@ -25,6 +25,7 @@ from .management import IsSuperuser
 from .lines import CATALOG, all_lines, phrase
 from . import references
 from .models import CatalogClassificationState, CatalogImportBatch, CatalogImportIssue, CatalogImportJob, Part, Reference
+from .technical_data import classification
 from .catalog_recovery import date_identifier, date_recovery, description_text, recovery_evidence
 from .workbook_reader import header, identifier_text
 
@@ -296,6 +297,15 @@ def read_excel(raw, *, include_warnings=False, include_recovery=False, include_r
         workbook.close()
 
 
+def current_values(line):
+    """The values of a line the file's columns compare against: CATEGORIA and SUBCATEGORIA against its subgrupo by the FK (S5,
+    mall.technical_data.classification), or a new line's defaults."""
+    if line is None:
+        return {'name': '', 'description': '', 'category': '', 'subcategory': '', 'active': True}
+    category, subcategory = classification(line)
+    return {'name': line.name, 'description': line.description, 'category': category, 'subcategory': subcategory, 'active': line.active}
+
+
 def build_plan(groups, errors, row_count, *, lock=False, warnings=None, error_sink=None):
     errors = list(errors)
     candidates = set(groups) | {code for group in groups.values() for _, code in group['codes']}
@@ -305,7 +315,8 @@ def build_plan(groups, errors, row_count, *, lock=False, warnings=None, error_si
     ordered_candidates = sorted(candidates)
     for offset in range(0, len(ordered_candidates), 2000):
         chunk = ordered_candidates[offset:offset + 2000]
-        parts_query = all_lines().filter(sku__in=chunk).select_related('merged_into').order_by('pk')  # every estado, as UNIQUE(sku) until S4
+        # Every estado, as UNIQUE(sku) until S4; with its subgrupo, which CATEGORIA / SUBCATEGORIA compare against (S5).
+        parts_query = all_lines().filter(sku__in=chunk).select_related('merged_into', 'part_type__grupo').order_by('pk')
         # A line's live References, by the printed code or by its key (clave: 17801-30070 is 1780130070, mall.references).
         codes_query = (Reference.objects.filter(Q(code__in=chunk) | Q(clave__in=sorted({references.clave(code) for code in chunk})))
                        .select_related('part').order_by('pk'))
@@ -348,16 +359,17 @@ def build_plan(groups, errors, row_count, *, lock=False, warnings=None, error_si
                 added.append((brand, code))
         group['existing'] = existing
         group['added'] = added
-        changed = existing and any(getattr(existing, field) != value for field, value in group['fields'].items())
+        current = current_values(existing)
+        changed = existing and any(current[field] != value for field, value in group['fields'].items())
         action = 'create' if not existing else 'update' if changed or added else 'unchanged'
         group['action'] = action
         summary[{'create': 'created_skus', 'update': 'updated_skus', 'unchanged': 'unchanged_skus'}[action]] += 1
         summary['added_codes'] += len(added)
-        preview.append({'sku': sku, 'name': group['fields'].get('name', existing.name if existing else ''),
-                        'description': group['fields'].get('description', existing.description if existing else ''),
-                        'category': group['fields'].get('category', existing.category if existing else ''),
-                        'subcategory': group['fields'].get('subcategory', existing.subcategory if existing else ''),
-                        'active': group['fields'].get('active', existing.active if existing else True),
+        preview.append({'sku': sku, 'name': group['fields'].get('name', current['name']),
+                        'description': group['fields'].get('description', current['description']),
+                        'category': group['fields'].get('category', current['category']),
+                        'subcategory': group['fields'].get('subcategory', current['subcategory']),
+                        'active': group['fields'].get('active', current['active']),
                         'codes': [{'brand': brand, 'code': code} for brand, code in added[:20]],
                         'action': action, 'added_codes': len(added)})
     relevant_pairs = {}
@@ -425,6 +437,8 @@ def save_plan(groups, user=None):
     new_parts, changed_parts, planned = [], [], []
     for sku, group in groups.items():
         part = group['existing'] or Part(sku=sku)
+        if group['existing'] is not None and {'category', 'subcategory'} & set(group['fields']):
+            part.category, part.subcategory = classification(part)  # the half the file leaves out is the line's subgrupo's (S5)
         for field, value in group['fields'].items():
             setattr(part, field, value)
         if group['existing'] is None:

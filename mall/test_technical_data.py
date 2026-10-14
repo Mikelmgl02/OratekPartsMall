@@ -7,7 +7,7 @@ from rest_framework.exceptions import ValidationError
 
 from .catalog_grouping import merge_catalog_parts
 from .catalog_import import save_plan
-from .models import (Account, Membership, Application, ItemApplication, Part, PartSpecification, PartType,
+from .models import (Account, Membership, Application, Grupo, ItemApplication, Part, PartSpecification, PartType,
                      Role, TechnicalTemplate, User)
 
 
@@ -136,7 +136,9 @@ class TechnicalDataTests(APITestCase):
         self.assertEqual(self.part.specifications.count(), 1)
 
     def test_part_type_pages_are_ordered_by_group_name_and_id(self):
-        PartType.objects.bulk_create([PartType(category=f'GRUPO {index % 3}', name=f'SUBGRUPO {54 - index:02d}') for index in range(55)])
+        grupos = [Grupo.objects.create(nombre=f'GRUPO {index}') for index in range(3)]
+        PartType.objects.bulk_create([PartType(grupo=grupos[index % 3], category=f'GRUPO {index % 3}', name=f'SUBGRUPO {54 - index:02d}')
+                                      for index in range(55)])
         Part.objects.create(sku='TEST-DISC-2', category='FRENOS', subcategory='DISCOS')
         Part.objects.create(sku='TEST-DISC-OLD', category='FRENOS', subcategory='DISCOS', active=False, merged_into=self.part)
         expected = [str(pk) for pk in PartType.objects.order_by('category', 'name', 'id').values_list('id', flat=True)]

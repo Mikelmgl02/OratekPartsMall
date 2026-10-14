@@ -1,7 +1,7 @@
 from decimal import Decimal, InvalidOperation
 
 from django.db import IntegrityError, transaction
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.db.models.deletion import ProtectedError
 from django.shortcuts import get_object_or_404
 from drf_spectacular.types import OpenApiTypes
@@ -16,7 +16,8 @@ from .catalog_scope import ACCOUNT_PARAMETER, request_scope
 from .lines import catalog_q, detail_line, storefront_lines
 from .management import IsSuperuser, UppercaseCharField
 from .models import Application, ItemApplication, Part, PartSpecification, PartType, TechnicalField, TechnicalTemplate
-from .technical_data import normalized_label
+from .lines import project_subgrupos
+from .technical_data import grupo_for, grupo_nombre, normalized_label
 
 # Multipliers to a common unit within each dimension. Never convert across dimensions.
 UNITS = {'mm': ('length', '1'), 'cm': ('length', '10'), 'm': ('length', '1000'), 'in': ('length', '25.4'),
@@ -27,7 +28,9 @@ UNITS = {'mm': ('length', '1'), 'cm': ('length', '10'), 'm': ('length', '1000'),
 
 
 class PartTypeSerializer(serializers.ModelSerializer):
-    category = UppercaseCharField(max_length=120)
+    """A subgrupo as {category, name}: category is its grupo's nombre (the FK, S5). Sending another category moves the subgrupo to that
+    grupo, found or created; its lines' grupo text follows (mall.lines.project_subgrupos)."""
+    category = UppercaseCharField(max_length=120, help_text='El grupo del subgrupo.')
     name = UppercaseCharField(max_length=120)
     part_count = serializers.IntegerField(read_only=True, default=0)
     field_count = serializers.IntegerField(read_only=True, default=0, help_text='Campos de su plantilla técnica.')
@@ -37,24 +40,37 @@ class PartTypeSerializer(serializers.ModelSerializer):
         fields = ['id', 'category', 'name', 'part_count', 'field_count']
         validators = []
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['category'] = grupo_nombre(instance)
+        return data
+
     def validate(self, data):
         for key in ('category', 'name'):
             if key in data:
                 data[key] = normalized_label(data[key])
-        category = data.get('category', getattr(self.instance, 'category', ''))
+        category = data.get('category', grupo_nombre(self.instance) if self.instance else '')
         name = data.get('name', getattr(self.instance, 'name', ''))
-        duplicates = PartType.objects.filter(category__iexact=category, name__iexact=name)
+        # The subgrupos of that grupo by its FK, and until 0082 one with no grupo yet under that text.
+        duplicates = PartType.objects.filter(Q(grupo__nombre__iexact=category) | Q(grupo__isnull=True, category__iexact=category), name__iexact=name)
         if self.instance:
             duplicates = duplicates.exclude(pk=self.instance.pk)
         if duplicates.exists():
             raise ValidationError('Este subgrupo ya existe en el grupo seleccionado.')
         return data
 
+    @staticmethod
+    def with_grupo(data):
+        if 'category' in data:
+            data['grupo'] = grupo_for(data['category'])
+            data['category'] = data['grupo'].nombre
+        return data
+
     @transaction.atomic
     def create(self, data):
         try:
             with transaction.atomic():
-                result = super().create(data)
+                result = super().create(self.with_grupo(data))
                 TechnicalTemplate.objects.create(part_type=result)
                 return result
         except IntegrityError:
@@ -65,9 +81,9 @@ class PartTypeSerializer(serializers.ModelSerializer):
         instance = PartType.objects.select_for_update().get(pk=instance.pk)
         try:
             with transaction.atomic():
-                instance = super().update(instance, data)
-                # Legacy strings remain a compatibility projection for import/filter APIs.
-                Part.objects.filter(part_type=instance).update(category=instance.category, subcategory=instance.name)
+                instance = super().update(instance, self.with_grupo(data))
+                # Until S10 the lines' grupo and subgrupo text follow their subgrupo (the import and filter APIs still read it).
+                project_subgrupos([instance])
         except IntegrityError:
             raise ValidationError('Este subgrupo ya existe.')
         return instance
@@ -77,12 +93,14 @@ class PartTypeList(generics.ListCreateAPIView):
     permission_classes = [IsSuperuser]
     serializer_class = PartTypeSerializer
     filter_backends = [filters.SearchFilter, StableOrdering]
-    search_fields = ['category', 'name']
+    search_fields = ['grupo__nombre', 'name']
+    # category orders by the text, which until S10 is the grupo's nombre.
     ordering_fields = ['category', 'name', 'part_count', 'field_count']
     # Meta.ordering is ignored on GROUP BY queries; pages need an explicit, unique order. Two counted relations need distinct counts.
     # part_count: the subgrupo's lines in the catalog (mall.lines.catalog_lines: publicada and retirada).
-    queryset = (PartType.objects.annotate(part_count=Count('parts', filter=catalog_q(prefix='parts__'), distinct=True),
-                                          field_count=Count('template__fields', distinct=True)).order_by('category', 'name', 'id'))
+    queryset = (PartType.objects.select_related('grupo')
+                .annotate(part_count=Count('parts', filter=catalog_q(prefix='parts__'), distinct=True),
+                          field_count=Count('template__fields', distinct=True)).order_by('category', 'name', 'id'))
 
 
 class PartTypeDetail(generics.RetrieveUpdateAPIView):
@@ -324,7 +342,7 @@ class ItemTechnicalDetail(APIView):
 
     @extend_schema(responses=OpenApiTypes.OBJECT, description='Resuelve la plantilla del subgrupo del SKU y devuelve valores, campos faltantes y aplicaciones vinculadas.')
     def get(self, request, pk):
-        return Response(sheet_data(detail_line(pk, queryset=Part.objects.select_related('part_type'))))
+        return Response(sheet_data(detail_line(pk, queryset=Part.objects.select_related('part_type__grupo'))))
 
     @extend_schema(request=SheetWriteSerializer, responses=OpenApiTypes.OBJECT,
                    description='Sustituye los valores o vínculos incluidos; conserva las secciones omitidas. Requiere las revisiones actuales. Los valores nulos significan desconocido.')
@@ -361,5 +379,5 @@ class CatalogTechnicalDetail(APIView):
     def get(self, request, pk):
         # Outside the member's scope (mall.catalog_scope) the SKU does not exist for it.
         scope = request_scope(request)
-        part = get_object_or_404(scope.parts(storefront_lines(Part.objects.select_related('part_type'))), pk=pk)
+        part = get_object_or_404(scope.parts(storefront_lines(Part.objects.select_related('part_type__grupo'))), pk=pk)
         return Response(sheet_data(part, public=True))

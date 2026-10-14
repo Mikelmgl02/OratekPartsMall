@@ -118,9 +118,10 @@ class Part(models.Model):
         if fields:  # a partial save stamps updated_at too (auto_now only writes it when listed); update_fields=[] still saves nothing
             fields = kwargs['update_fields'] = set(fields) | {'updated_at'}
         if fields is None or {'category', 'subcategory', 'part_type'} & set(fields):
+            from .lines import set_subgrupo
             from .technical_data import bind_part_types
             if self._state.adding and self.part_type_id and not (self.category or self.subcategory):
-                self.category, self.subcategory = self.part_type.category, self.part_type.name
+                set_subgrupo(self, self.part_type)  # a new line given only its subgrupo takes its text
             bind_part_types([self], using=kwargs.get('using') or self._state.db or 'default')
             if fields is not None:
                 kwargs['update_fields'] = set(fields) | {'category', 'subcategory', 'part_type'}
@@ -538,7 +539,7 @@ from .assistant_models import WhatsAppAssistantSession
 from .basket_models import BasketEvent, BasketItem
 from .inbox_models import AccountWhatsApp, ConversationRead, InboxCursor, InboxGroup, PushSubscription, WhatsAppContact, WhatsAppMessage
 from .matching_models import MatchingQueue, MatchingCase, SupplierCodeMapping, MatchingDecision
-from .technical_models import PartType, TechnicalTemplate, TechnicalField, PartSpecification, Application, ItemApplication
+from .technical_models import Grupo, PartType, TechnicalTemplate, TechnicalField, PartSpecification, Application, ItemApplication
 from .pricing_models import (SupplierPricingSettings, PricingAuditEvent, PriceList, PriceListEntry, SupplierItemPricing, PriceChange,
                              ClientPricingProfile, PricingRule)
 from .quote_draft_models import DealQuotationDraft, DealQuotationDraftLine, DealQuotationAudit, DealQuotationLineAudit

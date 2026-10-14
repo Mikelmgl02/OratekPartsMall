@@ -83,6 +83,18 @@ class CategoryEngineTests(TestCase):
             classify_categories([row()],instructions='MI CLASIFICACION')
             self.assertEqual(provider.call_count,4)
 
+    def test_taxonomy_reads_each_subgrupos_grupo_by_its_fk(self):
+        """S5: an existing subgrupo enters the choices under its grupo's nombre (the FK), whatever its text says, and wins over a rule's
+        spelling of the same pair."""
+        custom = PartType.objects.create(category='OTRO', name='CUSTOM')
+        PartType.objects.filter(pk=custom.pk).update(category='TEXTO VIEJO')
+        rule = PartType.objects.create(category='Frenos', name='Pastillas de freno')
+        choices = taxonomy()
+        self.assertIn(('OTRO', 'CUSTOM'), choices)
+        self.assertNotIn(('TEXTO VIEJO', 'CUSTOM'), choices)
+        self.assertIn(('FRENOS', rule.name), choices)
+        self.assertEqual([pair for pair in choices if pair[1].upper() == 'PASTILLAS DE FRENO'], [('FRENOS', 'Pastillas de freno')])
+
     def test_no_description_and_no_key_leave_unknowns_for_review(self):
         with override_settings(GEMINI_API_KEY=''),patch('mall.category_suggestions.category_provider') as provider:
             results,metrics=classify_categories([row(),row('B',''),row('C','UNKNOWN')])

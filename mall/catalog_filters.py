@@ -1,10 +1,14 @@
 """Catalog filters and counts across all canonical SKUs, before pagination. In a supplier's own view (values['own'], see
-mall.catalog_scope) the stock and its bands come from that supplier's items alone, and there is no supplier filter or facet."""
+mall.catalog_scope) the stock and its bands come from that supplier's items alone, and there is no supplier filter or facet.
+
+The grupo and subgrupo filters and facets keep their text parameters (category, subcategory) but read each line's subgrupo by its FK
+(inventory refactor S5): its grupo's nombre and its name. A line with no subgrupo counts by the partial classification its text holds
+(mall.technical_data), until S10."""
 from uuid import UUID
 
 from django.conf import settings
 from django.db.models import Count, F, IntegerField, OuterRef, Q, Subquery, Sum, Value
-from django.db.models.functions import Greatest
+from django.db.models.functions import Coalesce, Greatest
 from rest_framework.exceptions import ValidationError
 
 from .models import Account, SupplierItem
@@ -54,10 +58,15 @@ def with_stock_units(query, own=None):
     return query.annotate(_stock_units=Subquery(totals, output_field=IntegerField()))
 
 
+# What a line is filtered and counted by: its subgrupo's grupo and name (the FK), else its text (a partial classification, until S10).
+TAXONOMY = {'category': lambda: Coalesce(F('part_type__grupo__nombre'), F('category')),
+            'subcategory': lambda: Coalesce(F('part_type__name'), F('subcategory'))}
+
+
 def apply_filters(query, values, omit=None):
-    for key in ('category', 'subcategory'):
+    for key, expression in TAXONOMY.items():
         if key != omit and values[key]:
-            query = query.filter(**{f'{key}__in': values[key]})
+            query = query.alias(**{f'_{key}': expression()}).filter(**{f'_{key}__in': values[key]})
     if omit != 'supplier' and values['supplier']:
         query = query.filter(pk__in=eligible_items().filter(supplier_id__in=values['supplier']).values('part_id'))
     band = values['availability'] if omit != 'availability' else ''
@@ -72,8 +81,8 @@ def catalog_facets(base, values):
         # Keep all groups available; subgroups follow the chosen groups.
         scope_values = {**values, 'subcategory': []} if field == 'category' else values
         scope = apply_filters(base, scope_values, omit=field).order_by()
-        rows = scope.values(field).annotate(count=Count('pk', distinct=True)).order_by(field)
-        facets[field] = [{'value': row[field], 'label': row[field] or blank_label, 'count': row['count']} for row in rows]
+        rows = scope.annotate(_value=TAXONOMY[field]()).values('_value').annotate(count=Count('pk', distinct=True)).order_by('_value')
+        facets[field] = [{'value': row['_value'], 'label': row['_value'] or blank_label, 'count': row['count']} for row in rows]
     stock_scope = with_stock_units(apply_filters(base, values, omit='availability'), values.get('own')).order_by()
     counts = stock_scope.aggregate(**{value: Count('pk', distinct=True, filter=stock_band_q(value)) for value in AVAILABILITY_LABELS})
     facets['availability'] = [{'value': value, 'label': label, 'count': counts[value]} for value, label in AVAILABILITY_LABELS.items()]
