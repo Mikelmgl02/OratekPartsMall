@@ -18,7 +18,9 @@ OEMCrossReference rows, whether or not a SKU carries the number, and every SKU l
 those numbers (PartOEMLink, source catalog) when the makes agree. A number the catalog prints for two or more different parts (an
 inner and an outer joint of one drive shaft, a row the extract misread) says nothing about which part replaces it: it files no codes
 and ties no SKU, and a SKU matched to an item only through such numbers is tied to none of the item's numbers. Variants of one part
-(GWT-116A and GWT-116AH) count as one. A drive-shaft assembly number listed for a CV component files nothing either. After an apply
+(GWT-116A and GWT-116AH) count as one. A drive-shaft assembly number listed for a CV component files nothing either: a finder
+assembly class under the make's own or partner numbering (Ford and Kia print Mazda shafts), Kia's Mazda-era 25-40/50/60, a
+Mitsubishi MR number or a number linked to a SKU sold as a whole shaft (EJE COMPLETO, SEMIEJE). After an apply
 the name links of every SKU are refreshed (mall.oem_links), since new numbers may name existing SKUs. Codes an OEM number carries to the
 SKU are not copied onto it as company alternos (alternos step 2c); a SKU matched only through shared numbers gets none either, so
 only an item whose codes no number can carry (no OEM number printed, or only shared or assembly ones) still writes them on the SKU.
@@ -85,6 +87,10 @@ INTEGER_KEYS = {'holes', 'bolts', 'outer_splines', 'inner_splines', 'abs_teeth',
 BOOLEAN_KEYS = {'vented', 'wear_indicator', 'abs', 'with_abs', 'with_sensor'}
 YES, NO = {'YES', 'SI', 'SÍ', 'TRUE', 'Y', '+', 'X'}, {'NO', 'FALSE', 'N', '-'}
 SAMPLE = 40
+# Drive-shaft classes the OEM finder's ASSEMBLY_CLASSES leave out: Kia's Mazda-era numbers (0K2N1-25-600) use Mazda's shaft groups.
+EXTRA_ASSEMBLY_CLASSES = {('KIA_LEGACY', '25-40'), ('KIA_LEGACY', '25-50'), ('KIA_LEGACY', '25-60')}
+# A SKU sold as a whole drive shaft: the numbers linked to it are shaft numbers, whatever CV component a catalog lists them for.
+SHAFT_RE = re.compile(r'\bEJE COMPLETO\b|\bSEMI-?EJES?\b')
 
 
 def compact(value):
@@ -286,10 +292,20 @@ class CatalogImport:
 
     # ------------------------------------------------------------------ OEM table
     def is_assembly(self, manufacturer, code):
-        """A drive-shaft assembly number (OEM finder ASSEMBLY_CLASSES), e.g. Hyundai 49501-2S300 printed next to a CV joint."""
+        """A drive-shaft assembly number, e.g. Hyundai 49501-2S300 printed next to a CV joint: an OEM finder assembly class under the
+        make's own or platform-partner numbering (Ford G565-25-500B and Kia B002-25-400B are Mazda shafts), Kia's Mazda-era shafts
+        (0K2N1-25-600), a Mitsubishi MR number (the series ASVA prints for whole shafts: MR453384) or a number linked to a SKU sold as
+        a whole shaft (build_indexes 'shafts')."""
         from .oem_finder import ASSEMBLY_CLASSES, MAKE_SYSTEMS, system_hits
-        own = set(MAKE_SYSTEMS.get(manufacturer, ([], []))[0])
-        return any((h['system'], h.get('lexkey')) in ASSEMBLY_CLASSES for h in system_hits(code.strip().upper(), self.finder.table) if h['system'] in own)
+        own, partners = MAKE_SYSTEMS.get(manufacturer, ([], []))
+        for h in system_hits(code.strip().upper(), self.finder.table):
+            if h['system'] not in own and h['system'] not in partners:
+                continue
+            if (h['system'], h.get('lexkey')) in ASSEMBLY_CLASSES or (h['system'], h.get('lexkey')) in EXTRA_ASSEMBLY_CLASSES:
+                return True
+            if h['system'] == 'MITSU_OLD' and h['groups'].get('cls') == 'MR':
+                return True
+        return compact(code) in self.ix.get('shafts', ())
 
     def listed_assembly(self, item, oem):
         """The OEM number is a drive-shaft assembly printed next to a CV component, not the component's own number."""
@@ -614,7 +630,25 @@ def build_indexes(finder, imported=()):
         codes[compact(code)].add(str(pid))
     for pid, sku in Part.objects.values_list('pk', 'sku'):
         skus[compact(sku)].add(str(pid))
-    return {'raw': raw, 'oem': oem, 'codes': codes, 'skus': skus, 'claims': {}}
+    return {'raw': raw, 'oem': oem, 'codes': codes, 'skus': skus, 'claims': {}, 'shafts': shaft_numbers(finder.table)}
+
+
+def shaft_numbers(table=None):
+    """Compact OEM numbers of whole drive shafts: those a live SKU sold as one (EJE COMPLETO, SEMIEJE, subgrupo SEMIEJES) names with
+    its own code, carries as an OEM alterno or is linked to. A CV catalog lists them for its joints, but the joint does not replace
+    the shaft (is_assembly)."""
+    from .models import Part, PartCode
+    from .oem_links import chunks, name_key
+    from .oem_reference_models import PartOEMLink
+    shafts, numbers = [], set()
+    for pk, sku, description, subcategory in Part.objects.filter(active=True, merged_into__isnull=True).values_list('pk', 'sku', 'description', 'subcategory'):
+        if SHAFT_RE.search(fold(description)) or fold(subcategory) == 'SEMIEJES':
+            shafts.append(pk)
+            numbers.add(name_key(sku, table))
+    for chunk in chunks(shafts):
+        numbers.update(PartOEMLink.objects.filter(part_id__in=chunk).values_list('reference__code', flat=True))
+        numbers.update(compact(code) for code in PartCode.objects.filter(part_id__in=chunk, ref_type='oem').values_list('code', flat=True))
+    return numbers - {''}
 
 
 def run(paths, *, apply=False, report_path=None, stdout=None):

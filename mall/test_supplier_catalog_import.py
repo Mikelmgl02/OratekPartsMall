@@ -362,3 +362,55 @@ class ChainedMatchTests(Fresh, TestCase):
         self.assertEqual(again['catalogs'][0]['counts']['linked_parts'], 1)  # R177.27 is no matching key: DAC35620040 stays unlinked
         self.assertNotIn(('ASVA', 'DAC35620040'), reached(bearing))
         self.assertFalse(bearing.codes.exists() or bearing.specifications.exists())
+
+
+def run_extract(data, apply=True):
+    with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False, encoding='utf-8') as handle:
+        json.dump(data, handle, ensure_ascii=False)
+    try:
+        return sci.run([handle.name], apply=apply, stdout=io.StringIO())
+    finally:
+        os.unlink(handle.name)
+
+
+class CVAssemblyCheckTests(Fresh, TestCase):
+    """Target data step 1: the shaft numbers a CV catalog lists for its joints, beyond the finder's own assembly classes."""
+
+    def joint(self, brand_code, oem, apps=(), product_type='cv_joint_outer'):
+        return item(brand_code, product_type, oem=oem, name_es='JUNTA HOMOCINÉTICA EXTERIOR', apps=apps)
+
+    def assembly(self, manufacturer, number):
+        ref = OEMReference.objects.get(manufacturer=manufacturer, code=number)
+        return ref.part_type == 'SEMIEJES' and ref.sources.get().detail.get('assembly_number_listed_for_component', False)
+
+    def test_partner_makes_kia_legacy_and_mitsubishi_mr_numbers_are_shafts(self):
+        Part.objects.create(sku='28321-FG010', description='EJE COMPLETO SUB FORESTER 08-12 RH')  # a SKU sold as the whole shaft
+        run_extract(extract([
+            self.joint('MZ-056A44', [('G565-25-500B', 'FORD'), ('G572-22-510', 'FORD')]),  # Mazda shaft and Mazda joint under Ford
+            self.joint('MZ-11', [('0K2N1-25-600', 'KIA'), ('B002-25-400B', 'KIA'), ('KK370-22-510', 'KIA')]),
+            self.joint('MT-99A50', [('MR453384', 'MITSUBISHI'), ('MB526438', 'MITSUBISHI')]),
+            self.joint('SB-12', [('28321-FG010', 'SUBARU'), ('28391-FG010', 'SUBARU')]),
+            self.joint('HY-IX35', [('49501-2S300', 'HYUNDAI')]),  # the finder's own class, as before
+        ], key='asva_cv', title='ASVA CV', brand='ASVA', product_line='cv_joint'))
+        shafts = {('FORD', '565', 'G56525500B'), ('KIA', 'legacy', '0K2N125600'), ('KIA', 'mazda', 'B00225400B'), ('MITSUBISHI', 'MR', 'MR453384'),
+                  ('SUBARU', 'sku', '28321FG010'), ('HYUNDAI', 'finder', '495012S300')}
+        for manufacturer, why, number in shafts:
+            self.assertTrue(self.assembly(manufacturer, number), (why, number))
+            self.assertFalse(OEMCrossReference.objects.filter(reference__code=number).exists(), number)
+        for manufacturer, number in [('FORD', 'G57222510'), ('KIA', 'KK37022510'), ('MITSUBISHI', 'MB526438'), ('SUBARU', '28391FG010')]:
+            self.assertFalse(self.assembly(manufacturer, number), number)  # joint numbers keep the joint's codes
+            self.assertTrue(OEMCrossReference.objects.filter(reference__code=number, brand='ASVA').exists(), number)
+
+    def test_a_joint_sku_named_after_a_shaft_number_gets_the_code_as_an_alterno_and_no_shaft_ties(self):
+        joint = Part.objects.create(sku='MR-567160-NDK', description='PUNTA FLECHA EXT MIT LANCER 05')
+        result = run_extract(extract([self.joint('MT-38A43', [('MR567160', 'MITSUBISHI'), ('MR580474', 'MITSUBISHI')], apps=[('MITSUBISHI', 'LANCER')])],
+                                     key='asva_cv', title='ASVA CV', brand='ASVA', product_line='cv_joint'))
+        self.assertEqual(result['catalogs'][0]['counts']['linked_parts'], 1)
+        self.assertFalse(PartOEMLink.objects.filter(part=joint, source='catalog').exists())  # MR567160 is a shaft: the joint is not it
+        self.assertEqual(list(joint.codes.values_list('brand', 'code', 'ref_type')), [('ASVA', 'MT-38A43', 'company')])  # no number carries it
+        self.assertFalse(OEMCrossReference.objects.exists())
+
+    def test_cv_axle_items_are_shafts_themselves_and_keep_their_numbers(self):
+        run_extract(extract([item('CVSK-001R', 'cv_axle', oem=[('0K012-25-500D', 'KIA')], name_es='SEMIEJE')],
+                            key='asva_cv', title='ASVA CV', brand='ASVA', product_line='cv_joint'))
+        self.assertTrue(OEMCrossReference.objects.filter(reference__code='0K01225500D', brand='ASVA', code='CVSK-001R').exists())
