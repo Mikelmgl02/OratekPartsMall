@@ -167,7 +167,9 @@ class SupplierRequestWorkflowTests(APITestCase):
         self.assertEqual(detail.data['notes'], 'ENTREGA')
         self.assertEqual((detail.data['line_count'], detail.data['unit_count']), (2, 5))
         for line in detail.data['lines']:
-            self.assertEqual(set(line), {'id', 'part_id', 'sku', 'name', 'codigo', 'brand', 'description', 'quantity'})
+            self.assertEqual(set(line), {'id', 'part_id', 'sku', 'name', 'codigo', 'brand', 'description', 'quantity', 'grupo', 'subgrupo'})
+            part = Part.objects.get(pk=line['part_id'])  # the document groups its items by the part's catalog grupo and subgrupo
+            self.assertEqual((line['grupo'], line['subgrupo']), (part.category, part.subcategory))
         self.assertEqual(self.client.post(path, {}, format='json').status_code, 405)
         self.client.force_authenticate(self.seller_a)
         self.assertEqual(self.client.post(f'{self.url(self.supplier_a)}{row["id"]}/review/', {}, format='json').status_code, 200)

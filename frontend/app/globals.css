@@ -1190,25 +1190,7 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .deal-detail { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; min-width: 0; }
 .deal-detail > *, .deal-quote-tab > *, .deal-quote-editor > * { min-width: 0; }
 .deal-modal .modal-header h2 { overflow-wrap: anywhere; }
-.deal-progress { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); padding: 0; margin: 0; list-style: none; gap: 8px; }
-.deal-progress li { display: flex; align-items: center; gap: 8px; min-width: 0; overflow-wrap: break-word; font-size: 12px; color: var(--muted); border-bottom: 2px solid var(--line); padding: 10px 0; }
-.deal-progress li > span:first-child { display: grid; place-items: center; flex: 0 0 22px; width: 22px; height: 22px; border-radius: 50%; background: var(--line); font-weight: 700; }
-.deal-progress .reached { color: var(--ink); border-color: #45886a; }
-.deal-progress .reached > span:first-child { background: #dceddd; color: #326343; }
 /* A step the order went past without (En camino on a pickup, both steps on older orders): reached, but dashed and unchecked. */
-.deal-progress li.skipped { color: var(--muted); border-bottom-style: dashed; }
-.deal-progress li.skipped > span:first-child { background: #eef0ea; color: #8d9684; }
-.deal-progress-text { display: grid; min-width: 0; }
-.deal-progress-text small { font-size: 10px; line-height: 1.3; color: #8a5a12; }
-.deal-progress li.reached .deal-progress-text small.done { color: #1f5f4d; }
-.deal-state-note { display: flex; align-items: flex-start; gap: 10px; border-radius: 12px; padding: 14px; background: #f0f3ed; }
-.deal-state-note svg { flex-shrink: 0; margin-top: 2px; }
-.deal-state-note p { min-width: 0; overflow-wrap: anywhere; margin: 0; font-size: 13px; line-height: 1.6; }
-.deal-state-note.handshaked { background: #e4f2e8; color: #276244; }
-.deal-state-note.processing { background: #eef3df; color: #56701f; }
-.deal-state-note.in_transit { background: #e3eef6; color: #22597c; }
-.deal-state-note.delivered { background: #fff4dc; color: #7d5a1c; }
-.deal-state-note.received { background: #dcefe9; color: #1f5f4d; }
 .deal-tabs { display: flex; gap: 5px; border-bottom: 1px solid var(--line); overflow-x: auto; }
 .deal-tabs button { display: flex; align-items: center; gap: 7px; padding: 12px 14px; white-space: nowrap; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; }
 .deal-tabs .selected { border-color: #45886a; color: var(--ink); font-weight: 700; }
@@ -1253,47 +1235,100 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .deal-hold>svg { flex:0 0 auto; margin-top:2px; }
 .deal-hold.lapsed { background:#fdf5e7; color:#8a5a12; }
 .deal-line-short { color:#a1442f; font-weight:600; }
-/* The order's items as a plain table (deal-items-table.tsx); Ampliar keeps the full grid. Its own rules beat the app's generic td styles. */
+/* The order's items as a dense grid (deal-items-table.tsx); Ampliar keeps the full grid. Its own rules beat the app's generic td styles. */
 .deal-document { container-type:inline-size; }
 .deal-items-frame { overflow-x:auto; }
 .deal-items { width:100%; border-collapse:collapse; white-space:normal; }
-.deal-items th { padding:10px 14px; border-bottom:1px solid var(--line); background:#f7f9f4; color:#66706a; font-size:10.5px; font-weight:700; letter-spacing:.6px; text-transform:uppercase; text-align:left; white-space:nowrap; }
-.deal-items td { padding:12px 14px; border-bottom:1px solid #eef1ea; color:var(--ink); font-size:13px; line-height:1.4; vertical-align:top; }
+.deal-items th { padding:9px 10px; border-bottom:1px solid var(--line); background:#f3f4f1; color:#3b4540; font-size:10.5px; font-weight:700; letter-spacing:.6px; text-transform:uppercase; text-align:left; white-space:nowrap; }
+.deal-items td { padding:7px 10px; border-bottom:1px solid #eef1ea; color:var(--ink); font-size:12.5px; line-height:1.35; vertical-align:top; }
 .deal-items .num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
 .deal-items td > span { display:inline; max-width:none; margin:0; font-size:inherit; color:inherit; white-space:inherit; }
-/* The item keeps a readable width; past it the frame scrolls instead of squeezing the code into slivers. */
-.deal-items th:first-child, .deal-items td:first-child { min-width:8rem; }
-.deal-items thead th:first-child { width:40%; }
-.deal-items .deal-item-code { font-size:13.5px; font-weight:700; letter-spacing:.2px; overflow-wrap:break-word; }
-.deal-items .deal-item-description { margin-top:2px; color:#66706a; font-size:12px; overflow-wrap:break-word; }
-.deal-items .deal-item-note { margin-top:2px; color:#66706a; font-size:11.5px; font-weight:500; }
-.deal-items .deal-line-short { color:#a1442f; }
-.deal-items .deal-item-detail { max-width:11rem; font-weight:400; white-space:normal; }
-.deal-items .num .deal-item-detail { min-width:7.5rem; margin-left:auto; }
-.deal-items .deal-item-stock { margin-top:6px; color:var(--ink); }
-.deal-items strong.deal-item-amount { display:inline; color:var(--ink); font-size:13px; font-weight:700; }
+.deal-items .deal-item-code { font-weight:700; white-space:nowrap; }
+.deal-items .deal-item-description { min-width:11rem; text-transform:uppercase; overflow-wrap:break-word; }
+.deal-items td > span.deal-item-brand { color:var(--muted); }
+.deal-items .deal-item-note { margin-top:1px; color:var(--muted); font-size:10.5px; font-weight:500; white-space:nowrap; }
+.deal-items .deal-item-ordered { color:var(--muted); }
+.deal-items .deal-item-disp { font-weight:700; }
+.deal-items .deal-item-disp.enough { color:#a06a12; }
+.deal-items .deal-item-disp.short { color:#c4561b; }
+.deal-items .deal-item-disp.none, .deal-items .deal-item-disp.unknown { color:#a1442f; }
+.deal-items .deal-line-short, .deal-items td > span.deal-line-short { color:#a1442f; font-weight:700; }
+.deal-items tr.deal-items-off td { color:#9aa29b; }
+.deal-items strong.deal-item-amount { display:inline; color:var(--ink); font-size:12.5px; font-weight:700; }
+.deal-items tr.deal-items-off strong.deal-item-amount { color:#9aa29b; }
+.deal-items .deal-items-group th { padding:6px 10px; background:#f7f8f4; color:#3b4540; letter-spacing:.5px; }
+.deal-items .deal-items-group span { margin-left:4px; color:var(--muted); font-weight:500; }
 /* The suggested price and its origin (deal-detail.tsx SuggestedPrice) wrap in their own column, over the app's generic cell styles. */
 .deal-items td.deal-item-suggested { min-width:8rem; max-width:15rem; white-space:normal; }
-.deal-items .deal-item-suggested strong { display:block; margin:0; color:var(--ink); font-size:13px; font-weight:700; }
-.deal-items .deal-item-suggested small { display:block; margin-top:2px; color:#66706a; font-size:11.5px; line-height:1.35; }
-.deal-items .deal-items-narrow { display:none; }
-.deal-items tfoot th, .deal-items tfoot td { padding-top:12px; padding-bottom:12px; border-bottom:0; background:#f7f9f4; color:var(--ink); font-size:13px; letter-spacing:0; text-transform:none; }
+.deal-items .deal-item-suggested strong { display:block; margin:0; color:var(--ink); font-size:12.5px; font-weight:700; }
+.deal-items .deal-item-suggested small { display:block; margin-top:2px; color:#66706a; font-size:11px; line-height:1.35; }
+.deal-items tfoot th, .deal-items tfoot td { padding-top:10px; padding-bottom:10px; border-bottom:0; background:#f7f9f4; color:var(--ink); font-size:13px; letter-spacing:0; text-transform:none; }
 .deal-items tfoot th { text-align:left; font-weight:700; }
 .deal-items tfoot strong.deal-item-amount { font-size:15px; }
-/* Narrow: the availability goes under the item, a short offer under the ordered units and the unit price under the amount; a phone's
-   width holds the three columns left. */
+/* Narrow: the code goes above the description and Pedido under Cant. */
 @container (max-width:620px) {
   .deal-items .deal-items-wide { display:none; }
-  .deal-items .deal-items-narrow { display:block; }
-  .deal-items th, .deal-items td { padding-left:10px; padding-right:10px; }
-  .deal-items th:first-child, .deal-items td:first-child { min-width:7rem; }
-  .deal-items thead th:first-child { width:auto; }
-  .deal-items .num .deal-items-narrow { white-space:normal; }
+  .deal-items .deal-item-description { min-width:6rem; }
+  .deal-items .deal-item-description::before { content:attr(data-code); display:block; margin-bottom:1px; font-weight:700; text-transform:none; }
+  .deal-items .deal-item-offered::after { content:attr(data-ordered); display:block; margin-top:1px; color:var(--muted); font-size:10.5px; font-weight:500; }
+  .deal-items th, .deal-items td { padding-left:6px; padding-right:6px; }
 }
-@container (max-width:340px) {
-  .deal-items th, .deal-items td { padding-left:8px; padding-right:8px; }
-  .deal-items th:first-child, .deal-items td:first-child { min-width:6rem; }
+/* Phone: no Subtotal; the total sits next to its label. */
+@container (max-width:420px) {
+  .deal-items.quoted .deal-items-subtotal { display:none; }
+  .deal-items tfoot th[data-total]::after { content:attr(data-total); margin-left:6px; }
 }
+/* The order's stages (deal-stages.tsx): reached ones open read-only, the current one ringed, those ahead locked; the ? explains them. */
+.deal-stages { display:flex; align-items:center; gap:6px; padding:8px 0; container-type:inline-size; }
+.deal-stages ol { display:flex; align-items:center; flex:1; min-width:0; margin:0; padding:0; list-style:none; }
+.deal-stages li { display:flex; align-items:center; flex:1 1 auto; min-width:0; }
+.deal-stages li + li::before { content:''; flex:1 1 6px; min-width:4px; height:2px; margin:0 4px; background:var(--line); }
+.deal-stage { display:flex; align-items:center; gap:5px; flex:0 0 auto; padding:3px 8px 3px 3px; border:0; border-radius:999px; background:none; color:var(--muted); font:inherit; font-size:12px; font-weight:600; cursor:pointer; }
+.deal-stage:hover:not(:disabled) { background:#f3f4f1; }
+.deal-stage-dot { display:grid; place-items:center; flex:0 0 20px; width:20px; height:20px; border-radius:50%; background:#eceee8; font-size:10.5px; font-weight:700; }
+.deal-stage.done { color:var(--green-dark, #44652d); }
+.deal-stage.done .deal-stage-dot { background:#dcebc8; }
+.deal-stage.current .deal-stage-dot { box-shadow:0 0 0 2px #fff, 0 0 0 4px #9ec37a; }
+.deal-stage.viewing { background:var(--ink); color:#fff; }
+.deal-stage.viewing .deal-stage-dot { background:#dcf39e; color:var(--ink); }
+.deal-stage.locked { opacity:.45; cursor:not-allowed; }
+.deal-stage.skipped { cursor:default; }
+.deal-stage-cancelled { flex:0 0 auto; padding:2px 8px; border-radius:999px; background:#f8e3dd; color:#a1442f; font-size:11px; font-weight:700; }
+.deal-status-link { border:0; font:inherit; cursor:pointer; }
+.deal-status-link:hover { filter:brightness(.95); }
+.deal-stages-help { display:grid; place-items:center; flex:0 0 26px; width:26px; height:26px; border:1px solid var(--line); border-radius:50%; background:#fff; color:var(--muted); cursor:pointer; }
+.deal-stages-help:hover { border-color:var(--ink); color:var(--ink); }
+@container (max-width:760px) { .deal-stage:not(.viewing) .deal-stage-label { display:none; } .deal-stage:not(.viewing) { padding-right:3px; } }
+.deal-stages-list { margin:0; padding:0; list-style:none; }
+.deal-stages-list li { display:flex; gap:12px; padding:10px 0; border-bottom:1px solid #eef1ea; }
+.deal-stages-list li:last-child { border-bottom:0; }
+.deal-stages-list .deal-stage-dot { flex:0 0 24px; height:24px; color:var(--muted); }
+.deal-stages-list li.done .deal-stage-dot { background:#dcebc8; color:var(--green-dark, #44652d); }
+.deal-stages-list li.current .deal-stage-dot { background:var(--ink); color:#dcf39e; }
+.deal-stages-list li.locked { opacity:.6; }
+.deal-stages-list strong { font-size:13px; }
+.deal-stages-list strong em { color:var(--green-dark, #44652d); font-style:normal; }
+.deal-stages-list strong span { color:var(--muted); font-weight:500; }
+.deal-stages-list small { display:block; color:var(--muted); font-size:11px; }
+.deal-stages-list p { margin:3px 0 0; font-size:12.5px; line-height:1.45; }
+.deal-next-step { margin:0; padding:9px 12px; border-radius:10px; font-size:12.5px; line-height:1.5; }
+.deal-next-step em { font-style:normal; font-weight:700; }
+.deal-next-step.you { background:#fff8df; color:#6b5520; }
+.deal-next-step.them { background:#f3f4f1; color:#5b655e; }
+.deal-next-step.done { background:#e6f2df; color:#2f5a2a; }
+.deal-next-step.cancelled { background:#f8e9e5; color:#8a3f2c; }
+.deal-looking-back { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:6px 12px; padding:9px 12px; border-radius:10px; background:#f3f1fb; color:#4e4382; font-size:12.5px; }
+/* What each quotation version changed (quote-changes.tsx). */
+.deal-quote-changes { margin:12px 18px; padding:10px 12px; border:1px solid #dfe6d6; border-radius:10px; background:#fafcf6; font-size:12.5px; }
+.deal-quote-changes h4 { margin:0 0 4px; font-size:12.5px; }
+.deal-quote-changes h4 small { color:var(--muted); font-weight:500; }
+.deal-quote-changes ul { margin:0; padding-left:18px; }
+.deal-quote-changes details summary { cursor:pointer; }
+.deal-quote-changes-older { margin-top:8px; color:#5b655e; }
+.deal-quote-changes-older > summary { font-weight:600; }
+.deal-quote-changes-version p { margin:8px 0 2px; }
+.deal-quote-changes-doc { margin-top:8px; }
+.deal-quote-changes-doc > summary { color:var(--green-dark, #44652d); font-weight:600; }
 /* Pedir lo que falta a otro proveedor (reorder-missing.tsx): the order's missing units, and the dialog that asks other suppliers for them. */
 .deal-missing { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px 12px; padding:12px 18px; border-bottom:1px solid var(--line); background:#fdf6f4; }
 .deal-missing>p { display:flex; align-items:center; gap:8px; margin:0; color:#8a3f2c; font-size:13px; font-weight:600; }
@@ -1337,9 +1372,7 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .deal-handshake > div { min-width: 0; overflow-wrap: anywhere; }
 .deal-handshake p { font-size: 12px; margin: 8px 0 0; }
 /* After the handshake: delivery, shortfall and cancellation (deal-after-handshake.tsx, admin-deals.tsx). */
-.deal-progress.cancelled .reached { border-color: #c98a7c; }
 /* Seven steps leave a narrow column per label below ~860 px (a tablet, the client's modal): the circle goes above it, so words stay whole. */
-@media (max-width: 860px) { .deal-progress li { flex-direction: column; align-items: flex-start; gap: 5px; } }
 .deal-after { display: grid; gap: 14px; margin-top: 14px; min-width: 0; }
 .deal-outcome, .deal-shortfall-pending { display: flex; gap: 14px; border-radius: 14px; padding: 18px 20px; min-width: 0; overflow-wrap: anywhere; }
 .deal-outcome svg, .deal-shortfall-pending > svg { flex-shrink: 0; }
@@ -1393,8 +1426,6 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .admin-deal-shortfalls { display: grid; gap: 8px; }
 .admin-deal-shortfalls article { display: grid; gap: 3px; padding: 10px 12px; border-radius: 9px; background: #fff8ea; font-size: 12px; }
 .admin-deal-shortfalls article span, .admin-deal-shortfalls article small { color: #7d5a1c; font-size: 11px; }
-.deal-quote-history summary { cursor: pointer; font-size: 13px; padding: 12px 0; }
-.deal-quote-history .historical { margin-bottom: 12px; opacity: .85; }
 .deal-events { list-style: none; display: grid; gap: 16px; margin: 0; padding: 0; }
 .deal-events li { border-left: 3px solid #c5d7c8; padding-left: 14px; }
 .deal-events span { font-size: 11px; color: var(--muted); }
@@ -1412,8 +1443,6 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .deal-footer { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; border-top: 1px solid var(--line); padding-top: 14px; }
 .deal-footer small { color: var(--muted); font-size: 11px; }
 @media (max-width: 600px) {
-  .deal-progress { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
-  .deal-progress li { flex-direction: column; align-items: flex-start; gap: 5px; font-size: 10px; }
   .deal-tabs button { padding: 10px 8px; font-size: 12px; gap: 4px; }
   .deal-quote-editor { padding: 12px; }
   .deal-quote-heading { align-items: flex-start; flex-direction: column; padding: 14px; }

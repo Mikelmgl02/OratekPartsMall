@@ -159,8 +159,8 @@ test('drafts arrive priced from the list, explain each price and apply suggestio
   // The order's document shows the private suggested price with its origin.
   const lines = content.getByRole('table', { name: 'Artículos de la orden', exact: true });
   await expect(lines.getByRole('columnheader', { name: 'Precio sugerido' })).toBeVisible();
-  await expect(lines.getByRole('row').nth(1)).toContainText('Lista GENERAL');
-  await expect(lines.getByRole('row').nth(2)).toContainText('Sin precio en tu lista');
+  await expect(lines.getByRole('row').filter({ hasText: '00700-NP' })).toContainText('Sin precio en tu lista');
+  await expect(lines.getByRole('row').filter({ hasText: 'Lista GENERAL' })).toHaveCount(1);
   await content.getByRole('button', { name: 'Preparar cotización', exact: true }).click();
   await expect(quote(lineA, 'unit_price')).toContainText('15.00');
   await expect(quote(lineA, 'price_source')).toHaveText('Lista');

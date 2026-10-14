@@ -42,7 +42,7 @@ DEAL_KEYS = {'client', 'supplier', 'quotations', 'quotation', 'events', 'agreeme
 QUOTATION_KEYS = {'id', 'revision', 'currency', 'terms', 'total', 'created_at', 'supplier_confirmed_at', 'client_confirmed_at', 'lines'}
 QUOTATION_LINE_KEYS = {'order_line_id', 'codigo', 'sku', 'description', 'quantity', 'unit_price', 'total'}
 EVENT_KEYS = {'id', 'kind', 'description', 'account_name', 'actor_name', 'created_at', 'quotation_id'}
-CLIENT_LINE_KEYS = {'id', 'part_id', 'sku', 'name', 'codigo', 'brand', 'description', 'quantity'}
+CLIENT_LINE_KEYS = {'id', 'part_id', 'sku', 'name', 'codigo', 'brand', 'description', 'quantity', 'grupo', 'subgrupo'}
 SUPPLIER_LINE_KEYS = CLIENT_LINE_KEYS | {'supplier_item_id', 'supplier_invent_id', 'stock'}
 MARKERS = ['777.77', '666.66', '555.55', 'SECRETO-REGLA', 'SECRETO-PERFIL', 'SECRETO-BORRADOR', 'SECRETO-IA', 'SECRETO-AUDITORIA',
            'SECRETO-LINEA', 'LISTA-SECRETA', 'SECRETA_X', 'SECRETO-ERP', 'SECRETO-NOTA', 'review_requested']

@@ -150,15 +150,15 @@ test('supplier sees requested units, stock shortfalls and refreshed availability
   await expect(page).toHaveURL(`/proveedor/${supplierAccount}/ordenes/${requestId}`);
   await expect(page.getByRole('dialog')).toHaveCount(0);
   const dialog = requestDialog(page);
-  // The document's items, a plain table: the available units with whether they suffice and, when some are held, the reported and reserved.
+  // The document's items, a dense grid: the available units (what is missing under them), reported and reserved in the cell's tooltip.
   const items = dialog.getByRole('table', { name: 'Artículos de la orden', exact: true });
   const first = items.getByRole('row').filter({ hasText: '58411-1R000-G' });
   const second = items.getByRole('row').filter({ hasText: '58-1R0' });
   const available = (row: typeof first) => row.getByRole('cell').nth(2);
-  await expect(available(first)).toContainText('10 reportadas · 2 reservadas');
-  await expect(available(first)).toContainText('suficientes');
+  await expect(available(first)).toHaveAttribute('title', 'Reportadas: 10 · Reservadas: 2');
+  await expect(available(first)).toHaveClass(/enough/);
   await expect(available(second)).toContainText('faltan 2');
-  await expect(second.getByRole('cell').nth(1)).toHaveText('3');
+  await expect(second.getByRole('cell').nth(3)).toHaveText('3');  // Pedido
   expect(await dialog.locator('.deal-items-frame').evaluate(element => element.scrollWidth > element.clientWidth)).toBe(false);
   await expect(dialog.getByRole('status')).toContainText('1 artículo requiere confirmar disponibilidad');
   // Ampliar: the full grid, with the stock details and Por revisar.
@@ -171,11 +171,11 @@ test('supplier sees requested units, stock shortfalls and refreshed availability
   await expect(large.getByRole('row').filter({ hasText: '58-1R0' })).toContainText('Faltan 2 unidades');
   await large.getByRole('button', { name: 'Cerrar ventana', exact: true }).click();
   await dialog.getByRole('button', { name: 'Actualizar existencias', exact: true }).click();
-  await expect(available(first)).toContainText('Revisar artículo');
-  await expect(available(first)).toContainText('confirma la equivalencia en Inventario');
-  await expect(available(second)).toContainText('0 reportadas · 2 reservadas');
+  await expect(available(first)).toContainText('?revisar');
+  await expect(available(first)).toHaveAttribute('title', /confirma la equivalencia en Inventario/);
+  await expect(available(second)).toHaveAttribute('title', 'Reportadas: 0 · Reservadas: 2');
   await expect(available(second)).toContainText('faltan 3');
-  await expect(second.getByRole('cell').nth(1)).toHaveText('3');
+  await expect(second.getByRole('cell').nth(3)).toHaveText('3');
   await expect(dialog.getByRole('status')).toContainText('2 artículos requieren confirmar disponibilidad');
   await expect(dialog.getByText('En revisión', { exact: true }).first()).toBeVisible();
   expect(reads).toBe(2);

@@ -192,7 +192,12 @@ for (const mobile of [false, true]) test(`${mobile ? 'mobile' : 'desktop'}: priv
   await dialog(page).getByRole('button', {name:'Sí, confirmar acuerdo', exact:true}).click();
   await expect(dialog(page)).toContainText('HANDSHAKED · Acuerdo confirmado');
   await expect(dialog(page).getByRole('button', {name:'Solicitar ajuste', exact:true})).toHaveCount(0);
-  await dialog(page).getByText('Versiones anteriores (1)', {exact:true}).click();
+  // What v2 changed against v1, with v1's whole document folded under the earlier versions.
+  const changes = dialog(page).getByRole('region', {name:'Cambios entre versiones', exact:true});
+  await expect(changes).toContainText('Cambios en v2');
+  await expect(changes).toContainText('58411-1R000-G: ofrecidas 5 → 3.');
+  await changes.getByText('Versiones anteriores (1)', {exact:true}).click();
+  await changes.getByText('Ver documento v1', {exact:true}).click();
   await expect(dialog(page).getByRole('region', {name:'Cotización anterior v1', exact:true})).toContainText('62.50');
   expect(await dialog(page).evaluate(element => element.scrollWidth > element.clientWidth)).toBe(false);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
@@ -210,7 +215,7 @@ for (const mobile of [false, true]) test(`${mobile ? 'mobile' : 'desktop'}: priv
   await page.getByRole('button', {name:'Ver enviada ORD-PRUEBA-001', exact:true}).click();
   await quoteTab(page);
   await expect(dialog(page).getByText('HANDSHAKED · Acuerdo confirmado', {exact:true})).toBeVisible();
-  await expect(dialog(page).locator('.deal-state-note')).toContainText('El proveedor está preparando tu orden.');
+  await expect(dialog(page).getByRole('note', { name: 'Siguiente paso' })).toContainText('El proveedor está preparando tu orden.');
   await dialog(page).getByRole('button', {name:'Cerrar ventana', exact:true}).click();
   expect(state.messages).toHaveLength(2);
   expect(state.actions.map(value => value.action)).toEqual(['quote','request_adjustment','quote','accept']);

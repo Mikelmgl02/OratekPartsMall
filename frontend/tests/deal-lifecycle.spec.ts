@@ -95,7 +95,8 @@ async function openClientDeal(page: Page) {
   return page.locator('dialog.deal-modal');
 }
 const processing: Partial<Deal> = { status: 'processing', processing_at: stamp };
-const steps = (deal: Page | ReturnType<Page['locator']>) => deal.getByRole('list', { name: 'Seguimiento del acuerdo' });
+// The order's stages (deal-stages.tsx): the current one is the step shown, each stage a list item with its button.
+const steps = (deal: Page | ReturnType<Page['locator']>) => deal.getByRole('navigation', { name: 'Etapas de la orden' });
 const pendingShortfall = (): Partial<Deal> => ({ shortfall_pending: true, shortfalls: [{ id: '99999999-9999-4999-8999-999999999999', status: 'pending', reason: 'no_stock',
   reason_label: 'Sin existencias', note: 'SE DAÑÓ EN BODEGA', reported_at: stamp, responded_at: null,
   lines: [{ order_line_id: lineA, codigo: 'A-001', description: 'TAMBOR A-001', agreed: 3, missing: 2 }] }] });
@@ -113,8 +114,8 @@ test('the supplier marks a confirmed deal delivered and the deal shows it', asyn
   await expect(deal.locator('.deal-outcome.delivered')).toContainText('Entregado · esperando al cliente');
   await expect(deal.locator('.deal-outcome.delivered')).toContainText('Sus unidades siguen reservadas hasta que tu próxima carga de existencias las descuente.');
   await expect(deal.locator('.supplier-request-status.delivered').first()).toHaveText('Entregado · por recibir');
-  await expect(steps(deal).locator('[aria-current="step"]')).toContainText('Entregado');
-  await expect(steps(deal).locator('[aria-current="step"]')).toContainText('por recibir');
+  await expect(steps(deal).locator('[aria-current="step"]')).toContainText('Entregada');
+  await expect(deal.getByRole('note', { name: 'Siguiente paso' })).toContainText('En espera · para pasar a Recibida');
   await expect(deal.getByRole('button', { name: 'Cancelar acuerdo', exact: true })).toHaveCount(0);  // the order left: only MotionPartes cancels now
   await expect(deal.getByRole('button', { name: 'Marcar como entregado', exact: true })).toHaveCount(0);
   await expect(deal.getByRole('button', { name: 'Confirmar recibido', exact: true })).toHaveCount(0);  // the client's to confirm
@@ -129,7 +130,7 @@ test('the supplier moves the order through Procesando and En camino and the clie
   // Only the next step: Procesando first, never Entregado straight from the agreement.
   await expect(button('Marcar en camino')).toHaveCount(0);
   await expect(button('Marcar como entregado')).toHaveCount(0);
-  await expect(deal.locator('.deal-state-note')).toContainText('Márcala como Procesando cuando empieces a prepararla.');
+  await expect(deal.getByRole('note', { name: 'Siguiente paso' })).toContainText('Márcala como Procesando cuando empieces a prepararla.');
   await button('Marcar como procesando').click();
   await expect(deal.getByRole('button', { name: 'Sí, marcar procesando', exact: true })).toBeVisible();
   await expect(deal.locator('.deal-confirmation')).toContainText('¿Marcar la orden como Procesando?Avisaremos al cliente que la estás preparando. Tus existencias no cambian.');
@@ -157,8 +158,8 @@ test('the supplier moves the order through Procesando and En camino and the clie
   await button('Marcar como entregado').click();
   await button('Sí, marcar entregado').click();
   await expect(deal.locator('.supplier-request-status').first()).toHaveText('Entregado · por recibir');
-  await expect(deal.locator('.deal-state-note')).toContainText('Marcaste la orden como entregada. Falta que el cliente confirme que la recibió.');
-  await expect(steps(deal).locator('li.skipped')).toHaveCount(0);  // went through every step
+  await expect(deal.getByRole('note', { name: 'Siguiente paso' })).toContainText('Marcaste la orden como entregada. Falta que el cliente confirme que la recibió.');
+  await expect(steps(deal).locator('.deal-stage.skipped')).toHaveCount(0);  // went through every step
   expect(mock.actions.map(action => [action.action, action.expected_version])).toEqual([['process', 4], ['ship', 5], ['deliver', 6]]);
 
   await page.goto(`/?vista=solicitudes&cuenta=${clientId}`);
@@ -177,7 +178,8 @@ test('the supplier moves the order through Procesando and En camino and the clie
   await expect(client.getByRole('status').filter({ hasText: 'Confirmaste que recibiste la orden. ¡Gracias!' })).toBeVisible();
   await expect(client.locator('.supplier-request-status').first()).toHaveText('Recibido');
   await expect(client.locator('.deal-outcome.received')).toContainText(/Entregada el .+ · recibida el /);
-  await expect(steps(client).locator('[aria-current="step"]')).toContainText('recibido');
+  await expect(steps(client).locator('[aria-current="step"]')).toContainText('Recibida');
+  await expect(steps(client).locator('.deal-stage.done')).toHaveCount(7);
   await expect(client.getByRole('button', { name: 'Confirmar recibido', exact: true })).toHaveCount(0);
   await page.screenshot({ path: '/tmp/motionpartes-deal-received-client.png' });
   expect(mock.actions.at(-1)).toEqual({ action: 'receive', expected_version: 7, quotation_id: quoteId, operation_id: expect.any(String) });
@@ -189,7 +191,7 @@ test('the client sees no Confirmar recibido before Entregado and no cancel once 
   mock.set(processing);
   let deal = await openClientDeal(page);
   await deal.getByRole('button', { name: 'Cotización', exact: true }).click();
-  await expect(deal.locator('.deal-state-note')).toContainText('El proveedor está preparando tu orden.');
+  await expect(deal.getByRole('note', { name: 'Siguiente paso' })).toContainText('El proveedor está preparando tu orden.');
   await expect(deal.getByRole('button', { name: 'Cancelar acuerdo', exact: true })).toBeVisible();
   for (const name of ['Confirmar recibido', 'Marcar como procesando', 'Marcar en camino', 'Marcar como entregado', 'Reportar faltante'])
     await expect(deal.getByRole('button', { name, exact: true })).toHaveCount(0);
@@ -197,15 +199,15 @@ test('the client sees no Confirmar recibido before Entregado and no cancel once 
   await page.reload();
   deal = await openClientDeal(page);
   await deal.getByRole('button', { name: 'Cotización', exact: true }).click();
-  await expect(deal.locator('.deal-state-note')).toContainText('Tu orden va en camino.');
+  await expect(deal.getByRole('note', { name: 'Siguiente paso' })).toContainText('Tu orden va en camino.');
   await expect(deal.locator('.deal-outcome.in_transit')).toContainText('El proveedor la envió el');
-  await expect(deal.getByRole('note').filter({ hasText: 'Tu orden va en camino.' })).toContainText('MotionPartes puede intervenir si no se ponen de acuerdo.');
+  await expect(deal.getByRole('note').filter({ hasText: 'Si algo no está bien' })).toContainText('MotionPartes puede intervenir si no se ponen de acuerdo.');
   for (const name of ['Cancelar acuerdo', 'Confirmar recibido']) await expect(deal.getByRole('button', { name, exact: true })).toHaveCount(0);
   expect(mock.actions).toEqual([]);
   expect(mock.unexpected).toEqual([]);
 });
 
-test('a pickup skips En camino and the progress shows it as omitted', async ({ page }) => {
+test('a pickup skips En camino and the stages show it as omitted', async ({ page }) => {
   const mock = await fixture(page);
   mock.set(processing);
   await openSupplierDeal(page);
@@ -218,15 +220,17 @@ test('a pickup skips En camino and the progress shows it as omitted', async ({ p
   expect(mock.actions.map(action => action.action)).toEqual(['deliver']);
   const progress = steps(deal).getByRole('listitem');
   await expect(progress).toHaveCount(7);
-  await expect(progress.nth(4)).toHaveClass(/reached/);
-  await expect(progress.nth(4)).not.toHaveClass(/skipped/);
-  await expect(progress.nth(5)).toHaveClass(/skipped/);
-  await expect(progress.nth(5)).toContainText('En camino, omitido');
-  await expect(progress.nth(6)).toHaveAttribute('aria-current', 'step');
+  await expect(progress.nth(3).getByRole('button')).toHaveClass(/done/);  // Procesando
+  await expect(progress.nth(3).getByRole('button')).not.toHaveClass(/skipped/);
+  await expect(progress.nth(4).getByRole('button')).toHaveClass(/skipped/);  // En camino
+  await expect(progress.nth(4).getByRole('button')).toBeDisabled();
+  await expect(progress.nth(4)).toContainText('En camino, omitida');
+  await expect(progress.nth(5).getByRole('button')).toHaveAttribute('aria-current', 'step');  // Entregada
+  await expect(progress.nth(6).getByRole('button')).toBeDisabled();  // Recibida, locked until the client confirms
   expect(mock.unexpected).toEqual([]);
 });
 
-test('on a phone the seven progress steps fit without horizontal scroll', async ({ page }) => {
+test('on a phone the seven stages fit without horizontal scroll', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const mock = await fixture(page);
   mock.set({ ...processing, status: 'delivered', delivered_at: stamp });

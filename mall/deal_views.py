@@ -31,7 +31,7 @@ from .stock_reservations import hold
 from .request_models import (SupplierRequest, DealQuotation, DealQuotationLine, DealEvent,
                              DealMessage, DealCommand, DealShortfall)
 from .request_views import (RequestConflict, WholeRequestQuantity, request_detail_queryset,
-                            request_detail, sent_request_queryset, sent_request_summary)
+                            request_detail, line_group, sent_request_queryset, sent_request_summary)
 from .views import PERMISSION_RANK, account_for
 
 EXCEPTIONS_DETAIL = 'Revisa las alertas antes de enviar.'
@@ -96,7 +96,7 @@ def client_detail(row):
     return {**sent_request_summary(row), **deal_data(row), 'notes': row.notes,
             'lines': [{'id': str(line.pk), 'part_id': str(line.part_id), 'sku': line.sku,
                        'name': line.name, 'codigo': line.codigo, 'brand': line.brand,
-                       'description': line.description, 'quantity': line.quantity} for line in row.lines.all()]}
+                       'description': line.description, 'quantity': line.quantity, **line_group(line)} for line in row.lines.all()]}
 
 
 def participant(user, account_id, pk, *, lock=False):

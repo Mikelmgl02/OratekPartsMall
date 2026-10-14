@@ -18,6 +18,8 @@ export type SupplierRequestListItem = SupplierRequestSummary & {
 export type SupplierRequestLine = {
   id: string; supplier_item_id: string; supplier_invent_id: string; part_id: string;
   sku: string; name: string; codigo: string; brand: string; description: string; quantity: number;
+  // The part's catalog grupo and subgrupo ('' when unknown; optional: older payloads lack them). The document orders and groups by them.
+  grupo?: string; subgrupo?: string;
   // held_for_deal: units this confirmed deal still holds (not a shortfall of its own lines).
   stock: { reported_quantity: number; reserved_quantity: number; available_quantity: number; shortfall: number; held_for_deal?: number; updated_at: string } | null;
 };

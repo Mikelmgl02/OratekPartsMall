@@ -176,6 +176,12 @@ def stock_units(row):
     return {'held': states.get('open', 0), 'settled': states.get('settled', 0), 'released_after_dispatch': released}
 
 
+def line_group(line):
+    """The catalog grupo and subgrupo of an order line's part: the document orders and groups its items by them."""
+    part = line.part
+    return {'grupo': part.category if part else '', 'subgrupo': part.subcategory if part else ''}
+
+
 def request_detail(row):
     from .deal_views import deal_data
     held = own_reservations(row)
@@ -183,7 +189,7 @@ def request_detail(row):
             'lines': [{'id': str(line.pk), 'supplier_item_id': str(line.supplier_item_id),
                        'supplier_invent_id': line.supplier_invent_id, 'part_id': str(line.part_id),
                        'sku': line.sku, 'name': line.name, 'codigo': line.codigo, 'brand': line.brand,
-                       'description': line.description, 'quantity': line.quantity,
+                       'description': line.description, 'quantity': line.quantity, **line_group(line),
                        'stock': request_line_stock(line, row.supplier_id, confirmed=row.handshaked_at is not None, held=held.get(line.pk, 0))}
                       for line in row.lines.all()]}
 
@@ -211,7 +217,7 @@ def request_line_stock(line, supplier_id, *, confirmed=False, held=0):
 
 def request_detail_queryset(supplier):
     return request_queryset(supplier).prefetch_related(
-        Prefetch('lines', queryset=SupplierRequestLine.objects.select_related('supplier_item')))
+        Prefetch('lines', queryset=SupplierRequestLine.objects.select_related('supplier_item', 'part')))
 
 
 def sent_request_queryset(client):
@@ -251,12 +257,12 @@ class ClientSentRequestDetail(APIView):
     @extend_schema(operation_id='v1_accounts_sent_requests_retrieve', responses=OpenApiTypes.OBJECT)
     def get(self, request, account_id, pk):
         client = account_for(request.user, account_id, 'client')
-        row = get_object_or_404(sent_request_queryset(client).select_related('submission').prefetch_related('lines'), pk=pk)
+        row = get_object_or_404(sent_request_queryset(client).select_related('submission').prefetch_related('lines__part'), pk=pk)
         from .deal_views import deal_data
         return Response({**sent_request_summary(row), **deal_data(row), 'notes': row.notes,
                          'lines': [{'id': str(line.pk), 'part_id': str(line.part_id), 'sku': line.sku,
                                     'name': line.name, 'codigo': line.codigo, 'brand': line.brand,
-                                    'description': line.description, 'quantity': line.quantity}
+                                    'description': line.description, 'quantity': line.quantity, **line_group(line)}
                                    for line in row.lines.all()]})
 
 

@@ -175,15 +175,66 @@ test('a supplier edits a sent quotation on the go, until the client confirms it'
   await expect(document.getByRole('region', { name: 'Cotización vigente v1', exact: true })).toContainText('USD 61.75');  // still what the client sees
 });
 
-test('a long order: the document lists its items in a plain table, and Ampliar searches them and narrows to the ones to review', async ({ page }) => {
+test('the stages: those reached open read-only, those ahead stay locked, the ? explains them and the badge returns to the current one', async ({ page }) => {
+  const { document, conversations } = await panel(page, 'supplier', 'quoted', true);
+  const stages = document.getByRole('navigation', { name: 'Etapas de la orden', exact: true });
+  const items = stages.getByRole('listitem');
+  await expect(items).toHaveCount(7);
+  await expect(items.nth(0).getByRole('button')).toHaveClass(/done/);  // Sin cotizar
+  await expect(items.nth(1).getByRole('button')).toHaveAttribute('aria-current', 'step');  // Cotizada
+  for (let index = 2; index < 7; index++) await expect(items.nth(index).getByRole('button')).toBeDisabled();
+  await expect(items.nth(2)).toContainText('Acordada, bloqueada');
+  await expect(document.getByRole('note', { name: 'Siguiente paso', exact: true })).toHaveText(
+    'En espera · para pasar a Acordada: Enviaste la cotización v1. Mientras el cliente no la confirme, puedes editarla y enviarle una nueva versión.');
+  const decisions = document.getByRole('group', { name: 'Decisiones', exact: true });
+  await expect(decisions.getByRole('button', { name: 'Editar cotización', exact: true })).toBeVisible();
+  // Sin cotizar, read-only: what was asked for, with no decisions; the order is still Cotizada.
+  await items.nth(0).getByRole('button').click();
+  await expect(document.getByRole('status').filter({ hasText: 'Estás viendo una etapa anterior (Sin cotizar); la orden está en Cotizada.' })).toBeVisible();
+  await expect(decisions).toHaveCount(0);
+  await expect(document.getByRole('table', { name: 'Artículos de la orden', exact: true })).toBeVisible();
+  await expect(document.getByRole('note', { name: 'Siguiente paso', exact: true })).toHaveCount(0);
+  // The status badge next to the reference brings it back to the current stage.
+  await conversations.locator('.inbox-doc-title').getByRole('button', { name: 'Cotizada · por confirmar', exact: true }).click();
+  await expect(document.getByRole('table', { name: 'Líneas de la cotización v1', exact: true })).toBeVisible();
+  await expect(decisions.getByRole('button', { name: 'Editar cotización', exact: true })).toBeVisible();
+  // The ? lists the numbered stages: the current one, the locked ones, who acts.
+  await stages.getByRole('button', { name: '¿Qué significa cada etapa?', exact: true }).click();
+  const help = page.getByRole('dialog', { name: 'Etapas de la orden', exact: true });
+  await expect(help.getByRole('listitem')).toHaveCount(7);
+  await expect(help.getByRole('listitem').nth(1)).toContainText('Cotizada · etapa actual');
+  await expect(help.getByRole('listitem').nth(1)).toContainText('Le toca: Cliente');
+  await expect(help.getByRole('listitem').nth(2)).toContainText('Acordada · bloqueada');
+  await help.getByRole('button', { name: 'Cerrar ventana', exact: true }).click();
+  await expect(help).toHaveCount(0);
+});
+
+test('the items go by grupo, subgrupo and description, under a row per grupo; on a phone Subtotal goes and the total sits by its label', async ({ page }) => {
+  const item = (index: number, grupo: string, subgrupo: string, description: string) => ({ ...line, id: `44444444-4444-4444-8444-${String(index).padStart(12, '0')}`,
+    codigo: `COD-${index}`, sku: `SKU-${index}`, description, grupo, subgrupo });
+  const lines = [item(1, 'MOTOR', 'ENFRIAMIENTO', 'BOMBA DE AGUA'), item(2, 'FRENOS', 'TAMBORES', 'TAMBOR TRASERO'), item(3, 'FRENOS', 'PASTILLAS', 'PASTILLAS DELANTERAS'),
+    item(4, 'FRENOS', 'PASTILLAS', 'JUEGO DE PASTILLAS'), item(5, '', '', 'ACCESORIO')];
+  const offer = { ...quote, total: '30.00', lines: lines.map(each => ({ order_line_id: each.id, codigo: each.codigo, sku: each.sku, description: each.description, quantity: 5, unit_price: '1.20', total: '6.00' })) };
+  const { document } = await panel(page, 'client', 'quoted', true, lines, { quotation: offer, quotations: [offer] } as Partial<Deal>);
+  const table = document.getByRole('table', { name: 'Líneas de la cotización v1', exact: true });
+  const rows = table.locator('tbody tr');
+  await expect(rows).toHaveText(['FRENOS › PASTILLAS 2', /COD-4/, /COD-3/, 'FRENOS › TAMBORES 1', /COD-2/, 'MOTOR › ENFRIAMIENTO 1', /COD-1/, 'Sin grupo 1', /COD-5/]);
+  await expect(table.getByRole('columnheader', { name: 'Subtotal', exact: true })).toBeVisible();
+  await page.setViewportSize({ width: 380, height: 800 });
+  await expect(table.getByRole('columnheader', { name: 'Subtotal', exact: true })).toBeHidden();
+  expect(await table.locator('tfoot th').evaluate(element => getComputedStyle(element, '::after').content)).toBe('"USD 30.00"');
+  expect(await document.locator('.deal-items-frame').evaluate(element => element.scrollWidth > element.clientWidth)).toBe(false);
+});
+
+test('a long order: the document lists its items in a dense grid, and Ampliar searches them and narrows to the ones to review', async ({ page }) => {
   const many = Array.from({ length: 12 }, (_, index) => ({ ...line, id: `44444444-4444-4444-8444-${String(index).padStart(12, '0')}`, codigo: `COD-${index}`, sku: `SKU-${index}`,
     description: index === 5 ? 'BOMBA DE AGUA' : 'TAMBOR', stock: index === 7 ? null : { ...line.stock!, shortfall: index === 3 ? 2 : 0 } }));
   const { document } = await panel(page, 'supplier', 'pending', false, many);
   const items = document.getByRole('table', { name: 'Artículos de la orden', exact: true });
   await expect(items.getByRole('row')).toHaveCount(13);  // the heading and every item, without scrolling inside
-  await expect(items.getByRole('columnheader')).toHaveText(['Artículo', 'Pedidas', 'Disponibles']);
+  await expect(items.getByRole('columnheader')).toHaveText(['Código', 'Descripción', 'Disp', 'Pedido']);
   await expect(items.getByRole('row').filter({ hasText: 'COD-3' })).toContainText('faltan 2');
-  await expect(items.getByRole('row').filter({ hasText: 'COD-7' })).toContainText('Revisar artículo');
+  await expect(items.getByRole('row').filter({ hasText: 'COD-7' })).toContainText('?revisar');
   await document.getByRole('button', { name: 'Ampliar la tabla', exact: true }).click();
   const large = page.getByRole('dialog', { name: 'ORD-0123 · Artículos solicitados', exact: true });
   const grid = large.getByRole('region', { name: 'Artículos de la orden', exact: true });
