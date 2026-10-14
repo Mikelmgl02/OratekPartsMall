@@ -1,7 +1,9 @@
 import io
 import json
+import tempfile
 import threading
 from datetime import timedelta
+from pathlib import Path
 from unittest import skipUnless
 from unittest.mock import patch
 
@@ -16,6 +18,8 @@ from .matching_queue import MATCHING_LOCK, matching_lock
 from .matching_worker import process_queue
 from .models import Account, CatalogImportJob, Part, PartCode, SupplierItem, User
 from .oem_finder_models import OEMFinderRun, OEMReviewCase
+from .refactor import s0_suffix_revert as revert
+from .test_catalog_suffixes import relabel_night
 from .test_factories import Fresh, make_catalog  # Fresh: the OEM modules import it from here
 
 # Representative rows from the prototype samples, plus the class members the lexicon needs (>= 5 other keys = strong).
@@ -330,6 +334,8 @@ class ReviewCaseTests(Fresh, TestCase):
         self.assertIn(f'{len(before)} con la evidencia de las reglas oem-finder-9 (conservan su decisión)', text)
 
     def test_suffix_labels_retier_only_the_parts_that_read_them(self):
+        # Two parts read tokens D4 reverts (S0.1): RH and STD, variants relabelled as brands on 2026-10-07.
+        self.parts.update(create_catalog([('48654-60040-RH', 'BASE AMORT TOY PRADO RH'), ('11701-11020-STD', 'CASQ BANCADA TOY 3E 5E')]))
         self.run_finder()
         before = dict(OEMReviewCase.objects.values_list('part_id', 'fingerprint'))
         row = CatalogCodeSuffix.objects.get(token='U')
@@ -347,6 +353,23 @@ class ReviewCaseTests(Fresh, TestCase):
         self.assertEqual((case.tier, case.chain, case.blockers), ('WEAK', 'JR', []))  # unblocked: base F2 (no class data)
         self.assertEqual({k: v for k, v in OEMReviewCase.objects.values_list('part_id', 'fingerprint') if k != case.part_id},
                          {k: v for k, v in before.items() if k != case.part_id})
+        # The owner's relabel of the 45 tokens re-tiered only the two parts that read one of them; the D4 revert takes them back to
+        # the evidence they had before it, and every other decision keeps its fingerprint.
+        before = dict(OEMReviewCase.objects.values_list('part_id', 'fingerprint'))
+        reading = {self.parts['48654-60040-RH'].pk, self.parts['11701-11020-STD'].pk}
+        self.assertEqual((self.case('48654-60040-RH').tier, self.case('11701-11020-STD').tier), ('VARIANT_REVIEW', 'WEAK'))
+        relabel_night(User.objects.create_superuser('miguel', 'miguel@example.invalid', 'Example938!'))
+        self.assertEqual(self.run_finder()['counts']['cases']['updated'], 2)
+        rh = self.case('48654-60040-RH')
+        self.assertEqual((rh.tier, rh.chain, rh.blockers), ('PROBABLE_BASE', 'RH', ['no_second_unit', 'side_not_confirmed_by_class']))
+        self.assertEqual({k: v for k, v in OEMReviewCase.objects.values_list('part_id', 'fingerprint') if k not in reading},
+                         {k: v for k, v in before.items() if k not in reading})
+        with patch.object(revert, 'OUTPUT', Path(tempfile.mkdtemp())):
+            self.assertEqual(revert.run(apply=True, username='miguel', stdout=io.StringIO())['revert'], 45)
+        outcome = self.run_finder()
+        self.assertEqual(outcome['counts']['cases']['updated'], 2)
+        self.assertEqual(dict(OEMReviewCase.objects.values_list('part_id', 'fingerprint')), before)
+        self.assertEqual((self.case('48654-60040-RH').tier, self.case('48654-60040-RH').blockers), ('VARIANT_REVIEW', []))
 
     def test_stock_changes_update_the_flag_without_reopening(self):
         self.run_finder()
