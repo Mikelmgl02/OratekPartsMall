@@ -1,5 +1,5 @@
 """Guards the inventory refactor keeps on (plan §1.4): the models equal the migrations, migrations import no app code, and the test
-settings' network guard holds. The later stages add theirs (Part filters on estado outside lines.py, Reference deletes outside
+settings keep the outside services off, guard the network and never drop a real database. The later stages add theirs (Part filters on estado outside lines.py, Reference deletes outside
 references.py, new PartCode uses, bulk writes outside the choke points)."""
 import ast
 import io
@@ -13,6 +13,7 @@ from django.core.management import call_command
 from django.test import SimpleTestCase, TestCase
 
 from config import network_guard
+from config.test_runner import unsafe_test_name
 
 MIGRATIONS = Path(__file__).resolve().parent / 'migrations'
 
@@ -81,4 +82,19 @@ class NetworkGuardTests(SimpleTestCase):
         self.assertEqual(opened, [('10.4.0.7', 5432), '/run/postgresql/.s.PGSQL.5432'])
         self.assertEqual(blocked, [('104.20.29.242', 443)] * 2)
         self.assertEqual(stderr.getvalue().count('104.20.29.242:443'), 1)
+
+    def test_the_outside_services_are_blanked_before_the_settings_read_them(self):
+        environ = {'RESEND_API_KEY': 're_live', 'DO_SPACES_BUCKET': 'bucket', 'REDIS_URL': 'redis://redis:6379/0', 'POSTGRES_DB': 'partsmall'}
+        self.assertEqual(network_guard.blank_outside_services(environ), ['RESEND_API_KEY', 'DO_SPACES_BUCKET', 'REDIS_URL'])
+        self.assertEqual({name: environ[name] for name in network_guard.OUTSIDE_SERVICES}, dict.fromkeys(network_guard.OUTSIDE_SERVICES, ''))
+        self.assertEqual(environ['POSTGRES_DB'], 'partsmall')
+
+
+class TestDatabaseNameTests(SimpleTestCase):
+    def test_the_runner_refuses_a_test_database_name_that_could_be_a_real_database(self):
+        for name in ('test_partsmall_isolated', 'test_partsmall_s0x', None):
+            self.assertIsNone(unsafe_test_name({'NAME': 'partsmall', 'TEST': {'NAME': name}}, live='partsmall'), name)
+        for name, configured in (('partsmall', 'partsmall'), ('partsmall_rehearsal', 'partsmall'), ('test_copy', 'test_copy'),
+                                 ('test_live', 'other')):
+            self.assertIn('debe empezar por test_', unsafe_test_name({'NAME': configured, 'TEST': {'NAME': name}}, live='test_live'), name)
 

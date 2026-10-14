@@ -4,6 +4,9 @@ Any socket connection to a public address raises ConnectionRefusedError, so a te
 push or Spaces fails or degrades instead of reaching the live service; private and loopback addresses (PostgreSQL, Redis) stay open.
 Each blocked destination is reported once on stderr; with NETWORK_GUARD_LOG set, every attempt is appended to that file with its stack.
 The baseline run of 2026-10-13 caught 86 real Resend deliveries this way.
+
+Private addresses stay open, so the services the containers reach on the compose network (Redis, which carries the deal inbox's nudges
+to the live users' pages) are switched off by blanking their variables instead: blank_outside_services() before settings.py reads them.
 """
 import ipaddress
 import os
@@ -11,6 +14,10 @@ import socket
 import sys
 import traceback
 
+# The environment variables that switch an outside service on: Resend, Gemini, WhatsApp, web push, Spaces (settings.py refuses a key
+# without its bucket) and the channel layer on Redis.
+OUTSIDE_SERVICES = ('RESEND_API_KEY', 'GEMINI_API_KEY', 'GEM_API_KEY', 'WHATSAPP_ACCESS_TOKEN', 'VAPID_PRIVATE_KEY', 'DO_SPACES_KEY',
+                    'DO_SPACES_SECRET', 'DO_SPACES_BUCKET', 'REDIS_URL')
 blocked = []  # (host, port) of every refused connection, in order
 _reported = set()
 
@@ -47,6 +54,14 @@ def _guarded(original):
         return original(self, address, *args, **kwargs)
     connect.network_guard = True
     return connect
+
+
+def blank_outside_services(environ=os.environ):
+    """Blank every OUTSIDE_SERVICES variable, so the settings read afterwards configure none of them; returns the names that had a value."""
+    had = [name for name in OUTSIDE_SERVICES if environ.get(name)]
+    for name in OUTSIDE_SERVICES:
+        environ[name] = ''
+    return had
 
 
 def install():
