@@ -3,9 +3,8 @@ import io
 import json
 import os
 import shutil
-import sys
 import tempfile
-from types import SimpleNamespace
+from pathlib import Path
 from unittest import mock
 
 from django.contrib.auth import get_user_model
@@ -182,22 +181,31 @@ class TwinNumberTests(Fresh, TestCase):
     def test_on_the_live_database_an_apply_needs_the_s0_11_guard_and_the_manifest_folder(self):
         if connection.vendor != 'postgresql':
             self.skipTest('PostgreSQL only: the live database is the PostgreSQL one')
-        before, frozen = self.state(), []
-        guard = SimpleNamespace(refusal=lambda applying=True, alias='default': None if frozen else 'Base de datos en vivo sin el congelamiento del catálogo')
-        with override_settings(LIVE_DATABASE_NAME=connection.settings_dict['NAME']):
-            with mock.patch.dict(sys.modules, {'mall.refactor.guard': None}):  # before S0.11 lands the live database is refused outright
-                out = io.StringIO()
-                self.assertIsNone(s0n.run(apply=True, manifest_dir=os.path.join(self.tmp, 'm'), stdout=out))
-                self.assertIn('integra S0.11 primero', out.getvalue())
-                self.assertEqual(s0n.run(stdout=io.StringIO())['groups'], 3)  # a dry run never needs it
-            with mock.patch.dict(sys.modules, {'mall.refactor.guard': guard}):  # then its guard decides
-                out = io.StringIO()
-                self.assertIsNone(s0n.run(apply=True, manifest_dir=os.path.join(self.tmp, 'm'), stdout=out))
-                self.assertIn('sin el congelamiento del catálogo', out.getvalue())
-                frozen.append(True)
-                self.assertIsNone(s0n.run(apply=True, manifest_dir=os.path.join(self.tmp, 'missing', 'm'), stdout=io.StringIO()))
-                self.assertEqual(self.state(), before)
-                self.assertEqual(s0n.run(apply=True, manifest_dir=os.path.join(self.tmp, 'm'), stdout=io.StringIO())['counts']['merged'], 3)
+        before, folder = self.state(), os.path.join(self.tmp, '.maintenance')
+        os.mkdir(folder)
+        # The S0.11 guard decides (mall.refactor.guard: the freeze, and no writer still busy; its own tests cover the writers).
+        with override_settings(LIVE_DATABASE_NAME=connection.settings_dict['NAME'], MAINTENANCE_DIR=folder):
+            out = io.StringIO()
+            self.assertIsNone(s0n.run(apply=True, manifest_dir=os.path.join(self.tmp, 'm'), stdout=out))
+            self.assertIn('sin el congelamiento del catálogo', out.getvalue())
+            with self.assertRaises(SystemExit) as refused:  # the CLI exits before planning
+                s0n.main(['--apply', '--manifest-dir', os.path.join(self.tmp, 'm')], stdout=io.StringIO())
+            self.assertIn('sin el congelamiento del catálogo', str(refused.exception.code))
+            self.assertEqual(s0n.run(stdout=io.StringIO())['groups'], 3)  # a dry run never needs it
+            with open(os.path.join(folder, 'freeze'), 'w') as handle:
+                handle.write('catalog\n')
+            self.assertIsNone(s0n.run(apply=True, manifest_dir=os.path.join(self.tmp, 'missing', 'm'), stdout=io.StringIO()))
+            self.assertEqual(self.state(), before)
+            self.assertEqual(s0n.run(apply=True, manifest_dir=os.path.join(self.tmp, 'm'), stdout=io.StringIO())['counts']['merged'], 3)
+
+    def test_the_manifest_goes_to_the_main_checkouts_output_folder_by_default(self):
+        with override_settings(MAIN_CHECKOUT=self.tmp), mock.patch.dict(os.environ, {'REFACTOR_OUTPUT': ''}):
+            self.assertEqual(s0n.default_manifest_dir(), str(Path(self.tmp) / 'output' / 'refactor' / 's0' / 'normalize_numbers'))
+            out = io.StringIO()
+            self.assertIsNone(s0n.run(apply=True, stdout=out))  # no output/refactor/s0 in this checkout: refused before any write
+            self.assertIn(f"Falta la carpeta {Path(self.tmp) / 'output' / 'refactor' / 's0'}", out.getvalue())
+        with mock.patch.dict(os.environ, {'REFACTOR_OUTPUT': os.path.join(self.tmp, 'rehearsal')}):  # a rehearsal's own folder
+            self.assertEqual(s0n.default_manifest_dir(), os.path.join(self.tmp, 'rehearsal'))
 
     def test_a_manifest_that_cannot_be_written_changes_nothing(self):
         before = self.state()

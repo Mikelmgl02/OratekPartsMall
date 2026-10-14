@@ -13,10 +13,11 @@ as a re-import of the catalog would file them. A make that holds only the other 
 the canonical one, has it renamed in place. A twin that needs a person stays as it is and is listed: an OEM alterno files under it
 (the alterno mirror would bring the spelling back), it is disputed or annotated, it chains a supersession, or a code is retired
 from one twin and live on the other.
-On the live database an apply needs the S0.11 guard (mall.refactor.guard: the catalog freeze is on and no writer is still busy);
-until S0.11 lands it is refused there outright. It takes the matching worker's lock and writes every group in one transaction. It
-logs each row it changes or deletes, with its values before, to DIR/manifest.jsonl before the transaction commits, so a failed
-write changes nothing; DIR (by default /app/output/refactor/s0/normalize_numbers) must sit in an existing folder. To undo it,
+On the live database an apply needs the S0.11 guard (mall.refactor.guard: the catalog freeze is on and no writer is still busy).
+It takes the matching worker's lock and writes every group in one transaction. It logs each row it changes or deletes, with its
+values before, to DIR/manifest.jsonl before the transaction commits, so a failed write changes nothing; DIR (by default
+mall.refactor.output.stage_dir('s0/normalize_numbers'): the main checkout's output/refactor/s0/normalize_numbers, /app/output/… in
+the containers, or REFACTOR_OUTPUT in a rehearsal) must sit in an existing folder. To undo it,
 restore the D1 dump while still frozen. Re-running changes nothing. Afterwards run python -m mall.link_oem_numbers --apply: a SKU's
 name link follows the spelling its own code names.
 """
@@ -28,26 +29,22 @@ import sys
 from collections import Counter, defaultdict
 
 EXPECTED_GROUPS = 59  # the plan's count, 2026-10-13
-DEFAULT_MANIFEST_DIR = '/app/output/refactor/s0/normalize_numbers'
+STAGE = 's0/normalize_numbers'  # the manifest's folder under output/refactor/ (mall.refactor.output)
 FILLABLE = ('description', 'part_type', 'applications', 'system', 'family')
 # What a supplier catalog's source lists, added up when two spellings' sources join (the import unions them per number too).
 CATALOG_LISTS = ('pages', 'brand_codes', 'product_types')
 
 
+def default_manifest_dir():
+    from .output import stage_dir
+    return str(stage_dir(STAGE))
+
+
 def refusal():
     """Why --apply may not write now, or None: the S0.11 guard (mall.refactor.guard: on the live database, the catalog freeze and no
-    writer still busy). Until S0.11 lands the live database is refused outright, since a freeze file would hold back neither the
-    screens nor the workers; a test or rehearsal database needs nothing."""
-    try:
-        from .guard import refusal as shared
-    except ImportError:  # S0.11 has not landed yet
-        from django.conf import settings
-        from django.db import connection
-        live = getattr(settings, 'LIVE_DATABASE_NAME', 'partsmall')
-        if connection.vendor == 'postgresql' and connection.settings_dict['NAME'] == live:
-            return (f'Base de datos en vivo ({live}) sin la seguridad de operaciones de S0.11 (mall.refactor.guard): sin ella el '
-                    'congelamiento del catálogo no detiene las pantallas ni los trabajadores. No se escribe nada; integra S0.11 primero.')
-        return None
+    writer still busy); a test or rehearsal database needs nothing. main() exits on it first, as the other guarded CLIs do; run()
+    checks it again for a caller that skips main()."""
+    from .guard import refusal as shared
     return shared(True)
 
 
@@ -252,12 +249,13 @@ def execute(groups, apply):
     return counts, log
 
 
-def run(*, apply=False, username=None, report_path=None, manifest_dir=DEFAULT_MANIFEST_DIR, stdout=None):
+def run(*, apply=False, username=None, report_path=None, manifest_dir=None, stdout=None):
     from django.contrib.auth import get_user_model
     from django.db import connection, transaction
     from django.utils import timezone
     from ..oem_finder import matching_lock
     stdout = stdout or sys.stdout
+    manifest_dir = manifest_dir or default_manifest_dir()
     actor = get_user_model().objects.get(username=username) if username else None
     if apply:
         reason = refusal()
@@ -309,11 +307,14 @@ def main(argv=None, stdout=None):
     mode.add_argument('--apply', action='store_true', help='Une cada grupo en una sola transacción (requiere el catálogo congelado).')
     parser.add_argument('--user', help='Usuario que figura en el registro de cambios.')
     parser.add_argument('--report', help='Escribe el plan y los conteos en esta ruta (JSON).')
-    parser.add_argument('--manifest-dir', default=DEFAULT_MANIFEST_DIR, help='Carpeta del registro de cambios (manifest.jsonl).')
+    parser.add_argument('--manifest-dir', help='Carpeta del registro de cambios (manifest.jsonl); por omisión '
+                                               'output/refactor/s0/normalize_numbers del checkout principal.')
     options = parser.parse_args(argv)
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
     import django
     django.setup()
+    from .guard import require_freeze
+    require_freeze(options.apply)
     result = run(apply=options.apply, username=options.user, report_path=options.report, manifest_dir=options.manifest_dir, stdout=stdout)
     sys.exit(0 if result is not None else 1)
 
