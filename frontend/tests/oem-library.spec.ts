@@ -266,3 +266,18 @@ test('a stale version shows the current reference instead of overwriting it', as
   expect(mock.patches.at(-1)?.body.expected_version).toBe(3);
   expect(mock.unexpected).toEqual([]);
 });
+
+test('the OEM tools are Biblioteca OEM and Sufijos, and an old Revisión OEM or Aplicación automática link opens the library', async ({ page }) => {
+  const mock = await fixture(page);  // the owner retired OEM linking on 2026-10-14
+  await page.goto('/administracion?seccion=inventario');
+  await expect(page.getByRole('button', { name: 'Biblioteca OEM', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Aplicación OEM', exact: true })).toHaveCount(0);
+  for (const slug of ['revision', 'automatica']) {
+    await page.goto(`/administracion?seccion=oem&pestana=${slug}`);
+    const tabs = page.getByRole('group', { name: 'Herramientas OEM' });
+    await expect(tabs.getByRole('button')).toHaveText(['Biblioteca OEM', 'Sufijos']);
+    await expect(tabs.getByRole('button', { name: 'Biblioteca OEM', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('.oem-library-table').getByText('1780130070', { exact: true })).toBeVisible();
+  }
+  expect(mock.unexpected).toEqual([]);
+});
