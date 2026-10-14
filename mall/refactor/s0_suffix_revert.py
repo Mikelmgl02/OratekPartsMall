@@ -87,10 +87,10 @@ def plan(lock=False):
     return entries
 
 
-def reverted_rows(rows):
+def reverted_rows(rows, entries=None):
     """The suffix table rows (catalog_suffixes FIELDS dicts) with D4 applied in memory: what a read-only analysis sees before the apply.
-    Rows already back, or edited since, stay as they are."""
-    pending = {e['token']: e['before'] for e in plan() if e['status'] == 'revert'}
+    Rows already back, or edited since, stay as they are. entries: a plan() already made."""
+    pending = {e['token']: e['before'] for e in (plan() if entries is None else entries) if e['status'] == 'revert'}
     return [dict(r, **{k: pending[r['token']][k] for k in r if k in pending[r['token']]}) if r['token'] in pending else r for r in rows]
 
 
