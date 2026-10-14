@@ -45,7 +45,14 @@ HEADERS = {
     'EXISTENCIAS': 'quantity', 'CANTIDAD': 'quantity', 'QUANTITY': 'quantity', 'STOCK': 'quantity',
     'BALANCE': 'quantity', 'ERRORES': 'ignored', 'ERRORS': 'ignored',
     'REFERENCIAS': 'references', 'REFERENCES': 'references', 'ALTERNOS': 'references', 'CODIGOS_ALTERNOS': 'references',
+    # Optional (rule 10, S3.2): what the supplier says about each article. Not in the template; a blank cell leaves the value as it was.
+    'CALIDAD': 'calidad', 'QUALITY': 'calidad', 'CONDICION': 'condicion', 'CONDITION': 'condicion', 'GARANTIA': 'garantia',
+    'WARRANTY': 'garantia', 'UNIDADES_POR_EMPAQUE': 'unidades_por_empaque', 'UNIDADES_EMPAQUE': 'unidades_por_empaque',
+    'MATERIAL': 'material', 'ORIGEN': 'origen', 'PAIS_DE_ORIGEN': 'origen', 'PAIS_ORIGEN': 'origen',
 }
+OPTIONAL = {'calidad': 'CALIDAD', 'condicion': 'CONDICION', 'garantia': 'GARANTIA', 'unidades_por_empaque': 'UNIDADES_POR_EMPAQUE',
+            'material': 'MATERIAL', 'origen': 'ORIGEN'}
+COLUMNS.update(OPTIONAL)
 
 
 class SupplierImportRequest(serializers.Serializer):
@@ -122,8 +129,16 @@ def read_supplier_excel(raw):
                 record['original'][field] = cell_original(cell)
                 try:
                     reject_formula(cell)
+                    if field in OPTIONAL and (cell.value is None or str(cell.value).strip() == ''):
+                        continue  # a blank optional cell says nothing
                     if field == 'quantity':
                         value = _quantity(cell)
+                    elif field == 'unidades_por_empaque':
+                        reject_date_or_boolean(cell)
+                        text = str(cell.value).strip()
+                        if not re.fullmatch(r'\+?\d+(?:\.0+)?', text) or not 1 <= int(Decimal(text)) <= 32767:
+                            raise ValueError('Las unidades por empaque son un número entero entre 1 y 32767.')
+                        value = int(Decimal(text))
                     elif field in ['supplier_invent_id', 'codigo']:
                         if cell.value is None or cell.value == '':
                             raise ValueError('Ingresa el identificador de esta fila.')
@@ -235,7 +250,8 @@ def stock_plan(supplier, rows, *, lock=False):
         # own; any other waits in codigo_pendiente, out of stock, while the code stays.
         plan = outcome(item, data, parts.get(match_id))
         part_id, status = plan.part_id, plan.status
-        action = 'create' if not item else 'update' if any(getattr(item, field) != data[field] for field in ['codigo', 'brand', 'description', 'references']) or difference else 'unchanged'
+        compared = ['codigo', 'brand', 'description', 'references', *(field for field in OPTIONAL if field in data)]
+        action = 'create' if not item else 'update' if any(getattr(item, field) != data[field] for field in compared) or difference else 'unchanged'
         summary['valid_rows'] += 1
         summary[{'create': 'created_items', 'update': 'updated_items', 'unchanged': 'unchanged_items'}[action]] += 1
         if direction != 'none':

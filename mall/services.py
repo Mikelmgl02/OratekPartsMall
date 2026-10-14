@@ -58,6 +58,7 @@ def ingest_inventory(*, supplier, actor, data, queue_matching=True, recorder=Non
     item.description = data.get('description', '')
     item.references = data['references']
     item.reported_quantity = data['quantity']
+    stamp_variant_data(item, data)
     item.save()
     entry = None
     if delta:
@@ -73,6 +74,21 @@ def ingest_inventory(*, supplier, actor, data, queue_matching=True, recorder=Non
     # queue_matching=False: the caller knows only the quantity moved (the apiag-cloud pull), which changes nothing to match.
     if changed or (queue_matching and item.matching_status != 'matched'):
         enqueue_matching()
+    return item
+
+
+def stamp_variant_data(item, data):
+    """The variant's own data a load sends (rule 10, S3.2: material, origen, garantia, calidad, condicion, unidades_por_empaque): only
+    the keys present are written, each changed one stamped in field_sources with where it came from."""
+    from django.utils import timezone
+    from .serializers import VARIANT_DATA
+    sources = dict(item.field_sources or {})
+    for field in VARIANT_DATA:
+        if field in data and getattr(item, field) != data[field]:
+            setattr(item, field, data[field])
+            sources[field] = {'source': 'proveedor', 'via': data.get('source', ''), 'update': data.get('update_id', ''),
+                              'at': timezone.now().isoformat()}
+    item.field_sources = sources
     return item
 
 

@@ -326,3 +326,50 @@ class RetireAndMoveTests(VariantTestCase):
         line_merge.split_line(self.plain.pk, [{'id': str(source.pk), 'codes': [], 'items': [str(item.pk)], 'images': []}], actor=self.root)
         item.refresh_from_db()
         self.assertEqual((item.part_id, item.reference_id), (source.pk, waiting.pk))
+
+
+class VariantDataTests(VariantTestCase):
+    """S3.2 (rule 10): the optional data a supplier sends about an article: written only when sent, stamped in field_sources."""
+
+    def setUp(self):
+        super().setUp()
+        self.client = APIClient()
+        self.client.force_authenticate(self.root)
+
+    def test_the_api_writes_what_it_is_sent_and_a_replay_is_the_same_load(self):
+        url = f'/api/v1/accounts/{self.supplier.pk}/inventory/ingest/'
+        payload = {'update_id': 'data-1', 'supplier_invent_id': 'DATA-1', 'codigo': '04111-22152', 'brand': '', 'source': 'upload',
+                   'quantity': 2, 'calidad': 'Original', 'condicion': 'NUEVO', 'unidades_por_empaque': 4, 'garantia': ' 1 AÑO '}
+        self.assertEqual(self.client.post(url, payload, format='json').status_code, 200)
+        item = SupplierItem.objects.get(supplier_invent_id='DATA-1')
+        self.assertEqual((item.calidad, item.condicion, item.unidades_por_empaque, item.garantia, item.material),
+                         ('original', 'nuevo', 4, '1 AÑO', ''))
+        self.assertEqual((item.field_sources['calidad']['source'], item.field_sources['calidad']['update']), ('proveedor', 'data-1'))
+        self.assertNotIn('material', item.field_sources)
+        self.assertEqual(self.client.post(url, payload, format='json').status_code, 200)  # the same update id and payload
+        later = self.client.post(url, {**{k: v for k, v in payload.items() if k not in ('calidad', 'condicion', 'unidades_por_empaque', 'garantia')},
+                                       'update_id': 'data-2', 'quantity': 3}, format='json')
+        self.assertEqual(later.status_code, 200)
+        item.refresh_from_db()
+        self.assertEqual((item.calidad, item.unidades_por_empaque, item.reported_quantity), ('original', 4, 3))  # not sent: kept
+        refused = self.client.post(url, {**payload, 'update_id': 'data-3', 'calidad': 'PIRATA'}, format='json')
+        self.assertEqual(refused.status_code, 400)
+
+    def test_the_excel_reads_the_optional_columns(self):
+        from openpyxl import Workbook
+        from .supplier_import import read_supplier_excel, stock_plan
+        import io
+        book = Workbook()
+        sheet = book.active
+        sheet.title = 'EXISTENCIAS'
+        sheet.append(['ID_INVENTARIO_PROVEEDOR', 'CODIGO', 'EXISTENCIAS', 'CALIDAD', 'UNIDADES_POR_EMPAQUE', 'GARANTÍA'])
+        sheet.append(['XL-1', '04111-22152', 2, 'alternativo', 6, ''])
+        sheet.append(['XL-2', '04111-22152-AS', 1, '', '0', '6 MESES'])
+        raw = io.BytesIO()
+        book.save(raw)
+        records, _ = read_supplier_excel(raw.getvalue())
+        first, second = records
+        self.assertEqual((first['data']['calidad'], first['data']['unidades_por_empaque'], 'garantia' in first['data']), ('ALTERNATIVO', 6, False))
+        self.assertEqual([error['column'] for error in second['errors']], ['UNIDADES_POR_EMPAQUE'])
+        plan, _ = stock_plan(self.supplier, [first])
+        self.assertEqual((plan['preview'][0]['calidad'], plan['preview'][0]['unidades_por_empaque']), ('alternativo', 6))

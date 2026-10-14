@@ -123,6 +123,23 @@ class SupplierStockSerializer(SupplierItemSerializer):
     def get_branch_stock(self, item):
         return [{'sucursal': row.sucursal.apiag_id, 'nombre': row.sucursal.nombre, 'disponible': row.quantity} for row in item.branch_stock.all()]
 
+# What a supplier may say about a variant (rule 10, S3.2): each optional, so a load without them hashes as before (InventoryUpdate).
+VARIANT_DATA = ('material', 'origen', 'garantia', 'calidad', 'condicion', 'unidades_por_empaque')
+CALIDAD_WORDS = {'ORIGINAL': 'original', 'GENUINO': 'original', 'GENUINE': 'original', 'OES': 'oes', 'OE': 'oes', 'ALTERNATIVO': 'alternativo',
+                 'AFTERMARKET': 'alternativo', 'GENERICO': 'alternativo', 'GENÉRICO': 'alternativo'}
+CONDICION_WORDS = {'NUEVO': 'nuevo', 'NEW': 'nuevo', 'REMANUFACTURADO': 'remanufacturado', 'REMAN': 'remanufacturado',
+                   'REMANUFACTURED': 'remanufacturado'}
+
+
+def _word(value, words, label):
+    text = ' '.join(str(value or '').strip().upper().split())
+    if not text:
+        return ''
+    if text not in words:
+        raise serializers.ValidationError(f'{label} no reconocida: usa {", ".join(sorted(set(words.values())))}.')
+    return words[text]
+
+
 class InventorySerializer(serializers.Serializer):
     update_id = serializers.CharField(max_length=120)
     supplier_invent_id = serializers.CharField(max_length=120)
@@ -132,6 +149,12 @@ class InventorySerializer(serializers.Serializer):
     references = serializers.JSONField(required=False)
     source = serializers.ChoiceField(choices=['upload', 'apiag'])
     quantity = serializers.IntegerField(min_value=0)
+    material = serializers.CharField(max_length=120, required=False, allow_blank=True)
+    origen = serializers.CharField(max_length=120, required=False, allow_blank=True, help_text='País de origen.')
+    garantia = serializers.CharField(max_length=120, required=False, allow_blank=True)
+    calidad = serializers.CharField(required=False, allow_blank=True, help_text='original, oes o alternativo.')
+    condicion = serializers.CharField(required=False, allow_blank=True, help_text='nuevo o remanufacturado.')
+    unidades_por_empaque = serializers.IntegerField(min_value=1, max_value=32767, required=False, allow_null=True)
     def validate_codigo(self, value):
         return value.strip().upper()
     def validate_brand(self, value):
@@ -139,6 +162,16 @@ class InventorySerializer(serializers.Serializer):
     def validate_references(self, value):
         from .part_references import normalize_references
         return normalize_references(value)
+    def validate_material(self, value):
+        return value.strip()
+    def validate_origen(self, value):
+        return value.strip()
+    def validate_garantia(self, value):
+        return value.strip()
+    def validate_calidad(self, value):
+        return _word(value, CALIDAD_WORDS, 'Calidad')
+    def validate_condicion(self, value):
+        return _word(value, CONDICION_WORDS, 'Condición')
 
 class StockEntrySerializer(serializers.ModelSerializer):
     class Meta:
