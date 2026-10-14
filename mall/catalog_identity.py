@@ -15,7 +15,7 @@ from django.db import transaction
 from django.db.models import Q
 from rest_framework.exceptions import ValidationError
 from .catalog_families import normalized_reference
-from .lines import all_lines, storefront_lines
+from .lines import all_lines, catalog_lines, storefront_lines
 from . import references
 from .models import Part, Reference
 
@@ -177,7 +177,7 @@ def company_base_code(part, sku, actor=None):
     """File the company's own code of `sku` (its codigo without a company suffix: 0110-GSU45A48 of 0110-GSU45A48-FEB, brand FEBEST) as
     an aftermarket Reference of `part`, unless another line holds it. Returns the Reference, or None."""
     info = company_reference(sku)
-    if not info or all_lines().filter(sku__iexact=info['code']).exclude(pk=part.pk).exists():
+    if not info or all_lines().filter(sku__iexact=info['code']).exclude(pk=part.pk).exclude(estado='referencia').exists():
         return None
     try:
         return references.add(part, info['code'], info['brand'], tipo='aftermarket', actor=actor)[0]
@@ -217,24 +217,26 @@ def counts(code):
 
 
 def exact_listed(sku):
-    """The declared or verified numbers of the library (References, mall.references.library_q) whose clave is this SKU code, when the
-    code counts on its own: such a line is OEM by definition."""
+    """The declared or verified numbers of the library (References, mall.references.library_q) whose compact number is this SKU code,
+    when the code counts on its own: such a line is OEM by definition."""
     from .models import Reference
     code = normalized_reference(sku)
     if not counts(code):
         return []
-    return list(Reference.objects.filter(references.library_q(), clave=code, estado__in=COUNTING).order_by('brand'))
+    return list(Reference.objects.filter(references.library_q(), references.compact_q([code]), estado__in=COUNTING).order_by('brand'))
 
 
 def disputed_codes(codes=None):
     """Numbers the library has only in dispute (every manufacturer that files them disputes them): the OEM finder never applies them."""
     from .models import Reference
-    library = Reference.objects.filter(references.library_q())
+    library = Reference.objects.filter(references.library_q())  # numbers by their compact form (a short one's clave is its spelling)
     bad = library.filter(estado='disputa')
     if codes is not None:
-        bad = bad.filter(clave__in=[normalized_reference(code) for code in codes])
-    bad = set(bad.values_list('clave', flat=True))
-    return bad - set(library.filter(clave__in=bad).exclude(estado='disputa').values_list('clave', flat=True)) if bad else set()
+        bad = bad.filter(references.compact_q({normalized_reference(code) for code in codes}))
+    bad = {normalized_reference(code) for code in bad.values_list('code', flat=True)}
+    if not bad:
+        return set()
+    return bad - {normalized_reference(code) for code in library.filter(references.compact_q(bad)).exclude(estado='disputa').values_list('code', flat=True)}
 
 
 def exact_items(part_ids=None, codes=None):

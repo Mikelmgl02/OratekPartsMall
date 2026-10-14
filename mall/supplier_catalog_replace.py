@@ -13,10 +13,11 @@ alone would leave it:
   with none left it is retired the way Biblioteca OEM's Retirar does (OEMCrossReferenceRetired, by --user), so no import files it
   again. A code FILE files too keeps its other citations and takes FILE's pages.
 - OEM numbers (from S4 the library's References): a number FILE does not print loses the catalog's source (retired, never deleted).
-  With no source left, when nothing else holds it (it sits on its own line in referencia, no tie of another source or of a retired
-  SKU, and nobody disputed, annotated, chained or edited it) it is retired the way S4 retires a number: its line in referencia is
-  rejected (rechazada, bad_data) and the number waits there in disputa (it holds no key; a referencia line's main is never retired,
-  I1), and its codes are retired with it. A number FILE prints takes FILE's source detail (its items and pages; the import keeps the
+  With no source left, when nothing else holds it (no line keeps it as its own code, no tie of another source or of a retired SKU,
+  and nobody disputed, annotated, chained or edited it) it is dropped the way S4 drops a number (mall.references.drop_library_number):
+  it ends as the main of a line of its own in referencia, rejected (rechazada, bad_data), the number waiting there in disputa and
+  tagged (it holds no key; a line's main is never retired, I1), and its codes are deleted with it (no tombstone). A catalog that prints
+  it again brings the number and its line back and files its codes again. A number FILE prints takes FILE's source detail (its items and pages; the import keeps the
   first sighting's).
   When FILE turns it into a drive-shaft number listed for a CV component, or back, its description and part type follow (SEMIEJE
   (EJE COMPLETO) / SEMIEJES, or the component's), each only while it still holds what the catalog gave it.
@@ -71,12 +72,21 @@ def filed_codes(job):
 
 
 def held(ref, prefix):
-    """Something besides the catalog keeps the number (a library Reference) once the catalog's source goes: a catalog line holds it
-    (it is one of that line's codes), a person disputed, annotated, chained or edited it, another number names it as its replacement,
-    or a tie of another source or of a retired SKU points at it."""
+    """Something besides the catalog keeps the number (a library Reference) once the catalog's source goes: a line holds it as its own
+    code (its main, a code not placed there as library data by S4, or one whose clave the line keeps without a brand), supplier items
+    hang from it, a person disputed, annotated, chained or edited it, another number names it as its replacement, or a tie of another
+    source or of a retired SKU points at it. A number S4 put on a SKU line as library data (detail.origen biblioteca: the name links'
+    numbers) is not held by that line: dropped, it leaves it as the OEM table's number left with its name link."""
+    from . import references
     from .lines import on_storefront
-    if ref.part.estado != 'referencia' or ref.estado == 'disputa' or ref.notes.strip() or ref.reemplazado_por_id or ref.created_by_id \
-            or (ref.detail or {}).get('updated_by'):
+    from .models import Reference
+    if ref.part.estado != 'referencia':
+        if ref.is_main or (ref.detail or {}).get('origen') != references.LIBRARY_ORIGIN or references.has_variants(ref):
+            return True
+        if Reference.objects.filter(part_id=ref.part_id, clave=ref.clave, brand='', supplier__isnull=True,
+                                    estado__in=references.EXCLUSIVE).exclude(pk=ref.pk).exists():
+            return True  # the line keeps the number under its own brandless code
+    if ref.estado == 'disputa' or ref.notes.strip() or ref.reemplazado_por_id or ref.created_by_id or (ref.detail or {}).get('updated_by'):
         return True
     if ref.reemplaza.exists():
         return True
@@ -222,10 +232,10 @@ def plan(data):
 def apply_changes(job, changes, actor):
     from django.utils import timezone
     from . import references
-    from .lines import stage_estado
-    from .models import Part, ReferenceSource
+    from .models import ReferenceSource
     from .oem_links import chunks
     from .oem_reference_models import OEMCrossReference, OEMCrossReferenceRetired, PartOEMLink
+    from .supplier_catalog_import import citation
     now = timezone.now()
     for change in changes['numbers']:
         ref = change['ref']
@@ -241,11 +251,14 @@ def apply_changes(job, changes, actor):
             if change['action'] == 'drop_source':
                 references.refresh_library_estado(ref, actor)
     gone = [change['ref'] for change in changes['numbers'] if change['action'] == 'delete']
-    retired = [change['row'] for change in changes['codes'] if change['action'] in ('retire', 'with_number')]
+    retired = [change['row'] for change in changes['codes'] if change['action'] == 'retire']
     OEMCrossReferenceRetired.objects.bulk_create([OEMCrossReferenceRetired(reference_id=row.reference_id, brand=row.brand, number=row.number, code=row.code,
                                                                            citations=row.citations, retired_by=actor) for row in retired],
                                                  batch_size=1000, ignore_conflicts=True)
-    for chunk in chunks([row.pk for row in retired]):
+    # A dropped number's codes go with it, without a tombstone (they went with the OEM table's number before S4), so a catalog that
+    # prints the number again files them again.
+    dropped = [change['row'].pk for change in changes['codes'] if change['action'] == 'with_number']
+    for chunk in chunks([row.pk for row in retired] + dropped):
         OEMCrossReference.objects.filter(pk__in=chunk).delete()
     for change in changes['codes']:
         if change['action'] in ('recite', 'drop_citation'):
@@ -260,14 +273,8 @@ def apply_changes(job, changes, actor):
             change['link'].citations = change['citations']
             change['link'].save(update_fields=['citations'])
     note = f'El catálogo {job.report["title"]} ya no lo imprime (extracto corregido).'[:500]
-    for ref in gone:  # S4: retired, never deleted; a line in referencia keeps its main, in disputa, and is rejected
-        if ref.is_main:
-            references.update(ref, estado='disputa', dispute_note=note, actor=actor)
-            line = Part.objects.select_for_update().get(pk=ref.part_id)
-            if line.estado == 'referencia':
-                line.save(update_fields=stage_estado(line, 'rechazada', user=actor, reason='bad_data', note=note))
-        else:
-            references.retire(ref, actor=actor, reason=note, keep_library=False)
+    for ref in gone:  # S4: never deleted; each ends as the main of a rejected line of its own, in disputa, until a catalog prints it again
+        references.drop_library_number(ref, note, actor=actor, catalog=citation(job.catalog))
 
 
 def write_report(directory, changes):
@@ -280,13 +287,13 @@ def write_report(directory, changes):
             writer.writerows(rows)
 
     table('numbers.csv', ['accion', 'fabricante', 'numero', 'id_numero', 'detalle_antes', 'detalle_despues'],
-          [[c['action'], c['ref'].brand, c['ref'].clave, c['ref'].uid, json.dumps(c.get('before', c['source'].detail), ensure_ascii=False),
+          [[c['action'], c['ref'].brand, number_key(c['ref'])[1], c['ref'].uid, json.dumps(c.get('before', c['source'].detail), ensure_ascii=False),
             json.dumps(c.get('detail', c.get('fields', {})), ensure_ascii=False)] for c in changes['numbers']])
     table('codes.csv', ['accion', 'fabricante', 'numero', 'marca', 'codigo', 'id_equivalencia', 'citas_antes', 'citas_despues'],
-          [[c['action'], c['row'].reference.brand, c['row'].reference.clave, c['row'].brand, c['row'].code, c['row'].pk,
+          [[c['action'], c['row'].reference.brand, number_key(c['row'].reference)[1], c['row'].brand, c['row'].code, c['row'].pk,
             ' | '.join(c['row'].citations), ' | '.join(c['citations'])] for c in changes['codes']])
     table('ties.csv', ['accion', 'sku', 'fabricante', 'numero', 'id_vinculo', 'citas_antes', 'citas_despues'],
-          [[c['action'], c['link'].part.sku, c['link'].reference.brand, c['link'].reference.clave, c['link'].pk,
+          [[c['action'], c['link'].part.sku, c['link'].reference.brand, number_key(c['link'].reference)[1], c['link'].pk,
             ' | '.join(c['link'].citations), ' | '.join(c['citations'])] for c in changes['ties']])
     table('alternos-review.csv', ['sku', 'descripcion', 'marca', 'codigo', 'fuente', 'articulos_del_sku', 'articulos_que_lo_imprimen', 'id_alterno', 'id_sku'],
           [[c['code'].part.sku, c['code'].part.description, c['code'].brand, c['code'].code, c['code'].reference_source,

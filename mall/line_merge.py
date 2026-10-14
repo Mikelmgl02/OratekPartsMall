@@ -154,16 +154,18 @@ def importing(supplier_ids):
     return SupplierInventoryImportJob.objects.filter(supplier_id__in=supplier_ids, status='importing', expires_at__gt=timezone.now()).exists()
 
 
-def lock_lines(ids):
+def lock_lines(ids, *, suppliers=True):
     """Take the locks of a merge or a split in the plan's order (§1.6.5): the supplier Accounts of every variant on these lines and on
-    the lines merged into them, by id, then the lines by id. Refuses while one of those suppliers is importing. Returns {id: Part}."""
+    the lines merged into them, by id, then the lines by id. Refuses while one of those suppliers is importing. suppliers=False (a
+    library merge: lines in referencia hold no variants, and the target's do not move) takes the lines only. Returns {id: Part}."""
     m = _models()
     ids = {getattr(pk, 'pk', pk) for pk in ids if pk}
     family = ids | set(m.Part.objects.filter(merged_into_id__in=ids).values_list('pk', flat=True))
-    suppliers = sorted(set(m.SupplierItem.objects.filter(part_id__in=family).values_list('supplier_id', flat=True)))
-    list(m.Account.objects.select_for_update().filter(pk__in=suppliers).order_by('pk').values_list('pk', flat=True))
-    if importing(suppliers):
-        raise refuse('Un proveedor de estos SKU está importando su inventario. Espera a que termine y vuelve a intentarlo.')
+    if suppliers:
+        accounts = sorted(set(m.SupplierItem.objects.filter(part_id__in=family).values_list('supplier_id', flat=True)))
+        list(m.Account.objects.select_for_update().filter(pk__in=accounts).order_by('pk').values_list('pk', flat=True))
+        if importing(accounts):
+            raise refuse('Un proveedor de estos SKU está importando su inventario. Espera a que termine y vuelve a intentarlo.')
     return {part.pk: part for part in m.Part.objects.select_for_update().filter(pk__in=family).order_by('pk')}
 
 
@@ -204,6 +206,7 @@ def absorb(ref, line, *, actor=None, reason=''):
             raise references.ReferenceConflict(f'{ref.code} no tiene en el SKU de destino una referencia con su clave.')
         record = {'ref': ref.pk, 'into': kept.pk, 'estado': ref.estado, 'dispute_note': ref.dispute_note, 'spelling': None, 'sources': []}
         record['variants'] = rehang([ref.pk], kept)
+        library = references.is_library_number(ref)
         references.retire(ref, actor=actor, replaced_by=kept, reason=reason or 'Absorbida por otra línea', allow_main=True,
                           keep_library=False)
         if ref.code != kept.code and ref.code not in kept.printed_forms and len(kept.printed_forms) < references.MAX_PRINTED:
@@ -213,7 +216,63 @@ def absorb(ref, line, *, actor=None, reason=''):
             copy, created = references.cite(kept, source.citation, actor, kind=source.kind, detail={**source.detail, 'absorbed_from': ref.pk})
             if created:
                 record['sources'].append(copy.pk)
+        # S4: the aftermarket codes, tombstones and SKU links of a library number hang from its Reference: they follow it to the one
+        # that absorbs it (equivalents, reach_index, search and the Biblioteca read them there), which becomes an OEM number too.
+        rows = repoint_library_rows(ref, kept)
+        if any(rows[name] for name in ('codes', 'retired', 'links')) or any(rows['cited'].values()):
+            record['library_rows'] = rows
+        if library and kept.tipo != 'oem':
+            record['into_tipo'] = kept.tipo
+            references.update(kept, tipo='oem', actor=actor)
     return record
+
+
+LIBRARY_ROWS = (('codes', 'OEMCrossReference', ('brand', 'number')), ('retired', 'OEMCrossReferenceRetired', ('brand', 'number')),
+                ('links', 'PartOEMLink', ('part_id', 'source')))
+
+
+def library_row_models():
+    from . import oem_reference_models
+    return {name: (getattr(oem_reference_models, model), key) for name, model, key in LIBRARY_ROWS}
+
+
+def repoint_library_rows(ref, kept):
+    """What hangs from an absorbed Reference (the aftermarket codes filed under it, their tombstones, its SKU links) moves to the
+    Reference that absorbs it; a row whose key the kept one already has stays where it is and gives the kept one's row its citations.
+    Returns {'codes', 'retired', 'links': [ids moved], 'cited': {'codes'|'links': {id: citations before}}} for Separar."""
+    from .oem_reference_models import citation_list
+    out = {'codes': [], 'retired': [], 'links': [], 'cited': {'codes': {}, 'links': {}}}
+    for name, (model, fields) in library_row_models().items():
+        have = {tuple(getattr(row, field) for field in fields): row for row in model.objects.select_for_update().filter(reference_id=kept.pk)}
+        for row in model.objects.select_for_update().filter(reference_id=ref.pk).order_by('pk'):
+            other = have.get(tuple(getattr(row, field) for field in fields))
+            if other is None:
+                model.objects.filter(pk=row.pk).update(reference_id=kept.pk)
+                out[name].append(row.pk)
+            elif name in out['cited']:
+                merged = citation_list(other.citations, *row.citations)
+                if merged != other.citations:
+                    out['cited'][name].setdefault(str(other.pk), list(other.citations))
+                    model.objects.filter(pk=other.pk).update(citations=merged)
+                    other.citations = merged
+    return out
+
+
+def return_library_rows(record, actor=None):
+    """Separar: the rows absorb moved to the kept Reference go back to the revived one, the citations it gave the kept one's rows leave
+    them, and the kept one takes back the tipo it had."""
+    rows = record.get('library_rows') or {}
+    models = library_row_models()
+    for name, (model, _) in models.items():
+        if rows.get(name):
+            model.objects.filter(pk__in=rows[name], reference_id=record['into']).update(reference_id=record['ref'])
+    for name, cited in (rows.get('cited') or {}).items():
+        for pk, before in cited.items():
+            models[name][0].objects.filter(pk=pk).update(citations=before)
+    if record.get('into_tipo'):
+        kept = _models().Reference.objects.filter(pk=record['into'], tipo='oem').first()
+        if kept is not None:
+            references.update(kept, tipo=record['into_tipo'], actor=actor)
 
 
 # --- merge ---------------------------------------------------------------------------------------------------------------------------
@@ -242,10 +301,12 @@ def _codigo_holder(code, participants, target):
             .order_by('pk').first())
 
 
-def merge_lines(target, sources, *, actor, reason='', automatic=False, assistant_job=None, target_created=False):
+def merge_lines(target, sources, *, actor, reason='', automatic=False, assistant_job=None, target_created=False, library=False):
     """Merge `sources` (Parts, live, not merged) into `target` (a live Part): see the module's docstring. The caller has validated what
     it asked (Agrupar SKU's rules); this takes the locks again, refuses what would break the catalog (ValidationError with a detail)
-    and returns the CatalogMerge, or None when every source was already merged into target."""
+    and returns the CatalogMerge, or None when every source was already merged into target. library=True is S4's rule 3f (a code
+    absorbing library numbers' lines in referencia, mall.references.absorb_library_lines): every source must be in referencia without
+    variants, no supplier is locked (the caller may already hold lines or References) and the target keeps its estado."""
     m = _models()
     from .lines import refuse_unificada
     from .oem_reference_models import PartOEMLink
@@ -256,7 +317,7 @@ def merge_lines(target, sources, *, actor, reason='', automatic=False, assistant
     if len(set(source_ids)) != len(source_ids):
         raise refuse('No repitas los SKU por unificar.')
     with transaction.atomic():
-        locked = lock_lines([target_id, *source_ids])
+        locked = lock_lines([target_id, *source_ids], suppliers=not library)
         target = locked.get(target_id)
         if target is None:
             raise refuse('El SKU principal ya no está en el catálogo.')
@@ -276,6 +337,9 @@ def merge_lines(target, sources, *, actor, reason='', automatic=False, assistant
             raise refuse('Uno de los SKU por unificar ya no está en el catálogo.')
         if not sources:
             return None
+        if library and (any(source.estado != 'referencia' for source in sources)
+                        or m.SupplierItem.objects.filter(part_id__in=[source.pk for source in sources]).exists()):
+            raise refuse('Solo una línea de la Biblioteca en referencia, sin artículos, se une así.')
         ids = [target.pk, *(source.pk for source in sources)]
         if automatic:
             kept = kept_apart_among(ids)
@@ -331,7 +395,8 @@ def merge_lines(target, sources, *, actor, reason='', automatic=False, assistant
             holder = _codigo_holder(source.sku, participants, target)
             if holder is not None:  # a source's codigo another line holds as its codigo too (a spelling UNIQUE(sku) let through)
                 raise refuse(f'El código {holder.sku} identifica otro SKU. Corrige su asignación antes de unificar.')
-        items = list(m.SupplierItem.objects.select_for_update().filter(part_id__in=participants).order_by('pk'))
+        # A library merge locks no variant: its sources hold none, and the target's stay where they are.
+        items = list(m.SupplierItem.objects.select_for_update().filter(part_id__in=retired_ids if library else participants).order_by('pk'))
 
         brought = {source.pk: {'id': str(source.pk), 'sku': source.sku, 'estado': source.estado, 'codes': [], 'items': [], 'images': [],
                                'references': [], 'main': None, 'absorbed': [], 'undisputed': [], 'favorites': {'moved': [], 'dropped': []},
@@ -401,7 +466,7 @@ def merge_lines(target, sources, *, actor, reason='', automatic=False, assistant
         before_estado = target.estado
         filled = fill_scalars(target, sources)
         stocked = {item.part_id for item in items}
-        estado = merged_estado([target, *sources], [line for line in [target, *sources] if line.pk in stocked])
+        estado = target.estado if library else merged_estado([target, *sources], [line for line in [target, *sources] if line.pk in stocked])
         stamp = timezone.now()
         m.Part.objects.filter(pk__in=retired_ids).update(active=False, merged_into=target, estado='unificada', updated_at=stamp)
         merge = m.CatalogMerge.objects.create(actor=actor, target=target, sources=jsonable([brought[source.pk] for source in sources]),
@@ -888,7 +953,7 @@ def split_line(target_id, restore, *, actor, reason=''):
             estado = entry.get('estado') if entry.get('estado') in references_live_estados() else 'publicada'
             part.merged_into, part.estado, part.active = None, estado, estado == 'publicada'
             part._main_followed = True  # its main is set just below
-            part.save(update_fields=['active', 'merged_into', 'estado'])  # its name links follow (mall.oem_links.part_saved)
+            part.save(update_fields=['active', 'merged_into', 'estado'])
             summary['mains_returned'] += settle_returned(part, entry, mains[str(part.pk)], actor)
             summary['favorites_returned'] += return_favorites(part, target, entry)
             restore_dependents(entry, part)
@@ -961,6 +1026,7 @@ def revive_absorbed(part, entry, actor):
             kept = references.update(kept, estado='disputa', dispute_note=record['into_undisputed']['dispute_note'], actor=actor)
         if record.get('sources'):
             m.ReferenceSource.objects.filter(pk__in=record['sources'], reference_id=record['into']).delete()
+        return_library_rows(record, actor)
         if record.get('estado') == 'disputa' and record.get('dispute_note'):  # it waited in disputa: it does again, with its note
             references.update(ref, estado='disputa', dispute_note=record['dispute_note'], actor=actor)
             count += 1

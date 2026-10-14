@@ -25,7 +25,7 @@ from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 from .catalog_families import normalized_reference, supplier_base, application, family_candidates
 from .catalog_suffixes import HEAD_SYN
-from .lines import all_lines, create_line, storefront_lines
+from .lines import all_lines, create_line, shared_referencia_codigos, storefront_lines
 from .models import Account, Part, PartCode, SupplierItem, SupplierCodeMapping, MatchingCase, MatchingDecision
 from .matching_queue import matching_work
 from .oem_links import reach_index, same_make
@@ -549,8 +549,11 @@ def reconcile_items(index, *, stats=None):
 def catalog_families():
     rows = {p.sku: part_row(p) for p in storefront_lines().prefetch_related('codes')}
     bases = {supplier_base(sku) for sku in rows} - {''}
-    blocked = set(all_lines().filter(sku__in=bases).values_list('sku', flat=True)) - set(rows)  # a base a line off sale holds
-    blocked |= set(PartCode.objects.filter(code__in=bases).values_list('code', flat=True)) - set(rows)
+    # A base a line off sale holds; a line in referencia (a library number no product carries) is none: creating the parent promotes it
+    # (mall.lines.create_line), unless two makes' lines share the codigo (the parent would have to name the make).
+    blocked = set(all_lines().filter(sku__in=bases).exclude(estado='referencia').values_list('sku', flat=True)) - set(rows)
+    blocked |= set(PartCode.objects.filter(code__in=bases).exclude(part__estado='referencia').values_list('code', flat=True)) - set(rows)
+    blocked |= shared_referencia_codigos(bases)
     return family_candidates(rows, blocked)
 
 
@@ -571,7 +574,7 @@ def apply_family(case, *, actor, automatic=False, selected_target=None):
     if target.get('id'):
         if current.get(target['id']) != target:
             raise ValidationError('El SKU padre cambió. Actualiza el análisis.')
-    elif all_lines().filter(sku=case.target_sku).exists():
+    elif all_lines().filter(sku=case.target_sku).exclude(estado='referencia').exists():  # a line in referencia is promoted (S4)
         raise ValidationError('El SKU padre ya existe. Actualiza el análisis.')
     locked = MatchingCase.objects.select_for_update().get(pk=case.pk)
     if locked.status != 'review' or locked.fingerprint != case.fingerprint:
@@ -710,8 +713,10 @@ def create_supplier_families():
         if len({i.codigo for i in items}) < 2 or not all(same_spec(i.description, items[0].description) for i in items):
             continue
         # A key another line holds (S2b: any spelling of it, a brandless one reserving it for every brand) is that line's: no parent.
-        if (all_lines().filter(Q(sku=base) | Q(sku__in=[i.codigo for i in items])).exists() or PartCode.objects.filter(code=base).exists()
-                or reference_rules.conflicts(base, '').exists()):
+        # A line in referencia (a library number no product carries) holds nothing: the parent promotes it (S4), unless two makes' share it.
+        if (all_lines().filter(Q(sku=base) | Q(sku__in=[i.codigo for i in items])).exclude(estado='referencia').exists()
+                or PartCode.objects.filter(code=base).exclude(part__estado='referencia').exists()
+                or reference_rules.conflicts(base, '').exclude(part__estado='referencia').exists() or shared_referencia_codigos([base])):
             continue
         try:
             with transaction.atomic():

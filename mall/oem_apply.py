@@ -194,11 +194,14 @@ def new_claimant(known, pid, keys):
     now claim the number): the finder never weighed it."""
     for key in filter(None, keys):
         rx = reference_pattern(key, anchored=False)
-        for id_, sku, active, merged in all_lines().filter(sku__iregex=rx).exclude(pk=pid).values_list('id', 'sku', 'active', 'merged_into_id'):
+        # Lines in referencia and library numbers (S4) are listed data in the finder's snapshot, never claimants.
+        for id_, sku, active, merged in (all_lines().filter(sku__iregex=rx).exclude(pk=pid).exclude(estado='referencia')
+                                         .values_list('id', 'sku', 'active', 'merged_into_id')):
             if key in normalized_reference(sku) and known.parts.get(str(id_)) != (sku, active, str(merged) if merged else None):
                 return sku
         # A line's main (S2b) is its SKU, checked above; the snapshot lists the other References.
-        for part_id, code, brand in Reference.objects.filter(code__iregex=rx, is_main=False).exclude(part_id=pid).values_list('part_id', 'code', 'brand'):
+        for part_id, code, brand in (Reference.objects.filter(code__iregex=rx, is_main=False).exclude(part_id=pid).exclude(part__estado='referencia')
+                                     .exclude(detail__contains={'origen': 'biblioteca'}).values_list('part_id', 'code', 'brand')):
             if key in normalized_reference(code) and (str(part_id), code, brand) not in known.codes:
                 return code
         for part_id, codigo in SupplierItem.objects.filter(codigo__iregex=rx, part__isnull=False).exclude(part_id=pid).values_list('part_id', 'codigo'):
@@ -578,7 +581,7 @@ def revert_link(link_id, actor):
             raise Skip('sku_changed', part.sku)
         rename = change.previous_sku != change.sku
         if rename and (reference_owners(change.previous_sku, part, merged_here=False)
-                       or all_lines().filter(sku__iexact=change.previous_sku).exclude(pk=part.pk).exists()):
+                       or all_lines().filter(sku__iexact=change.previous_sku).exclude(pk=part.pk).exclude(estado='referencia').exists()):
             raise Skip('old_sku_taken', change.previous_sku)
         delete, restore, edited = [], [], []
         for c in undo.get('created_codes') or []:

@@ -299,9 +299,9 @@ class TightenExecutorTests(TestCase):
 
 
 def create_line_without_main(sku):
-    """A line inserted the way the code before S2b did (no main), to give 0076's repair something to do. The main goes by SQL: on a
-    database migrated back before 0077 the models' SupplierItem.reference (S3) has no column, so a delete through the ORM cannot
-    collect what points at the Reference."""
+    """A line inserted the way the code before S2b did (no main), to give 0076's repair something to do. Its main goes by plain SQL:
+    the database may be migrated back before 0077 or S4, whose columns (S3's SupplierItem.reference, S4's ref_id) the ORM's delete
+    collector would read."""
     line = make_line(sku)
     main = references.main_of(line)
     if main is not None:

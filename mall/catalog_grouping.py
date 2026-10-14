@@ -8,7 +8,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .management import IsSuperuser, ManagedPartSerializer, UppercaseCharField
-from .lines import all_lines, create_line, on_storefront, storefront_lines
+from .lines import LineStateError, all_lines, create_line, on_storefront, storefront_lines
 from . import line_merge
 from .models import Part, Reference
 from .catalog_families import family_candidates, supplier_base
@@ -42,7 +42,8 @@ def merge_catalog_parts(*, actor, target_sku, source_skus, category='', subcateg
     requested = {target_sku, *source_skus}
     # Every estado: the exact rows the SKUs name, so the checks below refuse a merged or retired one by name. Supplier accounts are
     # locked before the lines (mall.line_merge.lock_lines).
-    found = list(all_lines().filter(sku__in=requested).values_list('pk', flat=True))
+    # A line in referencia (a library number no product carries, S4) is none of them: a parent with its codigo promotes it.
+    found = list(all_lines().filter(sku__in=requested).exclude(estado='referencia').values_list('pk', flat=True))
     locked = line_merge.lock_lines(found)
     parts = {part.sku: part for part in locked.values() if part.sku in requested}
     missing = sorted(requested - set(parts) - ({target_sku} if create_target else set()))
@@ -52,14 +53,17 @@ def merge_catalog_parts(*, actor, target_sku, source_skus, category='', subcateg
     if created_target:
         if not create_target or any(supplier_base(sku) != target_sku for sku in source_skus):
             raise ValidationError('El nuevo SKU debe ser el código base completo de los alternos seleccionados.')
-        if Reference.objects.filter(code=target_sku).exists():
+        if Reference.objects.filter(code=target_sku).exclude(part__estado='referencia').exists():
             raise ValidationError('El código base ya es un alterno de otro SKU. Revisa su asignación.')
         family_rows = {part.sku: {'sku': part.sku, 'description': part.description, 'is_OEM': part.is_OEM} for part in
                        storefront_lines(Part.objects.select_for_update()).filter(sku__startswith=target_sku + '-').order_by('pk')}
         family = family_candidates(family_rows).get(target_sku)
         if not family or not set(source_skus).issubset({row['sku'] for row in family['sources']}):
             raise ValidationError('El código base requiere al menos dos variantes con descripciones compatibles para crear el SKU padre.')
-        target = create_line(target_sku, name=target_sku, description=family['target']['description'], actor=actor, strict=True)  # its main (S2b)
+        try:  # its main (S2b); the line in referencia with this codigo, if any, is promoted (S4)
+            target = create_line(target_sku, name=target_sku, description=family['target']['description'], actor=actor, strict=True)
+        except LineStateError as error:  # two makes' library numbers share the codigo
+            raise ValidationError({'detail': str(error)})
         parts[target_sku] = target
     else:
         target = parts[target_sku]

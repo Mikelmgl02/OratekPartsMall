@@ -255,9 +255,12 @@ class CatalogToolReaderTests(TestCase):
         make_line('90915-YZZD2-RAZ', description='FILTRO ACEITE TOY', estado='preparacion')
         make_line('23300-0L041-KSM', description='FILTRO COMBUSTIBLE TOY')  # a parent another line holds is not proposed
         make_line('23300-0L041-RAZ', description='FILTRO COMBUSTIBLE TOY')
-        make_line('23300-0L041', estado='referencia')
+        make_line('23300-0L041', estado='preparacion')
+        make_line('16100-79445-KSM', description='BOMBA AGUA TOY')  # S4: a library number's line in referencia blocks no parent:
+        make_line('16100-79445-RAZ', description='BOMBA AGUA TOY')  # creating the parent promotes it (mall.lines.create_line)
+        make_line('16100-79445', estado='referencia', origen='biblioteca')
         families = suggested_families()
-        self.assertEqual(set(families), {'58411-1R000'})
+        self.assertEqual(set(families), {'58411-1R000', '16100-79445'})
         self.assertEqual([row['sku'] for row in families['58411-1R000']['sources']], ['58411-1R000-KSM'])
 
     def test_grouping_refuses_a_line_off_sale_as_source_or_target(self):
@@ -375,7 +378,9 @@ class LibraryReaderTests(TestCase):
         case.evidence = {'primary': {'key': '486540K040', 'conflicts': [{'part_id': str(line.pk), 'kind': 'active_sku'} for line in lines.values()]},
                          'shared_with': [line.sku for line in lines.values()]}
         self.assertEqual(merge_family(case)['source_skus'], [])
-        owner = make_line('486540K040', estado='referencia')  # who holds the number: every estado
+        make_line('486540K040', estado='referencia', origen='biblioteca')  # S4: a library number's line owns nothing (rule 3f)
+        self.assertEqual(key_owners(part, '48654-0K040'), [])
+        owner = make_line('48654 0K040', estado='preparacion')  # who holds the number: every other estado
         self.assertEqual(key_owners(part, '48654-0K040'), [(str(owner.pk), owner.sku)])
 
     def test_productos_nuevos_owners_and_links(self):

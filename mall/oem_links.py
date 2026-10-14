@@ -92,8 +92,8 @@ def name_targets(parts, table=None, library=None):
         from . import references
         from .models import Reference
         for chunk in chunks({key for key, _ in keys.values()}):
-            for pk, manufacturer, code in Reference.objects.filter(references.library_q(), clave__in=chunk).values_list('pk', 'brand', 'clave'):
-                found[code].append((str(pk), make_group(manufacturer)))
+            for pk, manufacturer, code in Reference.objects.filter(references.library_q(), references.compact_q(chunk)).values_list('pk', 'brand', 'code'):
+                found[compact(code)].append((str(pk), make_group(manufacturer)))
     out = {}
     for part_id, (key, makes) in keys.items():
         refs = {ref for ref, group in found.get(key, []) if not makes or not group or group in makes}
@@ -249,7 +249,7 @@ def search_q(text, exact=False):
     if len(key) < MIN_SEARCH:
         return None
     library = Reference.objects.filter(references.library_q())
-    numbers = library.filter(**{'clave' if exact else 'clave__contains': key}).values('pk')
+    numbers = library.filter(references.compact_match_q(key, exact=exact)).values('pk')  # a short number's clave is its spelling
     crossed = OEMCrossReference.objects.filter(**{'number' if exact else 'number__contains': key}).values('reference_id')
     refs = Q(reference__in=numbers) | Q(reference__in=crossed)
     return (Q(pk__in=PartOEMLink.objects.filter(refs).values('part_id'))

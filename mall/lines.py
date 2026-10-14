@@ -394,6 +394,19 @@ def referencia_lines(codigo):
                 .filter(codigo_lower=key.lower()).order_by('pk'))
 
 
+def shared_referencia_codigos(codigos):
+    """The codigos among these that two or more lines in referencia share (one library number per make: 44310-STX-305 for ACURA and
+    HONDA). A catalog line with one has to name its make (promotable), so the automatic paths (the worker's families, a parent from
+    supplier codes) leave them alone; a codigo one line in referencia has is no obstacle: creating it promotes that line."""
+    keys = {codigo_key(codigo).lower(): codigo for codigo in codigos if codigo_key(codigo)}
+    if not keys:
+        return set()
+    from django.db.models import Count
+    rows = (_lines().filter(estado='referencia', merged_into__isnull=True).annotate(codigo_lower=Lower('sku'))
+            .filter(codigo_lower__in=sorted(keys)).values('codigo_lower').annotate(n=Count('pk')).filter(n__gt=1).values_list('codigo_lower', flat=True))
+    return {keys[key] for key in rows}
+
+
 def promotable(codigo, brand=''):
     """The line in referencia that a new catalog line with this codigo becomes (S4: promote instead of refusing), or None when no line
     in referencia has it. When several makes share the codigo (44310-STX-305 for ACURA and HONDA), the one whose main is under `brand`

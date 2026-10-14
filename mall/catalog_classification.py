@@ -25,7 +25,7 @@ from .ai_budget import record_provider_call
 from .classification_models import CatalogClassificationState, CatalogClassificationSuggestion
 from .catalog_import import ImportResponse
 from .management import IsSuperuser
-from .lines import all_lines, catalog_lines, storefront_lines
+from .lines import all_lines, catalog_lines, shared_referencia_codigos, storefront_lines
 from .models import Part, Reference
 from .references import live_q
 from .catalog_families import (normalized_reference, supplier_base, supplier_suffix_match,
@@ -144,7 +144,9 @@ def group_row(group, part=None):
 def candidate_context(groups, source_skus):
     # Retrieve across the entire upload so equivalent rows in different import
     # batches can still be proposed together. Only bounded context reaches AI.
-    existing = {part.sku: part for part in all_lines().filter(sku__in=groups).only('sku', 'is_OEM', 'name', 'description', 'category', 'subcategory')}
+    # A line in referencia (a library number no product carries, S4) is no catalog line: the import promotes or absorbs it.
+    existing = {part.sku: part for part in all_lines().filter(sku__in=groups).exclude(estado='referencia')
+                .only('sku', 'is_OEM', 'name', 'description', 'category', 'subcategory')}
     staged = {sku: group_row(group, existing.get(sku)) for sku, group in groups.items()}
     token_index = {}
     prefix_index = {}
@@ -176,7 +178,9 @@ def candidate_context(groups, source_skus):
                                       'subcategory': part.subcategory,
                                       'codes': [{'brand': code.brand, 'code': code.code, 'ref_type': code.ref_type, 'reference_source': code.reference_source} for code in sorted(part.codes.all(), key=lambda code: code.pk) if not code.is_main][:40]}
     rows = {**catalogue_rows, **staged}
-    blocked = set(all_lines().filter(sku__in=bases).values_list('sku', flat=True)) | set(Reference.objects.filter(code__in=bases).values_list('code', flat=True))
+    blocked = (set(all_lines().filter(sku__in=bases).exclude(estado='referencia').values_list('sku', flat=True))
+               | set(Reference.objects.filter(code__in=bases).exclude(part__estado='referencia').values_list('code', flat=True))
+               | shared_referencia_codigos(bases))
     families = family_candidates(rows, blocked)
     family_targets = {member['sku']: base for base, family in families.items() for member in family['sources']}
     rows.update({base: family['target'] for base, family in families.items()})
@@ -507,9 +511,11 @@ def apply_review(user, pk, decisions):
             seen.add(sku)
             if target != sku and target not in groups and target not in proposals[sku].candidate_skus:
                 raise ValidationError('El SKU de destino debe pertenecer a esta importación o a los candidatos mostrados.')
-            if not target or (target not in groups and target not in proposed_parents and not all_lines().filter(sku=target).exists()):
+            if not target or (target not in groups and target not in proposed_parents
+                              and not all_lines().filter(sku=target).exclude(estado='referencia').exists()):
                 raise ValidationError('El SKU de destino ya no está disponible. Revisa la agrupación.')
-            if target != sku and all_lines().filter(sku=sku).exists():
+            # A library number's line in referencia is no SKU of the catalog: grouped as an alterno, adding it absorbs that line (rule 3f).
+            if target != sku and all_lines().filter(sku=sku).exclude(estado='referencia').exists():
                 raise ValidationError(f'El SKU {sku} ya existe en el catálogo. Su fusión requiere una revisión manual para conservar sus vínculos.')
             if target != sku and len(sku) > 120:
                 raise ValidationError('El SKU de origen supera la longitud de un código alterno y no se puede agrupar.')

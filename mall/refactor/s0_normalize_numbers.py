@@ -42,10 +42,22 @@ def default_manifest_dir():
 
 def refusal():
     """Why --apply may not write now, or None: the S0.11 guard (mall.refactor.guard: on the live database, the catalog freeze and no
-    writer still busy); a test or rehearsal database needs nothing. main() exits on it first, as the other guarded CLIs do; run()
-    checks it again for a caller that skips main()."""
+    writer still busy; a test or rehearsal database needs nothing), and S4: once the library's numbers are References
+    (mall.refactor.s4_library gave them the OEMReference ids as uids) the OEM table is frozen, and merging two of its rows would leave
+    their References apart. main() exits on the guard first, as the other guarded CLIs do; run() checks both for a caller that skips
+    main()."""
     from .guard import refusal as shared
-    return shared(True)
+    return shared(True) or library_moved()
+
+
+def library_moved():
+    """The refusal once S4 moved the library to References, or None."""
+    from django.db import connection
+    with connection.cursor() as cursor:
+        cursor.execute('SELECT EXISTS (SELECT 1 FROM mall_partcode r JOIN mall_oemreference o ON o.id = r.uid)')
+        moved = cursor.fetchone()[0]
+    return ('S4 ya pasó la biblioteca OEM a referencias (mall.refactor.s4_library): la tabla OEM está congelada y este paso ya no escribe; '
+            'los números gemelos que queden se unen en S9.') if moved else None
 
 
 def joined_detail(kept, source):

@@ -13,7 +13,7 @@ from .catalog_classification import (
     supplier_suffix_match, validate_suggestions,
 )
 from .management import IsSuperuser
-from .lines import all_lines, storefront_lines
+from .lines import all_lines, shared_referencia_codigos, storefront_lines
 from .models import PartCode
 from .catalog_families import family_candidates, supplier_base
 
@@ -33,7 +33,10 @@ def suggested_families():
     parts = {part.sku: part_row(part) for part in storefront_lines().only(
         'id', 'sku', 'is_OEM', 'name', 'description', 'category', 'subcategory').order_by('sku')}
     bases = {base for sku in parts if (base := supplier_base(sku))}
-    blocked = set(all_lines().filter(sku__in=bases).values_list('sku', flat=True)) | set(PartCode.objects.filter(code__in=bases).values_list('code', flat=True))
+    # A line in referencia (a library number no product carries) blocks no base: the parent promotes it (S4), unless two makes' share it.
+    blocked = (set(all_lines().filter(sku__in=bases).exclude(estado='referencia').values_list('sku', flat=True))
+               | set(PartCode.objects.filter(code__in=bases).exclude(part__estado='referencia').values_list('code', flat=True))
+               | shared_referencia_codigos(bases))
     from .catalog_split import separation_warnings
     return separation_warnings(family_candidates(parts, blocked))
 

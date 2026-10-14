@@ -393,10 +393,12 @@ def key_owners(part, code):
     if not key:
         return []
     rx = reference_pattern(key)
-    owners = [(str(p), s) for p, s in all_lines().filter(sku__iregex=rx).exclude(pk=part.pk).exclude(merged_into=part.pk).values_list('pk', 'sku')
-              if normalized_reference(s) == key]
+    # A line in referencia and a library number (S4) own nothing here: the finder lists them as data, and adding one absorbs it (3f).
+    owners = [(str(p), s) for p, s in all_lines().filter(sku__iregex=rx).exclude(pk=part.pk).exclude(merged_into=part.pk).exclude(estado='referencia')
+              .values_list('pk', 'sku') if normalized_reference(s) == key]
     # A line's main (S2b) is its SKU, found above.
-    return owners + [(str(p), c) for p, c in Reference.objects.filter(code__iregex=rx, is_main=False).exclude(part=part.pk).values_list('part_id', 'code')
+    return owners + [(str(p), c) for p, c in Reference.objects.filter(code__iregex=rx, is_main=False).exclude(part=part.pk)
+                     .exclude(part__estado='referencia').exclude(detail__contains={'origen': 'biblioteca'}).values_list('part_id', 'code')
                      if normalized_reference(c) == key]
 
 

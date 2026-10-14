@@ -24,7 +24,8 @@ from .models import CatalogMerge, Part, Reference, SupplierItem
 from .oem_finder_models import OEMReviewCase
 from .oem_reference_models import PartOEMLink
 from .refactor import s2b_main_refs
-from .test_factories import Fresh, make_library_number, make_line, make_reference, make_supplier, make_user, make_variant
+from .test_factories import (Fresh, before_s4_tighten, make_legacy_number, make_line, make_reference, make_supplier, make_user,
+                             make_variant)
 from .test_main_references import broken_invariants
 
 TIGHTEN = {'mall_part': ('line_oem_iff_tipo',), 'mall_partcode': ('reference_one_main_per_line', 'reference_main_not_retired')}
@@ -192,12 +193,13 @@ class BackfillCatchUpTests(Fresh, TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         drop_tighten_constraints()
+        before_s4_tighten()  # S2b's backfill runs before S4: its links hang from the OEM table (reference_id)
         tightened = patch.object(s2b_main_refs, 'tightened', return_value=False)
         tightened.start()
         self.addCleanup(tightened.stop)
-        number = make_library_number('TOYOTA', '43512-60150', source_kind='catalog_approval', citation='CATÁLOGO')
+        number = make_legacy_number('TOYOTA', '4351260150', printed_forms=['43512-60150'], source_kind='catalog_approval', citation='CATÁLOGO')
         self.carrier, self.linked = make_line('43512-60150'), make_line('DISCO-X')
-        PartOEMLink.objects.create(part=self.linked, reference=number, source='catalog')
+        PartOEMLink.objects.create(part=self.linked, legacy_reference=number, source='catalog')
         references.purge(Reference.all_objects.filter(is_main=True).values_list('pk', flat=True))
 
     def manifest(self):

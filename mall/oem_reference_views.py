@@ -5,7 +5,7 @@ its supersession; edits and actions under the version the reviewer saw (409 with
 that is already in place returns the number unchanged.
 
 Ids, URLs and keys stay as they were: a number's id is its Reference's uid (the OEMReference id for the numbers the library had before
-S4), its code the compact number (its clave), and until S8 status and source kinds keep their legacy values in the JSON, the filters
+S4), its code the compact number (its code without separators), and until S8 status and source kinds keep their legacy values in the JSON, the filters
 accepting the new ones too (mall.oem_reference.LibraryNumber). Edits write the number's detail and touch the fields of its line only
 when that line is in referencia (the number's own line), never a published one. A dispute puts the Reference in disputa (it stops
 holding its key), and no line is unmarked any more. After S4's window the Biblioteca stays read-only for 24 hours (mall.maintenance,
@@ -16,6 +16,7 @@ from collections import Counter
 
 from django.db import connection, transaction
 from django.db.models import Count, Exists, OuterRef, Q
+from django.db.models.lookups import StartsWith
 from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
@@ -358,6 +359,12 @@ def plan(ref, data, user):
             raise ValidationError({'note': 'Explica por qué el número está en disputa.'})
         if ref.estado == 'disputa' and ref.dispute_note == note:
             return None
+        line = Part.objects.filter(pk=ref.part_id).only('sku', 'estado').first()
+        if ref.is_main and line is not None and line.estado in ('publicada', 'retirada'):
+            # In disputa a main frees its line's codigo for any other line (and the matching worker would propose a merge into it):
+            # the SKU is corrected first, in the inventory.
+            raise ValidationError({'note': f'{ref.brand} {compact(ref.code)} es el código principal del SKU {line.sku}: si el número no es '
+                                           'correcto, cambia primero el código principal del SKU en el inventario.'})
         return lambda: save(ref, user, estado='disputa', dispute_note=note)  # in dispute it holds no key; no line is unmarked
     if action == 'clear_dispute':
         if ref.estado != 'disputa':
@@ -368,19 +375,19 @@ def plan(ref, data, user):
     manufacturer, number = manufacturer_name(data.get('manufacturer') or ref.brand), compact(data.get('code'))
     if not 0 < len(number) <= 60:
         raise ValidationError({'code': 'Escribe el número que lo reemplaza: entre 1 y 60 letras o dígitos.'})
-    if (manufacturer, number) == (ref.brand, compact(ref.clave)):
+    if (manufacturer, number) == (ref.brand, compact(ref.code)):
         raise ValidationError({'code': 'Un número no puede reemplazarse a sí mismo.'})
-    target = (Reference.objects.filter(references.library_q(), brand=manufacturer, clave__in=sorted(references.library_claves(number, [data['code']])))
+    target = (Reference.objects.filter(references.library_q(), references.compact_q([number]), brand=manufacturer)
               .order_by(references.exclusive_first(), 'pk').first())
     if target and ref.reemplazado_por_id == target.pk:
         return None
     if target and creates_cycle(ref, target):
-        raise ValidationError({'code': f'{target.brand} {target.clave} ya está reemplazado, directa o indirectamente, por {ref.brand} '
-                                       f'{ref.clave}: el reemplazo formaría un ciclo.'})
+        raise ValidationError({'code': f'{target.brand} {compact(target.code)} ya está reemplazado, directa o indirectamente, por {ref.brand} '
+                                       f'{compact(ref.code)}: el reemplazo formaría un ciclo.'})
 
     def supersede():
         new = target or references.add_library_number(
-            manufacturer, data['code'], printed=[data['code']], source_kind='manual', citation=f'Reemplaza a {ref.brand} {ref.clave}',
+            manufacturer, data['code'], printed=[data['code']], source_kind='manual', citation=f'Reemplaza a {ref.brand} {compact(ref.code)}',
             source_detail={'verified': False, 'supersedes': str(ref.uid)}, actor=user, part_type=current.part_type,
             description=current.description)[0]
         save(ref, user, reemplazado_por=new)
@@ -452,8 +459,8 @@ class OEMReferenceList(APIView):
         if text:
             match = (Q(code__icontains=text) | Q(printed_forms__icontains=text) | Q(detail__description__icontains=text)
                      | Q(detail__part_type__icontains=text))
-            if compact(text):
-                match |= Q(clave__startswith=compact(text))
+            if compact(text):  # the compact number (a short one's clave is its printed spelling: OPEL 5 69 036)
+                match |= Q(clave__startswith=compact(text)) | Q(StartsWith(orf.compact_sql('code'), compact(text)))
             if len(compact(text)) >= MIN_SEARCH:  # an aftermarket code filed under the number (GWT-41A -> TOYOTA 1610039315)
                 match |= Q(pk__in=OEMCrossReference.objects.filter(number__contains=compact(text)).values('reference_id'))
             rows = rows.filter(match)
@@ -573,7 +580,8 @@ def part_types():
     """What Editar celdas offers as a number's part type: the subgrupos' names, and the library's texts no subgrupo maps (A6)."""
     names = set(PartType.objects.values_list('name', flat=True))
     texts = Reference.objects.filter(references.library_q()).exclude(detail__part_type='').values_list('detail__part_type', flat=True).distinct()
-    names |= {text for text in texts if text and not orf.subgrupo_for(text)}
+    known = orf.subgrupo_names()
+    names |= {text for text in texts if text and not orf.subgrupo_for(text, known)}
     return sorted(name for name in names if name)
 
 
@@ -635,7 +643,7 @@ class OEMReferenceBulkEdit(APIView):
                 raise ValidationError({'detail': 'Uno de los números ya no está en la biblioteca OEM. Vuelve a cargar la tabla.'})
             stale = [refs[row['id']] for row in rows if refs[row['id']].version != row['expected_version']]
             if stale:
-                names = ', '.join(f'{ref.brand} {ref.clave}' for ref in stale[:5])
+                names = ', '.join(f'{ref.brand} {compact(ref.code)}' for ref in stale[:5])
                 return Response({'detail': f'No se guardó ningún cambio: otra persona cambió {names} mientras editabas. Revisa sus valores actuales.',
                                  'rows': list_rows(ref.uid for ref in stale)}, status=409)
             for row in rows:

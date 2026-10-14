@@ -26,7 +26,8 @@ Mazda, Ford or Kia, name the joint (owner, 2026-10-14), and Mitsubishi's MR seri
 makes one of them a shaft. The catalog's own item code is filed even
 without a digit (ASVA FDWH-FOCMF); a competitor code needs one. A printed number the library does not hold whose twin spelling it
 holds (16100-87795-000 and 16100-87795: mall.refactor.s0_normalize_numbers) is filed under the twin, and in the GM family under the
-make's own canonical spelling when another make of the family holds it; re-run that tool's dry run after an import all the same.
+make's own canonical spelling when another make of the family holds it. That tool ran on the OEM table before S4 and refuses to
+write once S4 moved the library to References (the table is frozen; twins left over are S9's).
 Whether a number is printed for other parts too is decided per printed spelling, as before the twins became one, so the kept number
 holds what each spelling files and a replace after the merge changes nothing.
 The name links
@@ -374,7 +375,7 @@ class CatalogImport:
                     candidates |= {key[1], canonical, canonical + '000', '0' + canonical, canonical[1:] if canonical.startswith('0') else canonical}
             groups = defaultdict(set)  # (scope, canonical): {(manufacturer, code) held}
             for chunk in chunks(sorted(candidates - {''})):
-                for manufacturer, spelling in Reference.objects.filter(references.library_q(), clave__in=chunk).values_list('brand', 'code'):
+                for manufacturer, spelling in Reference.objects.filter(references.library_q(), references.compact_q(chunk)).values_list('brand', 'code'):
                     code = compact(spelling)
                     groups[(twin_scope(manufacturer), canonical_number(manufacturer, code))].add((manufacturer, code))
             self._twins = {}
@@ -497,10 +498,10 @@ class CatalogImport:
         from .oem_reference_models import manufacturer_name
         from .oem_links import chunks
         wanted, found = {(manufacturer_name(manufacturer), number): (manufacturer, number) for manufacturer, number in keys}, {}
-        claves = {key for _, number in keys for key in references.library_claves(number)}
-        for chunk in chunks(sorted(claves)):
-            for pk, manufacturer, printed in (Reference.objects.filter(references.library_q(), clave__in=chunk).order_by(references.exclusive_first(), 'pk')
-                                              .values_list('pk', 'brand', 'code')):
+        # By the compact number, as the library keys it: a short number's clave is its printed spelling (OPEL 5 69 036).
+        for chunk in chunks(sorted({number for _, number in keys})):
+            for pk, manufacturer, printed in (Reference.objects.filter(references.library_q(), references.compact_q(chunk))
+                                              .order_by(references.exclusive_first(), 'pk').values_list('pk', 'brand', 'code')):
                 key = (manufacturer, compact(printed))
                 if key in wanted and wanted[key] not in found:
                     found[wanted[key]] = pk

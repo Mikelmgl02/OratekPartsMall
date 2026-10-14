@@ -26,7 +26,10 @@ detail {description, applications, part_type, system, family}. By carrier:
   makers' numbers are References of the same line (49 lines hold two on 2026-10-13).
 A number two or more lines carry (66) goes to its keeper, and its carriers get a legacy catalog case (method shared_oem_number) unless
 S2b's case for them, or one holding all of them, is there (OD16 waived: S4 merges nothing).
-SKU lines carrying a number take its subgrupo and aplicaciones_texto where theirs are blank (field_sources biblioteca) (step 3).
+SKU lines carrying a number take its subgrupo and aplicaciones_texto where theirs are blank (field_sources biblioteca) (step 3); the
+subgrupo waits on a line an open or dismissed case shows (its row carries the subgrupo: the case would be rewritten). Short numbers
+are written without the punctuation an extract left at their edges (4405285, is 4405285). The numbers a name link would still tie to a
+SKU keep their estado, get no link and carry detail['regla_5b'] for S6's review.
 Sources (step 4): each OEMReferenceSource is upserted as a ReferenceSource on (reference, kind, citation), detail merged as the
 library merged it, the kind per A4 (catalog_approval citing "Declarado por" is proveedor), the old kind in detail.legacy_kind; the OEM
 finder's rows meet the buscador sources S2a made of the same algo: texts.
@@ -41,10 +44,16 @@ commits. --apply needs 0075/0076 (S2b's mains) and 0079 applied. The dry run wor
 would make are simulated from mall.refactor.s2b_main_refs.plan (its compact-duplicate merges left out), every aftermarket code counts
 as to re-point, and nothing is read from columns the database lacks. A rehearsal copy gives the real numbers.
 
---rollback (within the 24 hours the Biblioteca stays read-only, OD22): the cases it opened (still in review) and the sources it made
-are deleted, the rows it re-pointed lose ref_id again, the References it changed take their values back, and the References and lines
-it created are deleted when nothing points at them (anything else is listed and left). Reverse 0080 first: it refuses while ref_id
-is NOT NULL.
+--rollback (within the 24 hours the Biblioteca stays read-only, OD22): the cases it opened (still in review) are deleted; the rows it
+re-pointed lose ref_id again; what the code from S4 wrote after landing (aftermarket codes, tombstones and links hung from References
+only) takes reference_id back from its Reference's uid, or is deleted, its values in the manifest, when its number is younger than S4,
+and every row lets go of ref_id; the References it changed take their values back; a Reference or line it created is deleted only
+while it is still where the apply put it (a line in referencia not promoted nor merged, a number on the line the manifest names and
+not its main) with nothing else pointing at it, and so are the sources, subgrupos, grupos, brands and aliases it created that nothing
+uses; everything else is listed and left, and a later --rollback tries it again. It ends with what reversing 0079 needs (no codigo on
+two lines, no row without reference_id). Order: freeze, reverse 0080 (it refuses while ref_id is NOT NULL), --rollback, revert the
+code, then reverse 0079 from the worktree. The S0 tool that merged the OEM table's twins (s0_normalize_numbers) refuses to write once
+this ran.
 """
 import argparse
 import hashlib
@@ -248,19 +257,23 @@ def existing_sources():
 
 
 def part_types():
+    """{(grupo, subgrupo): PartType id}, the grupo by its FK (S5)."""
     from ..models import PartType
-    return {(row[1], row[2]): row[0] for row in PartType.objects.values_list('pk', 'category', 'name')}
+    return {(row[1], row[2]): row[0] for row in PartType.objects.values_list('pk', 'grupo__nombre', 'name')}
 
 
 # --- plan -----------------------------------------------------------------------------------------------------------------------------
 
 def number_claves(number):
     from .. import references
-    return references.library_claves(number['code'], number['printed_forms'])
+    return references.library_claves(number['code'], [first_form(number), *number['printed_forms']])
 
 
 def first_form(number):
-    return (number['printed_forms'] or [number['code']])[0]
+    """The code a number's Reference is written with: its first printed form without the punctuation an extract left at its edges
+    (4405285, is 4405285), else the compact number (mall.references.library_code)."""
+    from .. import references
+    return references.library_code(number['printed_forms'], number['code'])
 
 
 def detail_of(number, *, origin=False):
@@ -280,8 +293,11 @@ def plan(state=None):
     """Everything the apply writes, read-only. Returns {'numbers', 'lines', 'updates', 'new_refs', 'fills', 'sources', 'cases',
     'part_types', 'pending', 'final', 'schema', ...}."""
     from .. import references
-    from ..oem_reference import subgrupo_for
+    from ..oem_reference import subgrupo_for as mapped_subgrupo
     from .s2b_main_refs import line_stats
+
+    def subgrupo_for(text):  # A6 only (OD9): the backfill never reads a library text as another subgrupo's name
+        return mapped_subgrupo(text, {})
     state = state or schema()
     lines = line_rows()
     refs = reference_rows()
@@ -363,7 +379,7 @@ def plan(state=None):
         members.sort(key=lambda entry: (entry['maker'] != root, entry['maker'], entry['code']))
         main = members[0]
         texts = main['number']
-        fields = references.library_line_fields(texts['description'], texts['part_type'], texts['applications'])
+        fields = references.library_line_fields(texts['description'], texts['part_type'], texts['applications'], subgrupos={})
         line_key = f'{key}|{root}'
         new_lines.append({'key': line_key, 'sku': main['first'], 'main': main['id'], 'numbers': [entry['id'] for entry in members], **fields})
         for entry in members:
@@ -397,8 +413,8 @@ def plan(state=None):
                 estado, note = 'disputa', entry['dispute']
             if estado == 'disputa' and not (note or '').strip():
                 note = 'En disputa en la Biblioteca OEM.'
-            rest = [form for form in [*number['printed_forms'][1:], *([number['code']] if number['code'] != entry['first']
-                                                                      and references.clave(entry['first']) != number['code'] else [])]
+            rest = [form for form in [*number['printed_forms'], *([number['code']] if number['code'] != entry['first']
+                                                                  and references.clave(entry['first']) != number['code'] else [])]
                     if form != entry['first']][:20]
             new_refs.append({'number': number['pk'], 'line': entry['line'], 'code': entry['first'], 'brand': entry['maker'], 'estado': estado,
                              'dispute_note': note, 'printed_forms': rest, 'notes': number['notes'] or '', 'is_main': bool(entry.get('is_main')),
@@ -410,8 +426,10 @@ def plan(state=None):
     supersede = {entry['id']: entry['number']['superseded_by_id'] for entry in plans if entry['number']['superseded_by_id']}
     final['reemplazos'] = len(supersede)
     # SKU lines (not in referencia) carrying numbers: their blank subgrupo and aplicaciones_texto from the library.
-    fills = plan_fills(lines, plans, subgrupo_for)
+    in_cases = lines_in_cases()
+    fills, deferred = plan_fills(lines, plans, subgrupo_for, in_cases)
     final['lineas_completadas'] = len(fills)
+    final['subgrupos_aplazados'] = deferred
     # Sources.
     sources = plan_sources(plans, library_sources(), existing_sources())
     final['fuentes'] = len(sources['create']) + len(sources['merge'])
@@ -429,6 +447,7 @@ def plan(state=None):
     final['casos'] = len(cases)
     pending = pending_name_links(lines, numbers, plans)
     final['nombre_pendiente'] = len(pending)
+    final['nombre_pendiente_marcados'] = mark_pending(pending, plans, updates, new_refs)
     by_kind = Counter(entry['number']['part_type'] for entry in unplaced if not subgrupo_for(entry['number']['part_type']))
     listed['sin_subgrupo'] = [f'{text or "(vacío)"} · {count}' for text, count in by_kind.most_common(40)]
     return {'numbers': plans, 'lines': new_lines, 'updates': updates, 'new_refs': new_refs, 'supersede': supersede, 'fills': fills,
@@ -436,24 +455,41 @@ def plan(state=None):
             'schema': state, 'simulated_mains': len(simulated), 'line_rows': lines}
 
 
-def plan_fills(lines, plans, subgrupo_for):
-    """{line id: {'before', 'after'}}: the catalog lines that carry library numbers and have their subgrupo or aplicaciones_texto
-    blank, filled from them: the subgrupo only when every number of the line maps to the same one (A6); the applications of the number
-    the line's codigo is, else of its first number."""
+def lines_in_cases():
+    """The lines a matching case shows that is still open or that a person dismissed (review, unmatched, dismissed): their rows carry
+    the subgrupo (mall.matching_engine.part_row), so filling it would change the case's fingerprint, rewrite it and drop its AI answer
+    (which stays off until S6, OD12), or reopen a dismissed one."""
+    from ..matching_models import MatchingCase
+    found = set()
+    for sources, candidates in MatchingCase.objects.filter(status__in=('review', 'unmatched', 'dismissed')).values_list('sources', 'candidates'):
+        for row in [*(sources or []), *(candidates or [])]:
+            if isinstance(row, dict) and row.get('id'):
+                found.add(str(row['id']))
+    return found
+
+
+def plan_fills(lines, plans, subgrupo_for, in_cases=frozenset()):
+    """({line id: {'before', 'after'}}, subgrupos deferred): the catalog lines that carry library numbers and have their subgrupo or
+    aplicaciones_texto blank, filled from them: the subgrupo only when every number of the line maps to the same one (A6), and not on a
+    line an open or dismissed case shows (in_cases: a later run fills it once the case is decided); the applications of the number the
+    line's codigo is, else of its first number."""
     from .. import references
     by_line = defaultdict(list)
     for entry in plans:
         if entry['action'] in ('existente', 'nueva_en_linea') and entry['line'] in lines and lines[entry['line']]['estado'] != 'referencia':
             by_line[entry['line']].append(entry['number'])
-    fills = {}
+    fills, deferred = {}, 0
     for line_id, numbers in by_line.items():
         line = lines[line_id]
         numbers.sort(key=lambda number: (references.clave(line['sku']) not in number_claves(number), number['manufacturer'], number['code']))
         after, sources = {}, dict(line['field_sources'] or {})
         mapped = {subgrupo_for(number['part_type']) for number in numbers}
         if not line['part_type_id'] and not (line['category'] or line['subcategory']) and len(mapped) == 1 and None not in mapped:
-            after['category'], after['subcategory'] = next(iter(mapped))
-            sources['subgrupo'] = {'source': ORIGIN, 'texto': numbers[0]['part_type']}
+            if str(line_id) in in_cases:
+                deferred += 1
+            else:
+                after['category'], after['subcategory'] = next(iter(mapped))
+                sources['subgrupo'] = {'source': ORIGIN, 'texto': numbers[0]['part_type']}
         applications = next((number['applications'].strip() for number in numbers if (number['applications'] or '').strip()), '')
         if not (line['aplicaciones_texto'] or '').strip() and applications:
             after['aplicaciones_texto'] = applications
@@ -461,7 +497,7 @@ def plan_fills(lines, plans, subgrupo_for):
         if after:
             after['field_sources'] = sources
             fills[line_id] = {'before': {field: line.get(field) for field in LINE_FILL}, 'after': after}
-    return fills
+    return fills, deferred
 
 
 def plan_sources(plans, by_number, existing):
@@ -543,6 +579,25 @@ def plan_cases(lines, multi, plans):
     return sorted(out, key=lambda group: group['keeper_sku'])
 
 
+def mark_pending(pending, plans, updates, new_refs):
+    """The numbers a name link would still tie to a SKU (pending_name_links) keep their estado and get no link: their Reference carries
+    detail['regla_5b'] = {'sku': the SKU its codigo names}, so S6's rule-5b review finds them. Returns how many are marked."""
+    where = {str(entry['id']): entry for entry in plans}
+    by_number = {str(spec['number']): spec for spec in new_refs}
+    marked = set()
+    for row in pending:
+        tag = {'sku': row['sku'], 'linea': row['line']}
+        entry = where.get(str(row['number'])) or {}
+        if entry.get('action') == 'existente' and entry['ref'] in updates:
+            updates[entry['ref']]['after']['detail'] = {**updates[entry['ref']]['after']['detail'], 'regla_5b': tag}
+            marked.add(str(row['number']))
+        elif str(row['number']) in by_number:
+            spec = by_number[str(row['number'])]
+            spec['detail'] = {**spec['detail'], 'regla_5b': tag}
+            marked.add(str(row['number']))
+    return len(marked)
+
+
 def pending_name_links(lines, numbers, plans):
     """[{line, sku, number, maker, code, placed}]: the name links link_oem_numbers would still add (a catalog line whose codigo names a
     library number it has no link to). They are not carriers: the number goes where the plan puts it (a line of its own in referencia
@@ -580,13 +635,18 @@ def write(result, log, run, user):
     from .. import references
     from ..matching_engine import part_row, save_case
     from ..models import Part, Reference, ReferenceSource
-    from ..technical_data import part_type_for
+    from ..brand_models import Brand, BrandAlias
+    from ..technical_data import grupo_nombre, part_type_for
+    from ..technical_models import Grupo
     now, counts = timezone.now(), Counter()
+    # What exists before: the grupos, brands and aliases this run creates are logged, so --rollback can take them away again.
+    existed = {'mall.Grupo': set(Grupo.objects.values_list('pk', flat=True)), 'mall.Brand': set(Brand.objects.values_list('pk', flat=True)),
+              'mall.BrandAlias': set(BrandAlias.objects.values_list('pk', flat=True))}
     # New subgrupos, with their templates.
     known = part_types()
     for category, name in result['part_types']:
         part_type = part_type_for(category, name)
-        known[(part_type.category, part_type.name)] = part_type.pk
+        known[(category, name)] = known[(grupo_nombre(part_type), part_type.name)] = part_type.pk
         log.append({**run, 'model': 'mall.PartType', 'id': part_type.pk, 'action': 'create', 'after': {'category': category, 'name': name}})
         counts['subgrupos_nuevos'] += 1
     # Lines in referencia, without mains: their library number is their main.
@@ -682,6 +742,12 @@ def write(result, log, run, user):
             for pk, ref in changed:
                 log.append({**run, 'model': model, 'id': pk, 'action': 'update', 'before': {'ref_id': None}, 'after': {'ref_id': ref}})
             counts[f'repuntadas:{table}'] = len(changed)
+    for model, rows in (('mall.Grupo', Grupo.objects.values_list('pk', 'nombre')), ('mall.Brand', Brand.objects.values_list('pk', 'nombre')),
+                        ('mall.BrandAlias', BrandAlias.objects.values_list('pk', 'alias'))):
+        for pk, name in rows:
+            if pk not in existed[model]:
+                log.append({**run, 'model': model, 'id': str(pk) if model == 'mall.Grupo' else pk, 'action': 'create', 'after': {'nombre': name}})
+                counts[f'creadas:{model}'] += 1
     # Cases.
     for group in result['cases']:
         rows = {str(part.pk): part_row(part) for part in Part._base_manager.filter(pk__in=group['lines']).prefetch_related('codes')}
@@ -737,14 +803,100 @@ def busy_references(ids):
     return busy
 
 
-def undo(log, run):
-    """Put back what the applies on this database did: {'restored', 'deleted', 'changed': [...]}."""
+def legacy_fill(log, run):
+    """What the code from S4 wrote after landing hangs from References only (ref_id; reference_id NULL), which the code before S4 and
+    the reverse of 0079 cannot take. Each such aftermarket code, tombstone or link takes reference_id = its Reference's uid when that is
+    an OEMReference id (a number the library had before S4); one whose number is younger than S4 has no OEM table row to hang from and
+    is deleted, its values in the manifest; a row whose old key another row already holds gives that row its citations and goes. Then
+    every row lets go of ref_id (the old code reads reference_id only; reversing 0079 drops the column). Runs before the References take
+    their old uids back. Returns {table: {'filled', 'deleted', 'merged', 'released'}}."""
     from django.apps import apps
-    from django.db.models import F
+    from ..oem_reference_models import citation_list
+    out = {}
+    for model, table in REPOINTED:
+        cls = apps.get_model(model)
+        counts = Counter()
+        keys = ('legacy_reference_id', 'brand', 'number') if table != 'mall_partoemlink' else ('part_id', 'legacy_reference_id', 'source')
+        rows = list(cls.objects.filter(legacy_reference__isnull=True, reference__isnull=False).order_by('pk')
+                    .values('pk', 'reference_id', 'reference__uid', *[field for field in cls_fields(cls) if field not in ('id', 'reference_id')]))
+        if rows:
+            from ..oem_reference_models import OEMReference
+            known = set(OEMReference.objects.filter(pk__in={row['reference__uid'] for row in rows}).values_list('pk', flat=True))
+            for row in rows:
+                uid = row['reference__uid']
+                values = recorded({key: value for key, value in row.items() if key != 'reference__uid'})
+                if uid not in known:
+                    cls.objects.filter(pk=row['pk']).delete()
+                    log.append({**run, 'model': model, 'id': row['pk'], 'action': 'delete', 'role': 'posterior', 'before': values})
+                    counts['deleted'] += 1
+                    continue
+                key = {field: (uid if field == 'legacy_reference_id' else row[field]) for field in keys}
+                other = cls.objects.filter(**key).exclude(pk=row['pk']).first()
+                if other is not None:
+                    if hasattr(other, 'citations'):
+                        merged = citation_list(other.citations, *(row.get('citations') or []))
+                        if merged != other.citations:
+                            log.append({**run, 'model': model, 'id': other.pk, 'action': 'update', 'role': 'posterior',
+                                        'before': {'citations': other.citations}, 'after': {'citations': merged}})
+                            cls.objects.filter(pk=other.pk).update(citations=merged)
+                    cls.objects.filter(pk=row['pk']).delete()
+                    log.append({**run, 'model': model, 'id': row['pk'], 'action': 'delete', 'role': 'posterior', 'before': values})
+                    counts['merged'] += 1
+                    continue
+                cls.objects.filter(pk=row['pk']).update(legacy_reference_id=uid)
+                log.append({**run, 'model': model, 'id': row['pk'], 'action': 'update', 'role': 'posterior',
+                            'before': {'legacy_reference_id': None}, 'after': {'legacy_reference_id': str(uid)}})
+                counts['filled'] += 1
+        released = cls.objects.filter(reference__isnull=False, legacy_reference__isnull=False)
+        for pk, ref in released.values_list('pk', 'reference_id'):
+            log.append({**run, 'model': model, 'id': pk, 'action': 'rollback', 'before': {'ref_id': ref}, 'after': {'ref_id': None}})
+        counts['released'] = released.update(reference=None)
+        out[table] = dict(counts)
+    return out
+
+
+def cls_fields(cls):
+    """The concrete column names (attnames) of a model."""
+    return [field.attname for field in cls._meta.concrete_fields]
+
+
+def precheck():
+    """What reversing 0079 needs, counted after a rollback: no two lines with one codigo (Lower(sku): 0079's reverse puts
+    unique_sku_case_insensitive back), no aftermarket code, tombstone or link without reference_id (it puts NOT NULL back), and the lines
+    in referencia the code made after landing (outside the manifest), which the code before S4 would take as codigos in use."""
+    from django.db import connection
+    out = {}
+    with connection.cursor() as cursor:
+        cursor.execute('SELECT count(*) FROM (SELECT lower(sku) FROM mall_part GROUP BY 1 HAVING count(*) > 1) AS dup')
+        out['codigos_repetidos'] = cursor.fetchone()[0]
+        for _, table in REPOINTED:
+            cursor.execute(f'SELECT count(*) FROM {table} WHERE reference_id IS NULL')
+            out[f'sin_reference_id:{table}'] = cursor.fetchone()[0]
+        cursor.execute("SELECT count(*) FROM mall_part WHERE estado = 'referencia'")
+        out['lineas_en_referencia'] = cursor.fetchone()[0]
+    return out
+
+
+def undo(log, run):
+    """Put back what the applies on this database did: {'restored', 'deleted', 'changed': [...], 'legacy', 'precheck'}.
+
+    A row it created goes only while it is still where the apply put it and nothing else points at it; anything else is listed in
+    'changed' and left, and a later --rollback tries it again (only what is actually deleted is logged as deleted):
+    - a created Reference: on the line the manifest names; the main of its own line in referencia (still in referencia, not merged) or
+      a number on a carrier that is not that line's main; without sources the apply did not make and without rows naming it;
+    - a created line: still in referencia, not merged, with no References and nothing pointing at it (a line a catalog line promoted,
+      or one a code absorbed, stays);
+    - a created subgrupo, grupo, brand or brand alias: when nothing uses it any more.
+    What the code from S4 wrote after landing is first given back to the OEM table (legacy_fill), and the counts a reverse of 0079
+    needs are reported (precheck)."""
+    from django.apps import apps
+    from django.db.models import F, Q
     from django.utils import timezone
     from .. import references
+    from ..brand_models import Brand, BrandAlias
     from ..matching_models import MatchingCase
     from ..models import Part, PartType, Reference, ReferenceSource
+    from ..technical_models import Grupo
     chains = applied_lines()
     by_model = defaultdict(dict)
     for (model, pk), chain in chains.items():
@@ -758,29 +910,22 @@ def undo(log, run):
         case.delete()
         deleted += 1
         log.append({**run, 'model': 'matching.MatchingCase', 'id': pk, 'action': 'delete', 'before': chain[-1]['after']})
-    for pk, chain in by_model.get('mall.ReferenceSource', {}).items():
-        if chain[0]['action'] == 'create':
-            if ReferenceSource.objects.filter(pk=pk).delete()[0]:
-                deleted += 1
-                log.append({**run, 'model': 'mall.ReferenceSource', 'id': int(pk), 'action': 'delete', 'before': chain[-1]['after']})
-        else:
-            first = chain[0]['before']['detail']
-            ReferenceSource.objects.filter(pk=pk).update(detail=first)
-            restored += 1
-            log.append({**run, 'model': 'mall.ReferenceSource', 'id': int(pk), 'action': 'rollback', 'after': {'detail': first}})
+    # The rows the apply re-pointed lose ref_id again (their reference_id never changed).
     for model, _ in REPOINTED:
-        rows = by_model.get(model, {})
+        rows = {pk: chain for pk, chain in by_model.get(model, {}).items() if chain[-1].get('role') != 'posterior'}
         if not rows:
             continue
         cls = apps.get_model(model)
         by_ref = defaultdict(list)
         for pk, chain in rows.items():
-            by_ref[chain[-1]['after']['ref_id']].append(int(pk))
+            if 'ref_id' in (chain[-1].get('after') or {}):
+                by_ref[chain[-1]['after']['ref_id']].append(int(pk))
         for ref, pks in by_ref.items():
             done = cls.objects.filter(pk__in=pks, reference_id=ref).update(reference=None)
             restored += done
-        for pk in rows:
-            log.append({**run, 'model': model, 'id': int(pk), 'action': 'rollback', 'after': {'ref_id': None}})
+            for pk in pks:
+                log.append({**run, 'model': model, 'id': pk, 'action': 'rollback', 'after': {'ref_id': None}})
+    legacy = legacy_fill(log, run)  # before the References take their old uids back
     refs = by_model.get('mall.Reference', {})
     for pk, chain in sorted(refs.items(), key=lambda item: int(item[0])):
         updates = [line for line in chain if line['action'] == 'update']
@@ -795,23 +940,70 @@ def undo(log, run):
         if now_values == recorded(first):
             continue
         if now_values != recorded(last):
-            changed.append(f'referencia {pk}: cambió después de aplicar')
+            changed.append(f'referencia {pk}: cambió después de aplicar, se deja')
             continue
         Reference._base_manager.filter(pk=int(pk)).update(**first, version=F('version') + 1, updated_at=now)
         restored += 1
         log.append({**run, 'model': 'mall.Reference', 'id': int(pk), 'action': 'rollback', 'before': now_values, 'after': recorded(first)})
-    created = [int(pk) for pk, chain in refs.items() if chain[0]['action'] == 'create']
-    if created:  # a created number replaced by another created one names it: both go
-        Reference._base_manager.filter(pk__in=created, reemplazado_por__in=created).update(reemplazado_por=None)
-        busy = busy_references(created)
-        for pk in sorted(busy):
-            changed.append(f'referencia {pk}: algo la nombra (equivalencias, vínculos, artículos o un reemplazo), se deja')
-        free = [pk for pk in created if pk not in busy]
-        ReferenceSource.objects.filter(reference_id__in=free).delete()
-        deleted += references.purge(free)
-        for pk in free:
-            log.append({**run, 'model': 'mall.Reference', 'id': pk, 'action': 'delete', 'before': refs[str(pk)][0]['after']})
+    # The References it created: which may go.
     lines = by_model.get('mall.Part', {})
+    made_lines = {pk for pk, chain in lines.items() if chain[0]['action'] == 'create'}
+    created = {int(pk): chain for pk, chain in refs.items() if chain[0]['action'] == 'create'}
+    run_sources = {int(pk): chain for pk, chain in by_model.get('mall.ReferenceSource', {}).items()}
+    made_sources = {pk for pk, chain in run_sources.items() if chain[0]['action'] == 'create'}
+    free, kept = [], set()
+    if created:
+        Reference._base_manager.filter(pk__in=list(created), reemplazado_por__in=list(created)).update(reemplazado_por=None)
+        now_rows = {row['pk']: row for row in Reference._base_manager.filter(pk__in=list(created)).values(
+            'pk', 'part_id', 'is_main', 'part__estado', 'part__merged_into_id')}
+        busy = busy_references(list(now_rows))
+        foreign = set(ReferenceSource.objects.filter(reference_id__in=list(now_rows)).exclude(pk__in=made_sources)
+                      .values_list('reference_id', flat=True))
+        for pk, chain in sorted(created.items()):
+            row = now_rows.get(pk)
+            if row is None:
+                continue
+            where, own = chain[0].get('line'), chain[0].get('line') in made_lines
+            if str(row['part_id']) != where:
+                why = 'ya no está en la línea donde la puso S4 (una línea la absorbió, o salió de la suya)'
+            elif own and (row['part__estado'] != 'referencia' or row['part__merged_into_id']):
+                why = 'su línea ya no está en referencia (se publicó o se unió a otra)'
+            elif own and chain[0].get('role') == 'principal' and not row['is_main']:
+                why = 'ya no es la principal de su línea'
+            elif not own and row['is_main']:
+                why = 'es la principal de su línea'
+            elif pk in busy:
+                why = 'algo la nombra (equivalencias, vínculos, artículos o un reemplazo)'
+            elif pk in foreign:
+                why = 'tiene fuentes que S4 no puso'
+            else:
+                free.append(pk)
+                continue
+            kept.add(pk)
+            changed.append(f'referencia {pk}: {why}, se deja')
+    # The sources it made go, except on a Reference it created that stays; the ones it merged get their detail back.
+    for pk, chain in run_sources.items():
+        if chain[0]['action'] == 'create':
+            if (chain[0].get('after') or {}).get('reference_id') in kept:
+                continue
+            if ReferenceSource.objects.filter(pk=pk).delete()[0]:
+                deleted += 1
+                log.append({**run, 'model': 'mall.ReferenceSource', 'id': pk, 'action': 'delete', 'before': chain[-1]['after']})
+        else:
+            first = chain[0]['before']['detail']
+            ReferenceSource.objects.filter(pk=pk).update(detail=first)
+            restored += 1
+            log.append({**run, 'model': 'mall.ReferenceSource', 'id': pk, 'action': 'rollback', 'after': {'detail': first}})
+    if free:
+        ReferenceSource.objects.filter(reference_id__in=free).filter(pk__in=made_sources).delete()
+        references.purge(free)
+        left = set(Reference._base_manager.filter(pk__in=free).values_list('pk', flat=True))
+        for pk in free:
+            if pk in left:
+                changed.append(f'referencia {pk}: otra la nombra como su reemplazo, se deja')
+                continue
+            deleted += 1
+            log.append({**run, 'model': 'mall.Reference', 'id': pk, 'action': 'delete', 'before': refs[str(pk)][0]['after']})
     for pk, chain in lines.items():
         updates = [line for line in chain if line['action'] == 'update']
         if chain[0]['action'] == 'create' or not updates:
@@ -825,28 +1017,67 @@ def undo(log, run):
         if recorded(row) == recorded(first):
             continue
         if recorded(row) != recorded(last):
-            changed.append(f'línea {pk}: cambió después de aplicar')
+            changed.append(f'línea {pk}: cambió después de aplicar, se deja')
             continue
         Part._base_manager.filter(pk=pk).update(**first, updated_at=now)
         restored += 1
         log.append({**run, 'model': 'mall.Part', 'id': pk, 'action': 'rollback', 'before': recorded(row), 'after': recorded(first)})
-    made = [uuid.UUID(pk) for pk, chain in lines.items() if chain[0]['action'] == 'create']
+    made = [uuid.UUID(pk) for pk in made_lines]
     if made:
+        state = {row['pk']: row for row in Part._base_manager.filter(pk__in=made).values('pk', 'estado', 'merged_into_id')}
         left = set(Reference._base_manager.filter(part_id__in=made).values_list('part_id', flat=True))
-        busy = busy_lines(made) | left
-        for pk in sorted(busy, key=str):
-            changed.append(f'línea {pk}: algo la nombra (sus referencias, artículos, imágenes u órdenes), se deja')
-        free = [pk for pk in made if pk not in busy]
-        for start in range(0, len(free), CHUNK):
-            deleted += Part._base_manager.filter(pk__in=free[start:start + CHUNK], estado='referencia').delete()[1].get('mall.Part', 0)
-        for pk in free:
-            log.append({**run, 'model': 'mall.Part', 'id': str(pk), 'action': 'delete', 'before': lines[str(pk)][0]['after']})
+        busy = busy_lines(made)
+        free_lines = []
+        for pk in made:
+            row = state.get(pk)
+            if row is None:
+                continue
+            if row['estado'] != 'referencia' or row['merged_into_id']:
+                changed.append(f"línea {pk}: ya no está en referencia ({row['estado']}), se deja")
+            elif pk in left:
+                changed.append(f'línea {pk}: le quedan referencias, se deja')
+            elif pk in busy:
+                changed.append(f'línea {pk}: algo la nombra (artículos, imágenes, órdenes o una unificación), se deja')
+            else:
+                free_lines.append(pk)
+        gone = set()
+        for start in range(0, len(free_lines), CHUNK):
+            chunk = free_lines[start:start + CHUNK]
+            Part._base_manager.filter(pk__in=chunk, estado='referencia', merged_into__isnull=True).delete()
+        gone = set(free_lines) - set(Part._base_manager.filter(pk__in=free_lines).values_list('pk', flat=True))
+        for pk in free_lines:
+            if pk in gone:
+                deleted += 1
+                log.append({**run, 'model': 'mall.Part', 'id': str(pk), 'action': 'delete', 'before': lines[str(pk)][0]['after']})
     for pk, chain in by_model.get('mall.PartType', {}).items():
         if not Part._base_manager.filter(part_type_id=pk).exists():
             PartType.objects.filter(pk=pk).delete()  # its empty template goes with it
             deleted += 1
             log.append({**run, 'model': 'mall.PartType', 'id': pk, 'action': 'delete', 'before': chain[0]['after']})
-    return {'restored': restored, 'deleted': deleted, 'changed': changed}
+        else:
+            changed.append(f'subgrupo {pk}: hay líneas con él, se deja')
+    for pk, chain in by_model.get('mall.Grupo', {}).items():
+        if not PartType.objects.filter(grupo_id=pk).exists() and Grupo.objects.filter(pk=pk).delete()[0]:
+            deleted += 1
+            log.append({**run, 'model': 'mall.Grupo', 'id': pk, 'action': 'delete', 'before': chain[0]['after']})
+    for pk, chain in by_model.get('mall.BrandAlias', {}).items():
+        alias = BrandAlias.objects.filter(pk=int(pk)).first()
+        if alias is not None and not Reference._base_manager.filter(brand=alias.alias).exists():
+            alias.delete()
+            deleted += 1
+            log.append({**run, 'model': 'mall.BrandAlias', 'id': int(pk), 'action': 'delete', 'before': chain[0]['after']})
+    for pk, chain in by_model.get('mall.Brand', {}).items():
+        brand = Brand.objects.filter(pk=int(pk)).first()
+        if brand is None:
+            continue
+        if (Reference._base_manager.filter(Q(brand=brand.nombre) | Q(brand__in=brand.aliases.values('alias'))).exists()
+                or brand.aliases.exists() or brand.miembros.exists()):
+            changed.append(f'marca {brand.nombre}: hay referencias o alias con ella, se deja')
+            continue
+        brand.delete()
+        deleted += 1
+        log.append({**run, 'model': 'mall.Brand', 'id': int(pk), 'action': 'delete', 'before': chain[0]['after']})
+    return {'restored': restored, 'deleted': deleted, 'changed': changed, 'legacy': legacy, 'precheck': precheck()}
 
 
 # --- run ------------------------------------------------------------------------------------------------------------------------------
@@ -874,7 +1105,9 @@ def print_summary(stdout, mode, result, writes=None):
                        ('existente_principal', '  ya en una línea: su principal'), ('varios_existente', '  2+ líneas: la que ya lo tiene'),
                        ('varios_codigo_propio', '  2+ líneas: el código propio'), ('varios_regla_3g', '  2+ líneas: regla 3g'),
                        ('referencias_actualizadas', 'referencias existentes actualizadas'), ('reemplazos', 'reemplazos'),
-                       ('lineas_completadas', 'líneas con subgrupo o aplicaciones completados'), ('fuentes_nuevas', 'fuentes nuevas'),
+                       ('lineas_completadas', 'líneas con subgrupo o aplicaciones completados'),
+                       ('subgrupos_aplazados', 'subgrupos no completados (la línea está en un caso abierto o descartado)'),
+                       ('nombre_pendiente_marcados', 'números marcados para la regla 5b (S6)'), ('fuentes_nuevas', 'fuentes nuevas'),
                        ('fuentes_unidas', 'fuentes unidas a una existente'), ('equivalencias', 'equivalencias por re-apuntar'),
                        ('equivalencias_retiradas', 'equivalencias retiradas por re-apuntar'), ('vinculos', 'vínculos por re-apuntar'),
                        ('subgrupos_nuevos', 'subgrupos nuevos'), ('casos', 'casos shared_oem_number nuevos')):
@@ -963,6 +1196,18 @@ def run(*, apply=False, rollback=False, username=None, report_path=None, stdout=
                          f"{len(result['changed'])} cambiadas o nombradas (se dejan)\n")
             for line in result['changed'][:40]:
                 stdout.write(f'  {line}\n')
+            for table, counts in result['legacy'].items():
+                if any(counts.values()):
+                    stdout.write(f"  {table}: escritas después de aplicar · {counts.get('filled', 0)} vuelven a su número de la tabla OEM · "
+                                 f"{counts.get('merged', 0)} unidas a otra · {counts.get('deleted', 0)} borradas (número posterior a S4, en el "
+                                 f"manifiesto) · {counts.get('released', 0)} sueltan ref_id\n")
+            check = result['precheck']
+            missing = sum(value for key, value in check.items() if key.startswith('sin_reference_id:'))
+            stdout.write(f"  Para revertir 0079: {check['codigos_repetidos']} códigos repetidos entre líneas · {missing} filas sin reference_id · "
+                         f"{check['lineas_en_referencia']} líneas en referencia\n")
+            if check['codigos_repetidos'] or missing:
+                stdout.write('  0079 no se puede revertir así: resuelve esas filas primero (las líneas en referencia que el código creó después '
+                             'de aplicar, o rechaza las repetidas).\n')
         if result.get('manifest'):
             stdout.write(f"Manifiesto: {result['manifest']}\n")
         return result

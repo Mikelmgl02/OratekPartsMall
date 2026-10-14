@@ -4,7 +4,7 @@ compact numbers, the status rule, the source kinds, the subgrupo a library part 
 number.
 
 Until S8 the Biblioteca's JSON keeps the OEM table's legacy values: a number's id is its Reference's uid (the OEMReference id for the
-numbers the library had before S4), its code is its clave (the compact number), status is verified, declared, inferred or disputed
+numbers the library had before S4), its code is the compact number (compact(code): a short number's clave is its printed spelling), status is verified, declared, inferred or disputed
 (Reference estado verificado, declarado, inferido, disputa) and a source's kind is one of the 8 old kinds (ReferenceSource keeps it in
 detail.legacy_kind; a source written before S4 from a code's reference_source text maps back by its kind). LibraryNumber and
 LibrarySource wrap the rows with those names. Nothing here renames a line, writes a Reference or calls an AI provider: the writers are
@@ -74,9 +74,27 @@ def fold(text):
 SUBGRUPO_BY_FOLD = {fold(text): pair for text, pair in LIBRARY_SUBGRUPOS.items()}
 
 
-def subgrupo_for(part_type):
-    """(grupo, subgrupo) a library part type maps to (A6), or None."""
-    return SUBGRUPO_BY_FOLD.get(fold(part_type))
+def subgrupo_for(part_type, subgrupos=None):
+    """(grupo, subgrupo) a library part type maps to: A6 (OD9), else the subgrupo with that name (Editar celdas offers the subgrupos'
+    names, mall.oem_reference_views.part_types) when a single grupo has one; None otherwise. subgrupos: {fold(name): [(grupo, name)]}
+    as subgrupo_names() reads it (pass {} for A6 alone: S4's backfill maps the library by A6 only), read here when None."""
+    key = fold(part_type)
+    if not key:
+        return None
+    if key in SUBGRUPO_BY_FOLD:
+        return SUBGRUPO_BY_FOLD[key]
+    found = (subgrupo_names() if subgrupos is None else subgrupos).get(key) or []
+    return found[0] if len(found) == 1 else None
+
+
+def subgrupo_names():
+    """{fold(name): [(grupo, name)]} of the subgrupos there are, the grupo by its FK (S5)."""
+    from .models import PartType
+    out = defaultdict(list)
+    for grupo, name in PartType.objects.values_list('grupo__nombre', 'name').order_by('grupo__nombre', 'name'):
+        if grupo and name:
+            out[fold(name)].append((grupo, name))
+    return dict(out)
 
 
 def tables_ready():
@@ -250,8 +268,9 @@ class LibraryNumber:
         detail = ref.detail or {}
         self.ref = ref
         self.pk = self.id = ref.uid
-        self.manufacturer, self.code = ref.brand, ref.clave
-        self.printed_forms = [form for form in [ref.code, *(ref.printed_forms or [])] if form and form != ref.clave]
+        # The compact number, as the OEM table stored it (a short number's clave is its printed spelling: OPEL 5 69 036 is 569036).
+        self.manufacturer, self.code = ref.brand, compact(ref.code)
+        self.printed_forms = list(dict.fromkeys(form for form in [ref.code, *(ref.printed_forms or [])] if form and form != self.code))
         self.system, self.family = detail.get('system', ''), detail.get('family', '')
         self.part_type, self.description, self.applications = detail.get('part_type', ''), detail.get('description', ''), detail.get('applications', '')
         self.status = LEGACY_STATUS.get(ref.estado, 'inferred')

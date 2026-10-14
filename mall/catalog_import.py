@@ -476,6 +476,13 @@ def save_plan(groups, user=None):
     bind_part_types(new_parts + changed_parts + [part for part, _ in promoted])
     # ACTIVO=NO retires a line and ACTIVO=SI publishes it: the lines' writers keep estado in step with active.
     bulk_create_lines(new_parts, batch_size=500)
+    # A new SKU whose codigo a library number's line in referencia holds under another spelling (1610039315 for 16100-39315; the same
+    # spelling promoted that line above) gets its main in disputa from the bulk path: it absorbs that line instead (rule 3f, S4).
+    keyed = {references.clave(part.sku): part for part in new_parts}
+    for start in range(0, len(keyed), 2000):
+        chunk = sorted(keyed)[start:start + 2000]
+        for key in set(Reference.objects.filter(part__estado='referencia', clave__in=chunk).values_list('clave', flat=True)):
+            references.absorb_into_main(keyed[key], actor=actor)
     bulk_update_lines(changed_parts, ['name', 'description', 'active', 'category', 'subcategory', 'part_type'], batch_size=500)
     promote_fields = set()
     for part, group in promoted:  # a library number's line in referencia becomes the file's SKU: published (or retired with ACTIVO=NO)

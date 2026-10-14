@@ -51,16 +51,21 @@ def library():
     return Reference.objects.filter(references.library_q())
 
 
+def same_number(part):
+    """Q for the library numbers this SKU's code is: the same compact number (a short one's clave is its printed spelling)."""
+    return references.compact_q([compact(part.sku)])
+
+
 def holder(part, make):
     """Another catalog line that already holds this make's number: the two are the same part (Agrupar SKU). A line in referencia is
     the number's own line, which Marcar absorbs."""
-    return (library().filter(brand=make, clave=compact(part.sku)).exclude(part=part).exclude(part__estado='referencia')
+    return (library().filter(same_number(part), brand=make).exclude(part=part).exclude(part__estado='referencia')
             .select_related('part').first())
 
 
 def listed(part):
     """The numbers of the OEM list with this SKU's code (LibraryNumbers), in dispute ones left out."""
-    return [LibraryNumber(ref) for ref in library().filter(clave=compact(part.sku)).exclude(estado='disputa').select_related('reemplazado_por')
+    return [LibraryNumber(ref) for ref in library().filter(same_number(part)).exclude(estado='disputa').select_related('reemplazado_por')
             .order_by('brand')]
 
 
@@ -168,7 +173,7 @@ def plan_rows(ids, mode='mark'):
             warnings.append(f'El código termina en un sufijo de marca o proveedor ({part.sku[len(supplier_base(part.sku)) + 1:]}): '
                             'confirma que es el número OEM tal cual.')
         best = preferred(items, makes)
-        disputed = [] if items else list(library().filter(clave=compact(part.sku), estado='disputa').values_list('brand', flat=True))
+        disputed = [] if items else list(library().filter(same_number(part), estado='disputa').values_list('brand', flat=True))
         if disputed:
             warnings.append(f'{" / ".join(disputed)} {compact(part.sku)} está en disputa en la Biblioteca OEM: resuelve la disputa antes de marcarlo.')
         if mode == 'mark':
@@ -180,7 +185,7 @@ def plan_rows(ids, mode='mark'):
                                 'elige el del SKU.')
             suggested = best.manufacturer if best else ''
         else:
-            taken = set(library().filter(clave=compact(part.sku)).values_list('brand', flat=True))
+            taken = set(library().filter(same_number(part)).values_list('brand', flat=True))
             free = [make for make in makes if manufacturer_name(make) not in taken]
             suggested = free[0] if free else ''  # a make the list already has is refused by create_oem: Marcar ties to it
             if len(makes) > 1:
@@ -266,7 +271,7 @@ def mark_oem(*, actor, rows):
     for row in rows:
         part, make = parts.get(row['id']), manufacturer_name(row['manufacturer'])
         problem = checked(part, make)
-        if not problem and not library().filter(brand=make, clave=compact(part.sku)).exclude(estado='disputa').exists():
+        if not problem and not library().filter(same_number(part), brand=make).exclude(estado='disputa').exists():
             problem = f'{make} {compact(part.sku)} no está en la lista OEM: usa «Crear OEM desde SKU».'
         problem = problem or tie(part, make, citation(MARKED, actor, row.get('citation')), actor)
         if problem:
@@ -286,7 +291,7 @@ def create_oem(*, actor, rows):
     for row in rows:
         part, make = parts.get(row['id']), manufacturer_name(row['manufacturer'])
         problem = checked(part, make)
-        existing = None if problem else library().filter(brand=make, clave=compact(part.sku)).first()
+        existing = None if problem else library().filter(same_number(part), brand=make).first()
         if existing:
             problem = (f'{make} {compact(part.sku)} está en disputa en la Biblioteca OEM: resuelve la disputa primero.' if existing.estado == 'disputa'
                        else f'{make} {compact(part.sku)} ya está en la lista OEM: usa «Marcar como OEM».')
