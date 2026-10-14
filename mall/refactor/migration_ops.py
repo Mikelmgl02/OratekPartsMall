@@ -1,13 +1,15 @@
 """Operations the refactor's migrations use. Only Django is imported here, so a migration that names them never imports app code.
 
-LockTimeout goes first in every expand, tighten and contract migration of the refactor:
+Every expand, tighten and contract migration of the refactor wraps its operations in with_lock_timeout, which puts a LockTimeout at
+both ends: Django reverses a migration by running its operations last to first, so the closing one is what covers the DDL of a
+rollback (rollback rung 3).
 
-    operations = [LockTimeout('5s'), migrations.AddField(...), ...]
+    operations = with_lock_timeout([migrations.AddField(...), ...])
 
 Its DDL then waits at most that long for a table lock instead of queueing every request on that table behind a long transaction
 (a matching pass, an import batch). When it times out (`canceling statement due to lock timeout`), the migration's transaction rolls
-back whole: run migrate again. SET LOCAL ends with the migration's transaction; a non-atomic migration sets it for the rest of the
-migrate session instead."""
+back whole and python -m mall.refactor.migrate_retry runs it again. SET LOCAL ends with the migration's transaction; a non-atomic
+migration sets it for the rest of the migrate session instead."""
 import re
 
 from django.db.migrations.operations.base import Operation
@@ -46,3 +48,8 @@ class LockTimeout(Operation):
     @property
     def migration_name_fragment(self):
         return 'lock_timeout'
+
+
+def with_lock_timeout(operations, timeout='5s'):
+    """The migration's operations between two LockTimeouts: the first covers applying it, the last unapplying it."""
+    return [LockTimeout(timeout), *operations, LockTimeout(timeout)]

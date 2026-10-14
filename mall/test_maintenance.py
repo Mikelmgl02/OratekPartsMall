@@ -10,10 +10,12 @@ import uuid
 from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
+import psycopg
 from cryptography.fernet import Fernet
-from django.db import connection
+from django.db import OperationalError, connection, migrations, transaction
+from django.db.migrations.state import ProjectState
 from django.db.migrations.writer import OperationWriter
 from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import URLPattern, URLResolver, get_resolver
@@ -35,8 +37,9 @@ from .matching_runner import STOP, WorkerStopping
 from .matching_worker import process_queue
 from .models import Account, CatalogImportJob, DealEvent, Membership, Part, Role, SupplierItem, User, WishlistItem
 from .pricing_models import SupplierPricingSettings
+from .refactor import migrate_retry
 from .refactor.guard import live_database, refusal
-from .refactor.migration_ops import LockTimeout
+from .refactor.migration_ops import LockTimeout, with_lock_timeout
 from .request_models import StockReservation
 from .supplier_import_models import SupplierInventoryImportJob
 from .test_apiag_sync import FakeApiag
@@ -489,6 +492,30 @@ class LockTimeoutTests(TestCase):
                 cursor.execute('SHOW lock_timeout')
                 self.assertEqual(cursor.fetchone()[0], '5s')
 
+    def migration_sql(self, operations):
+        """The SQL of a migration with these operations, applied and then unapplied, without the comment lines."""
+        migration = type('Migration', (migrations.Migration,), {'operations': operations})('0099_lock_timeout_check', 'mall')
+        sql = []
+        for run in (migration.apply, migration.unapply):
+            with connection.schema_editor(collect_sql=True, atomic=True) as editor:
+                run(ProjectState(), editor, collect_sql=True)
+            sql.append([line for line in editor.collected_sql if not line.startswith('--')])
+        return sql
+
+    def test_with_lock_timeout_covers_applying_and_unapplying_a_migration(self):
+        if connection.vendor != 'postgresql':
+            self.skipTest('lock_timeout is a PostgreSQL setting.')
+        ddl = migrations.RunSQL('ALTER TABLE t ADD COLUMN c int', 'ALTER TABLE t DROP COLUMN c')
+        set_timeout = "SET LOCAL lock_timeout = '5s';"
+        # Django unapplies last to first: a LockTimeout only at the start would come after the reverse DDL.
+        self.assertEqual(self.migration_sql([LockTimeout('5s'), ddl]),
+                         [[set_timeout, 'ALTER TABLE t ADD COLUMN c int;'], ['ALTER TABLE t DROP COLUMN c;', set_timeout]])
+        applied, unapplied = self.migration_sql(with_lock_timeout([ddl]))
+        self.assertEqual(applied[0], set_timeout)
+        self.assertEqual(unapplied[0], set_timeout)
+        self.assertEqual((applied[1], unapplied[1]), ('ALTER TABLE t ADD COLUMN c int;', 'ALTER TABLE t DROP COLUMN c;'))
+        self.assertEqual([op.timeout for op in with_lock_timeout([ddl], '2s') if isinstance(op, LockTimeout)], ['2s', '2s'])
+
     def test_only_a_postgresql_duration_is_accepted_and_migrations_can_name_it(self):
         for value in ['5s', '500ms', '1min', 2000]:
             LockTimeout(value)
@@ -526,3 +553,55 @@ class ConnectionNameQueryTests(TestCase):
         with connection.cursor() as cursor:
             cursor.execute("SELECT current_setting('application_name')")
             self.assertEqual(cursor.fetchone()[0], connection.settings_dict['OPTIONS']['application_name'])
+
+
+class MigrateRetryTests(TestCase):
+    """python -m mall.refactor.migrate_retry: a migration that gave up waiting for a table lock is run again; nothing else is."""
+    KEY = 724631190  # an advisory lock of this test only (advisory locks are per database: the test database's own)
+
+    def lock_error(self):
+        error = OperationalError('canceling statement due to lock timeout')
+        error.__cause__ = psycopg.errors.LockNotAvailable('canceling statement due to lock timeout')
+        return error
+
+    def test_a_real_lock_timeout_is_recognised_through_djangos_wrapper(self):
+        if connection.vendor != 'postgresql':
+            self.skipTest('lock_timeout is a PostgreSQL setting.')
+        other = connection.get_new_connection(connection.get_connection_params())  # another session holds the lock
+        try:
+            other.autocommit = True
+            other.execute('SELECT pg_advisory_lock(%s)', [self.KEY])
+            with self.assertRaises(OperationalError) as caught, transaction.atomic(), connection.cursor() as cursor:
+                cursor.execute("SET LOCAL lock_timeout = '50ms'")
+                cursor.execute('SELECT pg_advisory_lock(%s)', [self.KEY])
+        finally:
+            other.close()
+        self.assertTrue(migrate_retry.lock_timeout(caught.exception))
+        self.assertFalse(migrate_retry.lock_timeout(OperationalError('could not connect to server')))
+        self.assertFalse(migrate_retry.lock_timeout(None))
+
+    def test_it_runs_migrate_again_after_a_lock_timeout_only(self):
+        sleeps, err = [], io.StringIO()
+        with patch('django.core.management.call_command', side_effect=[self.lock_error(), self.lock_error(), None]) as migrate, \
+                patch('django.db.connections.close_all') as fresh:
+            self.assertEqual(migrate_retry.migrate('mall', '0070', wait=3, sleep=sleeps.append, stderr=err, stdout=io.StringIO()), 3)
+        self.assertEqual([call.args for call in migrate.call_args_list], [('migrate', 'mall', '0070')] * 3)
+        self.assertEqual((sleeps, fresh.call_count), ([3, 3], 2))  # each attempt on a fresh session
+        self.assertIn('Intento 2 de 5: una tabla siguió bloqueada', err.getvalue())
+        with patch('django.core.management.call_command', side_effect=[self.lock_error()] * 2) as migrate, \
+                patch('django.db.connections.close_all'), self.assertRaises(OperationalError):
+            migrate_retry.migrate('mall', attempts=2, sleep=Mock(), stderr=io.StringIO())
+        self.assertEqual(migrate.call_count, 2)  # the last failure is raised
+        with patch('django.core.management.call_command', side_effect=OperationalError('relation "t" already exists')) as migrate, \
+                self.assertRaises(OperationalError):
+            migrate_retry.migrate(sleep=Mock(side_effect=AssertionError('no retry')), stderr=io.StringIO())
+        migrate.assert_called_once()
+
+    def test_a_plan_with_a_non_atomic_migration_gets_one_attempt(self):
+        self.assertEqual(migrate_retry.non_atomic('mall'), [])  # all applied: nothing planned
+        err = io.StringIO()
+        with patch('mall.refactor.migrate_retry.non_atomic', return_value=['mall.0071_index']), \
+                patch('django.core.management.call_command', side_effect=self.lock_error()) as migrate, self.assertRaises(OperationalError):
+            migrate_retry.migrate('mall', sleep=Mock(side_effect=AssertionError('no retry')), stderr=err)
+        migrate.assert_called_once()
+        self.assertIn('No atómicas: mall.0071_index', err.getvalue())
