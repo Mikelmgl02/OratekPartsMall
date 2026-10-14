@@ -15,6 +15,7 @@ from .catalog_classification import ClassificationConflict, provider_configurati
 from .management import IsSuperuser, UppercaseCharField
 from .sku_proposal_models import SkuProposal
 from .sku_review_models import SkuReviewRun, SkuReviewVerdict
+from .technical_data import grupo_nombre
 
 PAGE = 50
 RECENT_RUNS = 10
@@ -51,7 +52,7 @@ def verdict_json(verdict):
         'current': {'version': proposal.version, 'status': proposal.status, 'status_label': proposal.get_status_display(), 'sku': proposal.sku,
                     'description': proposal.description, 'brand': proposal.brand, 'internal_code': proposal.internal_code,
                     'oem': {'code': proposal.oem_code, 'brand': proposal.oem_brand} if proposal.oem_code else None,
-                    'part_type': {'id': str(part_type.pk), 'category': part_type.category, 'name': part_type.name} if part_type else None,
+                    'part_type': {'id': str(part_type.pk), 'category': grupo_nombre(part_type), 'name': part_type.name} if part_type else None,
                     'field_sources': proposal.field_sources, 'part': {'id': str(proposal.part_id), 'sku': proposal.part.sku} if proposal.part_id else None},
         'supplier_description': next(iter(verdict.evidence.get('descripciones_de_proveedores') or []), ''),
         'stock': verdict.evidence.get('existencias', 0), 'signals': verdict.evidence.get('senales', []),
@@ -60,7 +61,7 @@ def verdict_json(verdict):
 
 def verdicts(run):
     latest = sku_review.given().filter(proposal=OuterRef('proposal')).order_by('-created_at', '-pk').values('pk')[:1]
-    return run.verdicts.select_related('proposal__part_type', 'proposal__part', 'link_part').annotate(latest_id=Subquery(latest))
+    return run.verdicts.select_related('proposal__part_type__grupo', 'proposal__part', 'link_part').annotate(latest_id=Subquery(latest))
 
 
 def counts(rows):

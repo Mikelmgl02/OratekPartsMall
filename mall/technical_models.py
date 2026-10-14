@@ -1,14 +1,14 @@
 """Subgrupo-owned technical templates and reusable vehicle applications."""
 import uuid
 
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Q
 from django.db.models.functions import Lower
 
 
 class Grupo(models.Model):
     """A grupo of the catalog's taxonomy (FRENOS, FILTROS...); its subgrupos are the PartTypes (inventory refactor S5). One per name,
-    ignoring case: mall.technical_data.grupo_for finds or creates it."""
+    ignoring case: mall.technical_data.grupo_for finds or creates it. Renamed through save(), which renames the text that follows it."""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     nombre = models.CharField(max_length=120, verbose_name='grupo')
 
@@ -20,6 +20,17 @@ class Grupo(models.Model):
 
     def __str__(self):
         return self.nombre
+
+    def save(self, *args, **kwargs):
+        """The nombre is normalized, and a rename reaches the text that follows the grupo until S10, in the same transaction: its subgrupos'
+        category and their lines' grupo text (mall.technical_data.project_grupo). Otherwise a line's next save would look its subgrupo up
+        by the old text and bring the old grupo back. (A queryset update skips this; rename a grupo through save().)"""
+        from .technical_data import normalized_label, project_grupo
+        self.nombre = normalized_label(self.nombre)
+        using = kwargs.get('using') or self._state.db or 'default'
+        with transaction.atomic(using=using):
+            super().save(*args, **kwargs)
+            project_grupo(self, using=using)
 
 
 class PartType(models.Model):

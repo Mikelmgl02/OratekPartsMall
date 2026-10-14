@@ -16,6 +16,7 @@ from .lines import storefront_q
 from .list_ordering import StableOrdering
 from .management import IsSuperuser
 from .sku_proposal_models import SkuProposal, SkuProposalItem
+from .technical_data import grupo_nombre
 
 PREVIEW_ITEMS = 5
 MAX_BULK = 100
@@ -49,7 +50,7 @@ def proposal_json(proposal, *, all_items=False):
         'id': str(proposal.pk), 'status': proposal.status, 'status_label': proposal.get_status_display(), 'version': proposal.version,
         'sku': proposal.sku, 'description': proposal.description, 'brand': proposal.brand,
         'oem': {'code': proposal.oem_code, 'brand': proposal.oem_brand} if proposal.oem_code else None,
-        'part_type': {'id': str(part_type.pk), 'category': part_type.category, 'name': part_type.name} if part_type else None,
+        'part_type': {'id': str(part_type.pk), 'category': grupo_nombre(part_type), 'name': part_type.name} if part_type else None,
         'references': proposal.references, 'field_sources': proposal.field_sources, 'internal_code': proposal.internal_code,
         'ai_review': ai_review(proposal) if proposal.status == 'pending' else None,
         'item_count': len(rows), 'supplier_count': len({row.item.supplier_id for row in rows}),
@@ -76,7 +77,7 @@ def proposals():
     own_latest = given().filter(proposal=OuterRef('proposal_id')).order_by('-created_at', '-pk').values('pk')[:1]
     newest = Prefetch('review_verdicts', to_attr='latest_verdicts',
                       queryset=SkuReviewVerdict.objects.filter(pk=Subquery(own_latest)).select_related('link_part'))
-    return (SkuProposal.objects.select_related('part_type', 'part', 'decided_by')
+    return (SkuProposal.objects.select_related('part_type__grupo', 'part', 'decided_by')
             .prefetch_related('items__item__supplier', newest)
             .annotate(item_total=Count('items', distinct=True),
                       stock_total=Coalesce(Sum(Greatest(F('items__item__reported_quantity') - F('items__item__reserved_quantity'), Value(0))),

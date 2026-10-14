@@ -93,8 +93,9 @@ class CatalogFilterTests(APITestCase):
         self.assertEqual(self.client.get(self.url, {'category': 'TEXTO VIEJO'}).data['count'], 0)
         grupo = disc.part_type.grupo
         grupo.nombre = 'FRENADO'
-        grupo.save()
+        grupo.save()  # a rename renames the text too (Grupo.save), the out-of-step text above included
         self.assertEqual(self.client.get(self.url, {'category': 'FRENADO'}).data['count'], 1)
+        self.assertEqual(Part.objects.filter(pk=disc.pk).values_list('category', 'subcategory').get(), ('FRENADO', 'DISCOS'))
 
     def test_facets_exclude_inactive_merged_and_ineligible_supplier_records(self):
         part = self.part('CANONICAL')

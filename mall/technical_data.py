@@ -45,6 +45,16 @@ def grupo_nombre(part_type):
     return part_type.grupo.nombre if part_type.grupo_id else part_type.category
 
 
+def project_grupo(grupo, using='default'):
+    """After a grupo was saved (Grupo.save, a rename): its subgrupos' text takes its nombre, and so does their lines' grupo text
+    (mall.lines.project_subgrupos). Returns how many lines changed; nothing changes when the text is already in step."""
+    from .lines import project_subgrupos
+    from .models import PartType
+    subgrupos = PartType.objects.using(using).filter(grupo=grupo)
+    subgrupos.exclude(category=grupo.nombre).update(category=grupo.nombre)
+    return project_subgrupos(subgrupos.select_related('grupo'))
+
+
 def pair_grupo(part_type, using='default'):
     """Put a subgrupo's grupo and its text in step before it is saved (PartType.save). The FK wins, unless only the text changed since
     the subgrupo was loaded (the code before S5 moves a subgrupo by its text) or there is no grupo yet: then the text names the grupo,

@@ -1,8 +1,8 @@
 """Guards the inventory refactor keeps on (plan §1.4): the models equal the migrations, migrations import no app code, the test
 settings keep the outside services off, guard the network and never drop a real database, (S1) every Part.objects filter on active,
 merged_into or the SKU goes through mall.lines, and (S2a) nothing deletes a Reference outside mall.references, no new code names
-PartCode or reaches codes through a codes__ join outside the reviewed allowlist, and no bulk write of lines or References happens
-outside their choke points (mall.lines, mall.references)."""
+PartCode or reaches codes through a codes__ join outside the reviewed allowlist, no bulk write of lines or References happens
+outside their choke points (mall.lines, mall.references), and (S5) a subgrupo's grupo is read by its FK, not by its text."""
 import ast
 import io
 import re
@@ -330,3 +330,46 @@ PartImage.objects.bulk_update(images, ['position'])
         self.assertEqual(reference_deletes(source), [3, 4, 5, 6, 7])
         self.assertEqual(legacy_uses(source), 5)
         self.assertEqual(bulk_writes(source), [12, 13])
+
+
+# --- S5: a subgrupo's grupo is read by its FK ------------------------------------------------------------------------------------------
+
+# PartType.category is text that follows the grupo until S10 drops it; mall.technical_data (grupo_nombre, pair_grupo) reads it on purpose.
+# Other code reads mall.technical_data.grupo_nombre(part_type) or joins part_type__grupo__nombre.
+GRUPO_TEXT_ALLOWED = {Path('technical_data.py')}
+
+
+def grupo_text_reads(source):
+    """[line] of each part_type.category attribute (on any chain ending in part_type) or part_type__category lookup (a keyword or a
+    string)."""
+    tree = ast.parse(source)
+    skip, rows = docstrings(tree), []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr == 'category' and chain_names(node.value)[:1] == ['part_type']:
+            rows.append(node.lineno)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and 'part_type__category' in node.value and id(node) not in skip:
+            rows.append(node.lineno)
+        elif isinstance(node, ast.keyword) and node.arg and 'part_type__category' in node.arg:
+            rows.append(node.lineno)
+    return sorted(rows)
+
+
+class GrupoGuardTests(SimpleTestCase):
+    def test_a_subgrupos_grupo_is_read_by_its_fk(self):
+        """PartType.category leaves in S10 and a grupo's rename reaches it only through Grupo.save: a reader takes the grupo by the FK
+        (mall.technical_data.grupo_nombre, part_type__grupo__nombre)."""
+        found = {f'{relative}:{line}' for relative, path in app_modules() if relative not in GRUPO_TEXT_ALLOWED
+                 for line in grupo_text_reads(path.read_text(encoding='utf-8'))}
+        self.assertEqual(found, set(), 'Lecturas del grupo de un subgrupo por su texto (usa technical_data.grupo_nombre o part_type__grupo__nombre).')
+
+    def test_the_scan_finds_each_form(self):
+        source = """
+part.part_type.category
+part_type.category
+Part.objects.filter(part_type__category='FRENOS')
+values_list('part_type__category', flat=True)
+part.category
+grupo_nombre(part.part_type)
+values_list('part_type__grupo__nombre', flat=True)
+"""
+        self.assertEqual(grupo_text_reads(source), [2, 3, 4, 5])

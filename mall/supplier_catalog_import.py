@@ -550,7 +550,7 @@ class CatalogImport:
     def sheet(self, part, item, apply, target=None):
         """Classify an unclassified SKU into target (the subgrupo its description names, else the item's), add missing template fields
         and store the absent values. A SKU already in any subgrupo the item's product type accepts keeps it."""
-        from .technical_data import bind_part_types
+        from .technical_data import bind_part_types, grupo_nombre
         from .technical_models import PartSpecification, TechnicalField, TechnicalTemplate
         from .technical_api import specification
         rc, target = self.report['counts'], target or TAXONOMY.get(item['product_type'])
@@ -558,7 +558,7 @@ class CatalogImport:
         if not specs or not target:
             return
         if part.part_type_id:
-            if (fold(part.part_type.category), fold(part.part_type.name)) not in compatible(item['product_type']):
+            if (fold(grupo_nombre(part.part_type)), fold(part.part_type.name)) not in compatible(item['product_type']):
                 rc['specs_other_subgroup'] += 1
                 return
         elif part.category or part.subcategory:

@@ -63,6 +63,26 @@ class GrupoTests(TestCase):
         loaded.save(update_fields=['grupo'])  # the text follows even on a partial save
         self.assertEqual(PartType.objects.filter(pk=pads.pk).values_list('category', flat=True).get(), 'FRENOS')
 
+    def test_renaming_a_grupo_renames_the_text_that_follows_it(self):
+        """Until S10 a line's next save looks its subgrupo up by its text: a rename that left the text behind would bring the old grupo
+        back and move the line there."""
+        line = make_line('S5-RENAME', category='FRENOS', subcategory='DISCOS')
+        pads = part_type_for('FRENOS', 'PASTILLAS')
+        other = make_line('S5-OTHER', category='FILTROS', subcategory='ACEITE')
+        grupo = Grupo.objects.get(nombre='FRENOS')
+        grupo.nombre = ' frenado '
+        grupo.save()
+        self.assertEqual(grupo.nombre, 'FRENADO')
+        self.assertEqual(dict(PartType.objects.values_list('name', 'category')), {'DISCOS': 'FRENADO', 'PASTILLAS': 'FRENADO', 'ACEITE': 'FILTROS'})
+        self.assertEqual(Part.objects.filter(pk=line.pk).values_list('category', 'subcategory').get(), ('FRENADO', 'DISCOS'))
+        self.assertEqual(Part.objects.filter(pk=other.pk).values_list('category', flat=True).get(), 'FILTROS')
+        line = Part.objects.get(pk=line.pk)
+        line.description = 'DISCO DE FRENO'
+        line.save()  # a full save resolves the subgrupo by its text again
+        self.assertEqual(Part.objects.get(pk=line.pk).part_type_id, PartType.objects.get(name='DISCOS').pk)
+        self.assertEqual(set(Grupo.objects.values_list('nombre', flat=True)), {'FRENADO', 'FILTROS'})
+        self.assertEqual(part_type_for('frenado', 'pastillas'), pads)
+
 
 class SubgrupoWriterTests(TestCase):
     def test_a_line_names_its_subgrupo_by_text_and_takes_its_spelling(self):

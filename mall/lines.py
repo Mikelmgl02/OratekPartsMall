@@ -395,8 +395,8 @@ def set_subgrupo(lines, part_type, *, grupo='', subgrupo=''):
 
 
 def project_subgrupos(part_types):
-    """After a subgrupo moved to another grupo or was renamed: its lines' text follows it (one UPDATE per subgrupo). Returns how many
-    lines changed."""
+    """After a subgrupo moved to another grupo or was renamed, or its grupo was renamed (mall.technical_data.project_grupo): its lines'
+    text follows it (one UPDATE per subgrupo). Returns how many lines changed."""
     from .models import Part
     from .technical_data import grupo_nombre
     count = 0
