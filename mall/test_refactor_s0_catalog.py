@@ -256,6 +256,33 @@ class TwinNumberTests(Fresh, TestCase):
         self.assertEqual((kept.code, kept.sources.get().detail['pages'], kept.sources.get().detail['brand_codes']), ('1740077E00', [5, 6], ['GWS-10A', 'GWS-10AH']))
         self.assertEqual(scr.run(path, stdout=io.StringIO())['changes'], {'numbers': {}, 'codes': {}, 'ties': {}})
 
+    def test_after_the_merge_a_replace_keeps_what_a_spelling_printed_for_one_part_filed_though_the_other_is_shared(self):
+        # GMB v3: GWT-100A prints 16100-B9010 and 16100-B9010-000, GWT-136A only 16100-B9010. Before the merge the -000 spelling,
+        # printed for one part, filed GWT-100A's codes and tied its SKU; the merge moved them onto 16100-B9010, which a replace keeps.
+        pump = Part.objects.create(sku='16100-29115-GMB', description='BOMBA AGUA TOY HIACE')
+        data = extract([item('GWT-100A', 'water_pump', oem=[('16100-29115', 'TOYOTA'), ('16100-B9010', 'TOYOTA'), ('16100-B9010-000', 'TOYOTA')],
+                             cross_refs=[('AISIN', 'WPT-117')]),
+                        item('GWT-136A', 'water_pump', oem=[('16100-B9010', 'TOYOTA'), ('16100-29117', 'TOYOTA')], cross_refs=[('AISIN', 'WPT-136')])],
+                       title='GMB Water Pump Catalog', brand='GMB')
+        path = write(data)
+        self.addCleanup(os.unlink, path)
+        import_catalog([path], apply=True, stdout=io.StringIO())
+        self.assertFalse(OEMCrossReference.objects.filter(reference__code='16100B9010').exists())  # printed for two parts
+        self.assertTrue(PartOEMLink.objects.filter(part=pump, reference__code='16100B9010000', source='catalog').exists())
+        s0n.run(apply=True, manifest_dir=os.path.join(self.tmp, 'shared'), stdout=io.StringIO())
+        kept = OEMReference.objects.get(manufacturer='TOYOTA', code__startswith='16100B9010')
+        self.assertEqual(kept.code, '16100B9010')
+        self.assertEqual(sorted(kept.cross_references.values_list('brand', 'code')), [('AISIN', 'WPT-117'), ('GMB', 'GWT-100A')])
+        self.assertTrue(PartOEMLink.objects.filter(part=pump, reference=kept, source='catalog').exists())
+        before = self.state()
+        result = scr.run(path, stdout=io.StringIO())
+        self.assertEqual(result['changes'], {'numbers': {}, 'codes': {}, 'ties': {}})
+        self.assertEqual((result['import']['cross_reference_new'], result['import']['catalog_link_new']), (0, 0))
+        scr.run(path, apply=True, stdout=io.StringIO())
+        self.assertEqual(self.state(), before)
+        counts = s0_own_codes.run([path], stdout=io.StringIO())['catalogs'][0]['counts']
+        self.assertEqual((counts['filed'], counts['retire']), (2, 0))  # GWT-100A through the kept number, GWT-136A through 16100-29117
+
     def test_one_spelling_under_several_makes_is_no_twin(self):
         number('OPEL', '569000', citation=ASVA)
         number('VAUXHALL', '569000', citation=ASVA)

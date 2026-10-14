@@ -37,7 +37,7 @@ def classify(job, filed, retired, library):
         for o in item['oem']:
             number = job.number_key(o)[1]
             ref = library.get((manufacturer_name(o['manufacturer']), number))
-            if number in job.shared_numbers():
+            if job.shared(o):
                 why.add('shared')
             elif job.listed_assembly(item, o):
                 why.add('assembly')

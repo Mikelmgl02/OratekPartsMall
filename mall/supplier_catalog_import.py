@@ -26,6 +26,8 @@ makes one of them a shaft. The catalog's own item code is filed even
 without a digit (ASVA FDWH-FOCMF); a competitor code needs one. A printed number the library does not hold whose twin spelling it
 holds (16100-87795-000 and 16100-87795: mall.refactor.s0_normalize_numbers) is filed under the twin, and in the GM family under the
 make's own canonical spelling when another make of the family holds it; re-run that tool's dry run after an import all the same.
+Whether a number is printed for other parts too is decided per printed spelling, as before the twins became one, so the kept number
+holds what each spelling files and a replace after the merge changes nothing.
 After an apply
 the name links of every SKU are refreshed (mall.oem_links), since new numbers may name existing SKUs. Codes an OEM number carries to the
 SKU are not copied onto it as company alternos (alternos step 2c); a SKU matched only through shared numbers gets none either, so
@@ -209,16 +211,23 @@ class CatalogImport:
         self._oem_rows, self._shared, self._twins, self.clean = None, None, None, {}
 
     def shared_numbers(self):
-        """Compact OEM numbers this catalog prints for two or more of its parts that are not variants of one part."""
+        """Compact OEM numbers, as printed, this catalog prints for two or more of its parts that are not variants of one part. Each
+        printed spelling counts on its own, also once the library keeps one spelling of twins: s0_normalize_numbers gave the kept
+        number what each spelling had filed (GMB prints 16100-97205-000 for GWD-50AH alone and 16100-97205 for GWD-50AH and
+        GWT-134AH, so GWD-50AH's codes are filed under 16100-97205 through the -000 spelling)."""
         if self._shared is None:
             parts = defaultdict(set)
             for item in self.items:
                 if (item.get('brand_code') or '').strip():
                     for o in item.get('oem', []):
-                        parts[self.number_key(o)[1]].add(item['brand_code'])
+                        parts[compact(o['code'])].add(item['brand_code'])
             self._shared = {number for number, codes in parts.items() if len(codes) > 1 and not one_part(codes, self.brand)}
             self.report['counts']['shared_numbers'] = len(self._shared)
         return self._shared
+
+    def shared(self, oem):
+        """The catalog prints this spelling of the number for other parts too (shared_numbers)."""
+        return compact(oem['code']) in self.shared_numbers()
 
     def note(self, bucket, value):
         if len(self.report['samples'][bucket]) < SAMPLE:
@@ -446,7 +455,7 @@ class CatalogImport:
                         row['apps'].append(text)
                 if assembly:  # the component's codes do not replace the whole drive shaft
                     continue
-                if key[1] in self.shared_numbers():
+                if self.shared(o):
                     self.report['counts']['cross_reference_shared_skipped'] += len(codes)
                     continue
                 for brand, code, cite in codes:
@@ -665,7 +674,7 @@ class CatalogImport:
         groups, tied = {g for g in map(self.make_group, self.finder.parsed[self.fid[str(pid)]]['makes']) if g}, 0
         for o in item.get('oem', []):
             key = self.number_key(o)
-            if not key[0] or not 1 <= len(key[1]) <= 60 or key[1] in self.shared_numbers() or self.listed_assembly(item, o):
+            if not key[0] or not 1 <= len(key[1]) <= 60 or self.shared(o) or self.listed_assembly(item, o):
                 continue
             if not groups or self.make_group(o['manufacturer']) in groups:
                 self.catalog_links[(str(pid), key)].add(f"{cite} · {item['brand_code']}")
