@@ -414,3 +414,32 @@ class CVAssemblyCheckTests(Fresh, TestCase):
         run_extract(extract([item('CVSK-001R', 'cv_axle', oem=[('0K012-25-500D', 'KIA')], name_es='SEMIEJE')],
                             key='asva_cv', title='ASVA CV', brand='ASVA', product_line='cv_joint'))
         self.assertTrue(OEMCrossReference.objects.filter(reference__code='0K01225500D', brand='ASVA', code='CVSK-001R').exists())
+
+
+class OwnItemCodeTests(Fresh, TestCase):
+    """Target data step 1: the catalog's own item code is filed under its numbers wherever one can take it."""
+
+    def codes(self, number):
+        return sorted(OEMCrossReference.objects.filter(reference__code=number).values_list('brand', 'code'))
+
+    def test_an_own_code_without_a_digit_is_filed_and_a_competitor_one_is_not(self):
+        data = extract([item('FDWH-FOCMF', 'wheel_hub', oem=[('1223640', 'FORD')], cross_refs=[('SNR', 'R152.62'), ('BENDIX', 'HUB')], name_es='CUBO DE RUEDA'),
+                        item('AB', 'wheel_hub', oem=[('1230907', 'FORD')], name_es='CUBO DE RUEDA')],
+                       key='asva_hub', title='ASVA HUB', brand='ASVA', product_line='wheel_hub')
+        first = run_extract(data)
+        self.assertEqual(self.codes('1223640'), [('ASVA', 'FDWH-FOCMF'), ('SNR', 'R152.62')])  # BENDIX HUB names nothing
+        self.assertEqual(self.codes('1230907'), [])  # two letters are no code
+        self.assertEqual(first['catalogs'][0]['counts']['cross_reference_new'], 2)
+        again = run_extract(data)
+        self.assertEqual(again['catalogs'][0]['counts'].get('cross_reference_new', 0), 0)
+
+    def test_ate_powerdisc_twins_are_one_disc_and_file_both_codes(self):
+        run_extract(extract([item('24.0108-0111.1', 'brake_disc', oem=[('168 423 02 12', 'MERCEDES-BENZ')], name_es='DISCO DE FRENO'),
+                             item('24.0308-0111.1', 'brake_disc', oem=[('168 423 02 12', 'MERCEDES-BENZ')], name_es='DISCO DE FRENO'),
+                             item('24.0109-0114.1', 'brake_disc', oem=[('203 423 01 12', 'MERCEDES-BENZ')], name_es='DISCO DE FRENO'),
+                             item('24.0110-0115.1', 'brake_disc', oem=[('203 423 01 12', 'MERCEDES-BENZ')], name_es='DISCO DE FRENO')],
+                            key='ate', title='ATE', brand='ATE', product_line='brake_disc'))
+        self.assertEqual(self.codes('1684230212'), [('ATE', '24.0108-0111.1'), ('ATE', '24.0308-0111.1')])
+        self.assertEqual(self.codes('2034230112'), [])  # two different discs: the number cannot say which one replaces it
+        self.assertTrue(sci.one_part(['24.0108-0111.1', '24.0308-0111.1'], 'ATE'))
+        self.assertFalse(sci.one_part(['24.0108-0111.1', '24.0308-0111.1']))  # only ATE codes its PowerDisc that way

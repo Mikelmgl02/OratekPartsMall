@@ -111,3 +111,17 @@ class SupplierCatalogReplaceTests(Fresh, TestCase):
 
         sci.run([self.old], apply=True, stdout=io.StringIO())  # the old extract again: the retired code stays retired
         self.assertNotIn('QCP9', [number for _, _, number, _ in self.codes()])
+
+
+class OwnCodeReplaceTests(Fresh, TestCase):
+    def test_a_replace_keeps_the_own_codes_without_a_digit_it_files(self):
+        data = extract([item('FDWH-FOCMF', 'wheel_hub', oem=[('1223640', 'FORD')], name_es='CUBO DE RUEDA')],
+                       key='asva_hub', title='ASVA HUB', brand='ASVA', product_line='wheel_hub')
+        handle = tempfile.NamedTemporaryFile('w', suffix='.json', delete=False, encoding='utf-8')
+        json.dump(data, handle, ensure_ascii=False)
+        handle.close()
+        self.addCleanup(os.unlink, handle.name)
+        sci.run([handle.name], apply=True, stdout=io.StringIO())
+        result = scr.run(handle.name, stdout=io.StringIO())
+        self.assertEqual(result['changes']['codes'], {})  # neither retired nor re-cited
+        self.assertEqual(result['import']['cross_reference_present'], 1)

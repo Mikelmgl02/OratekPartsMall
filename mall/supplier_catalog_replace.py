@@ -22,7 +22,6 @@ import argparse
 import csv
 import json
 import os
-import re
 import sys
 from collections import Counter, defaultdict
 
@@ -48,13 +47,13 @@ def source_detail(job, row):
 
 def filed_codes(job):
     """{((manufacturer, number), brand, compact code): {'code', 'citations'}}: what write_cross_references files, keyed as stored."""
-    from .oem_reference_models import citation_list, compact, manufacturer_name
+    from .oem_reference_models import citation_list, manufacturer_name
     out = {}
     for (manufacturer, number), row in job.oem_rows().items():
         for (brand, code), cited in row['cross'].items():
             brand, code = manufacturer_name(brand), ' '.join(str(code or '').upper().split())
-            key = compact(code)
-            if not brand or len(brand) > 120 or not key or len(code) > 120 or not re.search(r'\d', key):
+            key = job.filed_key(brand, code)  # the catalog's own code is filed without a digit too
+            if not brand or len(brand) > 120 or not key or len(code) > 120:
                 continue
             entry = out.setdefault(((manufacturer_name(manufacturer), number), brand, key), {'code': code, 'citations': []})
             entry['citations'] = citation_list(entry['citations'], *sorted(cited))

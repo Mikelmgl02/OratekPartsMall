@@ -118,15 +118,16 @@ def refresh_name_links(part_ids=None, *, apply=True):
     return {'skus': len({part_id for part_id, _ in wanted}), 'links': len(wanted), 'new': len(new), 'removed': len(stale)}
 
 
-def store_cross_references(entries, *, apply=True):
+def store_cross_references(entries, *, apply=True, bare=()):
     """entries: {(reference id, brand, code): citations}. One row per (number, brand, compact code): a new code is created and a known
-    one gains the citations it lacks. A code without a digit or a brand, or one a superuser retired from the number, is skipped.
-    Returns {'new', 'cited', 'present'}."""
+    one gains the citations it lacks. A code without a brand, or one a superuser retired from the number, is skipped, and so is a code
+    without a digit unless bare lists its (brand, compact code): a catalog's own item code (ASVA FDWH-FOCMF). Returns {'new', 'cited',
+    'present'}."""
     plan = {}
     for (ref_id, brand, code), citations in entries.items():
         brand, code = manufacturer_name(brand), ' '.join(str(code or '').upper().split())
         number = compact(code)
-        if not brand or len(brand) > 120 or not number or len(code) > 120 or not re.search(r'\d', number):
+        if not brand or len(brand) > 120 or not number or len(code) > 120 or not (re.search(r'\d', number) or (brand, number) in bare):
             continue
         entry = plan.setdefault((str(ref_id), brand, number), {'code': code, 'citations': []})
         entry['citations'] = citation_list(entry['citations'], *citations)

@@ -87,6 +87,9 @@ INTEGER_KEYS = {'holes', 'bolts', 'outer_splines', 'inner_splines', 'abs_teeth',
 BOOLEAN_KEYS = {'vented', 'wear_indicator', 'abs', 'with_abs', 'with_sensor'}
 YES, NO = {'YES', 'SI', 'SÍ', 'TRUE', 'Y', '+', 'X'}, {'NO', 'FALSE', 'N', '-'}
 SAMPLE = 40
+MIN_BARE_CODE = 4  # letters and digits an own item code without a digit needs to be filed (ASVA CH-WK)
+# Variants of one part a brand codes beyond a letter suffix, folded onto one key: ATE's PowerDisc 24.03 is its 24.01 disc, slotted.
+VARIANT_FOLDS = {'ATE': [(re.compile(r'^2403(\d{7})$'), r'2401\1')]}
 # Drive-shaft classes the OEM finder's ASSEMBLY_CLASSES leave out: Kia's Mazda-era numbers (0K2N1-25-600) use Mazda's shaft groups.
 EXTRA_ASSEMBLY_CLASSES = {('KIA_LEGACY', '25-40'), ('KIA_LEGACY', '25-50'), ('KIA_LEGACY', '25-60')}
 # A SKU sold as a whole drive shaft: the numbers linked to it are shaft numbers, whatever CV component a catalog lists them for.
@@ -97,9 +100,17 @@ def compact(value):
     return re.sub(r'[^0-9A-Z]', '', (value or '').upper())
 
 
-def one_part(codes):
-    """The codes name one part: the shortest is a prefix of every other and the rest is at most three letters (GWT-116A, GWT-116AH)."""
-    keys = sorted({compact(code) for code in codes}, key=len)
+def variant_key(code, brand=''):
+    key = compact(code)
+    for pattern, replacement in VARIANT_FOLDS.get(brand, ()):
+        key = pattern.sub(replacement, key)
+    return key
+
+
+def one_part(codes, brand=''):
+    """The codes name one part: the shortest is a prefix of every other and the rest is at most three letters (GWT-116A, GWT-116AH),
+    once the brand's variant codes are folded (ATE 24.0308-0111.1 is the PowerDisc of 24.0108-0111.1)."""
+    keys = sorted({variant_key(code, brand) for code in codes}, key=len)
     return all(key.startswith(keys[0]) and re.fullmatch(r'[A-Z]{0,3}', key[len(keys[0]):]) for key in keys)
 
 
@@ -168,7 +179,7 @@ class CatalogImport:
                 if (item.get('brand_code') or '').strip():
                     for o in item.get('oem', []):
                         parts[compact(o['code'])].add(item['brand_code'])
-            self._shared = {number for number, codes in parts.items() if len(codes) > 1 and not one_part(codes)}
+            self._shared = {number for number, codes in parts.items() if len(codes) > 1 and not one_part(codes, self.brand)}
             self.report['counts']['shared_numbers'] = len(self._shared)
         return self._shared
 
@@ -291,6 +302,10 @@ class CatalogImport:
         return self.report
 
     # ------------------------------------------------------------------ OEM table
+    def number_key(self, oem):
+        """(manufacturer, compact number) an OEM number the catalog prints is filed under."""
+        return oem['manufacturer'].strip().upper(), compact(oem['code'])
+
     def is_assembly(self, manufacturer, code):
         """A drive-shaft assembly number, e.g. Hyundai 49501-2S300 printed next to a CV joint: an OEM finder assembly class under the
         make's own or platform-partner numbering (Ford G565-25-500B and Kia B002-25-400B are Mazda shafts), Kia's Mazda-era shafts
@@ -312,6 +327,13 @@ class CatalogImport:
         return (item['product_type'].startswith('cv_') and item['product_type'] != 'cv_axle'
                 and self.is_assembly(oem['manufacturer'].strip().upper(), oem['code']))
 
+    def filed_key(self, brand, code):
+        """The compact key an aftermarket code is filed under, or '' when it names nothing: a competitor code needs a digit, while the
+        catalog's own item code is the item's name and is filed with MIN_BARE_CODE letters (ASVA FDWH-FOCMF, CH-WK)."""
+        key = compact(code)
+        own = ' '.join(str(brand or '').upper().split()) == self.brand
+        return key if re.search(r'\d', key) or own and len(key) >= MIN_BARE_CODE else ''
+
     def aftermarket_codes(self, item):
         """(brand, code, citation) the item prints as equivalents of its OEM numbers: the catalog's own code and the competitor codes."""
         codes = []
@@ -330,7 +352,7 @@ class CatalogImport:
             pt = TAXONOMY.get(item['product_type'])
             codes = self.aftermarket_codes(item)
             for o in item.get('oem', []):
-                key = (o['manufacturer'].strip().upper(), compact(o['code']))
+                key = self.number_key(o)
                 if not key[0] or not 1 <= len(key[1]) <= 60:
                     continue
                 assembly = self.listed_assembly(item, o)
@@ -394,14 +416,17 @@ class CatalogImport:
         from .oem_links import store_cross_references
         rows, rc = self.oem_rows(), self.report['counts']
         refs = self.library_ids(set(rows))
-        entries, pending = {}, set()
+        entries, pending, bare = {}, set(), set()
         for key, row in rows.items():
             for (brand, code), cites in row['cross'].items():
+                filed = self.filed_key(brand, code)
+                if filed and not re.search(r'\d', filed):
+                    bare.add((' '.join(brand.upper().split()), filed))
                 if key in refs:
                     entries[(refs[key], brand, code)] = sorted(cites)
-                elif re.search(r'\d', compact(code)):
-                    pending.add((key, brand.strip().upper(), compact(code)))
-        counts = store_cross_references(entries, apply=apply)
+                elif filed:
+                    pending.add((key, brand.strip().upper(), filed))
+        counts = store_cross_references(entries, apply=apply, bare=bare)
         rc['cross_reference_new'] = counts['new'] + len(pending)
         rc['cross_reference_present'] = counts['present'] + counts['cited']
 
@@ -563,7 +588,7 @@ class CatalogImport:
             return 0
         groups, tied = {g for g in map(self.make_group, self.finder.parsed[self.fid[str(pid)]]['makes']) if g}, 0
         for o in item.get('oem', []):
-            key = (o['manufacturer'].strip().upper(), compact(o['code']))
+            key = self.number_key(o)
             if not key[0] or not 1 <= len(key[1]) <= 60 or key[1] in self.shared_numbers() or self.listed_assembly(item, o):
                 continue
             if not groups or self.make_group(o['manufacturer']) in groups:
