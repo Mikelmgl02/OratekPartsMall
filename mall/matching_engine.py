@@ -9,8 +9,9 @@ OEM alterno) or an aftermarket code a catalog files under such a number. It
 applies only when it reaches exactly one SKU; duplicates go to review.
 
 A supplier item that no code ties to any SKU (no exact code, remembered mapping, declared or labelled reference, library hit or
-code family) is a new product: its case is unmatched and Productos nuevos takes it (owner decision D1). The SKUs its description
-words find stay on the case only as hints, scored without makes, brands, years, units or the supplier's own common words.
+code family) is a new product: its case is unmatched and Productos nuevos takes it (owner decision D1, on with the setting
+MATCHING_NO_CODE_EVIDENCE). The SKUs its description words find stay on the case only as hints, scored without makes, brands,
+years, units or the supplier's own common words, and kept out of the case's fingerprint.
 """
 import hashlib
 import json
@@ -29,8 +30,8 @@ from .matching_queue import matching_work
 from .oem_links import reach_index, same_make
 
 VERSION = 'matching-3-oem-identity'
-# Owner decision D1: a supplier item no code ties to any SKU is a new product (Productos nuevos). Description words never link
-# it; the SKUs they find stay on its case only as hints (possible duplicates for Revisión IA).
+# Owner decision D1 (settings.MATCHING_NO_CODE_EVIDENCE): a supplier item no code ties to any SKU is a new product (Productos
+# nuevos). Description words never link it; the SKUs they find stay on its case only as hints (possible duplicates for Revisión IA).
 NO_CODE_EVIDENCE = 'no_code_evidence'
 NO_CODE_EVIDENCE_REASON = 'Sin evidencia de código: va a Productos nuevos'
 WORD = re.compile(r'[A-Z0-9]{3,}')
@@ -41,8 +42,8 @@ UNIT_WORDS = {'PCS', 'PZS', 'PZA', 'PZAS', 'LTS', 'LBS', 'KGS', 'MTS', 'UND', 'U
 HINTS = 8               # hints kept on a case
 HINT_BUCKET = 200       # a word more SKUs than this describe retrieves nothing
 HINT_WORDS = 2          # a hint shares at least this many informative words with the item
-COMMON_SHARE = 0.05     # a word in more than this share of one supplier's items (its models: FX11, GS11...) hints at nothing
-COMMON_MIN = 20         # ... nor in more than this many of them, so a small supplier keeps its words
+COMMON_SHARE = 0.05     # any word in more than this share of one supplier's items hints at nothing: its models (FX11, GS11...)
+COMMON_MIN = 20         # and its common part words (PUERTA, MOLDURA...); only above this many items, so a small supplier keeps its words
 
 
 def digest(value):
@@ -211,11 +212,12 @@ class MatchIndex:
                 self.mappings[(str(mapping.supplier_id), normalized_reference(mapping.code), mapping.brand)] = (str(part.pk), mapping.description, bool(mapping.actor_id))
                 if mapping.actor_id and mapping.brand and detailed(mapping.description):
                     self.portable[(normalized_reference(mapping.code), mapping.brand, description(mapping.description))].add(str(part.pk))
-        self.noise = noise_words()
+        self.noise = None
         self.common = {}
 
     def common_words(self, supplier_id):
-        """Words in more than 5% of one supplier's items: its vehicle models (FX11, GS11, PHEV...) and what it writes on everything."""
+        """Any word in more than 5% of one supplier's items (and in more than 20 of them): its vehicle models (FX11, GS11, PHEV...),
+        but also its common part words (PUERTA, MOLDURA, AMORT...) and what it writes on everything."""
         key = str(supplier_id)
         if key not in self.common:
             counts, total = Counter(), 0
@@ -230,18 +232,25 @@ class MatchIndex:
         """The item's description words that can hint at a product: not a make or brand, a year, a unit or a word its supplier puts
         on many items."""
         common = self.common_words(item.supplier_id)
+        if self.noise is None:
+            self.noise = noise_words()
         return {word for word in WORD.findall(description(item.description))
                 if word not in self.noise and word not in common and word not in UNIT_WORDS and not YEAR.match(word) and not UNIT.match(word)}
 
     def word_scores(self, item):
         """SKUs by how many of the item's informative words their description shares. Only words few SKUs use count (rare words
-        retrieve a bounded set; no full-catalog AI prompt), and an item with fewer than two such words finds nothing."""
-        words, scores = self.informative(item), Counter()
-        if len(words) >= HINT_WORDS:
-            for word in words:
-                bucket = self.words.get(word, set())
-                if len(bucket) <= HINT_BUCKET:
-                    scores.update(bucket)
+        retrieve a bounded set; no full-catalog AI prompt), and an item with fewer than two such words finds nothing. Until D1 is
+        switched on (MATCHING_NO_CODE_EVIDENCE) every word of three or more characters counts, as before."""
+        if settings.MATCHING_NO_CODE_EVIDENCE:
+            words = self.informative(item)
+            words = words if len(words) >= HINT_WORDS else set()
+        else:
+            words = set(WORD.findall(description(item.description)))
+        scores = Counter()
+        for word in words:
+            bucket = self.words.get(word, set())
+            if len(bucket) <= HINT_BUCKET:
+                scores.update(bucket)
         return scores
 
     def hints(self, item):
@@ -299,6 +308,13 @@ class MatchIndex:
         return targets
 
     def resolve(self, item):
+        """The candidate SKUs, the method, whether the match may apply on its own, and the reason."""
+        return self.resolve_case(item)[:4]
+
+    def resolve_case(self, item):
+        """resolve() plus the candidates a code reached (None when every candidate did, or while D1 is off, so fingerprints stay as
+        they were). The others are description hints, which move with every upload (each supplier's common words, the brands), so
+        they stay out of the case's fingerprint (save_case)."""
         code = normalized_reference(item.codigo)
         candidates, reasons = set(), []
         from .catalog_identity import company_reference
@@ -314,18 +330,18 @@ class MatchIndex:
             evidenced.add(remembered[0])
         if len(evidenced) > 1:
             return [self.parts[pk] for pk in sorted(evidenced)][:8], 'conflicting_references', False, \
-                'El código y las referencias apuntan a varios SKU. Revisa la equivalencia antes de vincular.'
+                'El código y las referencias apuntan a varios SKU. Revisa la equivalencia antes de vincular.', None
         if declared:
             target = self.parts[next(iter(declared))]
             if spec_conflict(item.description, target['description']):
-                return [target], 'reference_spec_conflict', False, 'La referencia coincide, pero hay una contradicción de posición, medida o aplicación.'
-            return [target], 'approved_reference', True, 'Referencia declarada coincidente con la biblioteca de equivalencias del SKU maestro.'
+                return [target], 'reference_spec_conflict', False, 'La referencia coincide, pero hay una contradicción de posición, medida o aplicación.', None
+            return [target], 'approved_reference', True, 'Referencia declarada coincidente con la biblioteca de equivalencias del SKU maestro.', None
         if remembered:
             target, previous_description, reviewed = remembered
             if (description(previous_description) == description(item.description)
                     and (reviewed or not (exact - {target}))
                     and not spec_conflict(item.description, self.parts[target]['description'])):
-                return [self.parts[target]], 'reviewed', True, 'Coincidencia confirmada anteriormente para este proveedor.'
+                return [self.parts[target]], 'reviewed', True, 'Coincidencia confirmada anteriormente para este proveedor.', None
             candidates.add(target)
             reasons.append('La descripción cambió desde la confirmación anterior.')
         candidates |= exact
@@ -333,14 +349,14 @@ class MatchIndex:
             target = self.parts[next(iter(exact))]
             literal = target['id'] in (self.literal_codes.get((item.codigo, ''), set()) | self.literal_codes.get((item.codigo, item.brand), set()))
             if (literal or len(code) >= 8) and not spec_conflict(item.description, target['description']):
-                return [target], 'known_code', True, 'Código único del catálogo o alterno aprobado (formato normalizado).'
+                return [target], 'known_code', True, 'Código único del catálogo o alterno aprobado (formato normalizado).', None
             reasons.append('El código coincide, pero las especificaciones requieren revisión.')
         learned = self.portable.get((code, item.brand, description(item.description)), set())
         candidates |= learned
         if len(learned) == 1 and not exact and not remembered:
             target = self.parts[next(iter(learned))]
             if not spec_conflict(item.description, target['description']):
-                return [target], 'reviewed_brand_spec', True, 'Código y marca confirmados en otro proveedor con especificaciones idénticas.'
+                return [target], 'reviewed_brand_spec', True, 'Código y marca confirmados en otro proveedor con especificaciones idénticas.', None
         reached = set()
         if not exact and not remembered and not learned:
             # The OEM library: the code is an aftermarket code a catalog files under an OEM number a SKU reaches, or that number itself.
@@ -356,8 +372,8 @@ class MatchIndex:
                                                            or bool(company) and self.printed_aftermarket(company['code'], company['brand']))
                 if (literal or len(code) >= 8) and not spec_conflict(item.description, target['description']):
                     if target['id'] in aftermarket:
-                        return [target], 'aftermarket_code', True, 'Código de marca de repuesto que un catálogo imprime para un número OEM del SKU.'
-                    return [target], 'linked_oem_number', True, 'El código es un número OEM vinculado al SKU, por su propio código o por un catálogo de repuesto.'
+                        return [target], 'aftermarket_code', True, 'Código de marca de repuesto que un catálogo imprime para un número OEM del SKU.', None
+                    return [target], 'linked_oem_number', True, 'El código es un número OEM vinculado al SKU, por su propio código o por un catálogo de repuesto.', None
                 reasons.append('El código equivale por número OEM a un SKU, pero las especificaciones o un código corto requieren revisión.')
             elif reached:
                 reasons.append('El código equivale por número OEM a varios SKU, posibles duplicados: agrúpalos con Agrupar SKU o elige el correcto.')
@@ -369,7 +385,7 @@ class MatchIndex:
         if len(family) == len(strong) == 1 and not exact and not remembered:
             target = self.parts[next(iter(strong))]
             if base or target['sku'] == item.codigo:
-                return [target], 'base_and_spec', True, 'Código base completo y aplicación/especificaciones idénticas.'
+                return [target], 'base_and_spec', True, 'Código base completo y aplicación/especificaciones idénticas.', None
         refs = text_refs
         candidates |= refs
         if len(refs) == 1 and not exact and not family and not remembered:
@@ -377,25 +393,37 @@ class MatchIndex:
             # OEM references are useful, but contradictory specifications block automatic linking.
             stripped = re.sub(r'(?:OEM|OE|REF(?:ERENCIA)?|REEMPLAZA)\s*[:#=]?\s*[A-Z0-9]+(?:[-./][A-Z0-9]+)+', '', item.description.upper()).strip(' ,;')
             if same_spec(stripped, target['description']):
-                return [target], 'explicit_oem', True, 'Referencia OEM explícita y sin contradicciones de posición o medida.'
-        if not (exact or remembered or declared or text_refs or learned or reached or family):
-            return self.hints(item), NO_CODE_EVIDENCE, False, NO_CODE_EVIDENCE_REASON
+                return [target], 'explicit_oem', True, 'Referencia OEM explícita y sin contradicciones de posición o medida.', None
+        evidence = None
+        if settings.MATCHING_NO_CODE_EVIDENCE:
+            if not (exact or remembered or declared or text_refs or learned or reached or family):
+                return self.hints(item), NO_CODE_EVIDENCE, False, NO_CODE_EVIDENCE_REASON, []
+            evidence = [self.parts[pk] for pk in sorted(candidates)]
         candidates |= self.descriptions.get(description(item.description), set()) if detailed(item.description) else set()
         scores = self.word_scores(item)
         ranked = sorted(candidates, key=lambda pk: (-scores[pk], self.parts[pk]['sku']))
         ranked.extend(pk for pk, score in scores.most_common(16) if score >= 2 and pk not in candidates)
-        return [self.parts[pk] for pk in ranked[:8]], 'needs_review', False, ' '.join(reasons) or 'No hay evidencia suficiente para vincular automáticamente.'
+        return [self.parts[pk] for pk in ranked[:8]], 'needs_review', False, \
+            ' '.join(reasons) or 'No hay evidencia suficiente para vincular automáticamente.', evidence
 
 
-def save_case(*, key, kind, sources, candidates, target='', method='', reason='', item=None, status='review'):
-    fingerprint = digest([VERSION, sources, candidates, target, method])
+def save_case(*, key, kind, sources, candidates, target='', method='', reason='', item=None, status='review', evidence=None):
+    """A changed fingerprint rewrites the case: new status, AI answer cleared. evidence: the candidates the case rests on when the
+    others are description hints (resolve_case). Only those enter the fingerprint, so hints that move with an upload are refreshed
+    in place, without reopening a case a person kept apart («Mantener separado») or clearing its AI answer."""
+    fingerprint = digest([VERSION, sources, candidates, target, method] if evidence is None else [VERSION, sources, evidence, method])
     case, created = MatchingCase.objects.get_or_create(key=key, defaults={
         'kind': kind, 'item': item, 'sources': sources, 'candidates': candidates, 'target_sku': target,
         'method': method, 'reason': reason, 'fingerprint': fingerprint, 'status': status})
-    if not created and case.fingerprint != fingerprint:
+    if created:
+        return case
+    if case.fingerprint != fingerprint:
         case.sources, case.candidates, case.target_sku = sources, candidates, target
         case.method, case.reason, case.fingerprint, case.status, case.ai = method, reason, fingerprint, status, {}
         case.save()
+    elif evidence is not None and case.status in ['review', 'unmatched', 'dismissed'] and (case.candidates, case.target_sku) != (candidates, target):
+        MatchingCase.objects.filter(pk=case.pk, fingerprint=fingerprint).update(candidates=candidates, target_sku=target)
+        case.candidates, case.target_sku = candidates, target
     return case
 
 
@@ -444,19 +472,24 @@ def reconcile_items(index, *, stats=None):
     for item in items.iterator(chunk_size=500):
         if stats is not None:
             stats['supplier_examined'] = stats.get('supplier_examined', 0) + 1
-        candidates, method, strong, reason = index.resolve(item)
+        candidates, method, strong, reason, evidence = index.resolve_case(item)
         unmatched = not candidates
         if method == NO_CODE_EVIDENCE:
-            if item.part_id:  # a linked item keeps its SKU until a person reviews its new code: never a new product
-                method, reason = 'needs_review', 'No hay evidencia suficiente para vincular automáticamente.'
+            if item.part_id:
+                # A linked item no code ties to a SKU keeps its SKU until a person reviews it, never a new product: its current
+                # SKU leads, the hints follow.
+                current = index.parts.get(str(item.part_id))
+                evidence = [current] if current else []
+                candidates = (evidence + [row for row in candidates if row['id'] != str(item.part_id)])[:HINTS]
+                method, reason, unmatched = 'needs_review', 'Ningún código lo vincula a un SKU. Se conserva el vínculo actual hasta su revisión.', False
             else:  # Productos nuevos takes it; its candidates are hints, so none is proposed as the target
                 unmatched = True
-        if item.part_id and candidates and str(item.part_id) != candidates[0]['id']:
+        elif item.part_id and candidates and str(item.part_id) != candidates[0]['id']:
             strong = False
             reason = 'El código cambió de familia. Se conserva el vínculo anterior hasta su revisión.'
         case = save_case(key=f'supplier:{item.pk}', kind='supplier', item=item, sources=[item_row(item)],
                          candidates=candidates, target=candidates[0]['sku'] if candidates and not unmatched else '', method=method,
-                         reason=reason, status='unmatched' if unmatched else 'review')
+                         reason=reason, status='unmatched' if unmatched else 'review', evidence=evidence)
         if strong and case.status == 'review':
             try:
                 apply_item(case, candidates[0], automatic=True)

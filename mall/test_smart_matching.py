@@ -7,7 +7,7 @@ from .models import (Account, Part, PartCode, User, SupplierItem, StockEntry, In
                      MatchingCase, MatchingDecision, MatchingQueue, SupplierCodeMapping, CatalogMerge)
 from .services import ingest_inventory
 from .matching_engine import (MatchIndex, reconcile_items, reconcile_catalog, create_supplier_families, item_row, part_row,
-                              spec_conflict, NO_CODE_EVIDENCE, NO_CODE_EVIDENCE_REASON)
+                              spec_conflict, digest, NO_CODE_EVIDENCE, NO_CODE_EVIDENCE_REASON, VERSION)
 from .matching_worker import process_queue, analyze_ambiguous
 from .matching_queue import enqueue_matching, matching_work
 
@@ -78,6 +78,7 @@ class SmartMatchingTests(APITestCase):
         self.assertIsNone(c.part_id)
         self.assertEqual(MatchingCase.objects.get(item=c).status,'review')
 
+    @override_settings(MATCHING_NO_CODE_EVIDENCE=True)
     def test_numeric_position_dimension_and_year_variants_are_not_automerged(self):
         Part.objects.create(sku='58411-07000',description='DISCO KIA PICANTO TRAS 200 MM 04-11')
         inputs=[('58411-07000-L','DISCO KIA PICANTO IZQ 200 MM 04-11'),
@@ -87,8 +88,15 @@ class SmartMatchingTests(APITestCase):
         for code,desc in inputs:self.ingest(code,description=desc)
         reconcile_items(MatchIndex())
         self.assertFalse(SupplierItem.objects.filter(matching_status='matched').exists())
+        # A supplier suffix (-K, -NP) puts the code in the SKU's family, which is code evidence (D1): review, with the SKU. -L and -22
+        # are no supplier suffix, so no SKU has their code: new products, with the SKU as a hint only.
+        cases={c.item.codigo:(c.status,c.method,c.target_sku,[x['sku'] for x in c.candidates])
+               for c in MatchingCase.objects.filter(kind='supplier').select_related('item')}
+        family,hint=('review','needs_review','58411-07000',['58411-07000']),('unmatched',NO_CODE_EVIDENCE,'',['58411-07000'])
+        self.assertEqual(cases,{'58411-07000-K':family,'58411-07000-NP':family,'58411-07000-L':hint,'58411-07000-22':hint})
         self.assertEqual(create_supplier_families(),0)
 
+    @override_settings(MATCHING_NO_CODE_EVIDENCE=True)
     def test_same_description_without_code_evidence_only_proposes_match(self):
         target=Part.objects.create(sku='58411-07000',description=self.description)
         item=self.ingest('D-HYU-1R')
@@ -249,7 +257,18 @@ class SmartMatchingTests(APITestCase):
         self.assertEqual(result['ai_status'], 'failed')
         self.assertEqual(result['ai_analyzed'], 0)
 
-    @override_settings(CATALOG_EXTRA_MAKES=['KAIYI'])
+    @override_settings(MATCHING_NO_CODE_EVIDENCE=False)
+    def test_until_d1_is_switched_on_the_engine_and_its_fingerprints_stay_as_before(self):
+        # MATCHING_NO_CODE_EVIDENCE off: the same description keeps the item in review, and the fingerprint is the one live cases
+        # already have, so landing the code rewrites no case.
+        target = Part.objects.create(sku='58411-07000', description=self.description)
+        item = self.ingest('D-HYU-1R')
+        reconcile_items(MatchIndex())
+        case = MatchingCase.objects.get(item=item)
+        self.assertEqual((case.status, case.method, case.target_sku), ('review', 'needs_review', target.sku))
+        self.assertEqual(case.fingerprint, digest([VERSION, case.sources, case.candidates, case.target_sku, case.method]))
+
+    @override_settings(CATALOG_EXTRA_MAKES=['KAIYI'], MATCHING_NO_CODE_EVIDENCE=True)
     def test_word_only_items_go_to_new_products_and_keep_only_informative_hints(self):
         # Before D1 the shared make, model and year (KAIYI FX11 2025) made these SKUs candidates and kept the item in review.
         Part.objects.create(sku='025CHA-1504110', description='TAPA KAIYI FX11 2025 55W')
@@ -273,6 +292,63 @@ class SmartMatchingTests(APITestCase):
         self.assertEqual((case.status, case.method, case.target_sku, [c['sku'] for c in case.candidates]),
                          ('unmatched', NO_CODE_EVIDENCE, '', ['58411-07000']))
         self.assertEqual(MatchingCase.objects.get(item=lone).status, 'unmatched')
+
+    @override_settings(CATALOG_EXTRA_MAKES=['KAIYI'], MATCHING_NO_CODE_EVIDENCE=True)
+    def test_hints_that_move_with_an_upload_do_not_reopen_a_case_kept_apart(self):
+        farol = Part.objects.create(sku='58411-07000', description='FAROL DELANTERO MOLDURA CROMADA')
+        item = self.ingest('F16-4121020-01AA', brand='KAIYI', description='FAROL KAIYI FX11 2025 CROMADA')
+        reconcile_items(MatchIndex())
+        case = MatchingCase.objects.get(item=item)
+        self.assertEqual((case.status, [c['sku'] for c in case.candidates]), ('unmatched', ['58411-07000']))
+        response = self.client.post(f'/api/v1/management/matching/{case.pk}/', {'action': 'dismiss', 'fingerprint': case.fingerprint}, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        dismissed_at = MatchingCase.objects.get(pk=case.pk).updated_at
+        for i in range(25):  # the supplier's next upload writes CROMADA on many items: it hints at nothing any more
+            SupplierItem.objects.create(supplier=self.suppliers[0], supplier_invent_id=f'CR-{i}', codigo=f'CR-{i}', description=f'PIEZA {i} CROMADA',
+                                        matching_status='matched', part=farol)
+        reconcile_items(MatchIndex())
+        moved = MatchingCase.objects.get(pk=case.pk)
+        # The hint is gone from the case, but the case stays kept apart and in its place in the list: hints are not in its fingerprint.
+        self.assertEqual((moved.status, moved.fingerprint, moved.candidates, moved.updated_at), ('dismissed', case.fingerprint, [], dismissed_at))
+
+    @override_settings(MATCHING_NO_CODE_EVIDENCE=True)
+    def test_extra_word_candidates_that_move_keep_a_review_case_and_its_ai(self):
+        target, item = self.code_with_contradiction()
+        Part.objects.create(sku='EXTRA-1', description='TAMBOR PICANTO TRAS')
+        reconcile_items(MatchIndex())
+        case = MatchingCase.objects.get(item=item)
+        self.assertEqual((case.status, [c['sku'] for c in case.candidates]), ('review', ['58411-07000', 'EXTRA-1']))
+        MatchingCase.objects.filter(pk=case.pk).update(ai={'target_sku': target.sku, 'confidence': 0.4, 'reason': 'Revisar los años.'})
+        for i in range(25):  # PICANTO becomes a word this supplier writes on everything: EXTRA-1 no longer shares two words
+            SupplierItem.objects.create(supplier=self.suppliers[0], supplier_invent_id=f'PI-{i}', codigo=f'PI-{i}', description=f'PIEZA {i} PICANTO',
+                                        matching_status='matched', part=target)
+        reconcile_items(MatchIndex())
+        moved = MatchingCase.objects.get(pk=case.pk)
+        self.assertEqual((moved.status, moved.fingerprint, moved.target_sku, [c['sku'] for c in moved.candidates]),
+                         ('review', case.fingerprint, '58411-07000', ['58411-07000']))
+        self.assertEqual(moved.ai['reason'], 'Revisar los años.')
+        # A change to the SKU its code reaches is evidence: the case is rewritten and its AI answer cleared.
+        Part.objects.filter(pk=target.pk).update(description='TAMBOR KIA PICANTO 04-12')
+        reconcile_items(MatchIndex())
+        rewritten = MatchingCase.objects.get(pk=case.pk)
+        self.assertEqual((rewritten.status, rewritten.ai), ('review', {}))
+        self.assertNotEqual(rewritten.fingerprint, case.fingerprint)
+
+    @override_settings(MATCHING_NO_CODE_EVIDENCE=True)
+    def test_a_linked_item_whose_new_code_no_sku_has_stays_in_review_with_its_sku_first(self):
+        current = Part.objects.create(sku='19010-RAD-01', description='RADIADOR HONDA CIVIC')
+        other = Part.objects.create(sku='42431-TAM-01', description='TAMBOR FRENO PICANTO TRAS')
+        bare = SupplierItem.objects.create(supplier=self.suppliers[0], supplier_invent_id='BARE', codigo='ZZ-NUEVO-1', description='TAMBOR',
+                                           matching_status='review', part=current)
+        hinted = SupplierItem.objects.create(supplier=self.suppliers[0], supplier_invent_id='HINTED', codigo='ZZ-NUEVO-2',
+                                             description='TAMBOR FRENO PICANTO', matching_status='review', part=current)
+        reconcile_items(MatchIndex())
+        for item, skus in [(bare, [current.sku]), (hinted, [current.sku, other.sku])]:
+            case = MatchingCase.objects.get(item=item)
+            self.assertEqual((case.status, case.method, case.target_sku, [c['sku'] for c in case.candidates]),
+                             ('review', 'needs_review', current.sku, skus))
+            item.refresh_from_db()
+            self.assertEqual(item.part_id, current.pk)
 
     def test_code_evidence_still_goes_to_review_and_pads_sold_as_a_set_link_by_code(self):
         Part.objects.create(sku='0446502220', description='PASTILLA FRENO DEL TOYOTA HILUX')

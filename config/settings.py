@@ -240,6 +240,9 @@ QUOTES_REQUIRE_DRAFT = os.getenv('QUOTES_REQUIRE_DRAFT', '1').lower() in ('true'
 OEM_FINDER_AUTO_STAGE = os.getenv('OEM_FINDER_AUTO_STAGE', '0').lower() in ('true', '1', 'yes')
 # Every matching pass marks OEM the SKUs whose code is a declared or verified number of the OEM list (mall.catalog_identity).
 OEM_EXACT_MARK = os.getenv('OEM_EXACT_MARK', '1').lower() in ('true', '1', 'yes')
+# Owner decision D1 in the matching engine: a supplier item no code ties to a SKU goes to Productos nuevos, and its description words
+# are only hints. Off keeps the engine as it was; it is switched on once the owner has checked the dry run (refactor stage S0.9).
+MATCHING_NO_CODE_EVIDENCE = os.getenv('MATCHING_NO_CODE_EVIDENCE', '0').lower() in ('true', '1', 'yes')
 CATALOG_LOW_STOCK_THRESHOLD = max(1, int(os.getenv('CATALOG_LOW_STOCK_THRESHOLD', '5')))
 CATALOG_HIGH_STOCK_THRESHOLD = int(os.getenv('CATALOG_HIGH_STOCK_THRESHOLD', '20'))
 if CATALOG_HIGH_STOCK_THRESHOLD <= CATALOG_LOW_STOCK_THRESHOLD:

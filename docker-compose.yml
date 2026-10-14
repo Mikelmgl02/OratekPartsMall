@@ -78,6 +78,8 @@ services:
       OEM_FINDER_AUTO_STAGE: ${OEM_FINDER_AUTO_STAGE:-0}
       # 1 marks OEM, on every matching pass, the SKUs whose code is a declared or verified number of the OEM list (Biblioteca OEM).
       OEM_EXACT_MARK: ${OEM_EXACT_MARK:-1}
+      # 1 sends a supplier item no code ties to a SKU to Productos nuevos (owner decision D1); its description words stay hints.
+      MATCHING_NO_CODE_EVIDENCE: ${MATCHING_NO_CODE_EVIDENCE:-0}
       CATALOG_LOW_STOCK_THRESHOLD: ${CATALOG_LOW_STOCK_THRESHOLD:-5}
       CATALOG_HIGH_STOCK_THRESHOLD: ${CATALOG_HIGH_STOCK_THRESHOLD:-20}
       DO_SPACES_KEY: ${DO_SPACES_KEY:-}
