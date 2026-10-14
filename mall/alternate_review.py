@@ -16,6 +16,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import prune_catalog_alternos as prune
+from .lines import catalog_lines
 from .management import IsSuperuser
 from .models import Part, PartCode
 from .oem_links import part_equivalents
@@ -127,7 +128,7 @@ def detail(part):
 
 
 def canonical(pk):
-    part = Part.objects.filter(pk=pk, merged_into__isnull=True).first()
+    part = catalog_lines().filter(pk=pk).first()
     if part is None:
         raise NotFound('Ese SKU no está en el catálogo o se agrupó en otro.')
     return part

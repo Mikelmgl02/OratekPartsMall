@@ -26,6 +26,7 @@ from rest_framework.views import APIView
 
 from .catalog_families import supplier_base
 from .management import IsSuperuser, ManagedPartSerializer, catalog_queryset, validate_code_mapping, with_merged_counts
+from .lines import catalog_lines
 from .models import Part, PartCode
 from .oem_finder import OEMFinder
 from .oem_reference_models import OEMReference, compact, manufacturer_name
@@ -144,7 +145,7 @@ class MarkOEMResult(serializers.Serializer):
 
 def plan_rows(ids, mode='mark'):
     from .oem_reference import part_defaults
-    parts = list(Part.objects.filter(pk__in=ids, merged_into__isnull=True).prefetch_related('codes').order_by('sku'))
+    parts = list(catalog_lines().filter(pk__in=ids).prefetch_related('codes').order_by('sku'))
     labels = dict(OEMReference._meta.get_field('status').choices)
     rows = []
     for part in parts:
@@ -235,7 +236,7 @@ def citation(prefix, actor, extra):
 
 
 def locked_parts(rows):
-    return {part.pk: part for part in Part.objects.select_for_update().filter(pk__in=[row['id'] for row in rows], merged_into__isnull=True)}
+    return {part.pk: part for part in catalog_lines(queryset=Part.objects.select_for_update()).filter(pk__in=[row['id'] for row in rows])}
 
 
 def checked(part, make):

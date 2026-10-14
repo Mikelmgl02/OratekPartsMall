@@ -13,13 +13,19 @@ pair_lifecycle), queryset writers set both, and migration 0072 adds the CHECK. O
 line it retires becomes retirada, one it reactivates publicada.
 
 Readers: storefront_lines() for what customers see, catalog_lines() for the admin grid (publicada and retirada by default),
-lines_by_codigo() for a SKU string, canonical() wherever two lines are compared (order lines, cesta, quote drafts): a merged line is
-the line it was merged into.
+lines_by_codigo() for a SKU string, all_lines() where every estado counts (a codigo or code another line holds, retired, merged or
+not yet published: UNIQUE(sku) sees them all until S4), detail_line() for a detail endpoint (any estado; a write refuses a unificada
+line), and same_line()/canonical() wherever two lines are compared (order lines, cesta, quote drafts): a merged line is the line it was
+merged into. mall.test_refactor_guards keeps every Part.objects filter on active, merged_into or sku outside this module going through
+them, unless its line says why not (# estado: <reason>).
 """
 import uuid
 
+from django.db.models import Q
 from django.db.models.functions import Lower
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from rest_framework.exceptions import APIException
 
 ESTADOS = ('referencia', 'preparacion', 'publicada', 'rechazada', 'retirada', 'unificada')
 ORIGENES = ('catalogo', 'biblioteca', 'proveedor')
@@ -35,6 +41,12 @@ MAX_CHAIN = 10  # merged_into is depth 1 (I6); a longer chain is followed this f
 
 class LineStateError(ValueError):
     """A transition the lifecycle does not allow; the message is for the person who asked for it."""
+
+
+class LineMerged(APIException):
+    """A write to a unificada line: its codigo is frozen and its edits belong to the line it was merged into."""
+    status_code = 409
+    default_detail = 'Este SKU se agrupó en otro: edita el SKU en el que se agrupó.'
 
 
 def _lines(queryset=None):
@@ -57,18 +69,58 @@ def codigo_key(codigo):
 def storefront_lines(queryset=None):
     """The lines customers see: publicada. Until S10 it also asks for active and no merge, which the 0072 CHECKs make the same thing,
     so a database not yet backfilled (estado still at its default) shows nothing it did not show before."""
-    return _lines(queryset).filter(estado='publicada', active=True, merged_into__isnull=True)
+    return _lines(queryset).filter(storefront_q())
+
+
+def storefront_q(prefix=''):
+    """storefront_lines as a Q, through a relation when prefix names one ('part__')."""
+    return Q(**{f'{prefix}estado': 'publicada', f'{prefix}active': True, f'{prefix}merged_into__isnull': True})
 
 
 def catalog_lines(estados=CATALOG, queryset=None):
-    """The lines in these estados (the admin catalog: publicada and retirada). Unless unificada is asked for, merged lines are left
-    out by merged_into too, for the same reason as storefront_lines."""
+    """The lines in these estados (the admin catalog: publicada and retirada). merged_into decides unificada too, for the same reason
+    as storefront_lines: unless it is asked for, merged lines are left out, and when it is, a merged line counts whatever its estado."""
+    return _lines(queryset).filter(catalog_q(estados))
+
+
+def catalog_q(estados=CATALOG, prefix=''):
+    """catalog_lines as a Q, through a relation when prefix names one ('part__', 'parts__'): for counts and joins that reach lines
+    from another model."""
     estados = tuple(estados)
     unknown = sorted(set(estados) - set(ESTADOS))
     if unknown:
         raise ValueError(f'Estados de línea desconocidos: {", ".join(unknown)}')
-    rows = _lines(queryset).filter(estado__in=estados)
-    return rows if 'unificada' in estados else rows.filter(merged_into__isnull=True)
+    if 'unificada' in estados:
+        return Q(**{f'{prefix}estado__in': estados}) | Q(**{f'{prefix}merged_into__isnull': False})
+    return Q(**{f'{prefix}estado__in': estados, f'{prefix}merged_into__isnull': True})
+
+
+def all_lines(queryset=None):
+    """Every line, in every estado, unificada included: where any line counts, such as a codigo or code another line already holds
+    (UNIQUE(sku) covers every row until S4) or a writer that addresses the exact row a SKU string names. A reader that wants the line
+    a SKU names uses lines_by_codigos; one that lists lines uses storefront_lines or catalog_lines."""
+    return _lines(queryset).all()
+
+
+def on_storefront(line):
+    """Whether a loaded line is on sale (storefront_lines, in Python): publicada, and until S10 active and not merged as well."""
+    return line is not None and line.estado == 'publicada' and line.active and not line.merged_into_id
+
+
+def refuse_unificada(line):
+    """For a detail endpoint's write: a unificada line refuses (LineMerged, 409) naming the line it went into. Returns the line."""
+    if line.merged_into_id or line.estado == 'unificada':
+        target = canonical(line) if line.merged_into_id else None
+        raise LineMerged(f'El SKU {line.sku} se agrupó en {target.sku}: edita ese SKU.' if target and target.pk != line.pk else None)
+    return line
+
+
+def detail_line(pk, *, queryset=None, write=False):
+    """A line by id for a detail endpoint (the admin's catalog detail, technical sheet and images): any estado, so a line in
+    preparación keeps its sheet and images editable (MatchEditor), and 404 when no line has the id. write=True refuses a unificada
+    line (refuse_unificada)."""
+    line = get_object_or_404(all_lines(queryset), pk=pk)
+    return refuse_unificada(line) if write else line
 
 
 def lines_by_codigos(codigos, *, include=(), queryset=None):
@@ -86,7 +138,8 @@ def lines_by_codigos(codigos, *, include=(), queryset=None):
     rows = list(_lines(queryset).annotate(codigo_lower=Lower('sku')).filter(codigo_lower__in=[key.lower() for key in keys])
                 .select_related('merged_into'))
     targets = canonical_lines([row for row in rows if row.merged_into_id])
-    rank = {'publicada': 0, 'retirada': 1, 'unificada': 2, **{estado: 3 + i for i, estado in enumerate(include)}}
+    extra = [estado for estado in include if estado not in CATALOG]
+    rank = {'publicada': 0, 'retirada': 1, 'unificada': 2, **{estado: 3 + i for i, estado in enumerate(extra)}}
     rows = [(effective_estado(row), row) for row in rows]
     for estado, row in sorted(((e, r) for e, r in rows if e in wanted), key=lambda pair: (rank[pair[0]], pair[1].sku, str(pair[1].pk))):
         line = targets.get(row.pk) if estado == 'unificada' else row
@@ -164,7 +217,12 @@ def canonical_lines(lines):
 
 
 def same_line(a, b):
-    """Whether two lines (Parts or ids) are the same once merges are followed."""
+    """Whether two lines (Parts or ids) are the same once merges are followed. The same id is the same line without a query."""
+    first, second = str(getattr(a, 'pk', a) or ''), str(getattr(b, 'pk', b) or '')
+    if not first or not second:
+        return False
+    if first == second:
+        return True
     first, second = canonical_id(a), canonical_id(b)
     return first is not None and first == second
 

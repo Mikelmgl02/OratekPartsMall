@@ -183,7 +183,9 @@ class CatalogGroupingMergeTests(APITestCase):
         supplier = Account.objects.create(name='PROVEEDOR')
         item = SupplierItem.objects.create(supplier=supplier, supplier_invent_id='KEEP-ID', codigo='UNKNOWN', brand='', source='upload')
         self.merge(sources=[self.first.sku])
-        self.assertEqual(self.client.patch(f'/api/v1/management/catalog/{self.first.pk}/', {'active': True}, format='json').status_code, 404)
+        refused = self.client.patch(f'/api/v1/management/catalog/{self.first.pk}/', {'active': True}, format='json')
+        self.assertEqual(refused.status_code, 409)  # a unificada line is read only (mall.lines.detail_line)
+        self.assertIn(self.target.sku, refused.data['detail'])
         self.assertEqual(self.client.post('/api/v1/management/alternates/', {'part': str(self.first.pk), 'code': 'NEW'}, format='json').status_code, 400)
         self.assertEqual(self.client.patch(f'/api/v1/management/inventory/{item.pk}/',
                                            {'part': str(self.first.pk), 'matching_status': 'matched'}, format='json').status_code, 400)

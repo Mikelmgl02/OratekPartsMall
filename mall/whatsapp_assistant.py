@@ -397,9 +397,9 @@ def offer_items(account):
 
 
 def offers(turn, part_id):
-    from .models import Part
+    from .lines import storefront_lines
     session = turn.session
-    part = Part.objects.filter(pk=as_uuid(part_id), active=True, merged_into__isnull=True).first() if as_uuid(part_id) else None
+    part = storefront_lines().filter(pk=as_uuid(part_id)).first() if as_uuid(part_id) else None
     if part is None:
         turn.say(text('Ese repuesto ya no está en el catálogo. ¿Qué repuesto buscas?'))
         return

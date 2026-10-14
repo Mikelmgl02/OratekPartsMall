@@ -23,6 +23,7 @@ from rest_framework.views import APIView
 from .basket import MAX_QUANTITY, apply_changes, basket_data
 from .basket_models import BasketEvent, BasketItem
 from .deal_lifecycle import agreement
+from .lines import canonical
 from .models import SupplierItem
 from .request_models import SupplierRequest
 from .request_views import RequestConflict
@@ -30,12 +31,8 @@ from .views import account_for
 
 
 def current_part(part):
-    """The SKU an article is listed under now: a part merged since points at the one it went into."""
-    for _ in range(10):
-        if part.merged_into_id is None:
-            break
-        part = part.merged_into
-    return part
+    """The SKU an article is listed under now: a part merged since points at the one it went into (mall.lines.canonical)."""
+    return canonical(part)
 
 
 def missing_lines(order):

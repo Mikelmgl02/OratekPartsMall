@@ -21,6 +21,7 @@ from .pricing_models import (ClientPricingProfile, PriceList, PriceListEntry, Pr
 from .pricing_services import set_prices
 from .quote_draft_models import DealQuotationAudit, DealQuotationDraft, DealQuotationDraftLine, DealQuotationLineAudit
 from .request_models import DealQuotation, SupplierRequest
+from .test_factories import make_line
 
 TODAY = datetime.date(2026, 10, 5)
 GENERAL = {'id': uuid.UUID('00000000-0000-4000-8000-000000000001'), 'code': 'GENERAL', 'name': 'LISTA GENERAL', 'currency': 'USD'}
@@ -318,6 +319,20 @@ class PricedDraftTests(APITestCase):
     def lines(self, items, quantity=2):
         return [(SimpleNamespace(pk=index, supplier_item=item, supplier_item_id=item.pk, part_id=item.part_id, supplier_invent_id=item.supplier_invent_id,
                                  codigo=item.codigo, brand=item.brand, quantity=quantity), None) for index, item in enumerate(items)]
+
+    def test_an_item_a_merge_moved_keeps_its_price_and_one_moved_elsewhere_does_not(self):
+        general = self.general()
+        self.price(general, self.item_a, Decimal('10.00'))
+        lines = self.lines([self.item_a])  # captured under self.part
+        target = request_tests.SupplierRequestWorkflowTests.merge_part(self)
+        lines[0][0].supplier_item = SupplierItem.objects.get(pk=self.item_a.pk)
+        self.assertEqual((lines[0][0].part_id, lines[0][0].supplier_item.part_id), (self.part.pk, target.pk))
+        result = price_lines(self.supplier_a, self.client_account.pk, 'USD', lines)[0]
+        self.assertEqual((result.unit_price, result.codes), (Decimal('10.00'), []))
+        SupplierItem.objects.filter(pk=self.item_a.pk).update(part=make_line('OTRO-SKU'))
+        lines[0][0].supplier_item = SupplierItem.objects.get(pk=self.item_a.pk)
+        result = price_lines(self.supplier_a, self.client_account.pk, 'USD', lines)[0]
+        self.assertEqual((result.unit_price, result.codes), (None, ['identity_changed']))
 
     def test_bulk_loader_uses_a_constant_number_of_queries(self):
         general = self.general()

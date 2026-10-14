@@ -11,6 +11,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from .catalog_classification import generate_json, provider_configuration, ClassificationProviderError
 from .catalog_identity import company_reference
+from .lines import storefront_lines
 from .management import IsSuperuser
 from .models import OEMLookupCache, Part
 
@@ -150,5 +151,5 @@ class CatalogOEMLookup(APIView):
     def post(self, request, pk):
         data = OEMLookupRequest(data=request.data)
         data.is_valid(raise_exception=True)
-        part = get_object_or_404(Part.objects.prefetch_related('codes'), pk=pk, active=True, merged_into__isnull=True)
+        part = get_object_or_404(storefront_lines(Part.objects.prefetch_related('codes')), pk=pk)
         return Response(lookup_oem(part, **data.validated_data))

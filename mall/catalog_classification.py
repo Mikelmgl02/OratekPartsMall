@@ -25,6 +25,7 @@ from .ai_budget import record_provider_call
 from .classification_models import CatalogClassificationState, CatalogClassificationSuggestion
 from .catalog_import import ImportResponse
 from .management import IsSuperuser
+from .lines import all_lines, catalog_lines, storefront_lines
 from .models import Part, PartCode
 from .catalog_families import (normalized_reference, supplier_base, supplier_suffix_match,
                                family_candidates, description_text)
@@ -142,7 +143,7 @@ def group_row(group, part=None):
 def candidate_context(groups, source_skus):
     # Retrieve across the entire upload so equivalent rows in different import
     # batches can still be proposed together. Only bounded context reaches AI.
-    existing = {part.sku: part for part in Part.objects.filter(sku__in=groups).only('sku', 'is_OEM', 'name', 'description', 'category', 'subcategory')}
+    existing = {part.sku: part for part in all_lines().filter(sku__in=groups).only('sku', 'is_OEM', 'name', 'description', 'category', 'subcategory')}
     staged = {sku: group_row(group, existing.get(sku)) for sku, group in groups.items()}
     token_index = {}
     prefix_index = {}
@@ -154,7 +155,7 @@ def candidate_context(groups, source_skus):
     source = [staged[sku] for sku in source_skus if sku in staged]
     bases = {base for sku in staged if (base := supplier_base(sku))}
     aliases = {code['code'] for row in source for code in row['codes']} | {row['sku'] for row in source} | {supplier_base(row['sku']) for row in source}
-    catalogue = Part.objects.filter(active=True, merged_into__isnull=True).filter(Q(sku__in=aliases) | Q(codes__code__in=aliases)).distinct().order_by('sku').prefetch_related('codes')
+    catalogue = storefront_lines().filter(Q(sku__in=aliases) | Q(codes__code__in=aliases)).distinct().order_by('sku').prefetch_related('codes')
     catalogue_rows = {part.sku: {'sku': part.sku, 'row': None, 'name': part.name,
                                'is_OEM': part.is_OEM,
                                'description': part.description[:2000], 'category': part.category,
@@ -166,14 +167,14 @@ def candidate_context(groups, source_skus):
     for row in source:
         literal_refs.update(re.findall(r'\b[A-Z0-9]+(?:[-./][A-Z0-9]+)+\b', f"{row['name']} {row['description']}".upper()))
     if literal_refs:
-        for part in Part.objects.filter(merged_into__isnull=True, sku__in=literal_refs).order_by('sku').prefetch_related('codes')[:AI_BATCH_SIZE * MAX_CANDIDATES]:
+        for part in catalog_lines().filter(sku__in=literal_refs).order_by('sku').prefetch_related('codes')[:AI_BATCH_SIZE * MAX_CANDIDATES]:
             catalogue_rows[part.sku] = {'sku': part.sku, 'row': None, 'name': part.name,
                                       'is_OEM': part.is_OEM,
                                       'description': part.description[:2000], 'category': part.category,
                                       'subcategory': part.subcategory,
                                       'codes': [{'brand': code.brand, 'code': code.code, 'ref_type': code.ref_type, 'reference_source': code.reference_source} for code in sorted(part.codes.all(), key=lambda code: code.pk)[:40]]}
     rows = {**catalogue_rows, **staged}
-    blocked = set(Part.objects.filter(sku__in=bases).values_list('sku', flat=True)) | set(PartCode.objects.filter(code__in=bases).values_list('code', flat=True))
+    blocked = set(all_lines().filter(sku__in=bases).values_list('sku', flat=True)) | set(PartCode.objects.filter(code__in=bases).values_list('code', flat=True))
     families = family_candidates(rows, blocked)
     family_targets = {member['sku']: base for base, family in families.items() for member in family['sources']}
     rows.update({base: family['target'] for base, family in families.items()})
@@ -504,9 +505,9 @@ def apply_review(user, pk, decisions):
             seen.add(sku)
             if target != sku and target not in groups and target not in proposals[sku].candidate_skus:
                 raise ValidationError('El SKU de destino debe pertenecer a esta importación o a los candidatos mostrados.')
-            if not target or (target not in groups and target not in proposed_parents and not Part.objects.filter(sku=target).exists()):
+            if not target or (target not in groups and target not in proposed_parents and not all_lines().filter(sku=target).exists()):
                 raise ValidationError('El SKU de destino ya no está disponible. Revisa la agrupación.')
-            if target != sku and Part.objects.filter(sku=sku).exists():
+            if target != sku and all_lines().filter(sku=sku).exists():
                 raise ValidationError(f'El SKU {sku} ya existe en el catálogo. Su fusión requiere una revisión manual para conservar sus vínculos.')
             if target != sku and len(sku) > 120:
                 raise ValidationError('El SKU de origen supera la longitud de un código alterno y no se puede agrupar.')

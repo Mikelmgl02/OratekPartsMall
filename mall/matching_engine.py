@@ -25,7 +25,7 @@ from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 from .catalog_families import normalized_reference, supplier_base, application, family_candidates
 from .catalog_suffixes import HEAD_SYN
-from .lines import create_line
+from .lines import all_lines, create_line, storefront_lines
 from .models import Account, Part, PartCode, SupplierItem, SupplierCodeMapping, MatchingCase, MatchingDecision
 from .matching_queue import matching_work
 from .oem_links import reach_index, same_make
@@ -166,7 +166,7 @@ def noise_words():
 
 class MatchIndex:
     def __init__(self):
-        self.parts = {str(p.pk): part_row(p) for p in Part.objects.filter(active=True, merged_into__isnull=True).prefetch_related('codes')}
+        self.parts = {str(p.pk): part_row(p) for p in storefront_lines().prefetch_related('codes')}
         self.by_sku = {p['sku']: p for p in self.parts.values()}
         self.codes = defaultdict(set)
         self.literal_codes = defaultdict(set)
@@ -501,9 +501,9 @@ def reconcile_items(index, *, stats=None):
 
 
 def catalog_families():
-    rows = {p.sku: part_row(p) for p in Part.objects.filter(active=True, merged_into__isnull=True).prefetch_related('codes')}
+    rows = {p.sku: part_row(p) for p in storefront_lines().prefetch_related('codes')}
     bases = {supplier_base(sku) for sku in rows} - {''}
-    blocked = set(Part.objects.filter(sku__in=bases).exclude(active=True, merged_into__isnull=True).values_list('sku', flat=True))
+    blocked = set(all_lines().filter(sku__in=bases).values_list('sku', flat=True)) - set(rows)  # a base a line off sale holds
     blocked |= set(PartCode.objects.filter(code__in=bases).values_list('code', flat=True)) - set(rows)
     return family_candidates(rows, blocked)
 
@@ -524,7 +524,7 @@ def apply_family(case, *, actor, automatic=False, selected_target=None):
         current_target = Part.objects.select_for_update().get(pk=target['id'])
         if part_row(current_target) != target:
             raise ValidationError('El SKU padre cambió. Actualiza el análisis.')
-    elif Part.objects.filter(sku=case.target_sku).exists():
+    elif all_lines().filter(sku=case.target_sku).exists():
         raise ValidationError('El SKU padre ya existe. Actualiza el análisis.')
     locked = MatchingCase.objects.select_for_update().get(pk=case.pk)
     if locked.status != 'review' or locked.fingerprint != case.fingerprint:
@@ -624,7 +624,7 @@ def reconcile_catalog_references(actor):
                   not spec_conflict(source['description'], target['description']) and
                   (target['id'] in direct or same_spec(source['description'], target['description'])))
         # Refresh snapshots when a preceding source merged into this target.
-        candidates = [part_row(p) for p in Part.objects.filter(pk__in=ids, active=True, merged_into__isnull=True).prefetch_related('codes').order_by('sku')]
+        candidates = [part_row(p) for p in storefront_lines().filter(pk__in=ids).prefetch_related('codes').order_by('sku')]
         if not candidates:
             continue
         case = save_case(key=f'catalog-reference:{source["id"]}', kind='catalog_reference', sources=[source],
@@ -661,7 +661,7 @@ def create_supplier_families():
     for base, items in groups.items():
         if len({i.codigo for i in items}) < 2 or not all(same_spec(i.description, items[0].description) for i in items):
             continue
-        if Part.objects.filter(Q(sku=base) | Q(sku__in=[i.codigo for i in items])).exists() or PartCode.objects.filter(code=base).exists():
+        if all_lines().filter(Q(sku=base) | Q(sku__in=[i.codigo for i in items])).exists() or PartCode.objects.filter(code=base).exists():
             continue
         with transaction.atomic():
             # Recheck under supplier locks before creating anything; no network calls here.

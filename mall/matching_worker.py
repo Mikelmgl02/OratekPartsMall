@@ -12,7 +12,8 @@ from .matching_runner import WorkerStopping, checkpoint, no_cut
 from .matching_engine import (MatchIndex, create_supplier_families, reconcile_catalog,
                               reconcile_items)
 from .catalog_classification import call_provider, provider_configuration, ClassificationProviderError
-from .models import User, Part, SupplierItem
+from .lines import storefront_lines
+from .models import User, SupplierItem
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +117,7 @@ def _process_queue(*, force=False, use_ai=True):
                 actor.save(update_fields=['password'])
             if actor.is_active or actor.has_usable_password():
                 raise RuntimeError('Matching service identity must be disabled.')
-            parts = Part.objects.filter(active=True, merged_into__isnull=True)
+            parts = storefront_lines()
             summary = {'catalog_count': parts.count(), 'oem_skus': parts.filter(is_OEM=True).count(),
                        'supplier_total': SupplierItem.objects.count(),
                        'supplier_already_matched': SupplierItem.objects.filter(matching_status='matched').count(),
@@ -140,8 +141,8 @@ def _process_queue(*, force=False, use_ai=True):
                 summary['ai_analyzed'] = analyze_ambiguous(stats=summary) if use_ai else 0
             summary['review'] = MatchingCase.objects.filter(status='review').count()
             summary['unmatched'] = MatchingCase.objects.filter(status='unmatched').count()
-            summary['oem_skus'] = Part.objects.filter(active=True, merged_into__isnull=True, is_OEM=True).count()
-            summary['non_oem_skus'] = Part.objects.filter(active=True, merged_into__isnull=True, is_OEM=False).count()
+            summary['oem_skus'] = storefront_lines().filter(is_OEM=True).count()
+            summary['non_oem_skus'] = storefront_lines().filter(is_OEM=False).count()
         with no_cut():  # the stop deadline never lands between the last stage and the pass's record
             MatchingQueue.objects.filter(pk=1, lease=lease).update(completed=revision, lease=None, lease_until=None,
                 finished_at=timezone.now(), summary=summary, error='', stage='completed')

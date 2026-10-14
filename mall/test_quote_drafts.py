@@ -16,6 +16,7 @@ from .pricing_models import PricingAuditEvent, SupplierPricingSettings
 from .quote_draft_models import DealQuotationDraft, DealQuotationDraftLine
 from .quote_drafts import CONFLICT_DETAIL, NOT_EDITABLE_DETAIL
 from .request_models import DealCommand, DealEvent, DealQuotation, SupplierRequest
+from .test_factories import make_line
 
 # Fingerprints of legacy deal payloads computed before draft_version existed; in-flight retries must keep matching them.
 LEGACY_QUOTE = {'operation_id': '0b0f5c7e-1d2a-4c3b-9e8f-7a6b5c4d3e2f', 'expected_version': 2, 'action': 'quote', 'currency': 'PAB',
@@ -39,6 +40,7 @@ class QuoteDraftTests(APITestCase):
     action = deal_tests.DealWorkflowTests.action
     quote = deal_tests.DealWorkflowTests.quote
     drafted = deal_tests.DealWorkflowTests.drafted
+    merge_part = request_tests.SupplierRequestWorkflowTests.merge_part
 
     def draft_url(self, order, account=None, suffix=''):
         return f'/api/v1/accounts/{(account or self.supplier_a).pk}/requests/{order.pk}/draft/{suffix}'
@@ -372,6 +374,21 @@ class QuoteDraftTests(APITestCase):
                 counts.append(len(queries))
             with self.subTest(state):
                 self.assertEqual(counts[0], counts[1])
+
+    def test_an_item_a_merge_moved_is_still_the_order_lines_and_one_moved_elsewhere_is_not(self):
+        order = self.reviewed()
+        target = self.merge_part()
+        self.assertEqual((SupplierItem.objects.get(pk=self.item_a.pk).part_id, set(order.lines.values_list('part_id', flat=True))),
+                         (target.pk, {self.part.pk}))
+        checked = check_lines((line, 1) for line in order.lines.select_related('supplier_item'))
+        self.assertEqual([entry['identity_ok'] for entry in checked], [True, True])
+        line = self.by_code(self.get_draft(order))['58411-1R000-G']
+        self.assertEqual(line['stock']['available_quantity'], 8)
+        self.assertNotIn('identity_changed', [item['code'] for item in line['exceptions']])
+        SupplierItem.objects.filter(pk=self.item_a.pk).update(part=make_line('OTRO-SKU'))
+        line = self.by_code(self.get_draft(order))['58411-1R000-G']
+        self.assertIsNone(line['stock'])
+        self.assertIn('identity_changed', [item['code'] for item in line['exceptions']])
 
 
 @skipUnless(connection.vendor == 'postgresql', 'Requires PostgreSQL row locks.')

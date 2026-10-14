@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .management import IsSuperuser, ManagedPartSerializer, UppercaseCharField
+from .lines import all_lines, on_storefront, storefront_lines
 from .models import Alternate, CatalogMerge, Part, PartCode, PartImage, SupplierItem
 from .wishlist import merge_wishlists
 from .catalog_families import family_candidates, supplier_base
@@ -68,7 +69,8 @@ def _merge_alternates(source_ids, target):
 def merge_catalog_parts(*, actor, target_sku, source_skus, category='', subcategory='', create_target=False, assistant_job=None):
     """Preserve the canonical UUID, supplier identities, and every stock entry."""
     requested = {target_sku, *source_skus}
-    parts = {part.sku: part for part in Part.objects.select_for_update().filter(sku__in=requested).order_by('pk')}
+    # Every estado: the exact rows the SKUs name, so the checks below refuse a merged or retired one by name.
+    parts = {part.sku: part for part in all_lines(Part.objects.select_for_update()).filter(sku__in=requested).order_by('pk')}
     missing = sorted(requested - set(parts) - ({target_sku} if create_target else set()))
     if missing:
         raise ValidationError({'detail': f'Estos SKU ya no están en el catálogo: {", ".join(missing)}.'})
@@ -79,8 +81,7 @@ def merge_catalog_parts(*, actor, target_sku, source_skus, category='', subcateg
         if PartCode.objects.filter(code=target_sku).exists():
             raise ValidationError('El código base ya es un alterno de otro SKU. Revisa su asignación.')
         family_rows = {part.sku: {'sku': part.sku, 'description': part.description, 'is_OEM': part.is_OEM} for part in
-                       Part.objects.select_for_update().filter(active=True, merged_into__isnull=True,
-                                                               sku__startswith=target_sku + '-').order_by('pk')}
+                       storefront_lines(Part.objects.select_for_update()).filter(sku__startswith=target_sku + '-').order_by('pk')}
         family = family_candidates(family_rows).get(target_sku)
         if not family or not set(source_skus).issubset({row['sku'] for row in family['sources']}):
             raise ValidationError('El código base requiere al menos dos variantes con descripciones compatibles para crear el SKU padre.')
@@ -88,7 +89,7 @@ def merge_catalog_parts(*, actor, target_sku, source_skus, category='', subcateg
         parts[target_sku] = target
     else:
         target = parts[target_sku]
-    if not target.active or target.merged_into_id:
+    if not on_storefront(target):
         raise ValidationError({'detail': 'Selecciona un SKU principal activo que todavía no esté unificado.'})
     sources, already = [], []
     for sku in source_skus:
@@ -97,7 +98,7 @@ def merge_catalog_parts(*, actor, target_sku, source_skus, category='', subcateg
             already.append(source)
         elif source.merged_into_id:
             raise ValidationError({'detail': f'El SKU {sku} ya fue unificado con otro SKU. Revisa el catálogo actual.'})
-        elif not source.active:
+        elif not on_storefront(source):
             raise ValidationError({'detail': f'El SKU {sku} está inactivo. Actívalo antes de unificarlo.'})
         else:
             sources.append(source)
@@ -126,7 +127,7 @@ def merge_catalog_parts(*, actor, target_sku, source_skus, category='', subcateg
         for row in PartCode.objects.select_for_update().filter(code__in=identifiers).exclude(part_id__in=participant_ids).order_by('pk'):
             if any(row.code == code and (not brand or not row.brand or brand == row.brand) for brand, code in incoming):
                 raise ValidationError({'detail': f'El código {row.code} pertenece a otro SKU. Corrige su asignación antes de unificar.'})
-        other_skus = Part.objects.select_for_update().filter(sku__in=identifiers).exclude(pk__in=participant_ids).exclude(merged_into=target).order_by('pk')
+        other_skus = all_lines(Part.objects.select_for_update()).filter(sku__in=identifiers).exclude(pk__in=participant_ids).exclude(merged_into=target).order_by('pk')
         collision = other_skus.first()
         if collision:
             raise ValidationError({'detail': f'El código {collision.sku} identifica otro SKU. Corrige su asignación antes de unificar.'})

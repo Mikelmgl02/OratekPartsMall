@@ -30,6 +30,7 @@ from .catalog_identity import company_reference
 from .catalog_split_models import CatalogSeparation, CatalogSplit
 from .management import IsSuperuser, ManagedPartSerializer, catalog_queryset, with_merged_counts
 from .media_serializers import PartImageSerializer
+from .lines import catalog_lines
 from .models import (Account, CatalogIdentityChange, CatalogMerge, ItemApplication, MatchingDecision, Part, PartCode, PartImage,
                      PartSpecification, SupplierInventoryImportJob, SupplierItem)
 from .oem_reference_models import PartOEMLink
@@ -482,10 +483,10 @@ class CatalogMergedList(generics.ListAPIView):
         return super().get(request, *args, **kwargs)
 
     def get_queryset(self):
-        grouped = Part.objects.filter(merged_into__isnull=False)
+        grouped = catalog_lines(('unificada',))
         children = grouped.filter(merged_into=OuterRef('pk')).order_by().values('merged_into').annotate(total=Count('pk')).values('total')[:1]
         merges = CatalogMerge.objects.filter(target=OuterRef('pk'))
-        queryset = Part.objects.filter(merged_into__isnull=True, pk__in=grouped.values('merged_into')).annotate(
+        queryset = catalog_lines().filter(pk__in=grouped.values('merged_into')).annotate(
             merged_count=Coalesce(Subquery(children, output_field=IntegerField()), 0),
             last_merged_at=Subquery(merges.order_by('-created_at').values('created_at')[:1]),
             automatic=Exists(merges.filter(actor__username=SERVICE_ACCOUNT)))

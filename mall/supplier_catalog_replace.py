@@ -69,12 +69,13 @@ def filed_codes(job):
 
 def held(ref, prefix):
     """Something besides the catalog keeps the number once the catalog's source goes."""
+    from .lines import on_storefront
     if ref.status == 'disputed' or ref.notes.strip() or ref.superseded_by_id or ref.created_by_id or ref.updated_by_id:
         return True
     if ref.supersedes.exists() or ref.alternos.exists():
         return True
     for link in ref.part_links.exclude(source='sku_name').select_related('part'):
-        if split(link.citations, prefix)[1] or not link.part.active or link.part.merged_into_id:
+        if split(link.citations, prefix)[1] or not on_storefront(link.part):
             return True
     return False
 
@@ -109,6 +110,7 @@ def retype(ref, source, row):
 def plan(data):
     """Everything an apply would change, decided read-only: the import job for FILE and the changes per table."""
     from .catalog_suffixes import suffix_table
+    from .lines import catalog_q, storefront_q
     from .models import PartCode
     from .oem_finder import OEMFinder, load_snapshot
     from .oem_reference_models import OEMCrossReference, OEMReferenceSource, PartOEMLink, citation_list, compact, manufacturer_name
@@ -161,7 +163,7 @@ def plan(data):
         else:
             changes['codes'].append({'action': 'retire', 'row': row, 'citations': []})
 
-    for link in (PartOEMLink.objects.filter(source='catalog', citations__icontains=prefix, part__active=True, part__merged_into__isnull=True)
+    for link in (PartOEMLink.objects.filter(storefront_q('part__'), source='catalog', citations__icontains=prefix)
                  .select_related('reference', 'part').order_by('part__sku', 'reference__manufacturer', 'reference__code')):
         mine, others = split(link.citations, prefix)
         if not mine:
@@ -188,7 +190,7 @@ def plan(data):
             printed_by[(manufacturer_name(job.brand), compact(item['brand_code']))].add(item['brand_code'])
             for xr in item.get('cross_refs', []):
                 printed_by[(manufacturer_name(xr.get('brand') or ''), compact(xr.get('code') or ''))].add(item['brand_code'])
-    for code in (PartCode.objects.filter(ref_type='company', reference_source__icontains=prefix, part__merged_into__isnull=True)
+    for code in (PartCode.objects.filter(catalog_q(prefix='part__'), ref_type='company', reference_source__icontains=prefix)
                  .select_related('part').order_by('part__sku', 'brand', 'code')):
         key = (manufacturer_name(code.brand), compact(code.code))
         mine = sorted(job.items[n]['brand_code'] for n in items_of.get(str(code.part_id), ()))

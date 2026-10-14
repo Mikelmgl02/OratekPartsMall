@@ -3,14 +3,16 @@
 Lock order (the reservation step, mall.stock_reservations): the SupplierRequest row first (callers already hold it), then KEY SHARE on
 the supplier's and client's Account rows, then SupplierItem rows in pk order. Never take an Account FOR UPDATE after the order lock.
 """
+from .lines import same_line
 from .models import SupplierItem
 from .quote_draft_models import DealQuotationAudit, DealQuotationLineAudit
 
 
 def line_item_identity_ok(line, supplier_id):
-    """The captured order line still points at the same supplier item, part, code and brand, and it is still matched."""
+    """The captured order line still points at the same supplier item, part (once merges are followed: an item moved to the SKU its
+    part was grouped into is the same), code and brand, and it is still matched."""
     item = line.supplier_item
-    return (item.supplier_id == supplier_id and item.part_id == line.part_id and item.supplier_invent_id == line.supplier_invent_id
+    return (item.supplier_id == supplier_id and same_line(item.part_id, line.part_id) and item.supplier_invent_id == line.supplier_invent_id
             and item.codigo == line.codigo and item.brand == line.brand and item.matching_status == 'matched')
 
 

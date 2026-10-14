@@ -3,11 +3,12 @@ import json
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
 from django.db.models import Q
-from .models import Account, InventoryUpdate, Part, StockEntry, SupplierItem
+from .lines import storefront_lines
+from .models import Account, InventoryUpdate, StockEntry, SupplierItem
 from .matching_queue import enqueue_matching
 
 def matching_part(codigo, brand):
-    matches = list(Part.objects.filter(active=True, merged_into__isnull=True).filter(
+    matches = list(storefront_lines().filter(
         Q(sku=codigo) | Q(codes__code=codigo, codes__brand__in=[brand, ''])
     ).distinct()[:2])
     # Ambiguous legacy code mappings require review instead of arbitrary matching.

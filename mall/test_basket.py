@@ -5,6 +5,7 @@ from rest_framework.test import APITestCase
 from .basket_models import BasketEvent, BasketItem
 from .models import Membership, Role, User
 from .request_models import SupplierRequestLine
+from .test_factories import make_line
 from . import test_requests as request_tests
 
 
@@ -17,6 +18,7 @@ class BasketTests(APITestCase):
     payload = request_tests.SupplierRequestWorkflowTests.payload
     submit = request_tests.SupplierRequestWorkflowTests.submit
     url = request_tests.SupplierRequestWorkflowTests.url
+    merge_part = request_tests.SupplierRequestWorkflowTests.merge_part
 
     def basket(self, account=None):
         return f'/api/v1/accounts/{(account or self.client_account).pk}/basket/'
@@ -97,6 +99,18 @@ class BasketTests(APITestCase):
         self.assertEqual((line['quantity'], line['changed'], line['offer']['selected_item']['codigo'], line['offer']['selected_item']['brand']),
                          (3, False, '58411-1R000-X', 'OTRA'))
         self.assertEqual(self.change((self.item_a, 1, 'add', {'expected_part_id': str(uuid.uuid4())})).status_code, 409)
+
+    def test_a_merge_keeps_the_cesta_line_and_the_sku_an_article_was_chosen_under(self):
+        self.change((self.item_a, 2, 'add', {'expected_part_id': str(self.part.pk)}))
+        self.merge_part()
+        [line] = self.client.get(self.basket()).data['lines']
+        self.assertEqual((line['changed'], line['available']), (False, True))  # its article moved with the SKU it was added under
+        response = self.change((self.item_a, 1, 'add', {'expected_part_id': str(self.part.pk)}),  # an old page: the merged SKU
+                               (self.item_b, 1, 'add', {'expected_part_id': str(self.part.pk)}))
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(self.quantities(response), {('PROVEEDOR A', '58411-1R000-G'): 3, ('PROVEEDOR B', '58411-1R000-G'): 1})
+        other = make_line('OTRO-SKU')
+        self.assertEqual(self.change((self.item_a2, 1, 'add', {'expected_part_id': str(other.pk)})).status_code, 409)
 
     def test_sending_takes_the_sent_units_out_and_leaves_what_was_added_since(self):
         self.change((self.item_a, 3, 'add'), (self.item_a2, 2, 'add'), (self.item_b, 6, 'add'))

@@ -21,6 +21,7 @@ from rest_framework.views import APIView
 from .ai_budget import FEATURE_LABELS, micro_usd
 from .analytics_models import UsageEvent, UsageVisit
 from .catalog_availability import catalog_availability
+from .lines import storefront_lines
 from .management import IsSuperuser
 from .models import Part, SupplierItem, User
 from .pricing_models import PricingAuditEvent
@@ -86,7 +87,7 @@ class UsageEvents(APIView):
         if data['kind'] == 'search':
             result_count = catalog_parts(data['term']).count()
         if 'part_id' in data:
-            part = get_object_or_404(Part, pk=data['part_id'], active=True, merged_into__isnull=True)
+            part = get_object_or_404(storefront_lines(), pk=data['part_id'])
         if data['kind'] == 'basket_add':
             account_for(request.user, account.pk, 'client')
             item = get_object_or_404(SupplierItem.objects.filter(part=part, matching_status='matched',

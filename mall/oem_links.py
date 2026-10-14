@@ -97,9 +97,9 @@ def name_targets(parts, table=None):
 def refresh_name_links(part_ids=None, *, apply=True):
     """Bring the name links of these SKUs (every canonical SKU by default) in line with their codes: the missing ones are added and the
     stale ones dropped, a grouped (merged) SKU's included. Returns {'skus', 'links', 'new', 'removed'}."""
-    from .models import Part
+    from .lines import catalog_lines
     ids = None if part_ids is None else [str(pk) for pk in part_ids]
-    parts = Part.objects.filter(merged_into__isnull=True)
+    parts = catalog_lines()  # publicada and retirada: a library number is its own referencia line, a line in preparación has no name yet
     links = PartOEMLink.objects.filter(source='sku_name')
     rows, have = [], {}
     for chunk in ([None] if ids is None else chunks(ids)):

@@ -31,7 +31,8 @@ from .catalog_classification import (PROVIDER_TIMEOUT, ClassificationConflict, C
 from .category_suggestions import taxonomy
 from .matching_engine import NO_CODE_EVIDENCE
 from .matching_models import MatchingCase
-from .models import Part, SupplierItem
+from .lines import storefront_lines
+from .models import SupplierItem
 from .sku_proposal_models import SkuProposal
 from .sku_proposals import PLACEHOLDER_BRANDS, ai_fill, catalog_owners, clean, duplicate_checks, vehicle_makes
 from .sku_review_models import SkuReviewRun, SkuReviewVerdict
@@ -132,7 +133,7 @@ def siblings(proposal, item_ids):
                                        .values_list('codigo', 'description', 'brand').order_by('codigo')[:SIBLINGS * 3]):
         if not placeholder(description) and len(found) < SIBLINGS:
             found.append({'codigo': codigo, 'descripcion': clean(description)[:120], 'marca': clean(brand)})
-    for sku, description, category, subcategory in (Part.objects.filter(active=True, merged_into__isnull=True, sku__contains=number)
+    for sku, description, category, subcategory in (storefront_lines().filter(sku__contains=number)
                                                    .values_list('sku', 'description', 'category', 'subcategory').order_by('sku')[:3]):
         found.append({'codigo': sku, 'descripcion': clean(description)[:120], 'catalogo': True,
                       **({'tipo': f'{category} / {subcategory}'} if category and subcategory else {})})
@@ -148,7 +149,7 @@ def candidates(proposal):
                  for pk, sku, description in SkuProposal.objects.filter(status='pending', sku__istartswith=base).exclude(pk=proposal.pk)
                  .values_list('pk', 'sku', 'description').order_by('sku')[:CANDIDATES]]
         found += [{'kind': 'part', 'id': str(pk), 'sku': sku, 'descripcion': clean(description)[:120]}
-                  for pk, sku, description in Part.objects.filter(active=True, merged_into__isnull=True, sku__istartswith=base)
+                  for pk, sku, description in storefront_lines().filter(sku__istartswith=base)
                   .values_list('pk', 'sku', 'description').order_by('sku')[:CANDIDATES - len(found)]] if len(found) < CANDIDATES else []
     seen = {row['id'] for row in found}
     return found + [row for row in word_hints(proposal) if row['id'] not in seen][:HINTS]
@@ -162,7 +163,7 @@ def word_hints(proposal):
                  .order_by('key').values_list('candidates', flat=True)):
         ids += [row['id'] for row in rows if row.get('id') and row['id'] not in ids]
     live = {str(pk): (sku, description) for pk, sku, description in
-            Part.objects.filter(pk__in=ids, active=True, merged_into__isnull=True).values_list('pk', 'sku', 'description')} if ids else {}
+            storefront_lines().filter(pk__in=ids).values_list('pk', 'sku', 'description')} if ids else {}
     return [{'kind': 'part', 'id': pk, 'sku': live[pk][0], 'descripcion': clean(live[pk][1])[:120]} for pk in ids if pk in live]
 
 
@@ -312,7 +313,7 @@ def vocabulary():
     """How often each word appears in our catalog's and suppliers' descriptions: a word used this much is a real word."""
     from collections import Counter
     counts = Counter()
-    for description in (*Part.objects.filter(active=True, merged_into__isnull=True).exclude(description='').values_list('description', flat=True),
+    for description in (*storefront_lines().exclude(description='').values_list('description', flat=True),
                         *SupplierItem.objects.exclude(description='').values_list('description', flat=True)):
         counts.update(set(WORD.findall(clean(description))))
     return counts

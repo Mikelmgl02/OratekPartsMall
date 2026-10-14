@@ -1,8 +1,10 @@
-"""Guards the inventory refactor keeps on (plan §1.4): the models equal the migrations, migrations import no app code, and the test
-settings keep the outside services off, guard the network and never drop a real database. The later stages add theirs (Part filters on estado outside lines.py, Reference deletes outside
-references.py, new PartCode uses, bulk writes outside the choke points)."""
+"""Guards the inventory refactor keeps on (plan §1.4): the models equal the migrations, migrations import no app code, the test
+settings keep the outside services off, guard the network and never drop a real database, and (S1) every Part.objects filter on
+active, merged_into or the SKU goes through mall.lines. The later stages add theirs (Reference deletes outside references.py, new
+PartCode uses, bulk writes outside the choke points)."""
 import ast
 import io
+import re
 import socket
 from contextlib import redirect_stderr
 from pathlib import Path
@@ -17,7 +19,8 @@ from config.test_runner import unsafe_test_name
 
 from .refactor import output
 
-MIGRATIONS = Path(__file__).resolve().parent / 'migrations'
+APP = Path(__file__).resolve().parent
+MIGRATIONS = APP / 'migrations'
 
 
 class MigrationGuardTests(TestCase):
@@ -110,3 +113,94 @@ class OutputTests(SimpleTestCase):
                 self.assertEqual(output.stage_dir('s2a'), Path('/app/output/refactor/s2a'))
         with patch.dict('os.environ', {'REFACTOR_OUTPUT': '/app/output/refactor/s1/rehearsal-20261013-120000/output-refactor/s1'}):
             self.assertEqual(output.manifest_path('s1'), Path('/app/output/refactor/s1/rehearsal-20261013-120000/output-refactor/s1/manifest.jsonl'))
+
+
+# --- S1: Part readers go through mall.lines ------------------------------------------------------------------------------------------
+
+LIFECYCLE_LOOKUPS = {'active', 'merged_into__isnull', 'sku', 'sku__in', 'sku__iexact', 'sku__iregex'}
+QUERY_METHODS = {'filter', 'exclude', 'get', 'get_or_create', 'update_or_create'}
+SHORTCUTS = {'get_object_or_404', 'get_list_or_404'}
+REASON = re.compile(r'#\s*estado:\s*\S')
+
+
+def part_manager(node):
+    """Whether an expression is a chain that starts at Part.objects (Part.objects.select_for_update().filter(...) included)."""
+    while isinstance(node, (ast.Call, ast.Attribute, ast.Subscript)):
+        if isinstance(node, ast.Attribute) and node.attr == 'objects':
+            base = node.value
+            return (isinstance(base, ast.Name) and base.id == 'Part') or (isinstance(base, ast.Attribute) and base.attr == 'Part')
+        node = node.func if isinstance(node, ast.Call) else node.value
+    return False
+
+
+def lookups(call):
+    """The lookups a query call names: its keyword arguments (not defaults) and those of every Q() among its arguments."""
+    found = {keyword.arg for keyword in call.keywords if keyword.arg not in (None, 'defaults', 'create_defaults')}
+    for argument in call.args:
+        for node in ast.walk(argument):
+            if isinstance(node, ast.Call) and getattr(node.func, 'id', getattr(node.func, 'attr', None)) == 'Q':
+                found |= {keyword.arg for keyword in node.keywords if keyword.arg}
+    return found
+
+
+def part_filters(source):
+    """[(line, lookups)] for each Part.objects query (filter, exclude, get...; get_object_or_404 on Part) in source that filters on
+    active, merged_into__isnull or the SKU and whose lines carry no '# estado: <reason>'."""
+    rows, text = [], source.splitlines()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr in QUERY_METHODS and part_manager(func.value):
+            names = lookups(node)
+        elif getattr(func, 'id', None) in SHORTCUTS and node.args and (
+                (isinstance(node.args[0], ast.Name) and node.args[0].id == 'Part') or part_manager(node.args[0])):
+            names = lookups(node)  # a Part.objects queryset given to it is a query call of its own
+        else:
+            continue
+        banned = names & LIFECYCLE_LOOKUPS
+        if banned and not any(REASON.search(line) for line in text[node.lineno - 1:node.end_lineno]):
+            rows.append((node.lineno, sorted(banned)))
+    return sorted(rows)
+
+
+def app_modules():
+    """The app's modules a reader can live in: tests, migrations and mall.lines itself left out."""
+    for path in sorted(APP.rglob('*.py')):
+        relative = path.relative_to(APP)
+        if not (relative.name.startswith('test_') or relative.name == 'tests.py' or 'migrations' in relative.parts or relative == Path('lines.py')):
+            yield relative, path
+
+
+class LineReaderGuardTests(SimpleTestCase):
+    def test_part_readers_take_their_lines_from_mall_lines(self):
+        """A Part.objects filter on active, merged_into__isnull or the SKU decides which estados it reads without saying so: it goes
+        through mall.lines (storefront_lines, catalog_lines, all_lines, lines_by_codigo, detail_line), or its line says why not with
+        '# estado: <reason>'. Otherwise S4's referencia lines and S6's lines in preparación reach it unasked."""
+        modules = list(app_modules())
+        self.assertGreater(len(modules), 100)
+        found = {f'{relative}:{line}': names for relative, path in modules for line, names in part_filters(path.read_text(encoding='utf-8'))}
+        self.assertEqual(found, {}, 'Filtros de Part fuera de mall.lines (usa sus querysets o anota la línea con # estado: <motivo>).')
+
+    def test_the_scan_finds_each_way_of_filtering_parts(self):
+        source = """
+Part.objects.filter(active=True, merged_into__isnull=True)
+Part.objects.select_for_update().filter(pk=pk).exclude(sku__in=codes)
+models.Part.objects.get(sku=code)
+Part.objects.filter(Q(sku__iexact=code) | Q(pk=pk))
+get_object_or_404(Part, pk=pk, merged_into__isnull=True)
+get_object_or_404(Part.objects.filter(sku__iregex=rx), pk=pk)
+Part.objects.filter(
+    active=True,
+    pk=pk)
+Part.objects.filter(sku=code)  # estado: every estado holds its codigo until S4
+Part.objects.filter(pk=pk, description='')
+Part.objects.filter(pk=pk).update(active=False, merged_into=target)
+Part.objects.get_or_create(pk=pk, defaults={'sku': code})
+storefront_lines().filter(sku__in=codes)
+SupplierItem.objects.filter(part__active=True, active=True)
+get_object_or_404(storefront_lines(), pk=pk)
+"""
+        self.assertEqual(part_filters(source), [
+            (2, ['active', 'merged_into__isnull']), (3, ['sku__in']), (4, ['sku']), (5, ['sku__iexact']), (6, ['merged_into__isnull']),
+            (7, ['sku__iregex']), (8, ['active'])])

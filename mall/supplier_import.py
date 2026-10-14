@@ -17,6 +17,7 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .lines import all_lines, on_storefront
 from .models import Account, Part, PartCode, SupplierItem
 from .serializers import InventorySerializer
 from .services import ingest_inventory, initial_match
@@ -166,7 +167,7 @@ def stock_plan(supplier, rows, *, lock=False):
         chunk = codes[offset:offset + 2000]
         query = PartCode.objects.filter(code__in=chunk).order_by('pk')
         aliases.extend(query)
-        query = Part.objects.filter(sku__in=chunk).order_by('pk')
+        query = all_lines().filter(sku__in=chunk).order_by('pk')  # every estado: matching below takes only the lines on sale
         parts.update((part.pk, part) for part in query)
     alias_part_ids = sorted(({alias.part_id for alias in aliases} | {item.part_id for item in items.values() if item.part_id}) - set(parts))
     for offset in range(0, len(alias_part_ids), 2000):
@@ -192,11 +193,11 @@ def stock_plan(supplier, rows, *, lock=False):
     held = open_reservations(item.pk for item in items.values())  # units confirmed deals still hold (mall.stock_reservations)
     matching = {}
     for part in parts.values():
-        if part.active and not part.merged_into_id:
+        if on_storefront(part):
             matching.setdefault(part.sku, []).append(('', part.pk))
     for alias in aliases:
         part = parts.get(alias.part_id)
-        if part and part.active and not part.merged_into_id:
+        if on_storefront(part):
             matching.setdefault(alias.code, []).append((alias.brand, part.pk))
     summary = {'valid_rows': 0, 'created_items': 0, 'updated_items': 0, 'unchanged_items': 0, 'credit_units': 0, 'debit_units': 0, 'reserved_rows': 0}
     preview, errors, warnings, reservations = [], [], [], []

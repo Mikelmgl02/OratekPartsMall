@@ -747,11 +747,12 @@ def shaft_numbers(table=None):
     """Compact OEM numbers of whole drive shafts: those a live SKU sold as one (EJE COMPLETO, SEMIEJE, subgrupo SEMIEJES) names with
     its own code, carries as an OEM alterno or is linked to. A CV catalog lists them for its joints, but the joint does not replace
     the shaft (is_assembly)."""
-    from .models import Part, PartCode
+    from .lines import storefront_lines
+    from .models import PartCode
     from .oem_links import chunks, name_key
     from .oem_reference_models import PartOEMLink
     shafts, numbers = [], set()
-    for pk, sku, description, subcategory in Part.objects.filter(active=True, merged_into__isnull=True).values_list('pk', 'sku', 'description', 'subcategory'):
+    for pk, sku, description, subcategory in storefront_lines().values_list('pk', 'sku', 'description', 'subcategory'):
         if SHAFT_RE.search(fold(description)) or fold(subcategory) == 'SEMIEJES':
             shafts.append(pk)
             numbers.add(name_key(sku, table))

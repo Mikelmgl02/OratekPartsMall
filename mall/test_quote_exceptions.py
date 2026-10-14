@@ -11,12 +11,14 @@ from rest_framework.test import APITestCase, APITransactionTestCase
 from . import test_deals as deal_tests
 from . import test_quote_drafts as draft_tests
 from . import test_requests as request_tests
+from .catalog_grouping import merge_catalog_parts
 from .deal_views import ACCEPT_SHORTFALL_DETAIL, EXCEPTIONS_DETAIL, RETURN_SHORTFALL_DETAIL
 from .models import SupplierItem
 from .pricing_models import PricingAuditEvent, SupplierPricingSettings
 from .quotation_exceptions import identity_context
 from .quote_draft_models import DealQuotationAudit, DealQuotationLineAudit
 from .request_models import DealCommand, DealEvent, DealQuotation, StockReservation, SupplierRequest
+from .test_factories import make_line
 
 
 class QuoteExceptionTests(APITestCase):
@@ -35,6 +37,7 @@ class QuoteExceptionTests(APITestCase):
     save = draft_tests.QuoteDraftTests.save
     get_draft = draft_tests.QuoteDraftTests.get_draft
     by_code = draft_tests.QuoteDraftTests.by_code
+    merge_part = request_tests.SupplierRequestWorkflowTests.merge_part
 
     def line_ids(self, order):
         return {line.supplier_item_id: str(line.pk) for line in order.lines.all()}
@@ -339,6 +342,24 @@ class QuoteExceptionTests(APITestCase):
         self.client.force_authenticate(self.buyer)
         other, quotation = self.quoted(order=self.reviewed([(self.item_a2, 2)]), quantities={self.item_a2: 2}, prices={self.item_a2: '4.00'})
         SupplierItem.objects.filter(pk=self.item_a2.pk).update(matching_status='review')
+        self.assertEqual(self.accept(other, quotation).status_code, 409)
+
+    def test_a_merge_raises_no_identity_alert_and_the_deal_still_goes_through(self):
+        """Agrupar SKU moves the items to the SKU their part went into: the draft, the quote's trace and the accept check compare the
+        canonical line (mall.lines.same_line), so the order is neither flagged nor blocked; an item moved to an unrelated SKU is."""
+        order = self.reviewed()
+        target = self.merge_part()
+        self.assertFalse(any('identity_changed' in self.codes(line) for line in self.get_draft(order)['lines']))
+        order, quotation = self.quoted(order=order)
+        self.assertEqual(set(DealQuotationLineAudit.objects.filter(line__quotation_id=quotation['id']).values_list('identity_ok_at_quote', flat=True)), {True})
+        later = make_line('58411-1R002', description='TAMBOR')  # merged again between the quote and the accept
+        merge_catalog_parts(actor=self.root, target_sku=later.sku, source_skus=[target.sku])
+        self.assertEqual(SupplierItem.objects.get(pk=self.item_a.pk).part_id, later.pk)
+        self.assertEqual(self.accept(order, quotation).status_code, 200)
+        check = DealQuotationAudit.objects.get(quotation_id=quotation['id']).accept_check
+        self.assertEqual({line['identity_ok_at_accept'] for line in check['lines']}, {True})
+        other, quotation = self.quoted(order=self.reviewed([(self.item_a2, 2)]), quantities={self.item_a2: 2}, prices={self.item_a2: '4.00'})
+        SupplierItem.objects.filter(pk=self.item_a2.pk).update(part=make_line('OTRO-SKU'))
         self.assertEqual(self.accept(other, quotation).status_code, 409)
 
     def test_trace_is_supplier_only(self):

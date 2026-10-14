@@ -13,7 +13,8 @@ from .catalog_classification import (
     supplier_suffix_match, validate_suggestions,
 )
 from .management import IsSuperuser
-from .models import Part, PartCode
+from .lines import all_lines, storefront_lines
+from .models import PartCode
 from .catalog_families import family_candidates, supplier_base
 
 
@@ -29,10 +30,10 @@ def part_row(part):
 
 
 def suggested_families():
-    parts = {part.sku: part_row(part) for part in Part.objects.filter(active=True, merged_into__isnull=True).only(
+    parts = {part.sku: part_row(part) for part in storefront_lines().only(
         'id', 'sku', 'is_OEM', 'name', 'description', 'category', 'subcategory').order_by('sku')}
     bases = {base for sku in parts if (base := supplier_base(sku))}
-    blocked = set(Part.objects.filter(sku__in=bases).values_list('sku', flat=True)) | set(PartCode.objects.filter(code__in=bases).values_list('code', flat=True))
+    blocked = set(all_lines().filter(sku__in=bases).values_list('sku', flat=True)) | set(PartCode.objects.filter(code__in=bases).values_list('code', flat=True))
     from .catalog_split import separation_warnings
     return separation_warnings(family_candidates(parts, blocked))
 
@@ -98,7 +99,7 @@ class CatalogGroupingClassify(APIView):
         selected = [value.strip().upper() for value in serializer.validated_data['source_skus']]
         if len(set([target, *selected])) != len(selected) + 1:
             raise ValidationError('Selecciona SKU distintos y un destino diferente de los alternos.')
-        parts = {part.sku: part for part in Part.objects.filter(active=True, merged_into__isnull=True, sku__in=[target, *selected]).prefetch_related('codes')}
+        parts = {part.sku: part for part in storefront_lines().filter(sku__in=[target, *selected]).prefetch_related('codes')}
         family = suggested_families().get(target) if target not in parts else None
         proposed_parent = family['target'] if family and family['target'].get('proposed_parent') else None
         if len(parts) != len(selected) + (0 if proposed_parent else 1) or (proposed_parent and not set(selected).issubset({row['sku'] for row in family['sources']})):

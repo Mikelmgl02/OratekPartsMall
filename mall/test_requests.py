@@ -7,6 +7,7 @@ from django.db import close_old_connections, connection
 from django.utils import timezone
 from rest_framework.test import APIClient, APITestCase, APITransactionTestCase
 
+from .catalog_grouping import merge_catalog_parts
 from .models import Account, InventoryUpdate, Membership, Part, Role, StockEntry, SupplierItem, User
 from .request_models import ClientRequestSubmission, SupplierRequest, SupplierRequestLine
 from .services import ingest_inventory
@@ -40,6 +41,13 @@ class SupplierRequestWorkflowTests(APITestCase):
 
     def url(self, account=None):
         return f'/api/v1/accounts/{(account or self.client_account).pk}/requests/'
+
+    def merge_part(self, sku='58411-1R001'):
+        """Agrupar SKU after the fact: self.part merges into a new line, which takes its items and codes, while order lines and the
+        cesta keep self.part (the identity checks follow the merge: mall.lines.same_line)."""
+        target = make_line(sku, name='TAMBOR', description='TAMBOR')
+        merge_catalog_parts(actor=self.root, target_sku=target.sku, source_skus=[self.part.sku])
+        return target
 
     def payload(self, lines=None, *, key=None, notes='', expected=False):
         rows = lines if lines is not None else [(self.item_a, 3), (self.item_a2, 2), (self.item_b, 4)]
@@ -394,6 +402,23 @@ class SupplierRequestWorkflowTests(APITestCase):
         self.assertEqual(self.submit(data).status_code, 409)
         self.assertFalse(ClientRequestSubmission.objects.exists())
         self.assertEqual(StockEntry.objects.count(), 3)
+
+    def test_a_merge_keeps_the_sku_an_article_was_chosen_under_and_its_pending_order_line(self):
+        self.assertEqual(self.submit(self.payload([(self.item_a, 3)], expected=True)).status_code, 200)
+        stale = self.payload([(self.item_a, 2)], expected=True)  # chosen under self.part before the merge
+        target = self.merge_part()
+        self.assertEqual(SupplierItem.objects.get(pk=self.item_a.pk).part_id, target.pk)
+        response = self.submit(stale)
+        self.assertEqual(response.status_code, 200, response.data)
+        line = SupplierRequestLine.objects.get(supplier_item=self.item_a)  # the pending order's line takes the units
+        self.assertEqual((line.quantity, line.part_id), (5, self.part.pk))
+        self.client.force_authenticate(self.seller_a)
+        detail = self.client.get(f'{self.url(self.supplier_a)}{line.request_id}/').data['lines'][0]
+        self.assertEqual(detail['stock']['available_quantity'], 8)  # still the same article once the merge is followed
+        self.client.force_authenticate(self.buyer)
+        moved = self.payload([(self.item_a, 1)], expected=True)
+        moved['lines'][0]['expected_part_id'] = str(make_line('OTRO-SKU').pk)
+        self.assertEqual(self.submit(moved).status_code, 409)
 
     def test_line_snapshots_and_party_names_survive_later_catalog_and_supplier_changes(self):
         response = self.submit(self.payload([(self.item_a, 2)], notes='PENDIENTE'))

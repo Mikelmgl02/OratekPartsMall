@@ -20,6 +20,7 @@ from .catalog_classification import (AI_BATCH_SIZE, PROVIDER_TIMEOUT, Classifica
     ClassificationUnavailable, call_provider, candidate_context, provider_configuration, validate_suggestions)
 from .catalog_grouping import merge_catalog_parts
 from .management import IsSuperuser, UppercaseCharField
+from .lines import storefront_lines
 from .models import CatalogMerge, Part
 
 
@@ -58,7 +59,7 @@ class AssistantAction(serializers.Serializer):
 
 
 def eligible_parts(scope, search):
-    parts = Part.objects.filter(active=True, merged_into__isnull=True)
+    parts = storefront_lines()
     if scope == 'unclassified':
         parts = parts.filter(Q(category='') | Q(subcategory=''))
     if search:
@@ -143,7 +144,7 @@ def classify(user, pk, index):
             return classify_category_batch(user, job, claim, index, selected)
         # Retrieve candidates from the full active catalog, across batch and filter
         # boundaries. Only the 50 sources and bounded candidates reach Gemini.
-        parts = list(Part.objects.filter(active=True, merged_into__isnull=True).prefetch_related('codes').order_by('sku'))
+        parts = list(storefront_lines().prefetch_related('codes').order_by('sku'))
         rows = {part.sku: current_row(part) for part in parts}
         selected_ids = set(selected)
         selected_skus = [part.sku for part in parts if str(part.pk) in selected_ids]
@@ -181,7 +182,7 @@ def classify(user, pk, index):
 
 def classify_category_batch(user, job, claim, index, selected):
     # A category needs only its source row, never a scan of all catalog candidates.
-    parts = list(Part.objects.filter(pk__in=selected, active=True, merged_into__isnull=True).prefetch_related('codes'))
+    parts = list(storefront_lines().filter(pk__in=selected).prefetch_related('codes'))
     if len(parts) != len(selected):
         raise ClassificationConflict('Algunos SKU se desactivaron o agruparon. Crea un análisis nuevo.')
     by_id = {str(part.pk): current_row(part) for part in parts}
@@ -247,10 +248,11 @@ def apply(user, pk, decisions, offset):
             raise ValidationError('Indica un grupo para la subclasificación propuesta.')
         normalized.append((suggestion, value))
         requested_skus.update([source, target])
-    parts = {part.sku: part for part in Part.objects.select_for_update().filter(sku__in=requested_skus).order_by('pk').prefetch_related('codes')}
+    parts = {part.sku: part for part in storefront_lines(Part.objects.select_for_update()).filter(sku__in=requested_skus).order_by('pk')
+             .prefetch_related('codes')}
     proposed_parents = {value['target_sku']: suggestion.context[value['target_sku']] for suggestion, value in normalized
                         if suggestion.context[value['target_sku']].get('proposed_parent')}
-    if requested_skus - set(parts) - set(proposed_parents) or any(not part.active or part.merged_into_id for part in parts.values()):
+    if requested_skus - set(parts) - set(proposed_parents):
         raise ClassificationConflict('Uno de los SKU ya no está activo. Revisa el inventario actual.')
     moving = {item.proposal['source_sku'] for item, value in normalized if item.proposal['source_sku'] != value['target_sku']}
     if any(value['target_sku'] in moving for _, value in normalized):

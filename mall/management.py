@@ -17,6 +17,7 @@ from rest_framework.authtoken.models import Token
 from rest_framework.exceptions import ValidationError
 
 from .apiag_tokens import ConnectionData, connection_data
+from .lines import all_lines, catalog_lines, phrase, refuse_unificada
 from .models import Account, Invitation, Membership, Part, PartCode, PartType, Role, SupplierItem, User
 from .serializers import SupplierItemSerializer
 from .media_serializers import PartImageSerializer
@@ -225,7 +226,7 @@ def validate_code_mapping(*, part, brand, code):
     existing = PartCode.objects.filter(code=code)
     if brand:
         existing = existing.filter(Q(brand=brand) | Q(brand=''))
-    skus = Part.objects.filter(sku=code)
+    skus = all_lines().filter(sku=code)  # a line in any estado holds its codigo: retired, merged elsewhere or not yet published
     if part:
         existing = existing.exclude(part=part)
         skus = skus.exclude(Q(pk=part.pk) | Q(merged_into=part))
@@ -259,7 +260,7 @@ class ManagedPartSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'estado', 'origen', 'stock_record_count', 'merged_count']
 
     def validate_sku(self, sku):
-        parts = Part.objects.filter(sku__iexact=sku)
+        parts = all_lines().filter(sku__iexact=sku)  # every estado: UNIQUE(sku) holds every line, merged ones too, until S4
         codes = PartCode.objects.filter(code=sku)
         if self.instance:
             parts = parts.exclude(pk=self.instance.pk)
@@ -474,9 +475,10 @@ class CatalogSearch(filters.SearchFilter):
         return matched | queryset.filter(library) if library is not None else matched
 
 
-def catalog_queryset():
-    """The Inventario grid's rows: canonical SKUs with their supplier stock rows counted."""
-    return Part.objects.filter(merged_into__isnull=True).annotate(stock_record_count=Count('supplier_items', distinct=True)).prefetch_related(
+def catalog_queryset(lines=None):
+    """The Inventario grid's rows, the catalog's lines (mall.lines.catalog_lines: publicada and retirada) unless others are given,
+    with their supplier stock rows counted."""
+    return (catalog_lines() if lines is None else lines).annotate(stock_record_count=Count('supplier_items', distinct=True)).prefetch_related(
         'codes', 'images').order_by('sku', 'id')
 
 
@@ -575,12 +577,18 @@ class CatalogBulkEdit(SuperuserMixin, APIView):
         if not rows or len(rows) > MAX_BULK_ROWS:
             raise serializers.ValidationError({'rows': f'Envía entre 1 y {MAX_BULK_ROWS} SKU.'})
         known = {(normalized(category), normalized(subcategory)): (category, subcategory) for category, subcategory in taxonomy()}
-        parts = {part.pk: part for part in Part.objects.filter(pk__in=[row['id'] for row in rows], merged_into__isnull=True)}
+        parts = {part.pk: part for part in catalog_lines().filter(pk__in=[row['id'] for row in rows])}  # the grid's lines
+        elsewhere = {part.pk: part for part in catalog_lines(('referencia', 'preparacion', 'rechazada')).filter(
+            pk__in=[row['id'] for row in rows if row['id'] not in parts])}
         errors, saved = [], []
         with transaction.atomic():
             for row in rows:
                 part = parts.get(row['id'])
                 fields = {key: row[key] for key in BULK_FIELDS if key in row}
+                if part is None and row['id'] in elsewhere:  # a line off the catalog: referencia, preparación, rechazada
+                    other = elsewhere[row['id']]
+                    errors.append({'id': other.pk, 'sku': other.sku, 'detail': f'Está {phrase(other.estado)} y no forma parte del catálogo.'})
+                    continue
                 if part is None:
                     errors.append({'id': row['id'], 'sku': '', 'detail': 'El SKU ya no está en el catálogo o se agrupó en otro.'})
                     continue
@@ -629,9 +637,15 @@ class CatalogTaxonomy(SuperuserMixin, APIView):
 
 
 class CatalogDetail(SuperuserMixin, generics.RetrieveUpdateAPIView):
+    """One line in any estado (mall.lines.detail_line), so the item editors open the line an item sits on even in preparación; a
+    unificada line is read only."""
     serializer_class = ManagedPartSerializer
-    queryset = CatalogList.queryset
+    queryset = catalog_queryset(all_lines())
     http_method_names = ['get', 'patch', 'head', 'options']
+
+    def get_object(self):
+        line = super().get_object()
+        return refuse_unificada(line) if self.request.method == 'PATCH' else line
 
 
 class InventoryList(SuperuserMixin, generics.ListAPIView):

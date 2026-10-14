@@ -16,6 +16,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema
 
+from .lines import detail_line
 from .management import IsSuperuser, UppercaseCharField
 from .media_serializers import PartImageSerializer
 from .models import Part, PartImage
@@ -97,13 +98,13 @@ class CatalogImages(APIView):
 
     @extend_schema(responses=PartImageSerializer(many=True))
     def get(self, request, pk):
-        part = get_object_or_404(Part, pk=pk, merged_into__isnull=True)
+        part = detail_line(pk)  # any estado (mall.lines.detail_line); the writes below refuse a unificada line
         return Response(gallery(part, request))
 
     @extend_schema(request=ImageUpload, responses={201: PartImageSerializer})
     def post(self, request, pk):
         # Check ownership before decoding or sending any bytes to storage.
-        part = get_object_or_404(Part, pk=pk, merged_into__isnull=True)
+        part = detail_line(pk, write=True)
         data = ImageUpload(data=request.data)
         data.is_valid(raise_exception=True)
         file = data.validated_data['file']
@@ -116,7 +117,7 @@ class CatalogImages(APIView):
                 field.save(name, ContentFile(content), save=False)
                 written.append((field.storage, field.name))
             with transaction.atomic():
-                part = get_object_or_404(Part.objects.select_for_update(), pk=pk, merged_into__isnull=True)
+                part = detail_line(pk, queryset=Part.objects.select_for_update(), write=True)
                 maximum = part.images.aggregate(value=Max('position'))['value']
                 image.position = maximum + 1 if maximum is not None else 0
                 image.save()
@@ -138,7 +139,7 @@ class CatalogImageDetail(APIView):
         data = ImageCaption(data=request.data)
         data.is_valid(raise_exception=True)
         with transaction.atomic():
-            part = get_object_or_404(Part.objects.select_for_update(), pk=pk, merged_into__isnull=True)
+            part = detail_line(pk, queryset=Part.objects.select_for_update(), write=True)
             image = get_object_or_404(part.images, pk=image_id)
             image.alt_text = data.validated_data['alt_text']
             image.save(update_fields=['alt_text'])
@@ -147,7 +148,7 @@ class CatalogImageDetail(APIView):
     @extend_schema(responses={204: None})
     def delete(self, request, pk, image_id):
         with transaction.atomic():
-            part = get_object_or_404(Part.objects.select_for_update(), pk=pk, merged_into__isnull=True)
+            part = detail_line(pk, queryset=Part.objects.select_for_update(), write=True)
             get_object_or_404(part.images, pk=image_id).delete()
         return Response(status=204)
 
@@ -161,7 +162,7 @@ class CatalogImageOrder(APIView):
         data.is_valid(raise_exception=True)
         ids = data.validated_data['image_ids']
         with transaction.atomic():
-            part = get_object_or_404(Part.objects.select_for_update(), pk=pk, merged_into__isnull=True)
+            part = detail_line(pk, queryset=Part.objects.select_for_update(), write=True)
             rows = {image.id: image for image in part.images.all()}
             if len(ids) != len(rows) or set(ids) != set(rows):
                 raise ValidationError('La galería cambió. Actualízala antes de ordenar las imágenes.')

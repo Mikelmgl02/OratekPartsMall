@@ -131,7 +131,8 @@ class CatalogMediaTests(TestCase):
         alternate.refresh_from_db()
         self.assertEqual(alternate.image.name, name)
         self.assertTrue(self.storage.exists(name))
-        self.assertEqual(self.client.post(self.path, {'file': upload()}, format='multipart').status_code, 404)
+        self.assertEqual(self.client.post(self.path, {'file': upload()}, format='multipart').status_code, 409)  # unificada: read only
+        self.assertEqual(self.client.get(self.path).status_code, 200)  # its (now empty) gallery still reads
 
     def test_catalog_queries_prefetch_gallery(self):
         from .serializers import PartSerializer

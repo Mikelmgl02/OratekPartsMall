@@ -17,6 +17,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .availability import line_item_identity_ok
+from .lines import on_storefront, same_line, storefront_lines
 from .models import Account, Part, SupplierItem
 from .quote_draft_models import DealQuotationDraft
 from .request_models import (ACTIVE_AGREEMENT, OPEN_AGREEMENT, STATUS_ORDER, ClientRequestSubmission, SupplierRequest, SupplierRequestLine,
@@ -282,7 +283,7 @@ class ClientPartRequestState(APIView):
     @extend_schema(responses=OpenApiTypes.OBJECT)
     def get(self, request, account_id, part_id):
         client = account_for(request.user, account_id, 'client')
-        part = get_object_or_404(Part, pk=part_id, active=True, merged_into__isnull=True)
+        part = get_object_or_404(storefront_lines(), pk=part_id)
         family = Part.objects.filter(Q(pk=part.pk) | Q(merged_into=part)).values('pk')
         # A confirmed deal counts the units of the quotation the client accepted, which can differ from those requested (or be 0), less
         # the shortfalls the client accepted: under handshaked until the supplier's Entregado (Procesando and En camino included), then
@@ -358,7 +359,7 @@ def submit_request(*, client, actor, data):
         supplier = suppliers[item.supplier_id]
         part = parts.get(item.part_id)
         selected = expected[identifier]
-        if (('expected_part_id' in selected and selected['expected_part_id'] != item.part_id)
+        if (('expected_part_id' in selected and not same_line(selected['expected_part_id'], item.part_id))
                 or ('expected_codigo' in selected and selected['expected_codigo'] != item.codigo)
                 or ('expected_brand' in selected and selected['expected_brand'] != item.brand)):
             raise RequestConflict(f'El SKU, código o marca del artículo {item.codigo} cambió desde que lo agregaste. Selecciónalo otra vez en el catálogo.')
@@ -367,7 +368,7 @@ def submit_request(*, client, actor, data):
         if item.supplier_id == client.pk:  # an account that also sells never orders from itself
             raise ValidationError(f'{item.codigo} es de tu propia cuenta: no puedes pedirte una cotización a ti mismo. Quítalo de la cesta.')
         if (not supplier.active or not any(role.capability == 'supplier' for role in supplier.roles.all())
-                or item.matching_status != 'matched' or not part or not part.active or part.merged_into_id):
+                or item.matching_status != 'matched' or not on_storefront(part)):
             raise ValidationError(f'El artículo {item.codigo} ya no está disponible para solicitar una cotización.')
         # A quotation request expresses demand; the supplier confirms supply later.
         # Preserve the requested quantity even when current stock is insufficient.
@@ -397,7 +398,7 @@ def submit_request(*, client, actor, data):
         for item, part, quantity in selections:
             line = row.lines.filter(supplier_item=item).first()
             if line:
-                if (line.part_id != part.pk or line.codigo != item.codigo or line.brand != item.brand
+                if (not same_line(line.part_id, part) or line.codigo != item.codigo or line.brand != item.brand
                         or line.supplier_invent_id != item.supplier_invent_id):
                     raise RequestConflict('Un artículo de la orden pendiente cambió de código o SKU. Revisa esa orden antes de agregarlo otra vez.')
                 if line.quantity + quantity > 9999:

@@ -311,8 +311,10 @@ def linked_parts(refs):
     """{reference id: [{id, sku, is_OEM, active, via, code}]}: the canonical catalog SKUs that carry each number, in three queries for
     any page: a SKU whose compact form is the number (via 'sku'), an alterno with that compact form (via its ref_type; an OEM alterno
     only under the same manufacturer), or a link to the number (via its source: sku_name, catalog). Merged SKUs are left out: their
-    codes moved to the SKU they were grouped into."""
-    from .models import Part, PartCode, PartOEMLink
+    codes moved to the SKU they were grouped into, and so are lines off the catalog (mall.lines.catalog_lines: a library number's
+    own referencia line, a line in preparación)."""
+    from .lines import catalog_lines, catalog_q
+    from .models import PartCode, PartOEMLink
     refs = list(refs)
     out, seen, by_number = {ref.pk: [] for ref in refs}, defaultdict(set), defaultdict(list)
     for ref in refs:
@@ -326,18 +328,18 @@ def linked_parts(refs):
             out[ref.pk].append({'id': part_id, 'sku': sku, 'is_OEM': is_oem, 'active': active, 'via': via, 'code': code})
 
     numbers = list(by_number)
-    for row in (Part.objects.filter(merged_into__isnull=True).annotate(number=compact_sql('sku')).filter(number__in=numbers)
+    for row in (catalog_lines().annotate(number=compact_sql('sku')).filter(number__in=numbers)
                 .order_by('sku').values_list('id', 'sku', 'is_OEM', 'active', 'number')):
         for ref in by_number[row[4]]:
             add(ref, *row[:4], 'sku', row[1])
-    for row in (PartCode.objects.filter(part__merged_into__isnull=True).annotate(number=compact_sql('code')).filter(number__in=numbers)
+    for row in (PartCode.objects.filter(catalog_q(prefix='part__')).annotate(number=compact_sql('code')).filter(number__in=numbers)
                 .order_by('part__sku', 'code', 'pk').values_list('part_id', 'part__sku', 'part__is_OEM', 'part__active', 'ref_type', 'code',
                                                                   'brand', 'number')):
         for ref in by_number[row[7]]:
             if row[4] != 'oem' or row[6] == ref.manufacturer:
                 add(ref, *row[:6])
     by_id = {ref.pk: ref for ref in refs}
-    for row in (PartOEMLink.objects.filter(reference_id__in=list(by_id), part__merged_into__isnull=True).order_by('part__sku', '-source', 'pk')  # sku_name first
+    for row in (PartOEMLink.objects.filter(catalog_q(prefix='part__'), reference_id__in=list(by_id)).order_by('part__sku', '-source', 'pk')  # sku_name first
                 .values_list('reference_id', 'part_id', 'part__sku', 'part__is_OEM', 'part__active', 'source')):
         add(by_id[row[0]], *row[1:], row[2])
     return out
@@ -346,13 +348,14 @@ def linked_parts(refs):
 def linked_q():
     """Q for references some canonical catalog SKU carries (the linked_parts rule) on a queryset annotated with pair (manufacturer:code),
     as uncorrelated IN subqueries the database evaluates once."""
-    from .models import Part, PartCode, PartOEMLink
-    alternos = PartCode.objects.filter(part__merged_into__isnull=True)
-    return (Q(code__in=Part.objects.filter(merged_into__isnull=True).annotate(number=compact_sql('sku')).values('number'))
+    from .lines import catalog_lines, catalog_q
+    from .models import PartCode, PartOEMLink
+    alternos = PartCode.objects.filter(catalog_q(prefix='part__'))
+    return (Q(code__in=catalog_lines().annotate(number=compact_sql('sku')).values('number'))
             | Q(code__in=alternos.exclude(ref_type='oem').annotate(number=compact_sql('code')).values('number'))
             | Q(pair__in=alternos.filter(ref_type='oem').annotate(pair=Concat('brand', Value(':'), compact_sql('code'), output_field=CharField()))
                 .values('pair'))
-            | Q(pk__in=PartOEMLink.objects.filter(part__merged_into__isnull=True).values('reference_id')))
+            | Q(pk__in=PartOEMLink.objects.filter(catalog_q(prefix='part__')).values('reference_id')))
 
 
 def reference_pair():

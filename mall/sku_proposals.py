@@ -36,6 +36,7 @@ from .catalog_identity import reference_pattern
 from .matching_engine import digest, item_row, part_row, remember
 from .matching_models import MatchingCase, MatchingDecision
 from .matching_queue import enqueue_matching, matching_work, request_another_pass
+from .lines import CATALOG, catalog_lines, catalog_q, storefront_lines
 from .models import Account, Part, PartCode, PartType, SupplierItem
 from .part_references import normalize_references
 from .sku_proposal_models import SkuProposal, SkuProposalItem
@@ -361,19 +362,23 @@ def lock_accounts(rows):
     return accounts
 
 
+OWNERS = (*CATALOG, 'unificada')  # the lines catalog_owners reads: the catalog's, and those merged into one
+
+
 def catalog_owners(code, brands=()):
     """Catalog SKUs this code already is once normalized (MR-968365 = MR968365): their own SKU, retired and merged ones included, or an
-    alterno of theirs under one of these brands or with none. A merged SKU answers with the one it was merged into.
+    alterno of theirs under one of these brands or with none. A merged SKU answers with the one it was merged into. Lines off the
+    catalog (mall.lines: referencia, preparación, rechazada) own nothing here.
     [(id, sku, active)]: a retired one still blocks a second SKU, but items can only be linked to an active one."""
     key = normalized_reference(code)
     if not key:
         return []
     rx, brands = reference_pattern(key), {clean(brand) for brand in brands if brand}
     owners = {(merged_id or pk, merged or sku, merged_active if merged_id else active) for pk, sku, active, merged_id, merged, merged_active in
-              Part.objects.filter(sku__iregex=rx).values_list('pk', 'sku', 'active', 'merged_into_id', 'merged_into__sku', 'merged_into__active')
+              catalog_lines(OWNERS).filter(sku__iregex=rx).values_list('pk', 'sku', 'active', 'merged_into_id', 'merged_into__sku', 'merged_into__active')
               if normalized_reference(sku) == key}
     owners |= {(merged_id or pk, merged or sku, merged_active if merged_id else active)
-               for found, brand, pk, sku, active, merged_id, merged, merged_active in PartCode.objects.filter(code__iregex=rx)
+               for found, brand, pk, sku, active, merged_id, merged, merged_active in PartCode.objects.filter(catalog_q(OWNERS, 'part__'), code__iregex=rx)
                .values_list('code', 'brand', 'part_id', 'part__sku', 'part__active', 'part__merged_into_id', 'part__merged_into__sku', 'part__merged_into__active')
                if normalized_reference(found) == key and (not brand or not brands or clean(brand) in brands)}
     return sorted(owners, key=lambda owner: owner[1])
@@ -521,7 +526,7 @@ def link_existing(proposal_id, user, expected_version, part_id):
         if not rows:
             raise ProposalConflict('La propuesta ya no tiene artículos: actualiza la lista.')
         lock_accounts(rows)
-        part = Part.objects.select_for_update().filter(pk=part_id, active=True, merged_into__isnull=True).first()
+        part = storefront_lines(Part.objects.select_for_update()).filter(pk=part_id).first()
         if part is None:
             raise ValidationError({'part': 'Elige un SKU activo del catálogo.'})
         link(proposal, rows, part, user, 'proposal_linked')

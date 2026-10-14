@@ -21,6 +21,7 @@ from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema
 
 from .management import IsSuperuser
+from .lines import all_lines
 from .models import CatalogClassificationState, CatalogImportBatch, CatalogImportIssue, CatalogImportJob, Part, PartCode
 from .catalog_recovery import date_identifier, date_recovery, description_text, recovery_evidence
 from .workbook_reader import header, identifier_text
@@ -302,7 +303,7 @@ def build_plan(groups, errors, row_count, *, lock=False, warnings=None, error_si
     ordered_candidates = sorted(candidates)
     for offset in range(0, len(ordered_candidates), 2000):
         chunk = ordered_candidates[offset:offset + 2000]
-        parts_query = Part.objects.filter(sku__in=chunk).select_related('merged_into').order_by('pk')
+        parts_query = all_lines().filter(sku__in=chunk).select_related('merged_into').order_by('pk')  # every estado, as UNIQUE(sku) until S4
         codes_query = PartCode.objects.filter(code__in=chunk).select_related('part').order_by('pk')
         if lock:
             parts_query = parts_query.select_for_update(of=('self',))

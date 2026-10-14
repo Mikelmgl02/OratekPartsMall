@@ -18,6 +18,7 @@ from .catalog_availability import catalog_availability
 from .catalog_filters import apply_filters, catalog_facets, filter_values
 from .catalog_scope import ACCOUNT_PARAMETER, FULL, request_scope
 from .catalog_search import search_parts, search_rank
+from .lines import storefront_lines
 from .oem_links import equivalents_for
 
 def account_for(user, account_id, capability=None):
@@ -74,9 +75,9 @@ class AccountList(generics.ListAPIView):
                 .annotate(apiag_linked=Exists(ApiagConnection.objects.filter(account=OuterRef('pk')))).order_by('name', 'id'))
 
 def catalog_parts(search='', scope=FULL):
-    """The canonical catalog SKUs the search finds (mall.catalog_search: every word, any order, accents and separators ignored), within
-    the member's scope (mall.catalog_scope)."""
-    return search_parts(scope.parts(Part.objects.filter(active=True, merged_into__isnull=True)), search, scope.own)
+    """The catalog SKUs on sale (mall.lines.storefront_lines: publicada) the search finds (mall.catalog_search: every word, any order,
+    accents and separators ignored), within the member's scope (mall.catalog_scope)."""
+    return search_parts(scope.parts(storefront_lines()), search, scope.own)
 
 
 REUSED_MATCHES = 2000
@@ -134,7 +135,7 @@ class OffersView(APIView):
     def get(self, request, part_id):
         if not Membership.objects.filter(user=request.user, account__active=True, account__roles__capability='client').exists():
             raise PermissionDenied('Se requiere un rol de cliente.')
-        get_object_or_404(Part, pk=part_id, active=True, merged_into__isnull=True)
+        get_object_or_404(storefront_lines(), pk=part_id)
         items = SupplierItem.objects.filter(part_id=part_id, matching_status='matched', supplier__active=True, supplier__roles__capability='supplier', reported_quantity__gt=F('reserved_quantity')).select_related('supplier').distinct()
         suppliers = {}
         for item in items.order_by('supplier__name', 'codigo', 'brand', 'id'):

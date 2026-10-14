@@ -16,6 +16,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .basket_models import BasketEvent, BasketItem
+from .lines import on_storefront, same_line
 from .models import Account, SupplierItem
 from .request_views import RequestConflict
 from .views import account_for
@@ -38,7 +39,7 @@ class BasketChanges(serializers.Serializer):
 def requestable(item):
     """Whether a client may ask a quotation for this article now: matched to an active SKU of an active supplier."""
     supplier = item.supplier
-    return (item.matching_status == 'matched' and item.part_id is not None and item.part.active and item.part.merged_into_id is None
+    return (item.matching_status == 'matched' and item.part_id is not None and on_storefront(item.part)
             and supplier.active and any(role.capability == 'supplier' for role in supplier.roles.all()))
 
 
@@ -62,7 +63,7 @@ def basket_data(request, user, account):
             'offer': {'supplier_id': str(item.supplier_id), 'supplier_name': item.supplier.name, 'in_stock': item.available_quantity > 0,
                       'selected_item': {'id': str(item.pk), 'codigo': row.codigo, 'brand': row.brand, 'description': item.description}},
             'available': requestable(item) and item.supplier_id != account.pk,
-            'changed': item.part_id != row.part_id or item.codigo != row.codigo or item.brand != row.brand,
+            'changed': not same_line(item.part_id, row.part_id) or item.codigo != row.codigo or item.brand != row.brand,
             'added_at': row.created_at.isoformat()})
     return {'lines': lines, 'count': len(lines)}
 
@@ -92,7 +93,7 @@ def apply_changes(user, account, changes, source='web', reference=''):
             if row is not None:
                 item = items.get(identifier)
                 if mode == 'add' and change.get('expected_part_id') and item is not None:  # chosen again in the catalog: as it is now
-                    if change['expected_part_id'] != item.part_id:
+                    if not same_line(change['expected_part_id'], item.part_id):
                         raise RequestConflict(f'El SKU del artículo {item.codigo} cambió. Selecciónalo otra vez en el catálogo.')
                     if requestable(item) and item.supplier_id != account.pk:
                         row.part_id, row.part, row.codigo, row.brand = item.part_id, item.part, item.codigo, item.brand
@@ -116,7 +117,7 @@ def apply_changes(user, account, changes, source='web', reference=''):
                 raise ValidationError({'changes': [f'{item.codigo if item else "Un artículo"} ya no está disponible para solicitar una cotización.']})
             if item.supplier_id == account.pk:
                 raise ValidationError({'changes': [f'{item.codigo} es de tu propia cuenta: no puedes pedirte una cotización a ti mismo.']})
-            if change.get('expected_part_id') and change['expected_part_id'] != item.part_id:
+            if change.get('expected_part_id') and not same_line(change['expected_part_id'], item.part_id):
                 raise RequestConflict(f'El SKU del artículo {item.codigo} cambió. Selecciónalo otra vez en el catálogo.')
             if count >= MAX_LINES:
                 raise ValidationError({'changes': [f'Tu cesta admite hasta {MAX_LINES} artículos. Envía una solicitud antes de agregar más.']})

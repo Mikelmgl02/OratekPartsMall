@@ -23,6 +23,7 @@ from rest_framework.exceptions import ValidationError
 from . import oem_finder as of
 from .catalog_families import normalized_reference
 from .catalog_identity import prefer_oem, reference_owners, reference_pattern, rename_conflicts
+from .lines import all_lines
 from .models import Account, CatalogIdentityChange, Part, PartCode, SupplierItem
 
 APPLY_TIERS = of.APPLY_TIERS
@@ -192,7 +193,7 @@ def new_claimant(known, pid, keys):
     now claim the number): the finder never weighed it."""
     for key in filter(None, keys):
         rx = reference_pattern(key, anchored=False)
-        for id_, sku, active, merged in Part.objects.filter(sku__iregex=rx).exclude(pk=pid).values_list('id', 'sku', 'active', 'merged_into_id'):
+        for id_, sku, active, merged in all_lines().filter(sku__iregex=rx).exclude(pk=pid).values_list('id', 'sku', 'active', 'merged_into_id'):
             if key in normalized_reference(sku) and known.parts.get(str(id_)) != (sku, active, str(merged) if merged else None):
                 return sku
         for part_id, code, brand in PartCode.objects.filter(code__iregex=rx).exclude(part_id=pid).values_list('part_id', 'code', 'brand'):
@@ -540,7 +541,7 @@ def revert_link(link_id, actor):
             raise Skip('sku_changed', part.sku)
         rename = change.previous_sku != change.sku
         if rename and (reference_owners(change.previous_sku, part, merged_here=False)
-                       or Part.objects.filter(sku__iexact=change.previous_sku).exclude(pk=part.pk).exists()):
+                       or all_lines().filter(sku__iexact=change.previous_sku).exclude(pk=part.pk).exists()):
             raise Skip('old_sku_taken', change.previous_sku)
         delete, restore, edited = [], [], []
         for c in undo.get('created_codes') or []:

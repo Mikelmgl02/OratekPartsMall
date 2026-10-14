@@ -164,6 +164,32 @@ class LineReaderTests(TestCase):
         self.assertFalse(lines.same_line(self.retirada, self.publicada))
         self.assertIsNone(lines.canonical('00000000-0000-0000-0000-000000000000'))
 
+    def test_the_readers_helpers(self):
+        self.assertEqual(self.skus(lines.all_lines()), {'L-PUB', 'L-RET', 'L-REF', 'L-PREP', 'L-UNI', 'L-REJ'})
+        self.assertEqual({line.sku for line in Part.objects.all() if lines.on_storefront(line)}, {'L-PUB'})
+        self.assertFalse(lines.on_storefront(None))
+        self.assertEqual(self.skus(Part.objects.filter(lines.catalog_q(lines.LIVE))), {'L-PUB', 'L-RET', 'L-REF', 'L-PREP', 'L-REJ'})
+        # include may name the catalog's estados too: they keep their rank, before what include adds.
+        self.assertEqual(lines.lines_by_codigos(['L-PUB', 'L-PREP'], include=lines.LIVE), {'L-PUB': [self.publicada], 'L-PREP': [self.preparacion]})
+        with self.assertNumQueries(0):
+            self.assertTrue(lines.same_line(self.publicada.pk, str(self.publicada.pk)))
+            self.assertFalse(lines.same_line(None, self.publicada))
+        self.assertEqual(lines.detail_line(self.preparacion.pk), self.preparacion)
+        self.assertEqual(lines.detail_line(self.unificada.pk), self.unificada)
+        with self.assertRaises(lines.LineMerged) as refused:
+            lines.detail_line(self.unificada.pk, write=True)
+        self.assertEqual(str(refused.exception.detail), 'El SKU L-UNI se agrupó en L-PUB: edita ese SKU.')
+
+    def test_merged_into_decides_unificada_before_the_backfill_too(self):
+        with connection.cursor() as cursor:
+            cursor.execute('SET CONSTRAINTS ALL IMMEDIATE')  # setUp's deferred checks, so the table can be altered
+        drop_lifecycle_checks()  # a merged row as 0071 leaves it: estado still at its default
+        Part.objects.filter(pk=self.unificada.pk).update(estado='publicada')
+        Part.objects.filter(pk=self.retirada.pk).update(estado='publicada')
+        self.assertEqual(self.skus(lines.catalog_lines(('unificada',))), {'L-UNI'})
+        self.assertEqual(self.skus(lines.catalog_lines()), {'L-PUB', 'L-RET'})
+        self.assertEqual(self.skus(lines.storefront_lines()), {'L-PUB'})
+
 
 class LineWriterTests(TestCase):
     def setUp(self):

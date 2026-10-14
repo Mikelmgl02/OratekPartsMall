@@ -20,6 +20,7 @@ from . import oem_reference as orf
 from .catalog_identity import mark_exact_matches, unmark_disputed
 from .catalog_suffix_models import values
 from .management import IsSuperuser, UppercaseCharField
+from .lines import catalog_lines
 from .models import Part
 from .oem_links import MIN_SEARCH, part_equivalents
 from .oem_links import tables_ready as oem_links_ready
@@ -438,7 +439,7 @@ class OEMReferenceItem(APIView):
             if data['action'] in ('dispute', 'clear_dispute'):  # it marks or unmarks the SKUs with its code: Parts before the item, like
                 code = OEMReference.objects.filter(pk=pk).values_list('code', flat=True).first()  # every writer (Editar SKU, the alterno signals)
                 if code:
-                    list(Part.objects.select_for_update().filter(merged_into__isnull=True).annotate(compact=orf.compact_sql('sku'))
+                    list(catalog_lines(queryset=Part.objects.select_for_update()).annotate(compact=orf.compact_sql('sku'))
                          .filter(compact=code).order_by('pk').values_list('pk', flat=True))
             ref = OEMReference.objects.select_for_update().filter(pk=pk).first()
             if ref is None:

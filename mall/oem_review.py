@@ -23,6 +23,7 @@ from . import oem_apply as oa
 from . import oem_finder as of
 from .catalog_families import family_candidates, normalized_reference
 from .catalog_identity import prefer_oem, reference_pattern
+from .lines import all_lines, storefront_lines
 from .models import CatalogIdentityChange, Part, PartCode, SupplierItem
 
 APPROVE_TIERS = ('STRONG_PENDING_OWNER_TAGS', 'CURRENT_REVIEW', 'PROBABLE_BASE', 'CURRENT_LIKELY_OEM', 'LOCAL_XREF', 'VARIANT_REVIEW', 'WEAK')
@@ -338,7 +339,7 @@ def merge_family(case):
     key = normalized_reference(oem) if refused.get('code') else primary.get('key') or normalized_reference(case.candidate)
     ids = {c['part_id'] for c in primary.get('conflicts') or [] if c.get('kind') in ('active_sku', 'partcode')}
     ids |= set(refused.get('owners') or [])
-    members = list(Part.objects.filter(Q(pk__in=uuids(ids)) | Q(sku__in=ev.get('shared_with') or []), active=True, merged_into__isnull=True)
+    members = list(storefront_lines().filter(Q(pk__in=uuids(ids)) | Q(sku__in=ev.get('shared_with') or []))
                    .exclude(pk=part.pk).prefetch_related('codes').order_by('sku')[:49])
     rows = {m.sku: grouping_row(m) for m in [part, *members]}
     owner = (next((m for m in members if normalized_reference(m.sku) == key), None)
@@ -389,7 +390,7 @@ def key_owners(part, code):
     if not key:
         return []
     rx = reference_pattern(key)
-    owners = [(str(p), s) for p, s in Part.objects.filter(sku__iregex=rx).exclude(pk=part.pk).exclude(merged_into=part.pk).values_list('pk', 'sku')
+    owners = [(str(p), s) for p, s in all_lines().filter(sku__iregex=rx).exclude(pk=part.pk).exclude(merged_into=part.pk).values_list('pk', 'sku')
               if normalized_reference(s) == key]
     return owners + [(str(p), c) for p, c in PartCode.objects.filter(code__iregex=rx).exclude(part=part.pk).values_list('part_id', 'code')
                      if normalized_reference(c) == key]
@@ -413,7 +414,7 @@ def sku_claimants(part, case, key):
         return []
     known = {s.get('sku') for s in ((case.evidence or {}).get('primary') or {}).get('siblings') or []}
     rx = '^' + NON_ALNUM + NON_ALNUM.join(key) + '([-/._+( ]|$)'
-    rows = Part.objects.filter(sku__iregex=rx, active=True, merged_into__isnull=True, is_OEM=False).exclude(pk=part.pk).values_list('pk', 'sku')
+    rows = storefront_lines().filter(sku__iregex=rx, is_OEM=False).exclude(pk=part.pk).values_list('pk', 'sku')
     return [(str(p), s) for p, s in rows if s not in known and normalized_reference(s) != key and not strip_lifecycle(clean_code(s))[1]]
 
 

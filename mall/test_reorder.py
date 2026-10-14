@@ -3,6 +3,7 @@ import uuid
 from rest_framework.test import APITestCase
 
 from . import test_deal_lifecycle as lifecycle_tests
+from . import test_requests as request_tests
 from .basket_models import BasketEvent, BasketItem
 from .models import SupplierItem
 
@@ -68,6 +69,13 @@ class ReorderMissingTests(APITestCase):
         self.client.force_authenticate(self.seller_b)
         self.assertEqual(self.client.get(self.missing_url(order)).status_code, 404)  # a stranger to the client account reads nothing
         self.assertEqual(self.client.get(self.missing_url(order, self.supplier_b)).status_code, 403)  # only a client account asks
+
+    def test_after_agrupar_sku_what_is_missing_is_offered_under_the_sku_it_went_into(self):
+        order, lines = self.short_quote()
+        target = request_tests.SupplierRequestWorkflowTests.merge_part(self)  # the order lines keep the merged SKU
+        data = self.missing(order)
+        self.assertEqual({(line['part_id'], line['sku'], line['suggested']) for line in data['lines']},
+                         {(str(target.pk), target.sku, str(self.item_b.pk))})
 
     def test_after_the_deal_a_shortfall_is_missing_and_a_cancelled_deal_misses_everything(self):
         order, quotation = self.handshake()

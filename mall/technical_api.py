@@ -1,7 +1,7 @@
 from decimal import Decimal, InvalidOperation
 
 from django.db import IntegrityError, transaction
-from django.db.models import Count, Q
+from django.db.models import Count
 from django.db.models.deletion import ProtectedError
 from django.shortcuts import get_object_or_404
 from drf_spectacular.types import OpenApiTypes
@@ -13,6 +13,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .catalog_scope import ACCOUNT_PARAMETER, request_scope
+from .lines import catalog_q, detail_line, storefront_lines
 from .management import IsSuperuser, UppercaseCharField
 from .models import Application, ItemApplication, Part, PartSpecification, PartType, TechnicalField, TechnicalTemplate
 from .technical_data import normalized_label
@@ -79,7 +80,8 @@ class PartTypeList(generics.ListCreateAPIView):
     search_fields = ['category', 'name']
     ordering_fields = ['category', 'name', 'part_count', 'field_count']
     # Meta.ordering is ignored on GROUP BY queries; pages need an explicit, unique order. Two counted relations need distinct counts.
-    queryset = (PartType.objects.annotate(part_count=Count('parts', filter=Q(parts__merged_into__isnull=True), distinct=True),
+    # part_count: the subgrupo's lines in the catalog (mall.lines.catalog_lines: publicada and retirada).
+    queryset = (PartType.objects.annotate(part_count=Count('parts', filter=catalog_q(prefix='parts__'), distinct=True),
                                           field_count=Count('template__fields', distinct=True)).order_by('category', 'name', 'id'))
 
 
@@ -322,13 +324,13 @@ class ItemTechnicalDetail(APIView):
 
     @extend_schema(responses=OpenApiTypes.OBJECT, description='Resuelve la plantilla del subgrupo del SKU y devuelve valores, campos faltantes y aplicaciones vinculadas.')
     def get(self, request, pk):
-        return Response(sheet_data(get_object_or_404(Part.objects.select_related('part_type'), pk=pk, merged_into__isnull=True)))
+        return Response(sheet_data(detail_line(pk, queryset=Part.objects.select_related('part_type'))))
 
     @extend_schema(request=SheetWriteSerializer, responses=OpenApiTypes.OBJECT,
                    description='Sustituye los valores o vínculos incluidos; conserva las secciones omitidas. Requiere las revisiones actuales. Los valores nulos significan desconocido.')
     @transaction.atomic
     def patch(self, request, pk):
-        part = get_object_or_404(Part.objects.select_for_update(), pk=pk, merged_into__isnull=True)
+        part = detail_line(pk, queryset=Part.objects.select_for_update(), write=True)
         serializer = SheetWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
@@ -359,5 +361,5 @@ class CatalogTechnicalDetail(APIView):
     def get(self, request, pk):
         # Outside the member's scope (mall.catalog_scope) the SKU does not exist for it.
         scope = request_scope(request)
-        part = get_object_or_404(scope.parts(Part.objects.select_related('part_type')), pk=pk, active=True, merged_into__isnull=True)
+        part = get_object_or_404(scope.parts(storefront_lines(Part.objects.select_related('part_type'))), pk=pk)
         return Response(sheet_data(part, public=True))

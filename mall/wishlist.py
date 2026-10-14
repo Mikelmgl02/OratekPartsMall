@@ -12,6 +12,7 @@ from rest_framework.views import APIView
 
 from .catalog_availability import catalog_availability
 from .catalog_scope import catalog_scope
+from .lines import on_storefront
 from .models import Membership, Part, WishlistItem
 from .oem_links import equivalents_for
 from .serializers import PartSerializer
@@ -29,7 +30,7 @@ class WishlistSerializer(serializers.ModelSerializer):
     available = serializers.SerializerMethodField()
 
     def get_available(self, obj) -> bool:
-        return obj.part.active and not obj.part.merged_into_id
+        return on_storefront(obj.part)
 
     class Meta:
         model = WishlistItem
@@ -60,7 +61,7 @@ class WishlistList(generics.ListAPIView):
     def list(self, request, *args, **kwargs):
         rows = list(self.paginate_queryset(self.get_queryset()))
         context = self.get_serializer_context()
-        context['availability_by_part'] = catalog_availability([row.part for row in rows if row.part.active], self.scope.own)
+        context['availability_by_part'] = catalog_availability([row.part for row in rows if on_storefront(row.part)], self.scope.own)
         context['equivalents_by_part'] = equivalents_for([row.part_id for row in rows])
         return self.get_paginated_response(self.get_serializer(rows, many=True, context=context).data)
 
@@ -103,7 +104,7 @@ class WishlistDetail(APIView):
         part = locked_canonical_part(part_id)
         if not scope.parts(Part.objects.filter(pk=part.pk)).exists():
             raise Http404  # outside a supplier-only user's own SKUs
-        if not part.active:
+        if not on_storefront(part):
             return Response({'detail': 'Este repuesto ya no está disponible en el catálogo.'}, status=400)
         row, _ = WishlistItem.objects.get_or_create(user=request.user, part=part)
         return Response({'part_id': part.pk, 'saved': True, 'saved_at': row.saved_at})

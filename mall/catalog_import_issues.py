@@ -10,7 +10,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .management import IsSuperuser
-from .models import CatalogImportIssue, CatalogImportJob, Part
+from .lines import lines_by_codigo
+from .models import CatalogImportIssue, CatalogImportJob
 
 
 FIELD_COLUMNS = {
@@ -198,7 +199,7 @@ class CatalogImportIssueDetail(APIView):
             issue.status = 'resolved'
             issue.errors = []
             issue.resolved_at = timezone.now()
-            issue.part = Part.objects.get(sku=values['sku'])
+            issue.part = lines_by_codigo(values['sku'])[0]
             issue.applied_summary = plan['summary']
             issue.save(update_fields=['values', 'status', 'errors', 'resolved_at', 'part', 'applied_summary'])
             return self.resolved_response(issue)

@@ -11,7 +11,8 @@ from .management import IsSuperuser
 from .matching_models import MatchingQueue, MatchingCase, MatchingDecision
 from .matching_queue import enqueue_matching, matching_work
 from .matching_engine import apply_item, apply_family, part_row
-from .models import Part, CatalogImportJob
+from .lines import lines_by_codigo, on_storefront
+from .models import CatalogImportJob
 
 
 class MatchingConflict(APIException):
@@ -160,8 +161,8 @@ class MatchingReview(APIView):
                             raise ValidationError('Revisa el SKU padre propuesto para esta familia.')
                         apply_family(case, actor=request.user)
                     else:
-                        part = Part.objects.filter(sku=target_sku, active=True, merged_into__isnull=True).first()
-                        if not part:
+                        part = next(iter(lines_by_codigo(target_sku)), None)
+                        if not on_storefront(part):
                             raise ValidationError('Selecciona un SKU activo del catálogo interno.')
                         target = next((c for c in case.candidates if c['id'] == str(part.pk)), part_row(part))
                         apply_item(case, target, actor=request.user)

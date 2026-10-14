@@ -73,7 +73,8 @@ def ids(queryset, limit):
 def choose_sample(username=None):
     """The inputs a snapshot reads. Every --diff reuses its base's sample, so a later stage reads exactly these again."""
     from django.db.models import F, Q
-    from ..models import Account, Membership, Part, PartCode, SupplierItem, User
+    from ..lines import catalog_lines, storefront_lines
+    from ..models import Account, Membership, PartCode, SupplierItem, User
     from ..oem_reference_models import OEMReference, PartOEMLink
     admins = User.objects.filter(is_superuser=True, is_active=True)
     admin = (admins.filter(username=username) if username else admins).order_by('pk').first()
@@ -86,7 +87,7 @@ def choose_sample(username=None):
         member = Membership.objects.filter(account=account, user__is_active=True).order_by('pk').values_list('user_id', flat=True).first()
         if member is not None:
             suppliers[str(account.pk)] = member
-    live = Part.objects.filter(active=True, merged_into__isnull=True)
+    live = storefront_lines()
     skus = list(ordered_by_hash(live).values_list('sku', flat=True)[:SIZES['import_new']])
     codes = list(ordered_by_hash(PartCode.objects.filter(part__in=live)).values_list('code', flat=True)[:5])
     searches = list(dict.fromkeys(['', *WORDS, *skus[:10], *[compact(sku) for sku in skus[:5]], *codes]))[:SIZES['searches']]
@@ -106,7 +107,7 @@ def choose_sample(username=None):
         'oem_equivalents': ids(live.filter(numbered), SIZES['oem_equivalents']),
         'mark_oem': mark,
         'technical': ids(live.filter(part_type__isnull=False), SIZES['technical']),
-        'split': ids(live.filter(pk__in=Part.objects.filter(merged_into__isnull=False).values('merged_into_id')), SIZES['split']),
+        'split': ids(live.filter(pk__in=catalog_lines(('unificada',)).values('merged_into_id')), SIZES['split']),
         'import': import_rows(skus),
     }
 
@@ -204,13 +205,13 @@ def import_preview(spec):
 
 def sections(sample, reader):
     """(name, read) in capture order; each read returns the section's {key: value}."""
-    from ..models import Part
+    from ..lines import storefront_lines
     users, admin, client = sample['users'], sample['users']['admin'], sample['users']['client']
     get = reader.get
     management = '/api/v1/management'
 
     def live_ids():
-        return list(Part.objects.filter(active=True, merged_into__isnull=True).values_list('pk', flat=True))
+        return list(storefront_lines().values_list('pk', flat=True))
 
     return [
         ('catalog', lambda: {q: get(client, '/api/v1/catalog/', {'search': q, 'include_facets': '1'}) for q in sample['searches']}),

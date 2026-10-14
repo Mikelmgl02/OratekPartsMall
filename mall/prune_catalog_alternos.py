@@ -29,12 +29,13 @@ def written_by_catalog(source, citations):
 def plan():
     """{'remove': [PartCode], 'review': {sku: [PartCode]}}: per canonical SKU, its catalog-written company alternos, all removed when
     the SKU reaches every one of them through its OEM numbers, none otherwise."""
+    from .lines import catalog_q
     from .models import PartCode
     from .oem_links import part_equivalents
     from .oem_reference_models import compact, manufacturer_name
     citations = catalog_citations()
     by_part = defaultdict(list)
-    for code in (PartCode.objects.filter(ref_type='company', part__merged_into__isnull=True).select_related('part')
+    for code in (PartCode.objects.filter(catalog_q(prefix='part__'), ref_type='company').select_related('part')
                  .order_by('part__sku', 'brand', 'code', 'pk')):
         if written_by_catalog(code.reference_source, citations):
             by_part[code.part_id].append(code)

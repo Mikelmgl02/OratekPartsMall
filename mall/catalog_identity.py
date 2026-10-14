@@ -10,6 +10,7 @@ from django.db import transaction
 from django.db.models import Q
 from rest_framework.exceptions import ValidationError
 from .catalog_families import normalized_reference
+from .lines import all_lines, catalog_lines, storefront_lines
 from .models import CatalogIdentityChange, Part, PartCode
 
 
@@ -30,7 +31,7 @@ def reference_owners(code, part, *, merged_here=True):
     if not key:
         return []
     rx = reference_pattern(key)
-    parts = Part.objects.filter(sku__iregex=rx).exclude(pk=part.pk)
+    parts = all_lines().filter(sku__iregex=rx).exclude(pk=part.pk)
     if not merged_here:
         parts = parts.exclude(merged_into=part.pk)
     return ([s for s in parts.values_list('sku', flat=True) if normalized_reference(s) == key]
@@ -43,7 +44,7 @@ def rename_conflicts(part, code):
     identifies another Part (its SKU, retired included, or an alterno) under any punctuation (MR-968365 = MR968365 = MR968365_).
     A Part merged into this one shares its identity (Agrupar SKU, then the OEM as MAIN); only its exact SKU still blocks the MAIN."""
     return (reference_owners(code, part, merged_here=False) + reference_owners(part.sku, part, merged_here=False)
-            + list(Part.objects.filter(sku__iexact=code, merged_into=part.pk).values_list('sku', flat=True)))
+            + list(all_lines().filter(sku__iexact=code, merged_into=part.pk).values_list('sku', flat=True)))
 
 
 def company_registry():
@@ -100,7 +101,7 @@ def preserve_sku_reference(part, sku, *, is_oem=False):
         if not PartCode.objects.filter(brand=info['brand'], code=sku).exclude(pk=existing.pk).exists():
             existing.brand, existing.ref_type = info['brand'], 'company'
             existing.save(update_fields=['brand', 'ref_type'])
-    if info and not Part.objects.filter(sku__iexact=info['code']).exclude(pk=part.pk).exists():
+    if info and not all_lines().filter(sku__iexact=info['code']).exclude(pk=part.pk).exists():
         if not PartCode.objects.filter(code__iexact=info['code']).exclude(part=part).exists():
             PartCode.objects.get_or_create(part=part, code=info['code'], brand=info['brand'],
                                            defaults={'ref_type': 'company'})
@@ -166,7 +167,7 @@ def reconcile_identities(actor=None):
     for suffix in company_registry():
         criteria |= Q(sku__endswith='-' + suffix)
     # A main already marked OEM is left alone by prefer_oem and never takes a company alterno: skip it up front.
-    ids = Part.objects.filter(criteria, active=True, merged_into__isnull=True, is_OEM=False).values_list('pk', flat=True).distinct()
+    ids = storefront_lines().filter(criteria, is_OEM=False).values_list('pk', flat=True).distinct()
     promoted = 0
     for pk in list(ids):
         with transaction.atomic():
@@ -216,7 +217,7 @@ def exact_items(part_ids=None, codes=None):
     refs = OEMReference.objects.filter(status__in=COUNTING)
     if codes is not None:
         refs = refs.filter(code__in=[normalized_reference(code) for code in codes])
-    parts = (Part.objects.filter(active=True, merged_into__isnull=True, is_OEM=False).annotate(compact=compact_sql('sku'))
+    parts = (storefront_lines().filter(is_OEM=False).annotate(compact=compact_sql('sku'))
              .filter(compact__in=refs.values('code')))
     if part_ids is not None:
         parts = parts.filter(pk__in=list(part_ids))
@@ -241,7 +242,7 @@ def mark_exact_matches(actor=None, *, part_ids=None, codes=None, apply=True):
     marked = []
     for pk, refs in exact_items(part_ids, codes).items():
         with transaction.atomic():
-            part = Part.objects.select_for_update().filter(pk=pk, active=True, merged_into__isnull=True, is_OEM=False).first()
+            part = storefront_lines(Part.objects.select_for_update()).filter(pk=pk, is_OEM=False).first()
             if part is None or normalized_reference(part.sku) != refs[0].code:
                 continue
             # Part, then the item (the order of every writer): a dispute committed since the snapshot marks nothing.
@@ -269,7 +270,7 @@ def unmark_disputed(ref, actor=None):
     if OEMReference.objects.filter(code=ref.code).exclude(status='disputed').exclude(pk=ref.pk).exists():
         return []
     unmarked = []
-    for part in (Part.objects.select_for_update().filter(is_OEM=True, merged_into__isnull=True).annotate(compact=compact_sql('sku'))
+    for part in (catalog_lines(queryset=Part.objects.select_for_update()).filter(is_OEM=True).annotate(compact=compact_sql('sku'))
                  .filter(compact=ref.code)):
         part.is_OEM = False
         part.save(update_fields=['is_OEM'])
