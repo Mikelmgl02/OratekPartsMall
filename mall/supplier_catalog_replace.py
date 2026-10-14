@@ -1,9 +1,11 @@
 """Replace what one supplier catalog filed with a corrected extract of it (a parser fix), then import the corrected extract.
 
-    python -m mall.supplier_catalog_replace --dry-run|--apply FILE [--report DIR] [--user USERNAME]
+    python -m mall.supplier_catalog_replace --dry-run|--apply FILE [FILE ...] [--report DIR] [--user USERNAME]
 
 FILE is a normalized extract (mall.supplier_catalog_import) of a catalog imported before, under the same title and year, so the
-citations match. Only rows that cite that catalog change, and each ends as an import of FILE alone would leave it:
+citations match. A catalog imported from several extracts under one citation (ASVA CV and its OEM-only extract) is replaced with all
+of them at once, read as one: replacing one alone would take the numbers only the other prints for misreadings. Only rows that cite
+that catalog change, and each ends as an import of FILE alone would leave it:
 - Aftermarket codes under an OEM number (OEMCrossReference): a code FILE does not file under the number loses the catalog's citations;
   with none left it is retired the way Biblioteca OEM's Retirar does (OEMCrossReferenceRetired, by --user), so no import files it
   again. A code FILE files too keeps its other citations and takes FILE's pages.
@@ -40,7 +42,7 @@ def split(citations, prefix):
 
 def source_detail(job, row):
     """The detail write_oem_table gives the catalog's source of one number."""
-    return {'catalog': job.catalog['key'], 'brand': job.brand, 'brand_codes': sorted(row['brand_codes']),
+    return {'catalog': row['catalog'], 'brand': job.brand, 'brand_codes': sorted(row['brand_codes']),
             'pages': sorted(p for p in row['pages'] if p), 'product_types': sorted(row['product_types']),
             **({'assembly_number_listed_for_component': True} if row['assembly'] else {})}
 
@@ -210,12 +212,26 @@ def write_report(directory, changes):
             ' '.join(c['sku_items']), ' '.join(c['printed_by']), c['code'].pk, c['code'].part_id] for c in changes['alternos']])
 
 
+def merged(datasets):
+    """Several extracts of one catalog (same citation) read as one: the first one's catalog and every item, each item marked with the
+    extract it comes from (the source detail's catalog key, as the first import of each number left it)."""
+    from .supplier_catalog_import import citation
+    if len({citation(data['catalog']) for data in datasets}) > 1:
+        raise ValueError('Los extractos deben ser del mismo catálogo (mismo título y año).')
+    if len(datasets) == 1:
+        return datasets[0]
+    items = [{**item, '_extract': data['catalog']['key']} for data in datasets for item in data['items']]
+    return {**datasets[0], 'items': items}
+
+
 def run(path, *, apply=False, report_dir=None, username=None, stdout=None):
+    """path: one extract, or a list of the extracts of one catalog."""
     from django.contrib.auth import get_user_model
     from django.db import transaction
     from .oem_finder import matching_lock
     stdout = stdout or sys.stdout
-    data = json.load(open(path, encoding='utf-8'))
+    paths = [path] if isinstance(path, (str, os.PathLike)) else list(path)
+    data = merged([json.load(open(p, encoding='utf-8')) for p in paths])
     actor = get_user_model().objects.get(username=username) if username else None
 
     def execute():
@@ -256,7 +272,7 @@ def main(argv=None, stdout=None):
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--dry-run', action='store_true', help='Calcula todo sin escribir nada.')
     mode.add_argument('--apply', action='store_true', help='Retira lo que el extracto corregido no registra e importa el extracto.')
-    parser.add_argument('file', help='Extracto JSON normalizado y corregido.')
+    parser.add_argument('files', nargs='+', help='Extracto JSON normalizado y corregido (varios si el catálogo se importó de varios extractos).')
     parser.add_argument('--report', help='Carpeta donde escribir los CSV del plan.')
     parser.add_argument('--user', help='Usuario que figura como autor de las equivalencias retiradas.')
     options = parser.parse_args(argv)
@@ -265,7 +281,7 @@ def main(argv=None, stdout=None):
     django.setup()
     from .refactor.guard import require_freeze
     require_freeze(options.apply)
-    result = run(options.file, apply=options.apply, report_dir=options.report, username=options.user, stdout=stdout)
+    result = run(options.files, apply=options.apply, report_dir=options.report, username=options.user, stdout=stdout)
     if result is not None:
         (stdout or sys.stdout).write(json.dumps(result, ensure_ascii=False) + '\n')
     sys.exit(0 if result is not None else 1)

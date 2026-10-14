@@ -356,7 +356,9 @@ class CatalogImport:
                 if not key[0] or not 1 <= len(key[1]) <= 60:
                     continue
                 assembly = self.listed_assembly(item, o)
+                # catalog: the extract that printed the number first, when several extracts of one catalog are replaced together.
                 row = rows.setdefault(key, {'printed': set(), 'pages': set(), 'brand_codes': set(), 'product_types': set(), 'assembly': assembly,
+                                            'catalog': item.get('_extract') or self.catalog['key'],
                                             'description': 'SEMIEJE (EJE COMPLETO)' if assembly else item.get('name_es') or '',
                                             'part_type': 'SEMIEJES' if assembly else pt[1] if pt else '', 'apps': [], 'cross': {}})
                 row['printed'].add(o['code'].strip().upper())
@@ -391,7 +393,7 @@ class CatalogImport:
         for (manufacturer, number), row in sorted(rows.items()):
             try:
                 upsert_reference(manufacturer, number, printed=sorted(row['printed']), source_kind='aftermarket_catalog', citation=cite,
-                                 detail={'catalog': self.catalog['key'], 'brand': self.brand, 'brand_codes': sorted(row['brand_codes']),
+                                 detail={'catalog': row['catalog'], 'brand': self.brand, 'brand_codes': sorted(row['brand_codes']),
                                          'pages': sorted(p for p in row['pages'] if p), 'product_types': sorted(row['product_types']),
                                          **({'assembly_number_listed_for_component': True} if row['assembly'] else {})},
                                  defaults={'description': row['description'][:300], 'part_type': row['part_type'],

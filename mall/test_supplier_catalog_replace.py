@@ -125,3 +125,41 @@ class OwnCodeReplaceTests(Fresh, TestCase):
         result = scr.run(handle.name, stdout=io.StringIO())
         self.assertEqual(result['changes']['codes'], {})  # neither retired nor re-cited
         self.assertEqual(result['import']['cross_reference_present'], 1)
+
+
+class SeveralExtractsReplaceTests(Fresh, TestCase):
+    """ASVA CV was imported from two extracts under one citation: its items, and the OEM numbers printed with no ASVA part."""
+
+    def setUp(self):
+        super().setUp()
+        joint = item('TY-LC200', 'cv_joint_outer', oem=[('43460-69115', 'TOYOTA')], name_es='JUNTA HOMOCINÉTICA EXTERIOR')
+        lone = item('', 'cv_joint_outer', oem=[('43460-60010', 'TOYOTA'), ('43460-69115', 'TOYOTA')], name_es='JUNTA HOMOCINÉTICA EXTERIOR')
+        self.paths = []
+        for data in (extract([joint], key='cv', title='ASVA CV', brand='ASVA', product_line='cv_joint'),
+                     extract([lone], key='cv_oem_only', title='ASVA CV', brand='ASVA', product_line='cv_joint')):
+            handle = tempfile.NamedTemporaryFile('w', suffix='.json', delete=False, encoding='utf-8')
+            json.dump(data, handle, ensure_ascii=False)
+            handle.close()
+            self.addCleanup(os.unlink, handle.name)
+            self.paths.append(handle.name)
+        for path in self.paths:
+            sci.run([path], apply=True, stdout=io.StringIO())
+
+    def test_one_extract_alone_would_take_the_numbers_only_the_other_prints(self):
+        result = scr.run(self.paths[0], stdout=io.StringIO())
+        self.assertEqual(result['changes']['numbers'], {'delete': 1})  # TOYOTA 4346060010
+
+    def test_all_the_extracts_together_change_nothing(self):
+        result = scr.run(self.paths, apply=True, stdout=io.StringIO())
+        self.assertEqual(result['changes'], {'numbers': {}, 'codes': {}, 'ties': {}})
+        self.assertEqual(sorted(OEMReferenceSource.objects.values_list('reference__code', 'detail__catalog')),
+                         [('4346060010', 'cv_oem_only'), ('4346069115', 'cv')])  # each number keeps the extract that printed it first
+
+    def test_extracts_of_different_catalogs_are_refused(self):
+        other = extract([], key='gmb', title='GMB', brand='GMB')
+        handle = tempfile.NamedTemporaryFile('w', suffix='.json', delete=False, encoding='utf-8')
+        json.dump(other, handle, ensure_ascii=False)
+        handle.close()
+        self.addCleanup(os.unlink, handle.name)
+        with self.assertRaises(ValueError):
+            scr.run([self.paths[0], handle.name], stdout=io.StringIO())
