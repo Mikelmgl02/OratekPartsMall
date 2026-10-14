@@ -72,7 +72,9 @@ def held(ref, prefix):
     from .lines import on_storefront
     if ref.status == 'disputed' or ref.notes.strip() or ref.superseded_by_id or ref.created_by_id or ref.updated_by_id:
         return True
-    if ref.supersedes.exists() or ref.alternos.exists():
+    from .models import Reference
+    # Every alterno filed under it, retired ones too: a retired alterno keeps pointing at its number as history (S2a), so it holds it.
+    if ref.supersedes.exists() or Reference.all_objects.filter(oem_reference=ref).exists():
         return True
     for link in ref.part_links.exclude(source='sku_name').select_related('part'):
         if split(link.citations, prefix)[1] or not on_storefront(link.part):

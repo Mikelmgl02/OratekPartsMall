@@ -416,8 +416,13 @@ def split_import_plan(groups, errors, records, metadata, warnings):
     return accepted, issues, result, metadata
 
 
-def save_plan(groups):
-    new_parts, changed_parts, new_codes = [], [], []
+def save_plan(groups, user=None):
+    """Write a planned batch: its lines in bulk, then their codes as References, one per key per line (mall.references): a spelling of
+    a key the line already holds joins that Reference's printed_forms, as does a second spelling of one key in the file; a key the line
+    retired comes back (references.add), as does a printed code retired on another line while unique_brand_code holds it there (until
+    0074); every other new key is built and inserted in bulk."""
+    actor = user if getattr(user, 'is_authenticated', False) else None
+    new_parts, changed_parts, planned = [], [], []
     for sku, group in groups.items():
         part = group['existing'] or Part(sku=sku)
         for field, value in group['fields'].items():
@@ -426,14 +431,46 @@ def save_plan(groups):
             new_parts.append(part)
         elif group['action'] == 'update':
             changed_parts.append(part)
-        new_codes.extend(references.build(part, code, brand) for brand, code in group['added'])
+        planned.append((part, group))
     from .lines import bulk_create_lines, bulk_update_lines
     from .technical_data import bind_part_types
     bind_part_types(new_parts + changed_parts)
     # ACTIVO=NO retires a line and ACTIVO=SI publishes it: the lines' writers keep estado in step with active.
     bulk_create_lines(new_parts, batch_size=500)
     bulk_update_lines(changed_parts, ['name', 'description', 'active', 'category', 'subcategory', 'part_type'], batch_size=500)
-    references.bulk_create(new_codes, batch_size=500)
+    line_ids = [part.pk for part, group in planned if group['existing'] is not None]
+    printed = sorted({code for _, group in planned for _, code in group.get('codes', group.get('added', []))})
+    held, retired_here, retired_printed = {}, set(), set()
+    for start in range(0, len(line_ids), 2000):  # what the lines hold, retired rows included (the batch locked the live ones)
+        for row in Reference.all_objects.filter(part_id__in=line_ids[start:start + 2000]).order_by('pk'):
+            if row.estado == 'retirada':
+                retired_here.add((row.part_id, row.brand, row.clave))
+            else:
+                held.setdefault((row.part_id, row.brand, row.clave), row)
+    for start in range(0, len(printed), 2000):
+        retired_printed.update(Reference.all_objects.filter(estado='retirada', code__in=printed[start:start + 2000]).values_list('brand', 'code'))
+    new_codes, built, one_by_one, queued, spellings = [], {}, [], set(), []
+    for part, group in planned:
+        for brand, code in group.get('codes', group.get('added', [])):  # every code of the file's rows (a plan without them: its added)
+            key = (part.pk, brand, references.clave(code))
+            if key in held:
+                spellings.append((held[key], code))
+            elif key in built:
+                if code != built[key].code and code not in built[key].printed_forms:
+                    built[key].printed_forms.append(code)
+            elif key in queued:
+                spellings.append((key, code))  # joins the Reference add() returns below
+            elif key in retired_here or (brand, code) in retired_printed:
+                queued.add(key)
+                one_by_one.append((key, part, code, brand))
+            else:
+                built[key] = references.build(part, code, brand, actor=actor)
+                new_codes.append(built[key])
+    references.bulk_create(new_codes, batch_size=500, actor=actor)
+    for key, part, code, brand in one_by_one:
+        held[key] = references.add(part, code, brand, actor=actor)[0]
+    for ref, code in spellings:
+        references.add_spelling(held[ref] if isinstance(ref, tuple) else ref, code)
 
 
 def encode_groups(groups):
@@ -555,7 +592,7 @@ class CatalogImportJobView(APIView):
                 result, fingerprint = build_plan(groups, [], len(groups), lock=True)
                 if fingerprint != batch.fingerprint or not result['valid']:
                     raise StalePreview('El catálogo cambió para este lote. Los lotes anteriores siguen guardados; revisa una nueva vista previa.')
-                save_plan(groups)
+                save_plan(groups, request.user)
                 for key, value in result['summary'].items():
                     job.applied_summary[key] = job.applied_summary.get(key, 0) + value
                 job.completed_batches += 1

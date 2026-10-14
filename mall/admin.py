@@ -43,7 +43,9 @@ class PartAdmin(admin.ModelAdmin):
         super().save_model(request, obj, form, change)
 
 class ReferenceAdminForm(forms.ModelForm):
-    """A Reference's key is checked as mall.references.validate checks it (another line's key, the brandless reservation)."""
+    """A Reference is checked as mall.references writes it: a new one as build() makes it (a dispute says why, interno ⇔ supplier), a
+    change on the values it ends up with (references.check), and its key as validate() checks it (another line's key, the brandless
+    reservation), so a refusal is a form error, never a failed save."""
     class Meta:
         model = Reference
         fields = ['part', 'code', 'brand', 'tipo', 'estado', 'supplier', 'reference_source', 'dispute_note', 'notes']
@@ -53,9 +55,17 @@ class ReferenceAdminForm(forms.ModelForm):
         if data.get('estado') == 'retirada' and not self.instance.pk:
             self.add_error('estado', 'Una referencia nueva no puede estar retirada.')
         elif data.get('part') and data.get('code'):
+            estado = data.get('estado') or 'declarado'
             try:
-                references.validate(data['code'], data.get('brand', ''), line=data['part'], supplier=data.get('supplier'),
-                                    estado=data.get('estado') or 'declarado', exclude=self.instance.pk)
+                if self.instance.pk:
+                    references.check(data.get('tipo') or 'otro', estado, data.get('supplier'), data.get('dispute_note', ''))
+                else:
+                    references.build(data['part'], data['code'], data.get('brand', ''), tipo=data.get('tipo') or None, estado=estado,
+                                     supplier=data.get('supplier'), source=data.get('reference_source', ''),
+                                     dispute_note=data.get('dispute_note', ''))
+                if estado != 'retirada':
+                    references.validate(data['code'], data.get('brand', ''), line=data['part'], supplier=data.get('supplier'),
+                                        estado=estado, exclude=self.instance.pk)
             except references.ReferenceConflict as error:
                 raise forms.ValidationError(error.message)
         return data
@@ -87,7 +97,7 @@ class ReferenceAdmin(admin.ModelAdmin):
         data = {name: form.cleaned_data[name] for name in form.changed_data if name in form.cleaned_data}
         if not change:
             obj.pk = references.add(obj.part, obj.code, obj.brand, tipo=obj.tipo, estado=obj.estado, supplier=obj.supplier,
-                                    source=obj.reference_source, actor=request.user, notes=obj.notes)[0].pk
+                                    source=obj.reference_source, actor=request.user, notes=obj.notes, dispute_note=obj.dispute_note)[0].pk
             return
         current = Reference.all_objects.get(pk=obj.pk)
         if data.get('estado') == 'retirada':

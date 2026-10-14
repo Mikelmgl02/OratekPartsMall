@@ -4,8 +4,9 @@
 # runs for the rename; the content type follows the new name). Then only columns that are nullable or have a database default, a
 # stored generated column and a new table: the code before S2a keeps working on it (it never names the new columns, its inserts get
 # a uid, a clave, tipo otro and estado declarado until mall.refactor.s2a_references backfills them). uid gets a fresh random UUID on
-# every existing row. created_at and updated_at are added empty, as on Part in 0071. unique_brand_code stays until the tighten
-# migration 0074, which replaces it with reference_one_live_line and the CHECKs.
+# every existing row. created_at and updated_at are added empty, as on Part in 0071. The new foreign keys delete in the database too
+# (DELETE_ACTIONS), so the code before S2a can still delete a code. unique_brand_code stays until the tighten migration 0074, which
+# replaces it with reference_one_live_line and the CHECKs.
 
 import django.contrib.postgres.functions
 import django.db.models.deletion
@@ -31,6 +32,40 @@ CLAVE = models.Case(
                 then=COMPACT_CODE),
     default=regexp_replace(django.db.models.functions.text.Upper(django.db.models.functions.text.Trim('code')), '\\s+', ' '),
     output_field=models.CharField(max_length=120))
+
+
+# Django 5.2 carries out CASCADE and SET_NULL in Python only, so the code before S2a, which knows none of these relations, would fail at
+# commit deleting a code that has a source or that another one names as its replacement (or a user who created one). The database
+# carries the action itself: these foreign keys are created without a constraint above and get it here, deferrable as Django's are.
+# A later AlterField of one of them recreates its constraint without the action (Django's own), which S10 settles.
+DELETE_ACTIONS = [  # (model, field, ON DELETE)
+    ('Reference', 'reemplazado_por', 'SET NULL'),
+    ('Reference', 'created_by', 'SET NULL'),
+    ('ReferenceSource', 'reference', 'CASCADE'),
+    ('ReferenceSource', 'created_by', 'SET NULL'),
+    ('ReferenceSource', 'retired_by', 'SET NULL'),
+]
+
+
+def foreign_keys(apps, schema_editor):
+    quote = schema_editor.quote_name
+    for model_name, field_name, action in DELETE_ACTIONS:
+        model = apps.get_model('mall', model_name)
+        field = model._meta.get_field(field_name)
+        table, column = model._meta.db_table, field.column
+        yield (quote(table), quote(f'{table}_{column}_fk'), quote(column), quote(field.related_model._meta.db_table),
+               quote(field.related_model._meta.pk.column), action)
+
+
+def add_foreign_keys(apps, schema_editor):
+    for table, name, column, target, target_column, action in foreign_keys(apps, schema_editor):
+        schema_editor.execute(f'ALTER TABLE {table} ADD CONSTRAINT {name} FOREIGN KEY ({column}) REFERENCES {target} ({target_column}) '
+                              f'ON DELETE {action} DEFERRABLE INITIALLY DEFERRED')
+
+
+def drop_foreign_keys(apps, schema_editor):
+    for table, name, *_ in foreign_keys(apps, schema_editor):
+        schema_editor.execute(f'ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {name}')
 
 
 class Migration(migrations.Migration):
@@ -102,15 +137,27 @@ class Migration(migrations.Migration):
             name='detail',
             field=models.JSONField(blank=True, db_default={}, default=dict, verbose_name='detalle'),
         ),
-        migrations.AddField(
-            model_name='reference',
-            name='reemplazado_por',
-            field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='reemplaza', to='mall.reference', verbose_name='reemplazada por'),
-        ),
-        migrations.AddField(
-            model_name='reference',
-            name='created_by',
-            field=models.ForeignKey(blank=True, editable=False, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='+', to=settings.AUTH_USER_MODEL, verbose_name='creada por'),
+        # The foreign keys come without their database constraint here and get it, with its ON DELETE action, from
+        # add_foreign_keys below (see DELETE_ACTIONS).
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.AddField(model_name='reference', name='reemplazado_por', field=models.ForeignKey(
+                    db_constraint=False, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='reemplaza', to='mall.reference')),
+                migrations.AddField(model_name='reference', name='created_by', field=models.ForeignKey(
+                    db_constraint=False, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='+', to=settings.AUTH_USER_MODEL)),
+            ],
+            state_operations=[
+                migrations.AddField(
+                    model_name='reference',
+                    name='reemplazado_por',
+                    field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='reemplaza', to='mall.reference', verbose_name='reemplazada por'),
+                ),
+                migrations.AddField(
+                    model_name='reference',
+                    name='created_by',
+                    field=models.ForeignKey(blank=True, editable=False, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='+', to=settings.AUTH_USER_MODEL, verbose_name='creada por'),
+                ),
+            ],
         ),
         migrations.SeparateDatabaseAndState(
             database_operations=[
@@ -135,29 +182,58 @@ class Migration(migrations.Migration):
             name='version',
             field=models.PositiveIntegerField(db_default=1, default=1, editable=False, verbose_name='versión'),
         ),
-        migrations.CreateModel(
-            name='ReferenceSource',
-            fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('kind', models.CharField(choices=[('catalogo', 'Catálogo de marca'), ('biblioteca', 'Biblioteca OEM'), ('proveedor', 'Proveedor'), ('admin', 'Administrador'), ('ia', 'Investigación IA'), ('buscador', 'Buscador OEM')], max_length=12, verbose_name='tipo de fuente')),
-                ('citation', models.CharField(blank=True, default='', max_length=500, verbose_name='cita')),
-                ('marks', models.JSONField(blank=True, default=list, help_text="Lo que la fuente anota junto al código: '*', 'W/HOUSING'...", verbose_name='marcas')),
-                ('retirada', models.BooleanField(default=False, verbose_name='retirada')),
-                ('retired_at', models.DateTimeField(blank=True, null=True, verbose_name='retirada el')),
-                ('detail', models.JSONField(blank=True, default=dict, verbose_name='detalle')),
-                ('created_at', models.DateTimeField(auto_now_add=True, verbose_name='registrada el')),
-                ('created_by', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='+', to=settings.AUTH_USER_MODEL, verbose_name='registrada por')),
-                ('reference', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='sources', to='mall.reference', verbose_name='referencia')),
-                ('retired_by', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='+', to=settings.AUTH_USER_MODEL, verbose_name='retirada por')),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.CreateModel(
+                    name='ReferenceSource',
+                    fields=[
+                        ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
+                        ('kind', models.CharField(max_length=12)),
+                        ('citation', models.CharField(blank=True, default='', max_length=500)),
+                        ('marks', models.JSONField(blank=True, default=list)),
+                        ('retirada', models.BooleanField(default=False)),
+                        ('retired_at', models.DateTimeField(blank=True, null=True)),
+                        ('detail', models.JSONField(blank=True, default=dict)),
+                        ('created_at', models.DateTimeField(auto_now_add=True)),
+                        ('created_by', models.ForeignKey(db_constraint=False, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='+', to=settings.AUTH_USER_MODEL)),
+                        ('reference', models.ForeignKey(db_constraint=False, on_delete=django.db.models.deletion.CASCADE, related_name='sources', to='mall.reference')),
+                        ('retired_by', models.ForeignKey(db_constraint=False, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='+', to=settings.AUTH_USER_MODEL)),
+                    ],
+                    options={
+                        'constraints': [
+                            models.UniqueConstraint(fields=('reference', 'kind', 'citation'), name='reference_source_unique'),
+                            models.CheckConstraint(condition=models.Q(('kind__in', ['catalogo', 'biblioteca', 'proveedor', 'admin', 'ia', 'buscador'])), name='reference_source_valid_kind'),
+                        ],
+                    },
+                ),
             ],
-            options={
-                'verbose_name': 'fuente de referencia',
-                'verbose_name_plural': 'fuentes de referencias',
-                'ordering': ['created_at', 'id'],
-                'constraints': [
-                    models.UniqueConstraint(fields=('reference', 'kind', 'citation'), name='reference_source_unique'),
-                    models.CheckConstraint(condition=models.Q(('kind__in', ['catalogo', 'biblioteca', 'proveedor', 'admin', 'ia', 'buscador'])), name='reference_source_valid_kind'),
-                ],
-            },
+            state_operations=[
+                migrations.CreateModel(
+                    name='ReferenceSource',
+                    fields=[
+                        ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
+                        ('kind', models.CharField(choices=[('catalogo', 'Catálogo de marca'), ('biblioteca', 'Biblioteca OEM'), ('proveedor', 'Proveedor'), ('admin', 'Administrador'), ('ia', 'Investigación IA'), ('buscador', 'Buscador OEM')], max_length=12, verbose_name='tipo de fuente')),
+                        ('citation', models.CharField(blank=True, default='', max_length=500, verbose_name='cita')),
+                        ('marks', models.JSONField(blank=True, default=list, help_text="Lo que la fuente anota junto al código: '*', 'W/HOUSING'...", verbose_name='marcas')),
+                        ('retirada', models.BooleanField(default=False, verbose_name='retirada')),
+                        ('retired_at', models.DateTimeField(blank=True, null=True, verbose_name='retirada el')),
+                        ('detail', models.JSONField(blank=True, default=dict, verbose_name='detalle')),
+                        ('created_at', models.DateTimeField(auto_now_add=True, verbose_name='registrada el')),
+                        ('created_by', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='+', to=settings.AUTH_USER_MODEL, verbose_name='registrada por')),
+                        ('reference', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='sources', to='mall.reference', verbose_name='referencia')),
+                        ('retired_by', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='+', to=settings.AUTH_USER_MODEL, verbose_name='retirada por')),
+                    ],
+                    options={
+                        'verbose_name': 'fuente de referencia',
+                        'verbose_name_plural': 'fuentes de referencias',
+                        'ordering': ['created_at', 'id'],
+                        'constraints': [
+                            models.UniqueConstraint(fields=('reference', 'kind', 'citation'), name='reference_source_unique'),
+                            models.CheckConstraint(condition=models.Q(('kind__in', ['catalogo', 'biblioteca', 'proveedor', 'admin', 'ia', 'buscador'])), name='reference_source_valid_kind'),
+                        ],
+                    },
+                ),
+            ],
         ),
+        migrations.RunPython(add_foreign_keys, drop_foreign_keys, elidable=False),
     ])

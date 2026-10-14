@@ -446,7 +446,7 @@ def pick(case, code):
             'system': case.system, 'grade': case.grade, 'brand': case.brand}, []
 
 
-def keep_alternos(part, case, others):
+def keep_alternos(part, case, others, actor=None):
     """The other MULTI_OEM numbers stay as (unverified) OEM alternos and the company codes of extra SKU segments as company alternos,
     when no other Part holds them; a held one is reported, never moved."""
     ev, kept, skipped = case.evidence or {}, [], []
@@ -458,7 +458,7 @@ def keep_alternos(part, case, others):
             skipped.append(f'{brand} {code}'.strip())
         elif not Reference.objects.filter(part=part, brand=brand, code=code).exists():
             try:
-                _, added = references.add(part, code, brand, ref_type=ref_type)
+                _, added = references.add(part, code, brand, ref_type=ref_type, actor=actor)
             except references.ReferenceConflict:  # another line holds its key: reported, never moved
                 skipped.append(f'{brand} {code}'.strip())
                 continue
@@ -497,10 +497,10 @@ def apply_case(run, case_id, fingerprint, actor, *, code=None, batch=1, bulk=Fal
         flag = chosen['code'] == part.sku
         tier = 'AUTO_FLAG_CURRENT' if flag else 'STRONG_PENDING_OWNER_TAGS' if case.tier == 'STRONG_PENDING_OWNER_TAGS' else 'AUTO_RENAME_BASE'
         source = f'algo:oem-finder:{oa.SOURCE_VERSION}:review-{case.tier.lower().replace("_", "-")}:{run.pk}'
-        oa.ensure_code(part, chosen['code'], chosen['brand'], 'oem', source)
+        oa.ensure_code(part, chosen['code'], chosen['brand'], 'oem', source, actor)
         if chosen['written'] and chosen['written'] != chosen['code']:  # the catalog spelling stays searchable, unverified
-            oa.ensure_code(part, chosen['written'], chosen['brand'], 'oem', '')
-        kept, held = keep_alternos(part, case, others)
+            oa.ensure_code(part, chosen['written'], chosen['brand'], 'oem', '', actor)
+        kept, held = keep_alternos(part, case, others, actor)
         before = {'sku': part.sku, 'name': part.name, 'is_OEM': part.is_OEM}
         part = prefer_oem(part, actor=actor, selected={'code': chosen['code'], 'brand': chosen['brand']}, confirm_current=flag)
         if part.sku != chosen['code'] or not part.is_OEM:

@@ -189,7 +189,7 @@ class CatalogImportIssueDetail(APIView):
                     # Keep the outer queue/job locks after a uniqueness race;
                     # the failed catalog write must roll back as one unit.
                     with transaction.atomic():
-                        save_plan(groups)
+                        save_plan(groups, request.user)
                 except IntegrityError:
                     errors = [{'row': issue.row, 'column': 'SKU', 'message': 'El catálogo cambió durante la corrección. Revisa los códigos y vuelve a guardar.'}]
             if errors:

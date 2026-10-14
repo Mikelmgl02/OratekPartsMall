@@ -60,7 +60,9 @@ def storefront_codes(client, search):
 class ClaveTests(TestCase):
     CODES = ['17801-30070', '1780130070', '17801 30070', 'EC-01', 'EC01', 'ec-01', 'WPT-111', 'wpt 111', 'MD-703270.KOYO',
              '13780-61J00-NP-', '12345678', '1234567', 'ABCDEFGH12', 'ABCDEFG123', 'A1B2C3D4', ' 16100-39315 ', 'TM  001',
-             'GWT-71A ', 'R177.27', '532 0418 10', 'Ñandú-123456', 'ßPIN-1234', 'X', '0-0-0-0-0-0-0-0', 'KX-100\t ', '  ab\t\tc  ']
+             'GWT-71A ', 'R177.27', '532 0418 10', 'Ñandú-123456', 'ßPIN-1234', 'X', '0-0-0-0-0-0-0-0', 'KX-100\t ', '  ab\t\tc  ',
+             # the Unicode spaces PostgreSQL's \s matches under en_US.utf8, and the no-break spaces it does not
+             'A\u2003B', 'X\u3000Y', 'K\u1680\u205fL', 'P\u2028Q', 'A\u00a0B', 'P\u2007Q', 'N\u202fO']
 
     def test_the_generated_clave_is_references_clave_on_every_code(self):
         line = make_line('CLAVE-LINE')
@@ -351,6 +353,26 @@ class ReferenceAdminTests(TestCase):
         self.assertEqual(retired.status_code, 302)
         self.assertEqual(Reference.all_objects.get(pk=live.pk).estado, 'retirada')
 
+    def test_the_admin_refuses_in_the_form_what_mall_references_refuses(self):
+        form = {'part': str(self.line.pk), 'code': 'ADM-DISP', 'brand': '', 'tipo': 'otro', 'estado': 'disputa', 'supplier': '',
+                'reference_source': '', 'dispute_note': '', 'notes': '',
+                'sources-TOTAL_FORMS': '0', 'sources-INITIAL_FORMS': '0', 'sources-MIN_NUM_FORMS': '0', 'sources-MAX_NUM_FORMS': '1000'}
+        refused = self.client.post('/admin/mall/reference/add/', form)
+        self.assertEqual(refused.status_code, 200)
+        self.assertContains(refused, 'motivo de la disputa')
+        self.assertContains(self.client.post('/admin/mall/reference/add/', {**form, 'estado': 'declarado', 'tipo': 'interno'}),
+                            'Un código interno lleva su proveedor')
+        self.assertEqual(self.client.post('/admin/mall/reference/add/', {**form, 'dispute_note': 'OTRA MEDIDA'}).status_code, 302)
+        added = Reference.objects.get(code='ADM-DISP')
+        self.assertEqual((added.estado, added.dispute_note), ('disputa', 'OTRA MEDIDA'))
+        gone = make_reference(self.line, 'ADM-BACK')
+        references.retire(gone)
+        make_reference(self.other, 'ADM-BACK', brand='GMB')  # another line took the key under a brand meanwhile
+        back = self.client.post(f'/admin/mall/reference/{gone.pk}/change/', {**form, 'code': 'ADM-BACK', 'estado': 'declarado'})
+        self.assertEqual(back.status_code, 200)  # a brandless code would reserve it again for every brand
+        self.assertContains(back, 'ya pertenece a otro SKU')
+        self.assertEqual(Reference.all_objects.get(pk=gone.pk).estado, 'retirada')
+
 
 class WriterTests(TestCase):
     def setUp(self):
@@ -398,6 +420,142 @@ class WriterTests(TestCase):
         self.assertEqual(references.cite(ref, CATALOG), (source, False))  # an upsert
 
 
+def brands_missing():
+    """Appendix C, I12: the non-blank brands of References that are neither a Brand nombre nor an alias."""
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT count(*) FROM mall_partcode r WHERE r.brand <> '' "
+                       "AND NOT EXISTS (SELECT 1 FROM mall_brand b WHERE b.nombre = r.brand) "
+                       "AND NOT EXISTS (SELECT 1 FROM mall_brandalias a WHERE a.alias = r.brand)")
+        return cursor.fetchone()[0]
+
+
+class WriterRuleTests(APITestCase):
+    """The rules every write keeps from S2a: update() checks what the row ends up as, every brand a Reference carries is a brand (I12),
+    bulk inserts take the clave locks, one Reference per key per line in the catalog import, a split keeps the brandless reservation,
+    and an exact code matches through the spellings a Reference keeps."""
+
+    def setUp(self):
+        self.root = make_user('rules-root', superuser=True)
+        self.a, self.b = make_line('RULE-A'), make_line('RULE-B')
+
+    def test_bringing_a_retired_reference_back_validates_it_and_clears_its_replacement(self):
+        ref, _ = references.add(self.a, 'EC-01', '')
+        other, _ = references.add(self.a, 'EC-02', '')
+        references.retire(ref, replaced_by=other)
+        held, _ = references.add(self.b, 'EC-01', 'TOYOTA')  # free while the brandless one is retired
+        with self.assertRaisesMessage(references.ReferenceConflict, 'ya pertenece a otro SKU (RULE-B)'):
+            references.update(Reference.all_objects.get(pk=ref.pk), estado='declarado')
+        references.retire(held)
+        back = references.update(Reference.all_objects.get(pk=ref.pk), actor=self.root, estado='declarado')
+        back.refresh_from_db()
+        self.assertEqual((back.estado, back.reemplazado_por_id, back.detail['returned']['by']), ('declarado', None, 'rules-root'))
+
+    def test_update_refuses_a_dispute_without_its_note_and_an_interno_code_without_its_supplier(self):
+        ref, _ = references.add(self.a, 'UPD-2', '')
+        with self.assertRaisesMessage(references.ReferenceConflict, 'motivo de la disputa'):
+            references.update(ref, estado='disputa')
+        with self.assertRaisesMessage(references.ReferenceConflict, 'Un código interno lleva su proveedor'):
+            references.update(ref, tipo='interno')
+        references.update(ref, estado='disputa', dispute_note='OTRA MEDIDA')
+        self.assertEqual(stored(ref), ('otro', 'unknown', 'disputa'))
+
+    def test_every_brand_a_reference_carries_is_a_brand_or_an_alias(self):
+        ref, _ = references.add(self.a, 'BR-1', 'marca  nueva')
+        brand = Brand.objects.get(nombre='MARCA NUEVA')
+        self.assertEqual((brand.tipo, list(brand.aliases.values_list('alias', flat=True))), ('repuesto', ['MARCA  NUEVA']))
+        references.update(ref, brand='Chery Oem', tipo='oem')
+        self.assertEqual(Brand.objects.get(nombre='CHERY OEM').tipo, 'vehiculo')
+        self.client.force_authenticate(self.root)
+        response = self.client.patch(f'/api/v1/management/catalog/{self.a.pk}/', {'codes': [{'brand': 'OTRA MARCA', 'code': 'BR-2'}]},
+                                     format='json')
+        self.assertEqual(response.status_code, 200, response.content)
+        save_plan({'RULE-NEW': {'sku': 'RULE-NEW', 'row': 2, 'existing': None, 'fields': {}, 'codes': {('IMPORTADA', 'BR-3'): 2}}}, self.root)
+        self.assertEqual(brands_missing(), 0)
+        self.assertTrue(Brand.objects.filter(nombre__in=['OTRA MARCA', 'IMPORTADA']).count() == 2)
+
+    def test_a_bulk_insert_checks_every_key_again(self):
+        references.add(self.a, '17801-30070', '')
+        with self.assertRaisesMessage(references.ReferenceConflict, 'ya pertenece a otro SKU (RULE-A)'):
+            references.bulk_create([references.build(self.b, '1780130070', 'TOYOTA')])  # the brandless reservation
+        with self.assertRaisesMessage(references.ReferenceConflict, 'se repite con otra grafía'):
+            references.bulk_create([references.build(self.b, 'BULK-12345', ''), references.build(self.b, 'BULK12345', '')])
+        self.assertFalse(Reference.objects.filter(part=self.b).exists())
+
+    def test_the_catalog_import_keeps_one_reference_per_key_and_brings_retired_ones_back(self):
+        gone = make_reference(self.a, 'IMP-R-1', brand='GMB')
+        references.retire(gone)
+        elsewhere = make_reference(self.b, 'IMP-R-2', brand='GMB')
+        references.retire(elsewhere)
+        groups = {'RULE-A': {'sku': 'RULE-A', 'row': 2, 'fields': {}, 'codes': {
+            ('GMB', 'IMP-R-1'): 2, ('GMB', 'IMP-R-2'): 2, ('', '17801-30070'): 2, ('', '1780130070'): 2}}}
+        result, _ = build_plan(groups, [], 1, lock=True)
+        self.assertTrue(result['valid'], result)
+        save_plan(groups, self.root)
+        self.assertEqual(Reference.objects.get(pk=gone.pk).estado, 'declarado')  # retired on this line: it comes back
+        moved = Reference.objects.get(part=self.a, code='IMP-R-2')  # retired on another line (unique_brand_code until 0074)
+        self.assertEqual(moved.estado, 'declarado')
+        new = Reference.objects.get(part=self.a, code='17801-30070')
+        self.assertEqual((new.printed_forms, new.created_by), (['1780130070'], self.root))  # the second spelling joins it
+        again = {'RULE-A': {'sku': 'RULE-A', 'row': 2, 'fields': {}, 'codes': {('', '17801 30070'): 2}}}
+        build_plan(again, [], 1, lock=True)
+        save_plan(again)
+        new.refresh_from_db()
+        self.assertEqual(new.printed_forms, ['1780130070', '17801 30070'])
+        self.assertEqual(Reference.objects.filter(part=self.a, clave='1780130070').count(), 1)
+
+    def test_a_split_refuses_a_code_that_would_leave_the_brandless_reservation_broken(self):
+        from rest_framework.exceptions import ValidationError
+        from .catalog_split import split_catalog_part
+        target, source = make_line('SPL-2'), make_line('SPL-2-GMB')
+        merge_catalog_parts(actor=self.root, target_sku='SPL-2', source_skus=['SPL-2-GMB'])
+        references.add(target, '17801-99999', '')
+        branded, _ = references.add(target, '1780199999', 'TOYOTA')  # on one line both may coexist
+        with self.assertRaisesMessage(ValidationError, 'quedaría en SPL-2-GMB'):
+            split_catalog_part(actor=self.root, target_id=target.pk,
+                               restore=[{'id': str(source.pk), 'codes': [branded.pk], 'items': [], 'images': []}])
+        self.assertEqual(Reference.objects.get(pk=branded.pk).part_id, target.pk)
+
+    def test_an_exact_code_matches_through_the_spellings_a_reference_keeps(self):
+        from .supplier_import import stock_plan
+        ref, _ = references.add(self.a, '13780-61J00-NP', '')
+        references.add_spelling(ref, '13780-61J00-NP-')
+        self.assertEqual(matching_part('13780-61J00-NP-', 'SUZUKI'), self.a)
+        rows = [{'row': 2, 'data': {'supplier_invent_id': 'PF-1', 'codigo': '13780-61J00-NP-', 'brand': '', 'quantity': 1}}]
+        plan, _ = stock_plan(make_supplier('RULE PROVEEDOR'), rows)
+        self.assertEqual([(row['matching_status'], row['part_id']) for row in plan['preview']], [('matched', str(self.a.pk))])
+
+    def test_a_catalog_replace_keeps_a_number_a_retired_alterno_points_at(self):
+        from .supplier_catalog_replace import held
+        ref, _ = references.add(self.a, '17801-30070', 'TOYOTA', ref_type='oem', source=ALGO)
+        references.retire(ref)
+        number = OEMReference.objects.get(manufacturer='TOYOTA', code='1780130070')
+        self.assertEqual(Reference.all_objects.get(pk=ref.pk).oem_reference_id, number.pk)  # history: it still points at its number
+        self.assertTrue(held(number, 'GMB Water Pump Catalog 2016'))
+
+    def test_add_moves_a_retired_row_only_for_unique_brand_code(self):
+        gone = make_reference(self.b, 'MOVE-1', brand='GMB')
+        references.retire(gone)
+        with patch.object(Reference, 'save', side_effect=IntegrityError('otra restricción')):
+            with self.assertRaisesMessage(references.ReferenceConflict, 'ya está registrado'):
+                references.add(self.a, 'MOVE-1', 'GMB')
+        self.assertEqual(Reference.all_objects.get(pk=gone.pk).part_id, self.b.pk)  # never moved for another refusal
+
+    def test_the_code_before_s2a_can_delete_a_code_with_sources_and_replacements(self):
+        author = make_user('rules-author')
+        ref, _ = references.add(self.a, 'DEL-1', 'GMB', ref_type='company', source=CATALOG, actor=author)
+        old = make_reference(self.a, 'DEL-0', brand='GMB')
+        references.retire(old, replaced_by=ref)
+        with connection.cursor() as cursor:  # as the code before S2a deletes: it knows none of these relations (0073 DELETE_ACTIONS)
+            cursor.execute('SET CONSTRAINTS ALL IMMEDIATE')
+            cursor.execute('DELETE FROM mall_partcode WHERE id = %s', [ref.pk])
+        self.assertFalse(ReferenceSource.objects.filter(reference_id=ref.pk).exists())
+        self.assertIsNone(Reference.all_objects.get(pk=old.pk).reemplazado_por_id)
+        kept, _ = references.add(self.a, 'DEL-2', 'GMB', ref_type='company', source=CATALOG, actor=author)
+        with connection.cursor() as cursor:
+            cursor.execute('DELETE FROM mall_user WHERE id = %s', [author.pk])
+        self.assertEqual((Reference.objects.get(pk=kept.pk).created_by_id, kept.sources.get().created_by_id), (None, None))
+
+
 class BackfillTests(TestCase):
     """python -m mall.refactor.s2a_references on rows as 0073 leaves them: tipo otro, estado declarado, no sources, created_at empty."""
 
@@ -429,7 +587,7 @@ class BackfillTests(TestCase):
         Brand.objects.create(nombre='GMB')
         # 0073 leaves every row as the code before S2a wrote it.
         ReferenceSource.objects.all().delete()
-        Reference.all_objects.update(tipo='otro', estado='declarado', created_at=None)
+        Reference.all_objects.update(tipo='otro', estado='declarado', created_at=None, updated_at=None)
 
     def run_cli(self, *args):
         out = io.StringIO()
@@ -484,7 +642,7 @@ class BackfillTests(TestCase):
     def test_the_catch_up_repairs_what_old_code_wrote_and_leaves_new_codes_alone(self):
         self.run_cli('--apply', '--user', self.root.username)
         old = Reference.objects.create(part=self.cv, code='OLD-WRITE', brand='GMB', ref_type='company')
-        Reference.all_objects.filter(pk=old.pk).update(tipo='otro', created_at=None)  # inserted by the code before S2a
+        Reference.all_objects.filter(pk=old.pk).update(tipo='otro', created_at=None, updated_at=None)  # inserted by the code before S2a
         new, _ = references.add(self.cv, 'NEW-WRITE', '', ref_type='unknown', estado='verificado')
         self.run_cli('--apply', '--user', self.root.username)
         self.assertEqual(stored(old), ('aftermarket', 'company', 'declarado'))
@@ -494,7 +652,7 @@ class BackfillTests(TestCase):
         self.run_cli('--apply', '--user', self.root.username)
         code, out = self.run_cli('--rollback', '--user', self.root.username)
         self.assertEqual(code, 0, out)
-        self.assertEqual(stored(self.finder), ('otro', 'oem', 'declarado'))
+        self.assertEqual(stored(self.finder), ('oem', 'oem', 'declarado'))  # tipo is never put back: the code before S2a ignores it
         self.assertEqual(stored(self.spare), ('otro', 'unknown', 'declarado'))
         self.assertEqual(Reference.objects.get(pk=self.keeper.pk).printed_forms, [])
         self.assertFalse(ReferenceSource.objects.exists())
@@ -518,6 +676,69 @@ class BackfillTests(TestCase):
         self.assertIn('HELD-1', out)
         self.assertTrue(Reference.all_objects.filter(pk=self.spare.pk).exists())  # the apply's own retirement is put back, not purged
 
+    def test_the_first_rollback_runs_with_0074s_constraints_in_place(self):
+        self.run_cli('--apply', '--user', self.root.username)
+        with connection.cursor() as cursor:  # 0074 applied: the documented order rolls back before reversing it
+            cursor.execute('SET CONSTRAINTS ALL IMMEDIATE')  # no pending trigger events before an index is built
+            cursor.execute("CREATE UNIQUE INDEX reference_one_live_line ON mall_partcode (clave, brand, supplier_id) NULLS NOT DISTINCT "
+                           "WHERE estado IN ('verificado', 'declarado', 'inferido')")
+            cursor.execute("ALTER TABLE mall_partcode ADD CONSTRAINT reference_tipo_matches_ref_type CHECK ((tipo = 'oem' AND "
+                           "ref_type = 'oem') OR (tipo = 'aftermarket' AND ref_type = 'company') OR (tipo IN ('interno', 'otro') AND "
+                           "ref_type = 'unknown'))")
+            cursor.execute("ALTER TABLE mall_partcode ADD CONSTRAINT reference_dispute_note CHECK (estado <> 'disputa' OR dispute_note <> '')")
+        code, out = self.run_cli('--rollback', '--purge-retired', '--user', self.root.username)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(stored(self.finder), ('oem', 'oem', 'declarado'))  # tipo stays: it matches ref_type
+        self.assertEqual(stored(self.disputed), ('oem', 'oem', 'declarado'))
+        self.assertEqual(stored(self.spare)[2], 'retirada')  # the keeper holds its key: it waits for 0074's reverse
+        self.assertIn('revierte 0074', out)
+        drop_tighten_constraints()  # 0074 reversed
+        code, out = self.run_cli('--rollback')
+        self.assertEqual(code, 0, out)
+        self.assertEqual(stored(self.spare), ('otro', 'unknown', 'declarado'))
+        self.assertIsNone(Reference.objects.get(pk=self.spare.pk).reemplazado_por_id)
+
+    def test_purge_deletes_a_row_the_apply_changed_that_the_code_retired_since(self):
+        self.run_cli('--apply', '--user', self.root.username)
+        references.retire(self.company)  # retyped by the apply, retired by the code after landing
+        code, out = self.run_cli('--rollback', '--purge-retired', '--user', self.root.username)
+        self.assertEqual(code, 0, out)
+        self.assertFalse(Reference.all_objects.filter(pk=self.company.pk).exists())
+        self.assertIn('1 retiradas borradas', out)
+        self.assertEqual(stored(self.spare), ('otro', 'unknown', 'declarado'))  # the apply's own retirement comes back
+
+    def test_without_purge_a_row_the_code_retired_is_listed_not_put_back(self):
+        self.run_cli('--apply', '--user', self.root.username)
+        references.retire(self.finder)
+        code, out = self.run_cli('--rollback', '--user', self.root.username)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(stored(self.finder), ('oem', 'oem', 'retirada'))
+        self.assertIn('--purge-retired la borra', out)
+
+    def test_purge_follows_a_chain_of_replacements(self):
+        self.run_cli('--apply', '--user', self.root.username)
+        a, b, c = make_reference(self.cv, 'CHAIN-A'), make_reference(self.cv, 'CHAIN-B'), make_reference(self.cv, 'CHAIN-C')
+        references.retire(b, replaced_by=c)
+        references.retire(a, replaced_by=b)
+        code, out = self.run_cli('--rollback', '--purge-retired')
+        self.assertEqual(code, 0, out)
+        self.assertEqual(set(Reference.all_objects.filter(code__startswith='CHAIN-').values_list('code', flat=True)), {'CHAIN-C'})
+
+    def test_a_catch_up_leaves_an_estado_the_code_set_on_an_old_row(self):
+        self.run_cli('--apply', '--user', self.root.username)
+        references.update(Reference.objects.get(pk=self.finder.pk), estado='declarado')  # a person confirmed it after landing
+        code, out = self.run_cli('--apply', '--user', self.root.username)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(stored(self.finder), ('oem', 'oem', 'declarado'))
+
+    def test_a_duplicate_of_a_branded_oem_alterno_is_listed_not_retired(self):
+        twin = make_reference(self.filter, '178010S010', brand='TOYOTA', tipo='oem', source=ALGO)
+        Reference.all_objects.filter(pk=twin.pk).update(tipo='otro', created_at=None, updated_at=None)
+        code, out = self.run_cli('--apply', '--user', self.root.username)
+        self.assertEqual(code, 0, out)
+        self.assertIn('Grafías duplicadas de alternos OEM (1)', out)
+        self.assertEqual((stored(twin)[2], stored(self.finder)[2]), ('inferido', 'inferido'))
+
     def test_a_manifest_of_another_database_is_refused(self):
         with open(os.path.join(self.output.name, 'manifest.jsonl'), 'w', encoding='utf-8') as handle:
             handle.write(json.dumps({'stage': 's2a', 'database': 'partsmall_rehearsal', 'action': 'run'}) + '\n')
@@ -528,7 +749,7 @@ class BackfillTests(TestCase):
 
     def test_a_key_two_lines_hold_is_listed_not_touched(self):
         clash = make_reference(self.filter, '13780-61J00NP')
-        Reference.all_objects.filter(pk=clash.pk).update(created_at=None)
+        Reference.all_objects.filter(pk=clash.pk).update(created_at=None, updated_at=None)
         code, out = self.run_cli('--dry-run')
         self.assertIn('Claves que tienen dos líneas (1)', out)
         self.assertNotIn('se retira 13780-61J00-NP-', out)

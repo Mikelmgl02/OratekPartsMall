@@ -242,6 +242,9 @@ def split_catalog_part(*, actor, target_id, restore, reason=''):
         if pk in wanted:
             raise ValidationError({'detail': 'No repitas un SKU por separar.'})
         wanted[pk] = entry
+    # The claves of the target's codes before their rows: a code moving to a restored line is checked against every other line under
+    # its clave's advisory lock (mall.references), the lock a writer adding the same key takes first.
+    references.lock(*Reference.objects.filter(part=target).values_list('clave', flat=True))
     codes = {code.pk: code for code in Reference.objects.select_for_update().filter(part=target).order_by('pk')}
     items = {str(item.pk): item for item in SupplierItem.objects.select_for_update().filter(part=target).order_by('pk')}
     images = {str(image.pk): image for image in PartImage.objects.select_for_update().filter(part=target).order_by('pk')}
@@ -286,6 +289,17 @@ def split_catalog_part(*, actor, target_id, restore, reason=''):
             raise ValidationError({'detail': f'{children[pk].sku} es alterno de {clash.part.sku}. Corrige esa asignación antes de separarlo.'})
 
     restored = [children[pk] for pk in wanted]
+    destination = {code_pk: children[pk].sku for pk in wanted for code_pk in plan[pk]['codes']}
+    for part in restored:  # a moved code must not clash on its new line with a code left elsewhere (the brandless reservation, I5)
+        moving = [codes[pk] for pk in plan[str(part.pk)]['codes']]
+        for code in moving:
+            clash = (references.conflicts(code.code, code.brand, line=part.pk, supplier=code.supplier_id, estado=code.estado)
+                     .exclude(pk__in=[row.pk for row in [*moving, *removed]]).select_related('part').first())  # removed ones retire
+            if clash:
+                where = destination.get(clash.pk) or clash.part.sku
+                raise ValidationError({'detail': f'{code.code} quedaría en {part.sku} con la clave de {clash}, que queda en {where} (un código '
+                                                 'sin marca vale para todas las marcas). Pasa los dos al mismo SKU o corrige uno en Editar '
+                                                 'antes de separar.'})
     for part in restored:
         moves = plan[str(part.pk)]
         Reference.objects.filter(pk__in=moves['codes']).update(part=part)

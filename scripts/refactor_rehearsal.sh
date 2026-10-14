@@ -3,7 +3,7 @@
 #
 #   scripts/refactor_rehearsal.sh --dump docker_backups/before-0071-s1.dump --worktree refactor-s1 --stage s1 \
 #       [--expand 0071_line_lifecycle] [--tighten 0072_line_lifecycle_checks] [--cli mall.refactor.s1] [--cli-user miguel] \
-#       [--allow PATRÓN ...] [--allow-applied PATRÓN ...] [--time 'python -m ...' ...] [--old-code /app] \
+#       [--allow PATRÓN ...] [--allow-applied PATRÓN ...] [--allow-rollback PATRÓN ...] [--time 'python -m ...' ...] [--old-code /app] \
 #       [--db partsmall_rehearsal] [--replace] [--keep] [--print]
 #
 #  1. Restores the dump into the copy (createdb + pg_restore --no-owner), confirms that the app containers of both codes connect to it,
@@ -16,7 +16,8 @@
 #     (createdb -T, dropped afterwards), so its writes never reach the rollback check. The commands run in-process (python -m ...,
 #     manage.py): one that names an HTTP address is refused, and every rehearsal container's HTTP proxy is a dead port.
 #  6. Rolls back (tighten reversed, CLI --rollback, migrations back to where the dump was) and snapshots with the old code: it must
-#     equal the baseline.
+#     equal the baseline, but for the --allow-rollback keys (a list the API returns without a defined order, such as a line's codes,
+#     which the stage's UPDATEs reorder on disk).
 #  7. Drops the copy (kept with --keep, and on a failure so it can be inspected).
 # Every step is timed; the window estimate is migrate + apply (+ tighten). The log goes to output/refactor/<stage>/rehearsal-<time>/ in
 # the main checkout. Its output-refactor/ folder is mounted over /app/output/refactor in every app container, so the snapshots
@@ -39,7 +40,7 @@ MIN_FREE_KB=$((3 * 1024 * 1024))  # 3 GB in the Docker VM (plan D0)
 
 DUMP='' WORKTREE='' STAGE='' EXPAND='' TIGHTEN='' CLI='' CLI_USER=miguel OLD_CODE=/app DB=partsmall_rehearsal
 REPLACE=0 KEEP=0 PRINT=0
-ALLOW=() ALLOW_APPLIED=() TIMED=()
+ALLOW=() ALLOW_APPLIED=() ALLOW_ROLLBACK=() TIMED=()
 
 usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit "${1:-0}"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -55,6 +56,7 @@ while [ $# -gt 0 ]; do
         --cli-user) CLI_USER=$2; shift 2 ;;
         --allow) ALLOW+=("$2"); shift 2 ;;
         --allow-applied) ALLOW_APPLIED+=("$2"); shift 2 ;;
+        --allow-rollback) ALLOW_ROLLBACK+=("$2"); shift 2 ;;
         --time) TIMED+=("$2"); shift 2 ;;
         --old-code) OLD_CODE=$2; shift 2 ;;
         --db) DB=$2; shift 2 ;;
@@ -244,6 +246,8 @@ EXPAND_DIFF=(--diff "$BASE")
 for pattern in ${ALLOW[@]+"${ALLOW[@]}"}; do EXPAND_DIFF+=(--allow "$pattern"); done
 APPLIED_DIFF=("${EXPAND_DIFF[@]}")
 for pattern in ${ALLOW_APPLIED[@]+"${ALLOW_APPLIED[@]}"}; do APPLIED_DIFF+=(--allow "$pattern"); done
+ROLLBACK_DIFF=(--diff "$BASE")
+for pattern in ${ALLOW_ROLLBACK[@]+"${ALLOW_ROLLBACK[@]}"}; do ROLLBACK_DIFF+=(--allow "$pattern"); done
 TARGET=()
 [ -z "$EXPAND" ] || TARGET=(mall "$EXPAND")
 
@@ -274,7 +278,7 @@ if [ -n "$CLI" ]; then
     step "CLI $CLI --rollback" cli --rollback
 fi
 step "Revertir las migraciones hasta $START" app "$NEW_CODE" python manage.py migrate --noinput mall "$START"
-step 'Instantánea tras revertir (código anterior)' snapshot "$OLD_CODE" 04-rolled-back --diff "$BASE"
+step 'Instantánea tras revertir (código anterior)' snapshot "$OLD_CODE" 04-rolled-back "${ROLLBACK_DIFF[@]}"
 
 if [ "$KEEP" = 0 ]; then
     step 'Borrar la copia' run docker exec "$DB_CONTAINER" dropdb -U "$PGUSER_NAME" --force "$DB"

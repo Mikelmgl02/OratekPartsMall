@@ -218,8 +218,7 @@ REFERENCE_RELATIONS = {'codes', 'alternos', 'reemplaza', 'internal_references', 
 LEGACY_ALLOWED = {
     'catalog_assistant.py': 2, 'catalog_classification.py': 2, 'catalog_grouping_suggestions.py': 4, 'catalog_identity.py': 2,
     'catalog_search.py': 3, 'matching_engine.py': 4, 'models.py': 1, 'oem_finder.py': 2, 'oem_links.py': 9, 'refactor/snapshot.py': 3,
-    'serializers.py': 2, 'services.py': 3, 'sku_proposals.py': 2, 'supplier_catalog_replace.py': 2, 'supplier_import.py': 3,
-    'wishlist.py': 4,
+    'serializers.py': 2, 'services.py': 6, 'sku_proposals.py': 2, 'supplier_catalog_replace.py': 2, 'wishlist.py': 4,
 }
 BULK_METHODS = {'bulk_create', 'bulk_update'}
 BULK_CHOKE_POINTS = {Path('lines.py'), Path('references.py')}

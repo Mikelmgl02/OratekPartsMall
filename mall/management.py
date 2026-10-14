@@ -293,11 +293,14 @@ class ManagedPartSerializer(serializers.ModelSerializer):
             validate_code_mapping(part=self.instance, brand=brand, code=code)
         return codes
 
+    def actor(self):
+        user = getattr(self.context.get('request'), 'user', None)
+        return user if getattr(user, 'is_authenticated', False) else None
+
     def save_codes(self, part, codes):
         """The line's References become exactly these (mall.references): each one found by its key (a new spelling replaces the
         printed one) or added, its type and source as sent; the ones not sent are retired, never deleted."""
-        user = getattr(self.context.get('request'), 'user', None)
-        actor = user if getattr(user, 'is_authenticated', False) else None
+        actor = self.actor()
         keep = []
         for code in codes:
             extra = {key: value for key, value in code.items() if key not in ('brand', 'code')}
@@ -319,7 +322,7 @@ class ManagedPartSerializer(serializers.ModelSerializer):
                 self.save_codes(part, codes)
                 from .catalog_identity import company_reference, preserve_sku_reference, prefer_oem
                 if not part.is_OEM and company_reference(part.sku):
-                    preserve_sku_reference(part, part.sku)
+                    preserve_sku_reference(part, part.sku, actor=self.actor())
                 return prefer_oem(part, actor=getattr(self.context.get('request'), 'user', None), selected=main,
                                   confirm_current='is_OEM' not in validated_data)
         except IntegrityError:
@@ -356,7 +359,7 @@ class ManagedPartSerializer(serializers.ModelSerializer):
                     self.save_codes(instance, codes)
                 from .catalog_identity import company_reference, preserve_sku_reference, prefer_oem
                 if old_sku != instance.sku or (not old_is_oem and company_reference(old_sku)):
-                    preserve_sku_reference(instance, old_sku, is_oem=old_is_oem)
+                    preserve_sku_reference(instance, old_sku, is_oem=old_is_oem, actor=self.actor())
                 # Explicit flag-only edits should not rename the SKU as a side effect.
                 if main or 'is_OEM' not in validated_data or codes is not None:
                     instance = prefer_oem(instance, actor=getattr(self.context.get('request'), 'user', None), selected=main,

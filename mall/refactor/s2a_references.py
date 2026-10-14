@@ -7,17 +7,19 @@ tipo is ref_type, mapped straight (plan A2): oem → oem, company → aftermarke
 Nothing is reclassified: the merge aliases keep brand '' and tipo otro (their TAG brands move in S6, since services.matching_part, the
 import preview and MatchIndex match brandless variants on brand in [x, '']). A row whose tipo already agrees with its ref_type keeps it.
 
-estado, on the rows 0073 left at its default (created_at NULL, estado declarado; the code from S2a writes its own): an OEM alterno
-filed under a library number takes the number's status (verified → verificado, declared → declarado, inferred → inferido, disputed →
-disputa with the number's dispute note); otherwise a code the OEM finder wrote (reference_source algo:...) is inferido and the rest
-declarado.
+estado, on the rows 0073 left at its default (created_at and updated_at NULL, estado declarado: the code from S2a stamps both on every
+row it writes, so an estado it set is never derived again): an OEM alterno filed under a library number takes the number's status
+(verified → verificado, declared → declarado, inferred → inferido, disputed → disputa with the number's dispute note); otherwise a
+code the OEM finder wrote (reference_source algo:...) is inferido and the rest declarado.
 
 Spelling duplicates: two live rows of one line with one key (clave, brand, supplier: 13780-61J00-NP and 13780-61J00-NP-; 7 pairs on
 2026-10-13). One stays: the line's codigo, then oem before aftermarket before otro, verificado before declarado before inferido, the
 cleaner spelling (no trailing - _ / ., fewer characters other than letters, digits and -) and the lower id. The others retire
 (estado retirada, reemplazado_por the one that stays, who and why in detail['retired']) and their spelling joins its printed_forms;
 the manifest records each spelling's supplier items (supplier_invent_id, line, status, stock), since most hold stock under both. A key
-two lines hold is only listed: a person decides (0074 refuses to tighten while one exists).
+two lines hold is only listed, and so is a duplicate whose spare is a branded OEM alterno (the OEM library cites it, and only
+mall.references.retire, one save at a time, takes it off the library as the mirror does): a person decides (0074 refuses to tighten
+while either exists).
 
 Sources: each non-blank reference_source becomes a ReferenceSource by its prefix (plan A3, mall.references.source_of): algo: buscador,
 a URL ia, 'Declarado por' proveedor, 'CONFIRMADO POR' and 'Marcado como OEM por' admin, a supplier catalog's citation (GMB, ASVA, ATE)
@@ -27,10 +29,9 @@ Brands: every non-blank brand must be a Brand nombre or alias (Appendix C, I12).
 normalized name (mall.brands.normalize; vehiculo when it only names OEM alternos, repuesto otherwise), or an alias of the brand that
 name already is. All are listed.
 
-It writes in bulk (no signals; an OEM alterno it retires leaves its library source as the mirror would) under the matching worker's
-lock, in one transaction; on the live database --apply and --rollback need the S0.11 guard (mall.refactor.guard: the catalog freeze is
-on and no writer is still busy). Every row it changes or creates goes, with its values before, to
-mall.refactor.output.manifest_path('s2a') (the main checkout's git-ignored output/refactor/s2a/, /app/output/… in the containers,
+It writes in bulk (no signals, and nothing in the OEM library) under the matching worker's lock, in one transaction; on the live
+database --apply and --rollback need the S0.11 guard (mall.refactor.guard: the catalog freeze is on and no writer is still busy).
+Every row it changes or creates goes, with its values before, to mall.refactor.output.manifest_path('s2a') (the main checkout's git-ignored output/refactor/s2a/, /app/output/… in the containers,
 REFACTOR_OUTPUT in a rehearsal) before the transaction commits; the folder must exist, and a manifest holding another database's lines
 is refused. The dry run also works before 0073 is applied (every row read as 0073 leaves it: tipo otro, estado declarado, no source)
 and compares the database's generated clave with mall.references.clave() on every code once it is. Re-running changes nothing new: it
@@ -38,15 +39,19 @@ runs before landing (the code before S2a ignores the new columns and the 7 retir
 as the catch-up.
 
 --rollback puts back what the applies on this database changed and no rollback has put back yet, unless a row changed since (listed):
-the References' values before, the sources, brands and aliases it created deleted. A retired duplicate whose key a live row holds
-cannot come back while 0074's reference_one_live_line exists (listed: run --rollback again after reversing 0074). --purge-retired also
-deletes the rows the code retired after landing that nothing points at (mall.references.purge), which the code before S2a would show as
-live codes, and lists the rest. S2a rolls back in this order, under the freeze, from the worktree: --rollback --purge-retired; reverse
-0074 (python manage.py migrate mall 0073_reference; it refuses while one printed brand and code is held twice); --rollback again when
-the first one listed duplicates; revert the code (git revert, reload gunicorn, restart the workers); and last, optionally, reverse
-0073 (migrate mall 0072_line_lifecycle_checks). Never revert the code while 0074 is applied: the code before S2a writes ref_type
-without tipo, which its CHECKs refuse. --report writes the duplicates, the keys two lines hold, the sources and the brands, for the
-owner.
+the References' estado, dispute note, replacement, printed forms and detail before, the sources, brands and aliases it created
+deleted. tipo is never put back: before, it only held 0073's default (otro), the code before S2a never reads it, and otro next to
+ref_type oem or company breaks 0074's reference_tipo_matches_ref_type. A row coming back to a key a live row holds (a retired duplicate,
+or a disputed one whose key another line took) cannot while 0074's reference_one_live_line exists (listed: run --rollback again after
+reversing 0074). A row the code retired after the apply is not put back: --purge-retired deletes the rows the code retired that
+nothing names as its replacement (mall.references.purge, repeated until none is left), which the code before S2a would show as live
+codes, and lists the rest; without it they are listed. S2a rolls back in this order, under the freeze, from the worktree:
+--rollback --purge-retired; reverse 0074 (python manage.py migrate mall 0073_reference; it refuses while one printed brand and code
+is held twice); --rollback again when the first one listed rows waiting for it; revert the code (git revert, reload gunicorn, restart
+the workers); and last, optionally, reverse 0073 (migrate mall 0072_line_lifecycle_checks: 0073's foreign keys delete in the database
+too, so the code before S2a can delete a code with sources). Never revert the code while 0074 is applied: the code before S2a writes
+ref_type without tipo, which its CHECKs refuse. --report writes the duplicates, the keys two lines hold, the sources and the brands,
+for the owner.
 """
 import argparse
 import json
@@ -58,10 +63,14 @@ import uuid
 from collections import Counter, defaultdict
 
 STAGE = 's2a'
-# Plan §3 S2a (2026-10-13). On 2026-10-14 the 34 legacy merges OD18 separated took their 60 merge aliases (unknown, brand '') away.
-EXPECTED = {'filas': 3766, 'oem': 440, 'aftermarket': 847, 'otro': 2479, 'retirada': 7, 'sin_marca': 2481, 'fuentes': 714}
+# The live dry run of 2026-10-14 12:50 (the rehearsal's dump). Plan §3 S2a counted 3,766 · 440 · 847 · 2,479 · 7 · 2,481 · ≈714 on
+# 2026-10-13: since then the 34 legacy merges OD18 separated took their 60 merge aliases (unknown, brand '') away, Productos nuevos
+# approvals added seven OEM alternos ('Declarado por …'), and Editar SKU ten codes (six oem, four unknown; eight brandless). The live
+# catalog keeps moving: D0 takes the rehearsal's dry run as the expected counts.
+EXPECTED = {'filas': 3723, 'oem': 453, 'aftermarket': 847, 'otro': 2423, 'retirada': 7, 'sin_marca': 2429, 'fuentes': 721}
 ESTADO_OF_STATUS = {'verified': 'verificado', 'declared': 'declarado', 'inferred': 'inferido', 'disputed': 'disputa'}
 FIELDS = ('tipo', 'ref_type', 'estado', 'dispute_note', 'reemplazado_por_id', 'printed_forms', 'detail')
+RESTORABLE = ('estado', 'dispute_note', 'reemplazado_por_id', 'printed_forms', 'detail')  # what --rollback puts back: never tipo (undo)
 LEGACY = ('pk', 'part_id', 'part__sku', 'brand', 'code', 'ref_type', 'reference_source', 'oem_reference_id')
 TIPO_RANK = {'oem': 0, 'aftermarket': 1, 'interno': 2, 'otro': 3}
 ESTADO_RANK = {'verificado': 0, 'declarado': 1, 'inferido': 2}
@@ -156,17 +165,17 @@ def tightened():
 # --- plan ----------------------------------------------------------------------------------------------------------------------------
 
 def reference_rows(schema, queryset=None):
-    """Every Reference's values (LEGACY, FIELDS, supplier_id, created_at, clave), retired ones included; with 0073's defaults before it
-    is applied (the clave computed in Python)."""
+    """Every Reference's values (LEGACY, FIELDS, supplier_id, created_at, updated_at, clave), retired ones included; with 0073's defaults
+    before it is applied (the clave computed in Python)."""
     from .. import references
     from ..models import Reference
     rows = (queryset if queryset is not None else Reference._base_manager.all()).order_by('pk')
     if schema:
-        yield from rows.values(*LEGACY, *FIELDS, 'supplier_id', 'created_at', 'clave').iterator(chunk_size=CHUNK)
+        yield from rows.values(*LEGACY, *FIELDS, 'supplier_id', 'created_at', 'updated_at', 'clave').iterator(chunk_size=CHUNK)
         return
     for row in rows.values(*LEGACY).iterator(chunk_size=CHUNK):
         yield {**row, 'tipo': 'otro', 'estado': 'declarado', 'dispute_note': '', 'reemplazado_por_id': None, 'printed_forms': [],
-               'detail': {}, 'supplier_id': None, 'created_at': None, 'clave': references.clave(row['code'])}
+               'detail': {}, 'supplier_id': None, 'created_at': None, 'updated_at': None, 'clave': references.clave(row['code'])}
 
 
 def keeper_key(row, after):
@@ -189,8 +198,8 @@ def supplier_items(spellings):
 
 
 def plan(schema=True, *, actor='', queryset=None):
-    """{'rows': {id: row}, 'changes': {id: (before, after)}, 'duplicates': [...], 'cross_line': [...], 'sources': [...],
-    'brands': {...}, 'final': Counter, 'clave_mismatch': [...]} (read-only)."""
+    """{'rows': {id: row}, 'changes': {id: (before, after)}, 'duplicates': [...], 'cross_line': [...], 'oem_duplicates': [...],
+    'sources': [...], 'brands': {...}, 'final': Counter, 'clave_mismatch': [...]} (read-only)."""
     from django.utils import timezone
     from .. import references
     from ..brand_models import Brand, BrandAlias
@@ -207,7 +216,7 @@ def plan(schema=True, *, actor='', queryset=None):
         if references.REF_TYPE_OF.get(row['tipo']) != row['ref_type']:
             after['tipo'] = references.tipo_of(row['ref_type'])
             after['ref_type'] = row['ref_type']
-        if row['created_at'] is None and row['estado'] == 'declarado':
+        if row['created_at'] is None and row['updated_at'] is None and row['estado'] == 'declarado':  # as 0073 left it
             status, note = library.get(row['oem_reference_id'], (None, ''))
             if after['tipo'] == 'oem' and status in ESTADO_OF_STATUS:
                 after['estado'] = ESTADO_OF_STATUS[status]
@@ -222,7 +231,7 @@ def plan(schema=True, *, actor='', queryset=None):
     for pk, row in rows.items():
         if afters[pk]['estado'] in references.EXCLUSIVE:
             groups[(row['clave'], row['brand'], row['supplier_id'])].append(pk)
-    duplicates, cross_line = [], []
+    duplicates, cross_line, oem_duplicates = [], [], []
     stamp = {'by': actor, 'at': timezone.now().isoformat()}
     for key, pks in sorted(groups.items(), key=lambda item: min(item[1])):
         if len(pks) < 2:
@@ -233,6 +242,10 @@ def plan(schema=True, *, actor='', queryset=None):
             continue
         ranked = sorted(pks, key=lambda pk: keeper_key(rows[pk], afters[pk]))
         keeper, retired = ranked[0], ranked[1:]
+        if any(rows[pk]['ref_type'] == 'oem' and rows[pk]['brand'] for pk in retired):  # the OEM library cites it: a person retires it
+            oem_duplicates.append({'clave': key[0], 'brand': key[1], 'keeper': {'id': keeper, 'code': rows[keeper]['code']},
+                                   'rows': [{'id': pk, 'code': rows[pk]['code'], 'sku': rows[pk]['part__sku']} for pk in sorted(pks)]})
+            continue
         for pk in retired:
             afters[pk].update(estado='retirada', reemplazado_por_id=keeper)
             afters[pk]['detail'] = {**afters[pk]['detail'], 'retired': {**stamp, 'reason': f'Grafía duplicada de {rows[keeper]["code"]} (S2a)'}}
@@ -289,8 +302,8 @@ def plan(schema=True, *, actor='', queryset=None):
         final[f"estado:{after['estado']}"] += 1
         final['sin_marca'] += not row['brand']
         final['fuentes'] += references.source_of(row['reference_source'], catalogs) is not None
-    return {'rows': rows, 'changes': changes, 'duplicates': duplicates, 'cross_line': cross_line, 'sources': sources, 'kinds': kinds,
-            'brands': brands, 'aliases': new_aliases, 'final': final, 'clave_mismatch': mismatch}
+    return {'rows': rows, 'changes': changes, 'duplicates': duplicates, 'cross_line': cross_line, 'oem_duplicates': oem_duplicates,
+            'sources': sources, 'kinds': kinds, 'brands': brands, 'aliases': new_aliases, 'final': final, 'clave_mismatch': mismatch}
 
 
 # --- apply ---------------------------------------------------------------------------------------------------------------------------
@@ -300,7 +313,6 @@ def write(result, log, run, user):
     and a note per duplicate with its supplier items. Returns the counts written."""
     from ..brand_models import Brand, BrandAlias
     from ..models import Reference, ReferenceSource
-    from ..oem_reference import guarded, remove_partcode_source
     rows, groups = result['rows'], defaultdict(list)
     for pk, (before, after) in sorted(result['changes'].items()):
         changed = {field: after[field] for field in FIELDS if after[field] != before[field]}
@@ -312,12 +324,8 @@ def write(result, log, run, user):
         values = json.loads(values)
         for start in range(0, len(pks), CHUNK):
             written += Reference._base_manager.filter(pk__in=pks[start:start + CHUNK]).update(**values)
-    for entry in result['duplicates']:
+    for entry in result['duplicates']:  # none is a branded OEM alterno (plan lists those): the OEM library has nothing to follow
         log.append({**run, 'action': 'note', 'kind': 'spelling_duplicate', **entry})
-        for retired in entry['retired']:  # what the OEM library mirror does on a retire: the alterno leaves the source it backed
-            row = rows[retired['id']]
-            if row['ref_type'] == 'oem':
-                guarded(remove_partcode_source, Reference._base_manager.get(pk=retired['id']))
     new_sources = [ReferenceSource(reference_id=source['reference_id'], kind=source['kind'], citation=source['citation'],
                                    detail=source['detail'], created_by=user) for source in result['sources']]
     ReferenceSource.objects.bulk_create(new_sources, batch_size=500)
@@ -355,7 +363,12 @@ def applied_lines():
 
 
 def undo(log, run, *, purge=False):
-    """Put back what the applies on this database changed: {'restored', 'deleted', 'purged', 'changed': [...], 'waiting': [...]}."""
+    """Put back what the applies on this database changed: {'restored', 'deleted', 'purged', 'changed': [...], 'waiting': [...]}.
+
+    Only RESTORABLE columns come back, never tipo (its value before was 0073's default, otro: the code before S2a never reads it, and
+    otro beside ref_type oem or company breaks 0074's reference_tipo_matches_ref_type; 0074's repair derives it from ref_type). A row
+    the apply retired (a spelling duplicate) comes back unless the code changed it since; a row the code retired after the apply is
+    not put back: --purge-retired deletes it when nothing names it (purge_retired), otherwise it is listed."""
     from .. import references
     from ..brand_models import Brand, BrandAlias
     from ..models import Reference, ReferenceSource
@@ -365,6 +378,9 @@ def undo(log, run, *, purge=False):
     restored, deleted, purged, changed, waiting = 0, 0, 0, [], []
     tight = tightened()
     chains = by_model.get('mall.Reference', {})
+    own = {int(pk) for pk, chain in chains.items()  # the rows an apply retired itself
+           if any(link['action'] == 'update' and link['after'].get('estado') == 'retirada' for link in chain)}
+    retired_later = []
     if chains:
         locked = {str(row['pk']): row for row in Reference._base_manager.select_for_update().filter(pk__in=[int(pk) for pk in chains])
                   .order_by('pk').values('pk', 'code', 'brand', 'clave', 'supplier_id', *FIELDS)}
@@ -373,7 +389,12 @@ def undo(log, run, *, purge=False):
             updates = [link for link in chain if link['action'] == 'update']
             if row is None or not updates:
                 continue
-            fields = list(dict.fromkeys(field for link in updates for field in link['after']))
+            if row['estado'] == 'retirada' and int(pk) not in own:  # the code retired it after the apply: --purge-retired's
+                retired_later.append(row)
+                continue
+            fields = [field for field in dict.fromkeys(field for link in updates for field in link['after']) if field in RESTORABLE]
+            if not fields:
+                continue
             now = recorded({field: row[field] for field in fields})
             last = {field: next(link['after'][field] for link in reversed(updates) if field in link['after']) for field in fields}
             first = {field: next(link['before'][field] for link in updates if field in link['before']) for field in fields}
@@ -382,7 +403,7 @@ def undo(log, run, *, purge=False):
             if now != last:
                 changed.append(f"referencia {row['code']} ({pk}): cambió después de aplicar")
                 continue
-            if (first.get('estado') in references.EXCLUSIVE and row['estado'] == 'retirada' and tight
+            if (first.get('estado') in references.EXCLUSIVE and row['estado'] not in references.EXCLUSIVE and tight
                     and Reference.objects.filter(clave=row['clave'], brand=row['brand'], supplier_id=row['supplier_id'],
                                                  estado__in=references.EXCLUSIVE).exclude(pk=row['pk']).exists()):
                 waiting.append(f"referencia {row['code']} ({pk}): otra referencia viva tiene su clave; revierte 0074 y vuelve a ejecutar --rollback")
@@ -391,16 +412,10 @@ def undo(log, run, *, purge=False):
             restored += 1
             log.append({**run, 'model': 'mall.Reference', 'id': int(pk), 'code': row['code'], 'action': 'rollback', 'before': now, 'after': first})
     if purge:
-        candidates = list(Reference._base_manager.filter(estado='retirada').exclude(pk__in=[int(pk) for pk in chains if pk])
-                          .values_list('pk', 'code', 'part_id', 'reemplaza__pk'))
-        held = sorted({(pk, code) for pk, code, _, other in candidates if other is not None})
-        free = sorted({pk for pk, _, _, other in candidates if other is None} - {pk for pk, _ in held})
-        for pk, code in held:
-            changed.append(f'referencia retirada {code} ({pk}): otra la nombra como reemplazo, se deja')
-        for pk, code, part_id, _ in candidates:
-            if pk in free:
-                log.append({**run, 'model': 'mall.Reference', 'id': pk, 'code': code, 'part': str(part_id), 'action': 'delete', 'reason': 'purge-retired'})
-        purged = references.purge(free)
+        purged = purge_retired(log, run, keep=own, changed=changed)
+    else:
+        changed.extend(f"referencia {row['code']} ({row['pk']}): la retiró el código después de aplicar; --purge-retired la borra si nada la nombra"
+                       for row in retired_later)
     for pk, chain in by_model.get('mall.ReferenceSource', {}).items():
         created = next((line for line in chain if line['action'] == 'create'), None)
         source = ReferenceSource.objects.select_for_update().filter(pk=pk).first()
@@ -433,6 +448,30 @@ def undo(log, run, *, purge=False):
         deleted += 1
         log.append({**run, 'model': 'mall.Brand', 'id': int(pk), 'action': 'delete', 'before': chain[-1]['after']})
     return {'restored': restored, 'deleted': deleted, 'purged': purged, 'changed': changed, 'waiting': waiting}
+
+
+def purge_retired(log, run, *, keep, changed):
+    """Delete the retired References no row names as its replacement, again and again until none is left (A → B → C, A and B retired:
+    A goes, then B), except `keep` (the rows an apply retired itself, which a rollback puts back). Every row it deletes goes to the log;
+    the ones still named are listed in changed. Returns how many went."""
+    from .. import references
+    from ..models import Reference
+    total = 0
+    while True:
+        candidates = list(Reference._base_manager.filter(estado='retirada').exclude(pk__in=keep).order_by('pk').values_list('pk', 'code', 'part_id'))
+        named = set(Reference._base_manager.filter(reemplazado_por__in=[pk for pk, _, _ in candidates])
+                    .values_list('reemplazado_por_id', flat=True)) if candidates else set()
+        free = [(pk, code, part_id) for pk, code, part_id in candidates if pk not in named]
+        if not free:
+            break
+        for pk, code, part_id in free:
+            log.append({**run, 'model': 'mall.Reference', 'id': pk, 'code': code, 'part': str(part_id), 'action': 'delete', 'reason': 'purge-retired'})
+        went = references.purge([pk for pk, _, _ in free])
+        total += went
+        if not went:  # never loops: what purge refused stays and is listed
+            break
+    changed.extend(f'referencia retirada {code} ({pk}): otra la nombra como reemplazo, se deja' for pk, code, _ in candidates)
+    return total
 
 
 # --- run -----------------------------------------------------------------------------------------------------------------------------
@@ -475,6 +514,11 @@ def print_summary(stdout, mode, totals, counts, result, writes=None):
             stocked = sum(1 for items in entry['supplier_items'].values() if items)
             stdout.write(f"    {entry['sku']}: queda {entry['keeper']['code']}, se retira "
                          f"{', '.join(retired['code'] for retired in entry['retired'])} ({stocked} grafías con artículos de proveedor)\n")
+    if result['oem_duplicates']:
+        stdout.write(f"  Grafías duplicadas de alternos OEM ({len(result['oem_duplicates'])}): la Biblioteca OEM las cita; una persona retira la "
+                     "que sobra (mall.references.retire), 0074 no se aplica mientras existan\n")
+        for entry in result['oem_duplicates'][:20]:
+            stdout.write(f"    {entry['clave']} {entry['brand']}: " + ', '.join(f"{row['code']} en {row['sku']}" for row in entry['rows']) + '\n')
     if result['cross_line']:
         stdout.write(f"  Claves que tienen dos líneas ({len(result['cross_line'])}): necesitan una persona, 0074 no se aplica mientras existan\n")
         for entry in result['cross_line'][:20]:
@@ -495,7 +539,8 @@ def print_summary(stdout, mode, totals, counts, result, writes=None):
 
 def report(result, totals, counts):
     return {'expected': EXPECTED, 'result': totals, 'changes': dict(counts), 'duplicates': result['duplicates'],
-            'cross_line': result['cross_line'], 'source_kinds': dict(result['kinds']), 'new_sources': len(result['sources']),
+            'cross_line': result['cross_line'], 'oem_duplicates': result['oem_duplicates'], 'source_kinds': dict(result['kinds']),
+            'new_sources': len(result['sources']),
             'brands': result['brands'], 'aliases': result['aliases'], 'clave_mismatch': result['clave_mismatch']}
 
 

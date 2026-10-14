@@ -228,18 +228,18 @@ def code_conflict(part, code, brand):
     return f'{brand} {code} ya es un alterno de {owner}.' if owner else ''
 
 
-def ensure_code(part, code, brand, ref_type, source):
+def ensure_code(part, code, brand, ref_type, source, actor=None):
     """The (brand, code) reference on this Part: added (mall.references), or retyped to a verified OEM when it existed unverified."""
     problem = code_conflict(part, code, brand)
     if problem:
         raise ValidationError(problem)
     existing = Reference.objects.filter(part=part, brand=brand, code=code).first()
     if existing is None:
-        existing, added = references.add(part, code, brand, ref_type=ref_type, source=source)
+        existing, added = references.add(part, code, brand, ref_type=ref_type, source=source, actor=actor)
         if added:
             return existing
     if source and (existing.ref_type != ref_type or not existing.reference_source.strip()):
-        references.update(existing, ref_type=ref_type, reference_source=source)
+        references.update(existing, actor=actor, ref_type=ref_type, reference_source=source)
     return existing
 
 
@@ -271,10 +271,10 @@ def apply_row(run, finder, known, pid, r, tier, batch, actor):
         from .catalog_identity import disputed_codes
         if disputed_codes([code]):  # disputed since the analysis
             raise Skip('disputed', code)
-        ensure_code(part, code, brand, 'oem', source)
+        ensure_code(part, code, brand, 'oem', source, actor)
         written = r.get('written_form') or ''
         if written and written != code:  # the catalog's spelling stays searchable; unverified, so it is never promoted on its own
-            ensure_code(part, written, brand, 'oem', '')
+            ensure_code(part, written, brand, 'oem', '', actor)
         before = {'sku': part.sku, 'name': part.name, 'is_OEM': part.is_OEM}
         part = prefer_oem(part, actor=actor, selected={'code': code, 'brand': brand}, confirm_current=tier == FLAG)
         if part.sku != code or not part.is_OEM:

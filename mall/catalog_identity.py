@@ -84,7 +84,7 @@ def identity_status(part):
     }
 
 
-def preserve_sku_reference(part, sku, *, is_oem=False):
+def preserve_sku_reference(part, sku, *, is_oem=False, actor=None):
     """Keep the old searchable code; only classify known suffixes as company."""
     info = None if is_oem else company_reference(sku)
     # A full supplier code remains a neutral alias for feeds with no brand.
@@ -94,15 +94,15 @@ def preserve_sku_reference(part, sku, *, is_oem=False):
         return  # Conflicting library ownership must go through grouping review.
     try:
         if not existing:
-            references.add(part, sku, defaults['brand'], ref_type=defaults['ref_type'])
+            references.add(part, sku, defaults['brand'], ref_type=defaults['ref_type'], actor=actor)
         elif is_oem and existing.ref_type == 'unknown':
-            references.update(existing, ref_type='oem')
+            references.update(existing, actor=actor, ref_type='oem')
         elif info and existing.ref_type == 'unknown':
             if not Reference.objects.filter(brand=info['brand'], code=sku).exclude(pk=existing.pk).exists():
-                references.update(existing, brand=info['brand'], ref_type='company')
+                references.update(existing, actor=actor, brand=info['brand'], ref_type='company')
         if info and not all_lines().filter(sku__iexact=info['code']).exclude(pk=part.pk).exists():
             if not Reference.objects.filter(code__iexact=info['code']).exclude(part=part).exists():
-                references.add(part, info['code'], info['brand'], ref_type='company')
+                references.add(part, info['code'], info['brand'], ref_type='company', actor=actor)
     except references.ReferenceConflict:
         return  # another line holds the key (mall.references.validate): grouping review decides, as above
 
@@ -150,7 +150,7 @@ def prefer_oem(part, *, actor=None, selected=None, confirm_current=False):
         if selected:
             raise ValidationError('El código anterior supera 120 caracteres y no puede conservarse como alterno.')
         return part
-    preserve_sku_reference(part, old, is_oem=part.is_OEM)
+    preserve_sku_reference(part, old, is_oem=part.is_OEM, actor=actor)
     part.sku = target.code
     part.is_OEM = True
     if part.name == old:
@@ -173,7 +173,7 @@ def reconcile_identities(actor=None):
         with transaction.atomic():
             part = Part.objects.select_for_update().get(pk=pk)
             if not part.is_OEM and company_reference(part.sku):
-                preserve_sku_reference(part, part.sku)
+                preserve_sku_reference(part, part.sku, actor=actor)
             before = part.sku
             updated = prefer_oem(part, actor=actor)
             promoted += int(before != updated.sku)

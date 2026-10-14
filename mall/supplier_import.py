@@ -18,7 +18,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .lines import all_lines, on_storefront
-from .models import Account, Part, PartCode, SupplierItem
+from .models import Account, Part, Reference, SupplierItem
 from .serializers import InventorySerializer
 from .services import ingest_inventory, initial_match
 from .stock_reservations import open_reservations, settle
@@ -163,9 +163,12 @@ def stock_plan(supplier, rows, *, lock=False):
     for offset in range(0, len(identifiers), 2000):
         query = SupplierItem.objects.filter(supplier=supplier, supplier_invent_id__in=identifiers[offset:offset + 2000]).order_by('pk')
         items.update((item.supplier_invent_id, item) for item in query)
+    wanted = set(codes)
+    # The live References that keep another spelling (printed_forms: a duplicate spelling S2a retired, 13780-61J00-NP-) match it too.
+    aliases.extend(alias for alias in Reference.objects.exclude(printed_forms=[]).order_by('pk') if wanted & set(alias.printed_forms))
     for offset in range(0, len(codes), 2000):
         chunk = codes[offset:offset + 2000]
-        query = PartCode.objects.filter(code__in=chunk).order_by('pk')
+        query = Reference.objects.filter(code__in=chunk).exclude(pk__in=[alias.pk for alias in aliases]).order_by('pk')
         aliases.extend(query)
         query = all_lines().filter(sku__in=chunk).order_by('pk')  # every estado: matching below takes only the lines on sale
         parts.update((part.pk, part) for part in query)
@@ -183,7 +186,7 @@ def stock_plan(supplier, rows, *, lock=False):
         alias_ids = sorted(alias.pk for alias in aliases)
         aliases = []
         for offset in range(0, len(alias_ids), 2000):
-            aliases.extend(PartCode.objects.select_for_update().filter(pk__in=alias_ids[offset:offset + 2000]).order_by('pk'))
+            aliases.extend(Reference.objects.select_for_update().filter(pk__in=alias_ids[offset:offset + 2000]).order_by('pk'))
         # Supplier rows in global pk order too, the order a deal confirmation locks them in. Callers hold the supplier's account lock,
         # which every item creator takes, so no row can appear between the read above and these locks.
         item_ids = sorted(item.pk for item in items.values())
@@ -198,7 +201,8 @@ def stock_plan(supplier, rows, *, lock=False):
     for alias in aliases:
         part = parts.get(alias.part_id)
         if on_storefront(part):
-            matching.setdefault(alias.code, []).append((alias.brand, part.pk))
+            for spelling in dict.fromkeys([alias.code, *alias.printed_forms]):
+                matching.setdefault(spelling, []).append((alias.brand, part.pk))
     summary = {'valid_rows': 0, 'created_items': 0, 'updated_items': 0, 'unchanged_items': 0, 'credit_units': 0, 'debit_units': 0, 'reserved_rows': 0}
     preview, errors, warnings, reservations = [], [], [], []
     for row in rows:

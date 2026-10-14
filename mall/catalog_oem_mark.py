@@ -206,7 +206,7 @@ def updated_rows(ids):
     return with_merged_counts(catalog_queryset().filter(pk__in=list(ids)))
 
 
-def tie(part, make, cite):
+def tie(part, make, cite, actor=None):
     """File the SKU code as the make's OEM alterno, which ties it to that item of the list, and mark the SKU OEM. Returns a problem or ''."""
     other = holder(part, make)
     if other:
@@ -221,11 +221,11 @@ def tie(part, make, cite):
     try:
         with transaction.atomic():
             if code is None:
-                code, added = references.add(part, part.sku, make, tipo='oem', source=cite)
+                code, added = references.add(part, part.sku, make, tipo='oem', source=cite, actor=actor)
                 if not added and code.tipo != 'oem':  # the make's spelling of the same key was there under another type
-                    references.update(code, tipo='oem', reference_source=code.reference_source.strip() or cite)
+                    references.update(code, actor=actor, tipo='oem', reference_source=code.reference_source.strip() or cite)
             else:
-                references.update(code, brand=make, tipo='oem', reference_source=code.reference_source.strip() or cite)
+                references.update(code, actor=actor, brand=make, tipo='oem', reference_source=code.reference_source.strip() or cite)
     except (IntegrityError, references.ReferenceConflict):
         return f'{make} {part.sku} ya es alterno de otro SKU. Revisa esa asignación o agrupa los SKU.'
     if not part.is_OEM:
@@ -258,7 +258,7 @@ def mark_oem(*, actor, rows):
         problem = checked(part, make)
         if not problem and not OEMReference.objects.filter(manufacturer=make, code=compact(part.sku)).exclude(status='disputed').exists():
             problem = f'{make} {compact(part.sku)} no está en la lista OEM: usa «Crear OEM desde SKU».'
-        problem = problem or tie(part, make, citation(MARKED, actor, row.get('citation')))
+        problem = problem or tie(part, make, citation(MARKED, actor, row.get('citation')), actor)
         if problem:
             errors.append(problem)
     if errors:
@@ -288,7 +288,7 @@ def create_oem(*, actor, rows):
                          detail={'verified': False, 'part': str(part.pk), 'sku': part.sku}, actor=actor,
                          defaults={'description': ' '.join((row.get('description') or part.description or '').upper().split())[:300],
                                    'part_type': ' '.join((row.get('part_type') or '').upper().split())[:60]})
-        problem = tie(part, make, citation(MARKED, actor, row.get('citation')))
+        problem = tie(part, make, citation(MARKED, actor, row.get('citation')), actor)
         if problem:
             errors.append(problem)
     if errors:

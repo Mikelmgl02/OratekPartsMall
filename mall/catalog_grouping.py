@@ -175,7 +175,7 @@ def merge_catalog_parts(*, actor, target_sku, source_skus, category='', subcateg
     from .catalog_identity import prefer_oem, company_reference, preserve_sku_reference
     for source in sources:
         if not source.is_OEM and company_reference(source.sku):
-            preserve_sku_reference(target, source.sku)
+            preserve_sku_reference(target, source.sku, actor=actor)
     target = prefer_oem(target, actor=actor, confirm_current=True)
     target.stock_record_count = target.supplier_items.count()
     return {'target': ManagedPartSerializer(target).data, 'merged_skus': [part.sku for part in sources],

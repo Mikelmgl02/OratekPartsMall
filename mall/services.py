@@ -9,8 +9,11 @@ from .references import live_q
 from .matching_queue import enqueue_matching
 
 def matching_part(codigo, brand):
+    # A live code matches as printed or as another spelling it keeps (printed_forms: a duplicate spelling S2a retired, 13780-61J00-NP-);
+    # a retired code matches nothing.
     matches = list(storefront_lines().filter(
-        Q(sku=codigo) | Q(live_q('codes__'), codes__code=codigo, codes__brand__in=[brand, ''])  # a retired code matches nothing
+        Q(sku=codigo) | Q(live_q('codes__'), codes__code=codigo, codes__brand__in=[brand, ''])
+        | Q(live_q('codes__'), codes__printed_forms__contains=[codigo], codes__brand__in=[brand, ''])
     ).distinct()[:2])
     # Ambiguous legacy code mappings require review instead of arbitrary matching.
     return matches[0] if len(matches) == 1 else None

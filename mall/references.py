@@ -8,6 +8,8 @@ history (Reference.objects and every line's `codes` leave retired rows out, so r
     update(ref, **fields)        change one (code, brand, tipo/ref_type, reference_source, estado...), validated again
     retire(refs)                 take References off their line (estado retirada, reemplazado_por when another one replaces it)
     validate(code, brand, line)  the brandless reservation and the one-live-line rule, under the clave's advisory lock
+    check(tipo, estado, ...)     what a Reference's columns must agree on (a dispute says why, interno ⇔ supplier), as 0074's CHECKs
+    ensure_brand(spelling)       every brand a Reference carries is a Brand nombre or alias (Appendix C, I12): add() and update() call it
     brandless_q(clave, brand)    the rows a (clave, brand) is reserved against; live_q() the live estados through a relation
     clave(code)                  the database's generated mall_partcode.clave, in Python
     cite(ref, text)              upsert the ReferenceSource a reference_source text names (A3)
@@ -45,7 +47,10 @@ SOURCE_KINDS = ('catalogo', 'biblioteca', 'proveedor', 'admin', 'ia', 'buscador'
 UPDATABLE = ('code', 'brand', 'tipo', 'ref_type', 'estado', 'reference_source', 'dispute_note', 'notes', 'detail', 'printed_forms',
              'supplier', 'part')
 MAX_PRINTED = 20
-SPACES = re.compile(r'[ \t\n\r\f\v]+')  # what PostgreSQL's \s matches in an ASCII code
+# What PostgreSQL's \s matches under the database's locale (en_US.utf8, glibc iswspace): ASCII whitespace and the Unicode spaces
+# U+1680, U+2000-U+2006, U+2008-U+200A, U+2028, U+2029, U+205F and U+3000; never the no-break spaces U+00A0, U+2007 and U+202F.
+SPACES = re.compile('[\t\n\v\f\r \u1680\u2000-\u2006\u2008-\u200a\u2028\u2029\u205f\u3000]+')
+UNIQUE_PRINTED = 'unique_brand_code'  # the uniqueness of one printed (brand, code) until 0074 drops it
 CATALOG_PAGE = re.compile(r' · pág\. ')  # how mall.supplier_catalog_import cites a catalog page
 
 
@@ -187,22 +192,49 @@ def default_estado(source):
     return 'inferido' if (source or '').strip().lower().startswith('algo:') else 'declarado'
 
 
-def build(line, code, brand='', *, tipo=None, ref_type=None, estado=None, supplier=None, source='', actor=None, detail=None, notes='',
-          printed_forms=None, dispute_note=''):
-    """An unsaved Reference of `line` (a Part or its id) with every column the transition needs: code and brand normalized, tipo
-    (or the one ref_type names) with ref_type in step, estado (disputa with its note), the supplier of an interno code, created_by.
-    Bulk paths save it with bulk_create (after checking their keys); add() saves one."""
-    Reference, _ = _models()
-    tipo = tipo or tipo_of(ref_type)
+def check(tipo, estado, supplier=None, dispute_note=''):
+    """Refuse (ReferenceConflict) columns a Reference cannot hold together, as 0074's CHECKs do: an unknown tipo or estado, an interno
+    code without its supplier (or a supplier on another tipo), a dispute without its note. build() and update() call it on the
+    values the row ends up with, so a write never reaches the database to fail there."""
     if tipo not in REF_TYPE_OF:
         raise ReferenceConflict(f'Tipo de referencia desconocido: {tipo}.')
-    estado = estado or default_estado(source)
-    if estado not in ESTADOS or estado == 'retirada':
-        raise ReferenceConflict(f'Una referencia nueva no puede estar {estado}.')
+    if estado not in ESTADOS:
+        raise ReferenceConflict(f'Estado de referencia desconocido: {estado}.')
     if (tipo == 'interno') != (supplier is not None):
         raise ReferenceConflict('Un código interno lleva su proveedor, y solo un código interno lo lleva.')
     if estado == 'disputa' and not (dispute_note or '').strip():
         raise ReferenceConflict('Una referencia en disputa lleva el motivo de la disputa.')
+
+
+def ensure_brand(spelling, tipo='otro'):
+    """Make the brand spelling a Reference carries a Brand nombre or alias (Appendix C, I12), as mall.refactor.s2a_references seeds
+    them: the brand it names (mall.brands.lookup), else a new brand under its normalized name (vehiculo for an OEM code, repuesto
+    otherwise); and the spelling as an alias when it differs from the nombre. Returns the brand, or None for '' (any brand)."""
+    from . import brands
+    from .brand_models import Brand, BrandAlias
+    spelling = brand_key(spelling)
+    if not spelling:
+        return None
+    brand = brands.lookup(spelling)
+    if brand is None:
+        brand, _ = Brand.objects.get_or_create(nombre=brands.normalize(spelling), defaults={
+            'tipo': 'vehiculo' if tipo == 'oem' else 'repuesto', 'notas': 'Creada al guardar una referencia con esta marca.'})
+    if spelling != brand.nombre and not BrandAlias.objects.filter(alias=spelling).exists():
+        BrandAlias.objects.get_or_create(alias=spelling, defaults={'brand': brand})
+    return brand
+
+
+def build(line, code, brand='', *, tipo=None, ref_type=None, estado=None, supplier=None, source='', actor=None, detail=None, notes='',
+          printed_forms=None, dispute_note=''):
+    """An unsaved Reference of `line` (a Part or its id) with every column the transition needs: code and brand normalized, tipo
+    (or the one ref_type names) with ref_type in step, estado (disputa with its note), the supplier of an interno code, created_by.
+    Bulk paths save it with bulk_create (which checks the keys again); add() saves one."""
+    Reference, _ = _models()
+    tipo = tipo or tipo_of(ref_type)
+    estado = estado or default_estado(source)
+    if estado == 'retirada':
+        raise ReferenceConflict('Una referencia nueva no puede estar retirada.')
+    check(tipo, estado, supplier, dispute_note)
     fields = {'part' if hasattr(line, 'pk') else 'part_id': line, 'supplier' if hasattr(supplier, 'pk') else 'supplier_id': supplier}
     return Reference(code=code_key(code), brand=brand_key(brand), tipo=tipo, ref_type=REF_TYPE_OF[tipo], estado=estado,
                      reference_source=(source or '').strip()[:500], created_by=actor if getattr(actor, 'pk', None) else None,
@@ -211,14 +243,44 @@ def build(line, code, brand='', *, tipo=None, ref_type=None, estado=None, suppli
 
 
 def bulk_create(references, *, batch_size=500, actor=None):
-    """Insert built References in bulk (no signals, as before S2a's catalog import), then their sources. The caller has checked the
-    keys (the catalog import's plan); the database refuses a duplicate one from 0074."""
+    """Insert built References in bulk (no signals, as before S2a's catalog import), then their sources. The caller has planned the
+    keys (the catalog import's plan); here they are checked again under each clave's advisory lock (plan §1.6.5), so a writer adding
+    the same key elsewhere meanwhile waits and one of the two is refused (ReferenceConflict), and every brand becomes a brand (I12).
+    The database refuses a duplicate key from 0074."""
     Reference, _ = _models()
     references = list(references)
-    Reference.objects.bulk_create(references, batch_size=batch_size)
-    for ref in references:
-        if ref.reference_source:
-            cite(ref, ref.reference_source, actor)
+    if not references:
+        return references
+    keys = sorted({clave(ref.code) for ref in references})
+    with transaction.atomic():
+        lock(*keys)
+        held = {}
+        for start in range(0, len(keys), 2000):
+            for row in Reference.objects.filter(clave__in=keys[start:start + 2000], estado__in=EXCLUSIVE).select_related('part').order_by('pk'):
+                held.setdefault(row.clave, []).append(row)
+        seen = set()
+        for ref in references:
+            if ref.estado not in EXCLUSIVE:
+                continue
+            key = (clave(ref.code), ref.brand, ref.supplier_id)
+            if key in seen:
+                raise ReferenceConflict(f'El código {ref.code} se repite con otra grafía en esta carga.')
+            seen.add(key)
+            for row in held.get(key[0], []):  # conflicts(), on the rows read once
+                if ref.supplier_id is not None:
+                    clash = row.supplier_id == ref.supplier_id and row.brand == ref.brand
+                else:
+                    clash = row.supplier_id is None and (not ref.brand or row.brand in (ref.brand, ''))
+                if row.part_id == ref.part_id and row.brand == ref.brand and row.supplier_id == ref.supplier_id:
+                    raise ReferenceConflict(f'{ref.code} ya es una referencia de este SKU.', row)
+                if clash and row.part_id != ref.part_id:
+                    raise ReferenceConflict(f'El código {ref.code} ya pertenece a otro SKU ({row.part.sku}).', row)
+        for spelling, tipo in {ref.brand: ref.tipo for ref in references if ref.brand}.items():
+            ensure_brand(spelling, tipo)
+        Reference.objects.bulk_create(references, batch_size=batch_size)
+        for ref in references:
+            if ref.reference_source:
+                cite(ref, ref.reference_source, actor)
     return references
 
 
@@ -234,8 +296,8 @@ def add(line, code, brand='', *, tipo=None, ref_type=None, estado=None, supplier
         dispute_note=''):
     """(reference, added) for a live (code, brand) on the line. When the line already holds that key (clave, brand, supplier) the
     existing Reference is returned unchanged (a new spelling joins its printed_forms; added False); one retired from this line comes
-    back with the tipo, estado and source given (added True); otherwise a new one is created after validate(). The caller locks the
-    line (Account → Part) when it needs to."""
+    back with the tipo, estado and source given (added True); otherwise a new one is created after validate(). Its brand becomes a
+    brand (ensure_brand). The caller locks the line (Account → Part) when it needs to."""
     Reference, _ = _models()
     ref = build(line, code, brand, tipo=tipo, ref_type=ref_type, estado=estado, supplier=supplier, source=source, actor=actor,
                 detail=detail, notes=notes, dispute_note=dispute_note)
@@ -253,16 +315,19 @@ def add(line, code, brand='', *, tipo=None, ref_type=None, estado=None, supplier
             add_spelling(live, ref.code)
             return live, False
         validate(ref.code, ref.brand, line=ref.part_id, supplier=ref.supplier_id, estado=ref.estado)
+        ensure_brand(ref.brand, ref.tipo)
         retired = next((row for row in reversed(same) if row.code == ref.code), None) or (same[-1] if same else None)
         if retired is not None:
             return revive(retired, ref, actor), True
         try:
             with transaction.atomic():
                 ref.save()
-        except IntegrityError:
+        except IntegrityError as error:
             # Until 0074 drops unique_brand_code, one printed (brand, code) is a single row wherever it sits: a code retired on another
-            # line comes back here instead.
-            elsewhere = Reference.all_objects.select_for_update().filter(brand=ref.brand, code=ref.code, estado='retirada').first()
+            # line comes back here instead. Any other refusal (a key a concurrent bulk write took) is a conflict, never a move.
+            elsewhere = None
+            if constraint_of(error) == UNIQUE_PRINTED:
+                elsewhere = Reference.all_objects.select_for_update().filter(brand=ref.brand, code=ref.code, estado='retirada').first()
             if elsewhere is None:
                 raise ReferenceConflict(f'El código {ref.code} ya está registrado.')
             moved_from = str(elsewhere.part_id)
@@ -272,6 +337,11 @@ def add(line, code, brand='', *, tipo=None, ref_type=None, estado=None, supplier
         if ref.reference_source:
             cite(ref, ref.reference_source, actor)
         return ref, True
+
+
+def constraint_of(error):
+    """The name of the constraint an IntegrityError reports (PostgreSQL's diagnostics), or ''."""
+    return getattr(getattr(error.__cause__, 'diag', None), 'constraint_name', '') or ''
 
 
 def revive(row, wanted, actor, extra=None):
@@ -294,8 +364,10 @@ def revive(row, wanted, actor, extra=None):
 
 def update(ref, *, actor=None, **fields):
     """Change a Reference and save only what changed: code, brand, tipo or ref_type (kept in step), estado (not retirada: use
-    retire), reference_source (its source is upserted), dispute_note, notes, detail, printed_forms, supplier, part. A change of key or
-    line is validated again (ReferenceConflict). The caller holds the line's lock when it needs one. Returns the Reference."""
+    retire), reference_source (its source is upserted), dispute_note, notes, detail, printed_forms, supplier, part. The values the row
+    ends up with are checked (check(): a dispute says why, interno ⇔ supplier) and a change of key, line or estado is validated again
+    (ReferenceConflict), so a retired Reference brought back is validated like a new one (and replaces nothing any more); a new brand
+    becomes a brand (ensure_brand). The caller holds the line's lock when it needs one. Returns the Reference."""
     unknown = set(fields) - set(UPDATABLE)
     if unknown:
         raise ReferenceConflict(f'No se puede cambiar {", ".join(sorted(unknown))} de una referencia aquí.')
@@ -318,16 +390,26 @@ def update(ref, *, actor=None, **fields):
     changed = {name: value for name, value in fields.items() if getattr(ref, name) != value}
     if not changed:
         return ref
+    # Checked on the values the row ends up with: a retired Reference brought back (estado declarado...) is validated like a new one.
+    estado = changed.get('estado', ref.estado)
+    check(changed.get('tipo', ref.tipo), estado, changed.get('supplier_id', ref.supplier_id), changed.get('dispute_note', ref.dispute_note))
     with transaction.atomic():
-        if {'code', 'brand', 'estado', 'part_id', 'supplier_id'} & set(changed) and ref.estado != 'retirada':
+        if {'code', 'brand', 'estado', 'part_id', 'supplier_id'} & set(changed) and estado != 'retirada':
             validate(changed.get('code', ref.code), changed.get('brand', ref.brand), line=changed.get('part_id', ref.part_id),
-                     supplier=changed.get('supplier_id', ref.supplier_id), estado=changed.get('estado', ref.estado), exclude=ref.pk)
+                     supplier=changed.get('supplier_id', ref.supplier_id), estado=estado, exclude=ref.pk)
+        if ref.estado == 'retirada' and estado != 'retirada':  # back on its line: it replaces nothing, and says who brought it back
+            if ref.reemplazado_por_id is not None:
+                changed['reemplazado_por_id'] = None
+            returned = {'by': getattr(actor, 'username', '') or '', 'at': timezone.now().isoformat()}
+            changed['detail'] = {**(changed.get('detail', ref.detail) or {}), 'returned': returned}
+        if changed.get('brand'):
+            ensure_brand(changed['brand'], changed.get('tipo', ref.tipo))
         if 'code' in changed and ref.code and clave(ref.code) == clave(changed['code']):
             forms = [form for form in [ref.code, *ref.printed_forms] if form != changed['code']]
             changed['printed_forms'] = forms[:MAX_PRINTED]
         for name, value in changed.items():
             setattr(ref, name, value)
-        names = [name[:-3] if name in ('part_id', 'supplier_id') else name for name in changed]
+        names = [name[:-3] if name in ('part_id', 'supplier_id', 'reemplazado_por_id') else name for name in changed]
         ref.save(update_fields=names)
         if 'reference_source' in changed and ref.reference_source:
             cite(ref, ref.reference_source, actor)
