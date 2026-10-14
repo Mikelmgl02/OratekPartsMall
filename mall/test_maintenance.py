@@ -6,6 +6,8 @@ import os
 import signal
 import sys
 import tempfile
+import uuid
+from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -18,7 +20,8 @@ from django.urls import URLPattern, URLResolver, get_resolver
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
-from . import link_oem_numbers, mark_exact_oem, oem_finder_revert, stock_reservations, supplier_catalog_replace
+from . import (link_oem_numbers, mark_exact_oem, oem_finder, oem_finder_revert, prune_catalog_alternos, stock_reservations,
+               supplier_catalog_import, supplier_catalog_replace)
 from . import test_deals as deal_tests
 from . import test_stock_reservations as reservation_tests
 from .apiag_models import ApiagConnection
@@ -30,11 +33,12 @@ from .maintenance import (ALL_DETAIL, BIBLIOTECA_DETAIL, CATALOG_DETAIL, CATALOG
 from .matching_models import MatchingQueue
 from .matching_runner import STOP, WorkerStopping
 from .matching_worker import process_queue
-from .models import Account, DealEvent, Membership, Part, Role, SupplierItem, User, WishlistItem
+from .models import Account, CatalogImportJob, DealEvent, Membership, Part, Role, SupplierItem, User, WishlistItem
 from .pricing_models import SupplierPricingSettings
 from .refactor.guard import live_database, refusal
 from .refactor.migration_ops import LockTimeout
 from .request_models import StockReservation
+from .supplier_import_models import SupplierInventoryImportJob
 from .test_apiag_sync import FakeApiag
 
 ID = '00000000-0000-4000-8000-000000000001'
@@ -398,6 +402,41 @@ class CliGuardTests(FreezeFolderMixin, TestCase):
             (self.folder / 'biblioteca').touch()  # the Biblioteca switch is not the catalog freeze
             self.assertIsNotNone(refusal())
 
+    def test_the_freeze_also_waits_for_the_writers_already_running(self):
+        if connection.vendor != 'postgresql':
+            self.skipTest('The live database is PostgreSQL.')
+        soon, gone = timezone.now() + timedelta(minutes=20), timezone.now() - timedelta(minutes=1)
+        root = User.objects.create_superuser('root-guard', 'root-guard@example.invalid', 'SecureRoot938!')
+        supplier = Account.objects.create(name='Motion Motors')
+        sync = ApiagSync.objects.create(connection=ApiagConnection.objects.create(account=supplier, server_url='https://mm.oratek.info',
+                                                                                  token_ciphertext='-', token_hint='0001'))
+        MatchingQueue.objects.create(pk=1)
+        self.freeze('catalog')
+        with self.live():
+            self.assertIsNone(refusal())
+            queue_lease = MatchingQueue.objects.filter(pk=1)
+            queue_lease.update(lease=uuid.uuid4(), lease_until=soon)  # a pass that began before the freeze, before its first stage boundary
+            self.assertIn('un análisis de coincidencias (MatchingQueue.lease)', refusal())
+            queue_lease.update(lease_until=gone)  # an expired lease holds nothing
+            self.assertIsNone(refusal())
+            ApiagSync.objects.filter(pk=sync.pk).update(lease=uuid.uuid4(), lease_until=soon)
+            self.assertIn('1 sincronización de apiag-cloud (ApiagSync.lease)', refusal())
+            ApiagSync.objects.filter(pk=sync.pk).update(lease=None, lease_until=None)
+            catalog = CatalogImportJob.objects.create(owner=root, filename='catalogo.xlsx', status='ready', expires_at=soon)
+            stock = SupplierInventoryImportJob.objects.create(supplier=supplier, filename='stock.xlsx', status='ready', expires_at=soon)
+            self.assertIsNone(refusal())  # a preview cannot be applied while frozen
+            SupplierInventoryImportJob.objects.filter(pk=stock.pk).update(status='importing')
+            self.assertIn(f'importación de inventario a medias (SupplierInventoryImportJob: {stock.pk})', refusal())
+            SupplierInventoryImportJob.objects.filter(pk=stock.pk).update(expires_at=gone)
+            CatalogImportJob.objects.filter(pk=catalog.pk).update(status='importing')
+            reason = refusal()
+            self.assertIn(f'importación del catálogo a medias (CatalogImportJob: {catalog.pk})', reason)
+            self.assertNotIn('SupplierInventoryImportJob', reason)  # expired
+            self.assertIn('El catálogo está congelado, pero todavía escribe', reason)
+            with self.assertRaises(SystemExit) as refused:
+                link_oem_numbers.main(['--apply'], stdout=io.StringIO())
+            self.assertEqual(refused.exception.code, reason)
+
     def test_the_catalog_clis_refuse_apply_on_the_live_database_until_it_is_frozen(self):
         if connection.vendor != 'postgresql':
             self.skipTest('The live database is PostgreSQL.')
@@ -405,10 +444,16 @@ class CliGuardTests(FreezeFolderMixin, TestCase):
         with self.live():
             for main, argv in [(link_oem_numbers.main, ['--apply']), (mark_exact_oem.main, ['--apply']),
                                (supplier_catalog_replace.main, ['--apply', '/nonexistent.json']),
+                               (supplier_catalog_import.main, ['--apply', '/nonexistent.json']),
+                               (prune_catalog_alternos.main, ['--apply']), (oem_finder.main, ['--apply-auto']),
                                (oem_finder_revert.main, ['--run', '1'])]:
                 with self.assertRaises(SystemExit) as refused:
                     main(argv, stdout=io.StringIO())
                 self.assertIn('sin el congelamiento del catálogo', str(refused.exception.code), argv)
+            # The OEM finder's dry run and its read-only preview pass the guard (they reach its matching lock, here held elsewhere).
+            for argv in (['--dry-run'], ['--apply-auto', '--read-only']):
+                with patch('mall.oem_finder.matching_lock', held_elsewhere):
+                    self.assertEqual(oem_finder.main(argv, stdout=io.StringIO()), 2, argv)
             out = io.StringIO()
             link_oem_numbers.main(['--dry-run'], stdout=out)
             self.assertIn('Simulación', out.getvalue())
@@ -416,6 +461,11 @@ class CliGuardTests(FreezeFolderMixin, TestCase):
             out = io.StringIO()
             link_oem_numbers.main(['--apply'], stdout=out)
             self.assertIn('Aplicado', out.getvalue())
+
+
+@contextmanager
+def held_elsewhere():
+    yield False
 
 
 class LockTimeoutTests(TestCase):
