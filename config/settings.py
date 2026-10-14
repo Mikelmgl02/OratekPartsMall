@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 from django.core.exceptions import ImproperlyConfigured
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -16,8 +17,23 @@ TEMPLATES = [{"BACKEND": "django.template.backends.django.DjangoTemplates", "DIR
 WSGI_APPLICATION = "config.wsgi.application"
 DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": BASE_DIR / "db.sqlite3"}}
 
+
+def process_name(argv):
+    """Who opens the database connections, as pg_stat_activity.application_name shows them: gunicorn, daphne, matching, apiag-sync,
+    quote-holds, refactor:<stage> (python -m mall.refactor.<stage>), the manage.py command (shell, migrate…) or the python -m module."""
+    path = Path(argv[0]) if argv and argv[0] not in ('', '-c', '-m') else None
+    if path is None:
+        return 'python'
+    if path.name == 'manage.py':
+        return argv[1] if len(argv) > 1 else 'manage.py'
+    if path.suffix == '.py' and path.parent.name == 'refactor':
+        return f'refactor:{path.stem}'
+    return {'matching_runner': 'matching', 'apiag_sync_runner': 'apiag-sync', 'quote_holds_runner': 'quote-holds'}.get(path.stem, path.stem)
+
+
 if os.getenv("POSTGRES_DB"):
-    DATABASES = {"default": {"ENGINE": "django.db.backends.postgresql", "NAME": os.environ["POSTGRES_DB"], "USER": os.getenv("POSTGRES_USER", "partsmall"), "PASSWORD": os.getenv("POSTGRES_PASSWORD", ""), "HOST": os.getenv("POSTGRES_HOST", "localhost"), "PORT": os.getenv("POSTGRES_PORT", "5432")}}
+    DATABASES = {"default": {"ENGINE": "django.db.backends.postgresql", "NAME": os.environ["POSTGRES_DB"], "USER": os.getenv("POSTGRES_USER", "partsmall"), "PASSWORD": os.getenv("POSTGRES_PASSWORD", ""), "HOST": os.getenv("POSTGRES_HOST", "localhost"), "PORT": os.getenv("POSTGRES_PORT", "5432"),
+                             "OPTIONS": {"application_name": (os.getenv("DB_APPLICATION_NAME") or process_name(sys.argv))[:63]}}}
 # The live database (the stage and catalog CLIs refuse --apply on it without the freeze; a rehearsal or test database is another name).
 LIVE_DATABASE_NAME = os.getenv("LIVE_DATABASE_NAME", "partsmall")
 # The main checkout: BASE_DIR, or the repository a .claude/worktrees/<name> checkout belongs to, so code run from a worktree sees the

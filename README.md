@@ -569,6 +569,12 @@ Gemini receives at most 20 ambiguous supplier cases per run with at most eight c
 
 API: superuser-only `GET/POST /api/v1/management/matching/` and `POST /api/v1/management/matching/{case_id}/` with `action` (`approve` or `dismiss`), `fingerprint`, and optional `target_sku`. Decisions retain evidence and reviewer/automatic attribution in `MatchingDecision`; catalog merges retain their existing audit. The worker uses a PostgreSQL advisory lock plus a visibility lease to prevent overlapping runs, and retries failures without duplicating committed matches.
 
+### Maintenance freeze and worker stops
+
+A deploy window that changes catalog data freezes catalog writes with a file, without restarting anything (`mall/maintenance.py`). `mkdir -p .maintenance && echo catalog > .maintenance/freeze` in the main checkout (`/app/.maintenance/freeze` in the containers; git-ignored) makes the catalog, inventory, Biblioteca, matching, taxonomy and supplier ingest/Excel import writes answer 503 «Mantenimiento del catálogo en curso». Reads, sign-in, deals, solicitudes, the cesta, favourites, messages, the inbox, push and WhatsApp keep working. `echo all` also holds solicitudes, deal actions and the cesta. `touch .maintenance/biblioteca` makes only the Biblioteca read-only. `rm .maintenance/freeze` ends it. While it is on, the `matching` and `apiag-sync` workers idle (and stop a pass in progress at its next stage or page, giving the lease back); `quote-holds` idles only at level `all`. Before writing, wait until `MatchingQueue.lease` and `ApiagSync.lease` are empty. The catalog CLIs (`link_oem_numbers`, `mark_exact_oem`, `prune_catalog_alternos`, `supplier_catalog_import`, `supplier_catalog_replace`, `oem_finder --apply-auto`, `oem_finder_revert`) and the refactor's stage CLIs (`mall/refactor/guard.py`) refuse `--apply` on the live database unless the freeze is on.
+
+The three workers stop cleanly on SIGTERM/SIGINT (`docker compose stop`/`restart`, Ctrl-C): the pass finishes its current unit, gives its lease back and the process exits; Compose waits up to 60 s (`stop_grace_period`). A pass that reaches no stage or page boundary within 40 s is cut at its next query outside a transaction. Gunicorn's `graceful_timeout` is 130 s, so a reload (HUP) lets requests finish. Every process names its database connection (`pg_stat_activity.application_name`: `gunicorn`, `daphne`, `matching`, `apiag-sync`, `quote-holds`, `refactor:<stage>`, or the `manage.py` command; `DB_APPLICATION_NAME` overrides it).
+
 
 ### Master references and supplier items
 

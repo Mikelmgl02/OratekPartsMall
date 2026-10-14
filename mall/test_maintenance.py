@@ -1,8 +1,10 @@
-"""Ops safety of the refactor's deploy windows (S0.11): the catalog write freeze, the workers' clean stop, the CLIs' live-database guard
-and the migrations' lock timeout. The runner loop itself is tested in test_matching_runner."""
+"""Ops safety of the refactor's deploy windows (S0.11): the catalog write freeze, the workers' clean stop, the CLIs' live-database guard,
+the migrations' lock timeout and the named database connections. The runner loop itself is tested in test_matching_runner."""
 import io
 import json
+import os
 import signal
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -362,3 +364,32 @@ class LockTimeoutTests(TestCase):
                 LockTimeout(value)
         source, imports = OperationWriter(LockTimeout('5s'), indentation=0).serialize()
         self.assertEqual((source, imports), ("mall.refactor.migration_ops.LockTimeout(\n    timeout='5s',\n),", {'import mall.refactor.migration_ops'}))
+
+
+class ConnectionNameTests(SimpleTestCase):
+    def test_each_process_names_its_connections(self):
+        from config.settings import process_name
+        for argv, name in [
+            (['/usr/local/bin/gunicorn', '--config', 'config/gunicorn.conf.py', 'config.wsgi:application'], 'gunicorn'),
+            (['/usr/local/bin/daphne', '-b', '0.0.0.0', 'config.asgi:application'], 'daphne'),
+            (['/app/mall/matching_runner.py'], 'matching'), (['/app/mall/apiag_sync_runner.py', '--once'], 'apiag-sync'),
+            (['/app/mall/quote_holds_runner.py'], 'quote-holds'), (['manage.py', 'shell'], 'shell'), (['manage.py', 'migrate'], 'migrate'),
+            (['/app/.claude/worktrees/wt/mall/refactor/s3_variants.py', '--apply'], 'refactor:s3_variants'),
+            (['/app/mall/link_oem_numbers.py', '--apply'], 'link_oem_numbers'), (['-c'], 'python'), ([], 'python')]:
+            self.assertEqual(process_name(argv), name, argv)
+
+    def test_the_test_run_connects_under_its_own_name(self):
+        if connection.vendor != 'postgresql':
+            self.skipTest('application_name is a PostgreSQL setting.')
+        from config.settings import process_name
+        expected = (os.getenv('DB_APPLICATION_NAME') or process_name(sys.argv))[:63]
+        self.assertEqual(connection.settings_dict['OPTIONS']['application_name'], expected)
+
+
+class ConnectionNameQueryTests(TestCase):
+    def test_postgresql_sees_the_name(self):
+        if connection.vendor != 'postgresql':
+            self.skipTest('application_name is a PostgreSQL setting.')
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT current_setting('application_name')")
+            self.assertEqual(cursor.fetchone()[0], connection.settings_dict['OPTIONS']['application_name'])
