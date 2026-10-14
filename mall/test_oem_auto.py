@@ -152,7 +152,7 @@ class RefreshTests(Pending, TestCase):
     def test_rows_that_leave_the_auto_tiers_become_stale_but_sent_rows_stay_sent(self):
         of.execute()
         au.send_to_review([self.parts['48654-0K010'].pk], self.root)
-        Part.objects.filter(pk__in=[self.parts['48654-30030'].pk, self.parts['48654-0K010'].pk]).update(active=False)
+        Part.objects.filter(pk__in=[self.parts['48654-30030'].pk, self.parts['48654-0K010'].pk]).update(active=False, estado='retirada')
         stats = of.execute()['counts']['auto']
         row = self.row('48654-30030')
         self.assertEqual((row.status, row.reason, stats['moved']), ('stale', 'left_auto', 1))

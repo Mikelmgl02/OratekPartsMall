@@ -128,7 +128,17 @@ class Part(models.Model):
         verbose_name = 'repuesto'
         verbose_name_plural = 'repuestos'
         constraints = [models.UniqueConstraint(Lower('sku'), name='unique_sku_case_insensitive'),
-                       models.CheckConstraint(condition=~Q(id=models.F('merged_into')), name='different_merged_part')]
+                       models.CheckConstraint(condition=~Q(id=models.F('merged_into')), name='different_merged_part'),
+                       models.CheckConstraint(condition=Q(estado__in=['referencia', 'preparacion', 'publicada', 'rechazada', 'retirada', 'unificada']),
+                                              name='line_valid_estado'),
+                       models.CheckConstraint(condition=Q(origen__in=['catalogo', 'biblioteca', 'proveedor']), name='line_valid_origen'),
+                       models.CheckConstraint(condition=Q(merged_into__isnull=True) & ~Q(estado='unificada') | Q(merged_into__isnull=False, estado='unificada'),
+                                              name='line_unificada_iff_merged'),
+                       models.CheckConstraint(condition=~Q(estado='rechazada') | (~Q(decision_reason='') & Q(decided_at__isnull=False)),
+                                              name='line_rejected_has_reason'),
+                       # Transition until S10, when active becomes a generated mirror of estado.
+                       models.CheckConstraint(condition=Q(active=True, estado='publicada') | Q(active=False) & ~Q(estado='publicada'),
+                                              name='line_active_iff_publicada')]
 
 
 class PartImage(models.Model):

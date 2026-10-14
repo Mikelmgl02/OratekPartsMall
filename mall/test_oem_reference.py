@@ -490,7 +490,7 @@ class APITests(Fresh, APITestCase):
         other = Part.objects.create(sku='OTRO-1')
         oem(other, '17801 30070', brand='LEXUS')  # an OEM alterno of another manufacturer does not carry the TOYOTA number
         self.assertEqual([s['sku'] for s in linked_parts([self.ref])[self.ref.pk]], ['17801-30070'])
-        Part.objects.filter(pk=self.part.pk).update(merged_into=other, active=False)
+        Part.objects.filter(pk=self.part.pk).update(merged_into=other, active=False, estado='unificada')
         self.assertEqual(linked_parts([self.ref])[self.ref.pk], [])
 
     def test_create_is_idempotent_on_the_compact_number(self):

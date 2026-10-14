@@ -98,7 +98,7 @@ class MergeAuditTests(TestCase):
 
     def test_a_separated_source_shows_as_separated(self):
         self.catalog()
-        Part.objects.filter(sku='04111-22152-M').update(active=True, merged_into=None)
+        Part.objects.filter(sku='04111-22152-M').update(active=True, merged_into=None, estado='publicada')
         rows = {r['merge'].target.sku: r for r in merge_audit.audit()['rows']}
         self.assertEqual([s['state'] for s in rows['04111-22152']['sources']], ['unificado', 'separado'])
         self.assertEqual(merge_audit.merge_state(rows['04111-22152']), 'mixto')

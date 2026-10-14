@@ -85,7 +85,7 @@ class LibraryMatchingTests(OEMLibraryTests):
 
     def test_a_grouped_sku_is_never_a_target(self):
         target = Part.objects.create(sku='16100-39315', description=PUMP)
-        Part.objects.filter(pk=self.pump.pk).update(merged_into=target, active=False)
+        Part.objects.filter(pk=self.pump.pk).update(merged_into=target, active=False, estado='unificada')
         skus, method, strong, _ = self.resolve(self.item('GWT-41A', 'GMB'))
         self.assertNotIn('16100-39315-RAZ', skus)
 
@@ -121,6 +121,6 @@ class LibrarySearchTests(OEMLibraryTests):
         self.assertEqual(rows['16100-39315-RAZ']['codes'], [])  # the SKU's own alternos stay separate
 
     def test_a_grouped_or_inactive_sku_is_not_found_by_the_customer(self):
-        Part.objects.filter(pk=self.pump.pk).update(active=False)
+        Part.objects.filter(pk=self.pump.pk).update(active=False, estado='retirada')
         self.assertEqual(self.skus('/api/v1/catalog/', 'GWT-41A', self.buyer), [])
         self.assertEqual(self.skus('/api/v1/management/catalog/', 'GWT-41A', self.root), ['16100-39315-RAZ'])  # admins see inactive SKUs

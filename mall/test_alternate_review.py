@@ -82,5 +82,5 @@ class AlternateReviewTests(Fresh, APITestCase):
             for response in (self.client.get(URL), self.client.get(self.url), self.client.post(self.url, {'action': 'remove_copies'}, format='json')):
                 self.assertIn(response.status_code, (401, 403))
         self.client.force_authenticate(self.root)
-        Part.objects.filter(pk=self.part.pk).update(merged_into=Part.objects.create(sku='OTRO'), active=False)
+        Part.objects.filter(pk=self.part.pk).update(merged_into=Part.objects.create(sku='OTRO'), active=False, estado='unificada')
         self.assertEqual(self.client.get(self.url).status_code, 404)

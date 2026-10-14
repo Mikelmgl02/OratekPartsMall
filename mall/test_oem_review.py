@@ -207,7 +207,7 @@ class DecisionTests(Review, APITestCase):
         self.assertEqual((case.tier, case.underlying_tier, case.evidence['apply_conflict']['owners']), ('CONFLICT', 'PROBABLE_BASE', [str(claimant.pk)]))
         self.assertEqual(self.decide('48654-0K040-MANDO', 'send_to_merge').data['family']['target_sku'], '486540K040')  # the owner is the target
         self.assertFalse(OEMFinderRun.objects.filter(mode='apply_auto').exists())
-        Part.objects.filter(pk=self.parts['48654-12030'].pk).update(active=False)
+        Part.objects.filter(pk=self.parts['48654-12030'].pk).update(active=False, estado='retirada')
         self.assertEqual(self.decide('48654-12030', 'approve').data['reason'], 'retired')
 
     def test_a_sku_sharing_the_base_since_the_analysis_sends_the_case_to_merge_review(self):

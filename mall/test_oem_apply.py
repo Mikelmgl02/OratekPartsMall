@@ -255,7 +255,7 @@ class ApplyRevertTests(Catalog, TestCase):
     def test_revert_leaves_a_part_grouped_since_alone(self):
         run = self.canary(FLAG, 2)['run']
         link = run.changes.select_related('part').first()
-        Part.objects.filter(pk=link.part_id).update(active=False, merged_into=self.parts['MR-968365'])
+        Part.objects.filter(pk=link.part_id).update(active=False, merged_into=self.parts['MR-968365'], estado='unificada')
         result = oa.revert_run(run.pk)
         self.assertEqual((result['reverted'], [r['reason'] for r in result['skipped']]), (1, ['retired']))
         self.assertTrue(self.part(link.part.sku).is_OEM)

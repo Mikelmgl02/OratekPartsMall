@@ -177,7 +177,7 @@ class EquivalentsTests(Fresh, APITestCase):
         PartCode.objects.create(part=self.part, brand='TOYOTA', code='16100-29155', ref_type='oem', reference_source='CATÁLOGO')
         self.assertEqual(part_equivalents(self.part)['numbers'][0]['via'], ['oem', 'sku_name', 'catalog'])
         target = Part.objects.create(sku='BOMBA-2', description='BOMBA AGUA')
-        Part.objects.filter(pk=self.part.pk).update(merged_into=target, active=False)
+        Part.objects.filter(pk=self.part.pk).update(merged_into=target, active=False, estado='unificada')
         self.part.refresh_from_db()
         self.assertEqual(part_equivalents(self.part), {'numbers': [], 'cross_references': []})
 

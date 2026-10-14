@@ -51,5 +51,5 @@ class PruneTests(Fresh, TestCase):
         self.assertEqual(prune.run(apply=True, stdout=io.StringIO())['removed'], 0)  # nothing more on a second run
 
     def test_a_grouped_sku_is_left_to_the_sku_it_joined(self):
-        Part.objects.filter(pk=self.copied.pk).update(merged_into=self.lone, active=False)
+        Part.objects.filter(pk=self.copied.pk).update(merged_into=self.lone, active=False, estado='unificada')
         self.assertEqual(prune.run(stdout=io.StringIO())['remove'], 0)

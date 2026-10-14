@@ -7,7 +7,7 @@ import tempfile
 from datetime import timedelta
 from unittest.mock import patch
 
-from django.db import connection
+from django.db import IntegrityError, connection, transaction
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APITestCase
@@ -20,7 +20,7 @@ from .matching_engine import create_supplier_families
 from .models import Part, SupplierItem
 from .refactor import s1_lifecycle
 from .sku_proposal_models import SkuProposal
-from .test_factories import make_line, make_reference, make_supplier, make_user
+from .test_factories import make_line, make_reference, make_supplier, make_user, run_migration_function
 
 # 0072's CHECKs, which a test of the backfill drops inside its own transaction to stage the rows 0071 leaves (merged lines still
 # publicada) before the backfill runs.
@@ -87,6 +87,7 @@ class LinePairTests(TestCase):
         self.assertEqual(stored(line), ('publicada', True))
 
     def test_a_stored_pair_out_of_step_follows_active_on_the_next_save(self):
+        drop_lifecycle_checks()  # a row as 0071 can hold it before the backfill
         line = make_line('DRIFT-1')
         Part.objects.filter(pk=line.pk).update(estado='retirada', active=True)  # what a queryset writer without estado leaves
         line = Part.objects.get(pk=line.pk)
@@ -149,6 +150,47 @@ class LinePairTests(TestCase):
         for (active, merged, estado), expected in cases.items():
             with self.subTest(active=active, merged=merged, estado=estado):
                 self.assertEqual(lines.repaired_estado(active, merged, estado), expected)
+
+
+class LifecycleCheckTests(TestCase):
+    """0072's CHECKs: a writer that moves one column of the pair without the other fails, and so does an unknown estado or a
+    rejection without its reason. Its repair puts the rows old writers leave back in step, and stops on what needs a person."""
+
+    def assert_refused(self, **values):
+        line = make_line(f'CHK-{len(values)}-{"-".join(map(str, values.values()))}'[:60])
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Part.objects.filter(pk=line.pk).update(**values)
+
+    def test_the_checks_refuse_half_a_pair_and_unknown_values(self):
+        target = make_line('CHK-TARGET')
+        for values in ({'active': False}, {'estado': 'retirada'}, {'merged_into': target, 'active': False}, {'estado': 'unificada', 'active': False},
+                       {'estado': 'borrada', 'active': False}, {'origen': 'otro'}, {'estado': 'rechazada', 'active': False}):
+            with self.subTest(values=values):
+                self.assert_refused(**values)
+        line = make_line('CHK-OK')
+        Part.objects.filter(pk=line.pk).update(active=False, estado='retirada')
+        Part.objects.filter(pk=line.pk).update(merged_into=target, estado='unificada')
+        Part.objects.filter(pk=make_line('CHK-REJ').pk).update(active=False, estado='rechazada', decision_reason='other', decided_at=timezone.now())
+
+    def test_the_repair_puts_old_writers_rows_in_step_and_passes_on_an_empty_catalog(self):
+        run_migration_function('0072_line_lifecycle_checks', 'repair_estado')  # nothing to repair
+        drop_lifecycle_checks()
+        target = make_line('REP-TARGET')
+        rows = {sku: make_line(sku) for sku in ('REP-MERGED', 'REP-RETIRED', 'REP-BACK', 'REP-UNMERGED', 'REP-REF')}
+        Part.objects.filter(pk=rows['REP-MERGED'].pk).update(merged_into=target, active=False, estado='publicada')
+        Part.objects.filter(pk=rows['REP-RETIRED'].pk).update(active=False, estado='publicada')
+        Part.objects.filter(pk=rows['REP-BACK'].pk).update(active=True, estado='retirada')
+        Part.objects.filter(pk=rows['REP-UNMERGED'].pk).update(active=False, estado='unificada')
+        Part.objects.filter(pk=rows['REP-REF'].pk).update(active=False, estado='referencia')
+        for _ in range(2):  # idempotent
+            run_migration_function('0072_line_lifecycle_checks', 'repair_estado')
+        self.assertEqual({sku: stored(line) for sku, line in rows.items()},
+                         {'REP-MERGED': ('unificada', False), 'REP-RETIRED': ('retirada', False), 'REP-BACK': ('publicada', True),
+                          'REP-UNMERGED': ('retirada', False), 'REP-REF': ('referencia', False)})
+        Part.objects.filter(pk=rows['REP-REF'].pk).update(active=True)
+        Part.objects.filter(pk=target.pk).update(estado='rechazada', active=False)
+        with self.assertRaisesMessage(RuntimeError, '1 líneas activas en referencia, preparación o rechazada; 1 líneas rechazadas sin motivo'):
+            run_migration_function('0072_line_lifecycle_checks', 'repair_estado')
 
 
 class LineReaderTests(TestCase):
@@ -480,6 +522,7 @@ class LifecycleBackfillTests(TestCase):
             code, out = self.run_cli('--rollback', '--user', self.root.username)
         self.assertEqual(code, 1)
         self.assertIn('0072', out)
+        self.assertFalse(s1_lifecycle.checks_in_place())  # this test dropped them, as on a database where 0072 was reversed
 
     def test_a_manifest_of_another_database_is_refused(self):
         with open(os.path.join(self.output.name, 'manifest.jsonl'), 'w', encoding='utf-8') as handle:

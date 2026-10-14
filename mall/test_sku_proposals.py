@@ -345,5 +345,5 @@ class SkuProposalTests(APITestCase):
         proposal = self.proposal('F16-4121020-01AA')
         self.assertEqual(list(proposal.items.values_list('item_id', flat=True)), [item.pk])
         self.assertEqual([(c['kind'], c['id'], c['sku']) for c in candidates(proposal)], [('part', str(lamp.pk), '58411-07000')])
-        Part.objects.filter(pk=lamp.pk).update(active=False)   # a retired SKU is no longer a possible duplicate
+        Part.objects.filter(pk=lamp.pk).update(active=False, estado='retirada')   # a retired SKU is no longer a possible duplicate
         self.assertEqual(candidates(proposal), [])
