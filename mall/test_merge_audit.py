@@ -87,6 +87,14 @@ class MergeAuditTests(TestCase):
         self.assertEqual({s['sku']: s['reason'] for r in result['rows'] for s in r['sources'] if s['sku'].startswith('04111')},
                          {'04111-22152-AS': 'reverted', '04111-22152-M': 'reverted'})
 
+    def test_a_target_renamed_since_is_judged_as_the_worker_merged_into_it(self):
+        self.catalog()
+        # An AUTO_RENAME_BASE apply (or a person) renames the target after the merge: rule 3 still reads the SKU the worker joined.
+        Part.objects.filter(sku='12361-0L020').update(sku='12361-0L020-X', name='12361-0L020-X')
+        rows = {r['target_sku']: r for r in merge_audit.audit()['rows']}
+        self.assertEqual(([s['reason'] for s in rows['12361-0L020']['sources']], rows['12361-0L020']['merge'].target.sku),
+                         (['', ''], '12361-0L020-X'))
+
     def test_a_separated_source_shows_as_separated(self):
         self.catalog()
         Part.objects.filter(sku='04111-22152-M').update(active=True, merged_into=None)

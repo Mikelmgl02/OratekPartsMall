@@ -4,9 +4,9 @@
 
 Every source of the CatalogMerge rows the matching service made (1,388 merges, 2,378 sources) goes through rule 3 again: its code,
 read with the suffix table as D4 leaves it (applied in memory while S0.1 is pending), strips its trailing TAGs while each is
-auto-eligible, and what is left must be the merge's target. Then the 3c guards compare it with the target as the worker saw them
-(the MatchingDecision evidence, else today's descriptions): the same description head noun, and no spec_conflict (identical texts
-never contradict each other). A source fails on the first of: lifecycle chain, unknown chain, reverted token (one of the 45 D4
+auto-eligible, and what is left must be the SKU the worker merged into (a rename since does not count). Then the 3c guards compare
+it with the target as the worker saw them (the MatchingDecision evidence, else today's SKU and descriptions): the same description
+head noun, and no spec_conflict (identical texts never contradict each other). A source fails on the first of: lifecycle chain, unknown chain, reverted token (one of the 45 D4
 tokens), variant chain, TAG not auto-eligible, base differs, head differs, spec conflict. A merge with a failing source is one the
 new rules would not make; it joined different parts when two of its sources (lifecycle copies aside) carry different variant words,
 like 04111-22152-AS with 04111-22152-M. DIR gets summary.json, resumen.txt, merges.csv (each such merge, with its state today),
@@ -106,6 +106,8 @@ def audit():
     rows = []
     for merge in merges:
         ev = evidence.get(str(merge.pk), {})
+        # the target as the worker merged into it: a rename since (an AUTO_RENAME_BASE apply) never reads as "base differs"
+        target_sku = (ev.get('target') or {}).get('sku') or merge.target.sku
         target_description = (ev.get('target') or {}).get('description') or merge.target.description
         seen = {str(s.get('id')): s for s in ev.get('sources') or []}
         sources = []
@@ -114,11 +116,11 @@ def audit():
             part = parts.get(pk)
             description = (seen.get(pk) or {}).get('description') or (part.description if part else '')
             sources.append({'id': pk, 'sku': source.get('sku', ''), 'description': description, 'state': state(pk, merge.target, parts),
-                            **judge(source.get('sku', ''), description, merge.target.sku, target_description, table, d4)})
+                            **judge(source.get('sku', ''), description, target_sku, target_description, table, d4)})
         failing = [s for s in sources if s['reason']]
         words = {tuple(s['variants']) for s in sources if s['class'] != 'lifecycle'}
-        rows.append({'merge': merge, 'method': ev.get('method', ''), 'target_description': target_description, 'sources': sources,
-                     'failing': failing, 'different_parts': bool(failing) and len(words) >= 2})
+        rows.append({'merge': merge, 'method': ev.get('method', ''), 'target_sku': target_sku, 'target_description': target_description,
+                     'sources': sources, 'failing': failing, 'different_parts': bool(failing) and len(words) >= 2})
     return {'rows': rows, 'pending_d4': pending, 'table_version': table.version}
 
 
@@ -159,19 +161,20 @@ def write_report(directory, result, summary):
             writer.writerows(lines)
 
     failing = [r for r in result['rows'] if r['failing']]
-    table('merges.csv', ['id_union', 'fecha', 'metodo', 'sku_destino', 'destino_creado', 'destino_hoy', 'fuentes', 'fuentes_que_fallan',
-                         'motivos', 'piezas_distintas', 'estado_hoy', 'skus_que_fallan', 'otras_fuentes', 'descripcion_destino'],
-          [[r['merge'].pk, r['merge'].created_at.isoformat(), r['method'], r['merge'].target.sku, 'sí' if r['merge'].summary.get('target_created') else 'no',
-            target_state(r['merge'].target), len(r['sources']), len(r['failing']), ' | '.join(sorted({s['reason'] for s in r['failing']})),
+    table('merges.csv', ['id_union', 'fecha', 'metodo', 'sku_destino', 'sku_destino_hoy', 'destino_creado', 'destino_hoy', 'fuentes',
+                         'fuentes_que_fallan', 'motivos', 'piezas_distintas', 'estado_hoy', 'skus_que_fallan', 'otras_fuentes', 'descripcion_destino'],
+          [[r['merge'].pk, r['merge'].created_at.isoformat(), r['method'], r['target_sku'], r['merge'].target.sku,
+            'sí' if r['merge'].summary.get('target_created') else 'no', target_state(r['merge'].target), len(r['sources']), len(r['failing']),
+            ' | '.join(sorted({s['reason'] for s in r['failing']})),
             'sí' if r['different_parts'] else 'no', merge_state(r), ' '.join(s['sku'] for s in r['failing']),
             ' '.join(s['sku'] for s in r['sources'] if not s['reason']), r['target_description']] for r in failing])
     table('sources.csv', ['id_union', 'sku_destino', 'sku_fuente', 'id_fuente', 'motivo', 'detalle', 'cadena', 'clase_cadena', 'palabras_d4',
                           'variantes', 'estado_hoy', 'descripcion_fuente', 'descripcion_destino'],
-          [[r['merge'].pk, r['merge'].target.sku, s['sku'], s['id'], s['reason'], REASONS[s['reason']], '-'.join(s['chain']), s['class'],
+          [[r['merge'].pk, r['target_sku'], s['sku'], s['id'], s['reason'], REASONS[s['reason']], '-'.join(s['chain']), s['class'],
             ' '.join(s['reverted']), ' '.join(s['variants']), s['state'], s['description'], r['target_description']]
            for r in failing for s in r['failing']])
     table('different-parts.csv', ['id_union', 'sku_destino', 'destino_creado', 'estado_hoy', 'fuentes_con_variantes', 'descripcion_destino'],
-          [[r['merge'].pk, r['merge'].target.sku, 'sí' if r['merge'].summary.get('target_created') else 'no', merge_state(r),
+          [[r['merge'].pk, r['target_sku'], 'sí' if r['merge'].summary.get('target_created') else 'no', merge_state(r),
             ' | '.join(f"{s['sku']} ({' '.join(s['variants']) or 'sin variante'})" for s in r['sources'] if s['class'] != 'lifecycle'),
             r['target_description']] for r in failing if r['different_parts']])
     with open(os.path.join(directory, 'summary.json'), 'w', encoding='utf-8') as handle:
