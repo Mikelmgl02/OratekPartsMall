@@ -87,7 +87,7 @@ async function fixture(page: Page) {
 const supplierPage = (page: Page) => page.locator('.deal-order-content');
 async function openSupplierDeal(page: Page) {
   await page.goto(`/proveedor/${supplierId}/ordenes/${orderId}`);
-  await supplierPage(page).getByRole('button', { name: 'Cotización', exact: true }).click();
+  await supplierPage(page).getByRole('button', { name: 'Líneas', exact: true }).click();
 }
 async function openClientDeal(page: Page) {
   await page.goto('/?vista=solicitudes');
@@ -274,7 +274,7 @@ test('the supplier reports a shortfall and delivery waits for the client', async
   for (const name of ['Marcar en camino', 'Marcar como entregado', 'Reportar faltante']) await expect(deal.getByRole('button', { name, exact: true })).toHaveCount(0);
   await expect(deal.getByRole('button', { name: 'Cancelar acuerdo', exact: true })).toBeVisible();
   await expect(deal.locator('.supplier-request-status').first()).toHaveText('Procesando');
-  await expect(deal.locator('.deal-items')).toContainText('Faltante reportado: 2 por responder');  // in the grid, under its item
+  await expect(deal.locator(`.order-lines-grid .ag-row[row-id="${lineA}"] .ag-cell[col-id="quantity"]`)).toContainText('Faltante reportado: 2 por responder');  // in the grid, under its item's Cant.
   await page.screenshot({ path: '/tmp/motionpartes-deal-shortfall-supplier.png' });
   expect(mock.unexpected).toEqual([]);
 });

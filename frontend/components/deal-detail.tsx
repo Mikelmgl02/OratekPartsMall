@@ -10,6 +10,7 @@ import ReorderMissing from './reorder-missing';
 import DealItemsTable from './deal-items-table';
 import DealStages, { NextStepNote, STAGES, reachedStage } from './deal-stages';
 import QuoteChanges from './quote-changes';
+import SupplierOrderWorkspace from './supplier-order-workspace';
 import { UppercaseTextarea } from './uppercase-field';
 import { Account, ApiError, request } from '@/lib/types';
 import type { SupplierRequestLine } from '@/lib/request-types';
@@ -192,6 +193,10 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
   const reached = deal ? reachedStage(deal) : 0, lookingBack = viewing !== null && viewing < reached;
   const pendingShortfall = deal?.shortfalls?.find(item => item.status === 'pending');
   const startPricing = () => { setEditing(true); setTab('quote'); };
+  // The supplier page's Cerrar editor: the closing editor's last edits are saved on their way out, so opening it again reads the draft anew
+  // (not the one first loaded); read on reopening, after that save went out.
+  const reloadDraft = useRef(false);
+  const reopenPricing = () => { if (reloadDraft.current) { reloadDraft.current = false; setDraftLoad(null); setLiveDraft(null); } startPricing(); };
   const reviseButton = <button type="button" className="button primary small" disabled={busy} onClick={() => {
     setRevising(true); startPricing();
     // The editor opens under the sent version: bring it up (its loading placeholder first, while the draft loads).
@@ -295,14 +300,17 @@ export default function DealDetail({ account, orderId, reference, side, onClose,
       <ClientPricingProfile account={account} clientId={deal.client.id} embedded onSaved={profileSaved}/>
     </Modal>}
   </section>;
-  return supplier ? <section className="deal-order-content" aria-label={`Orden ${deal?.reference || reference || 'del cliente'}`}>
-    <div className="deal-page-heading"><span className="eyebrow">ORDEN DE CLIENTE</span><h1>{deal ? `Orden ${deal.reference}` : 'Detalle de la orden'}</h1></div>
-    {content}
-    {profileOpen && deal && <Modal wide title={`Perfil comercial · ${deal.client.name}`} className="client-profile-modal" onClose={() => setProfileOpen(false)}>
-      <ClientPricingProfile account={account} clientId={deal.client.id} embedded onSaved={profileSaved}/>
-      <p className="form-footnote">Este perfil también está en <a href={supplierPricingHref(account.id, 'clients', deal.client.id)}>Precios › Clientes</a>.</p>
-    </Modal>}
-  </section> : <Modal title={`Orden ${reference}`} wide className="deal-modal supplier-request-modal" onClose={() => { if (!inFlight.current) onClose?.(); }}>{content}</Modal>;
+  // The supplier's order page lays the same order out as a workspace: one grid of lines and a sidebar (supplier-order-workspace.tsx).
+  if (supplier) return <SupplierOrderWorkspace c={{
+    account, orderId, reference, deal, error, busy, notice, reload: open => void load(open), dismissError: () => { setError(''); void load(!deal); }, act,
+    tab, setTab, viewing, setViewing, reached, lookingBack, canDecide, stockWarnings, suggestedPrice: priced ? suggestedPrice : undefined,
+    editorMounted, revising, startPricing: reopenPricing, startRevising: () => { setRevising(true); reopenPricing(); },
+    closeEditor: () => { reloadDraft.current = true; setEditing(false); setRevising(false); },
+    draft: draftLoad, draftKey, draftPath, retryDraft, pricingRevision, onDraftChange: (persisted, next) => { setHasDraft(persisted); setLiveDraft({ key: draftKey, draft: next }); },
+    hasDraft, publishBlocked, pairProfile, priceListCode: loaded?.pricing.price_list?.code, profileOpen, setProfileOpen, profileSaved,
+    afterMode, setAfterMode, chatInsert, copyToChat: text => { setChatInsert({ text, id: Date.now() }); setTab('chat'); }, events,
+  }}/>;
+  return <Modal title={`Orden ${reference}`} wide className="deal-modal supplier-request-modal" onClose={() => { if (!inFlight.current) onClose?.(); }}>{content}</Modal>;
 }
 
 // Units the order will not bring (mall/reorder.py missing_lines): what the quotation does not offer, what the agreement will not deliver
@@ -394,7 +402,7 @@ function SuggestedPrice({ line, currency }: { line?: QuoteDraftLine; currency: s
 const acceptResults = { ok: 'Existencias verificadas al confirmar', blocked: 'Confirmación bloqueada por existencias', accepted_with_shortfall: 'Confirmado con faltante' };
 
 // Supplier-only publication trace: read each time it is opened (an accept check may have been added), never shown to the client.
-function QuoteTrace({ path, currency }: { path: string; currency: string }) {
+export function QuoteTrace({ path, currency }: { path: string; currency: string }) {
   const [trace, setTrace] = useState<QuotationTrace | null>(null);
   const [error, setError] = useState('');
   const loading = useRef(false);

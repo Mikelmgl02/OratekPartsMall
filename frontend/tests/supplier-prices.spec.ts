@@ -156,11 +156,11 @@ test('drafts arrive priced from the list, explain each price and apply suggestio
   const content = page.locator('.deal-order-content');
   const quote = (line: string, column: string) => content.locator(`.quotation-grid[aria-label="Artículos de la cotización"] .ag-row[row-id="${line}"] .ag-cell[col-id="${column}"]`);
   await page.goto(`/proveedor/${supplierId}/ordenes/${orderId}`);
-  // The order's document shows the private suggested price with its origin.
-  const lines = content.getByRole('table', { name: 'Artículos de la orden', exact: true });
+  // The order's lines show the private suggested price with its origin.
+  const lines = content.getByRole('region', { name: 'Artículos de la orden', exact: true });
   await expect(lines.getByRole('columnheader', { name: 'Precio sugerido' })).toBeVisible();
-  await expect(lines.getByRole('row').filter({ hasText: '00700-NP' })).toContainText('Sin precio en tu lista');
-  await expect(lines.getByRole('row').filter({ hasText: 'Lista GENERAL' })).toHaveCount(1);
+  await expect(lines.locator('.ag-row').filter({ hasText: '00700-NP' })).toContainText('Sin precio en tu lista');
+  await expect(lines.locator('.ag-row').filter({ hasText: 'Lista GENERAL' })).toHaveCount(1);
   await content.getByRole('button', { name: 'Preparar cotización', exact: true }).click();
   await expect(quote(lineA, 'unit_price')).toContainText('15.00');
   await expect(quote(lineA, 'price_source')).toHaveText('Lista');
@@ -196,10 +196,56 @@ test('drafts arrive priced from the list, explain each price and apply suggestio
   await expect(quote(lineA, 'price_source')).toHaveText('Lista');
   expect(drafts.reprices.at(-1)).toEqual({ save_id: any, expected_draft_version: 3, scope: 'lines', order_line_ids: [lineA] });
   expect(drafts.current().lines.map(line => [line.unit_price, line.price_source])).toEqual([['15.00', 'engine'], ['4.00', 'engine']]);
-  // The document, folded above the editor, follows the latest saved draft: the new list price shows as the second item's suggestion.
-  await content.getByTitle('Ver el documento', { exact: true }).click();
-  await expect(lines.getByRole('row').nth(2)).toContainText('Lista GENERAL');
+  // Back from the editor, the order's lines follow the latest saved draft: the new list price shows as the second item's suggestion.
+  await content.getByRole('button', { name: 'Cerrar editor', exact: true }).click();
+  await expect(lines.locator('.ag-row').filter({ hasText: '00700-NP' })).toContainText('Lista GENERAL');
   expect(drafts.saves.map(({ save_id: _, ...save }) => save)).toEqual([{ expected_draft_version: 0, lines: [{ order_line_id: lineA, unit_price: '13.00' }] },
     { expected_draft_version: 1, terms: 'RETIRO EN SUCURSAL' }]);
   expect(unexpected).toEqual([]);
+});
+
+test('the order page editor: Desc % follows the list price, a refresh never closes the cell being typed, and Cerrar editor keeps the draft', async ({ page }) => {
+  await session(page);
+  const order: Deal = { id: orderId, reference: 'ORD-PRECIOS-002', client: { id: clientId, name: 'TALLER CENTRAL' }, supplier: { id: supplierId, name: 'REPUESTOS CENTRAL' },
+    status: 'reviewed', version: 3, created_at: stamp, reviewed_at: stamp, handshaked_at: null, line_count: 2, unit_count: 3, notes: '', quotation: null, quotations: [], events: [],
+    lines: [orderLine(lineA, '58411-1R000-G', 2), orderLine(lineB, '00700-NP', 1)] };
+  let reads = 0;
+  await page.route(`${base}/requests/${orderId}`, route => { reads++; return route.fulfill({ json: { ...order, lines: order.lines.map(line => ({ ...line })) } }); });
+  await page.route(`${base}/requests/${orderId}/review`, route => route.fulfill({ json: order }));
+  await page.route(/\/api\/market\/accounts\/[^/]+\/deals\/[^/]+\/messages(?:\?.*)?$/, route => route.fulfill({ json: { results: [], cursor: 0, has_more: false, has_earlier: false } }));
+  const drafts = await mockQuoteDrafts(page, () => order, { suggestions: { [lineA]: suggestion('15.00'), [lineB]: suggestion(null) } });
+  const content = page.locator('.deal-order-content');
+  const quote = (line: string, column: string) => content.locator(`.quotation-grid[aria-label="Artículos de la cotización"] .ag-row[row-id="${line}"] .ag-cell[col-id="${column}"]`);
+  await page.goto(`/proveedor/${supplierId}/ordenes/${orderId}`);
+  await content.getByRole('button', { name: 'Preparar cotización', exact: true }).click();
+  await expect(quote(lineA, 'unit_price')).toContainText('15.00');
+  // Desc %: under the list price; without one there is nothing to compare with.
+  await expect(quote(lineA, 'discount')).toHaveText('0 %');
+  await expect(quote(lineB, 'discount')).toHaveText('—');
+  await quote(lineA, 'discount').click();
+  const discount = content.getByLabel('Descuento de 58411-1R000-G', { exact: true });
+  await expect(discount).toHaveValue('0');  // the percentage, as the cell shows it
+  await discount.fill('10'); await discount.press('Enter');
+  await expect(quote(lineA, 'unit_price')).toContainText('13.50');
+  await expect(quote(lineA, 'discount')).toHaveText('10 %');
+  await expect.poll(() => drafts.saves.at(-1)?.lines).toEqual([{ order_line_id: lineA, unit_price: '13.50' }]);  // the price is saved, not the percentage
+  // The order is read again (every 15 s, or when the other party acts) while a price is being typed: the cell stays open with the typing.
+  await quote(lineA, 'unit_price').click();
+  const price = content.getByLabel('Precio de 58411-1R000-G', { exact: true });
+  await price.fill('12');
+  const before = reads;
+  await page.evaluate(id => window.dispatchEvent(new CustomEvent('motionpartes:deal', { detail: { orderId: id, kind: 'event' } })), orderId);
+  await expect.poll(() => reads).toBeGreaterThan(before);
+  await page.waitForTimeout(300);
+  await expect(price).toBeVisible();
+  await expect(price).toHaveValue('12');
+  await price.fill('12.25'); await price.press('Enter');
+  await expect(quote(lineA, 'unit_price')).toContainText('12.25');
+  await expect.poll(() => drafts.current().lines.find(line => line.order_line_id === lineA)?.unit_price).toBe('12.25');
+  // Cerrar editor and back: the editor reads the draft again, with what was saved.
+  await content.getByRole('button', { name: 'Cerrar editor', exact: true }).click();
+  await expect(content.getByRole('region', { name: 'Artículos de la orden', exact: true })).toBeVisible();
+  await content.getByRole('button', { name: 'Preparar cotización', exact: true }).click();
+  await expect(quote(lineA, 'unit_price')).toContainText('12.25');
+  await expect(content.getByRole('status', { name: 'Estado del borrador' })).toContainText(`Borrador v${drafts.current().draft_version}`);
 });

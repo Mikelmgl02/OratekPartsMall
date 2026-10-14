@@ -76,8 +76,8 @@ async function fixture(page: Page, status: 'reviewed' | 'adjustment' = 'reviewed
 }
 async function openQuote(page: Page) {
   await page.goto(orderUrl);
-  await content(page).getByRole('button', { name: 'Cotización', exact: true }).click();
-  await content(page).getByRole('button', { name: 'Preparar cotización', exact: true }).click();  // the editor, from the order's document
+  await content(page).getByRole('button', { name: 'Líneas', exact: true }).click();
+  await content(page).getByRole('button', { name: 'Preparar cotización', exact: true }).click();  // the editor, in place of the order's lines
 }
 async function editQuote(page: Page, column: 'unit_price' | 'quantity', value: string, codigo = '58411-1R000-G', id = lineId) {
   await quoteCell(page, column, id).click();
@@ -89,8 +89,8 @@ test('supplier edits survive a reload, autosave never calls deal actions and pub
   const state = await fixture(page);
   await openQuote(page);
   await expect(draftStatus(page)).toHaveText('Borrador nuevo · se guarda automáticamente al editar');
-  await expect(quoteCell(page, 'available')).toHaveText('3');
-  await expect(quoteCell(page, 'available', secondId)).toHaveText('Revisar artículo');
+  await expect(quoteCell(page, 'available')).toHaveText(/^3/);
+  await expect(quoteCell(page, 'available', secondId)).toHaveText('?revisar');
   await editQuote(page, 'unit_price', '12,5');
   await expect(draftStatus(page)).toContainText('Borrador v1 · guardado por EMPLEADO');
   expect(state.drafts.saves).toEqual([{ save_id: any, expected_draft_version: 0, lines: [{ order_line_id: lineId, unit_price: '12.50' }] }]);
@@ -217,7 +217,7 @@ test('when the draft cannot be loaded the editor is read-only and Reintentar loa
   const notice = content(page).getByRole('alert').filter({ hasText: 'No se pudo cargar el borrador de la cotización.' });
   await expect(notice).toContainText('Las cotizaciones se preparan y se envían desde el borrador guardado.');
   await expect(draftStatus(page)).toHaveCount(0);
-  await expect(quoteCell(page, 'available')).toHaveText('3');
+  await expect(quoteCell(page, 'available')).toHaveText(/^3/);
   // Quotations are published only from the saved draft (QUOTES_REQUIRE_DRAFT): nothing here can be edited or sent.
   await expect(content(page).getByRole('button', { name: 'Confirmar y enviar cotización', exact: true })).toHaveCount(0);
   await expect(termsField(page)).toBeDisabled();
@@ -305,6 +305,7 @@ test('the private trace of the current quotation loads only when the supplier op
           exceptions: [{ code: 'identity_changed', severity: 'confirm', context: 'a1b2c3d4e5f6', acknowledged_by: null, acknowledged_at: null }] }] } });
   });
   await openQuote(page);
+  await content(page).getByRole('button', { name: 'Actividad', exact: true }).click();  // the price trace is part of the order's activity
   const trace = content(page).locator('details.deal-quote-trace');
   await expect(trace.locator('summary')).toHaveText('Ver origen de precios');
   expect(traces).toEqual([]);

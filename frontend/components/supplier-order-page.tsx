@@ -57,13 +57,12 @@ export default function SupplierOrderPage({ accountId, orderId }: { accountId: s
   return <>
     <AppToolbar><header className="header"><div className="header-inner supplier-order-toolbar">
       <Link className="wordmark" aria-label="Inicio de MotionPartes" href="/"><BrandLogo/></Link>
-      <div className="supplier-order-toolbar-actions"><InboxButtons/><Link className="button soft small" href={back}><ArrowLeft size={15}/>Volver a solicitudes</Link>{access?.authenticated && <button type="button" className="icon-button" aria-label="Cerrar sesión" disabled={signingOut} onClick={() => void logout()}><LogOut size={19}/></button>}</div>
+      <div className="supplier-order-toolbar-actions"><InboxButtons/>{!access?.account && <Link className="button soft small" href={back}><ArrowLeft size={15}/>Volver a solicitudes</Link>}{access?.authenticated && <button type="button" className="icon-button" aria-label="Cerrar sesión" disabled={signingOut} onClick={() => void logout()}><LogOut size={19}/></button>}</div>
     </div></header></AppToolbar>
-    <main className="section-container supplier-order-page" aria-label="Detalle de orden de proveedor">
+    {/* With access, the order's own header leads back to Solicitudes and the page is the workspace, as tall as the window. */}
+    <main className={`section-container supplier-order-page${access?.account ? ' workspace' : ''}`} aria-label="Detalle de orden de proveedor">
       {error && <div className="notice error" role="alert">{error}</div>}
       {!access ? <SupplierOrderSkeleton/> : access.account ? <>
-        <nav className="supplier-order-breadcrumbs" aria-label="Ubicación de la orden"><Link href={back}>Solicitudes</Link><span aria-hidden="true">/</span><span>Orden de cliente</span></nav>
-        <div className="supplier-order-account"><Store size={17}/><span>{access.account.name}</span></div>
         <DealDetail key={`${accountId}:${orderId}`} account={access.account} orderId={orderId} side="supplier"/>
       </> : <section className="empty-state supplier-order-access">
         <Store size={36}/><h1>{access.error ? 'No pudimos cargar esta orden.' : !access.authenticated ? 'Inicia sesión para ver esta orden.' : 'No tienes acceso a esta cuenta de proveedor.'}</h1>

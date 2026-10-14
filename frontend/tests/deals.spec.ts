@@ -125,7 +125,8 @@ async function asClient(page: Page) {
   await page.goto('/?vista=solicitudes');
   await page.getByRole('button', {name:'Ver enviada ORD-PRUEBA-001', exact:true}).click();
 }
-async function quoteTab(page: Page) { await dialog(page).getByRole('button', {name:'Cotización', exact:true}).click(); }
+// The client's order calls its document Cotización; the supplier's order page calls its lines Líneas.
+async function quoteTab(page: Page) { await dialog(page).getByRole('button', {name:/^(Cotización|Líneas)$/}).click(); }
 // The supplier prices the order in the editor, opened from its document.
 async function priceTab(page: Page) { await quoteTab(page); await dialog(page).getByRole('button', {name:'Preparar cotización', exact:true}).click(); }
 const quoteCell = (page: Page, column: string, id = lineId) => dialog(page).locator(`.quotation-grid[aria-label="Artículos de la cotización"] .ag-row[row-id="${id}"] .ag-cell[col-id="${column}"]`);
@@ -282,7 +283,8 @@ test('supplier pastes an Excel range into the grid while identities and requeste
   const state = await fixture(page);
   const secondId = '44444444-4444-4444-8444-444444444445';
   const first = state.getOrder().lines[0];
-  state.setLines([first, {...first, id:secondId, codigo:'00700-NP', quantity:1}]);
+  // The grid lists the order by description (then code): the second line sorts after the first, so the pasted range lands on both.
+  state.setLines([first, {...first, id:secondId, codigo:'00700-NP', description:'ZAPATA DE FRENO', quantity:1}]);
   await page.goto('/'); await asSupplier(page); await priceTab(page);
   await page.evaluate(() => navigator.clipboard.writeText('2\t1,25\n0\t'));
   await quoteCell(page, 'quantity').click();
