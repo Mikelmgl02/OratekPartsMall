@@ -9,7 +9,7 @@ const ids = { parent: '0d000000-0000-4000-8000-000000000001', k: '0d000000-0000-
 const items = { k: 'aa000000-0000-4000-8000-000000000001', np: 'aa000000-0000-4000-8000-000000000002' };
 const description = 'TAMBOR KIA PICANTO 04-11';
 const row = (id: string, sku: string, merged = 0): ManagedPart => ({ id, sku, name: sku, description, category: 'FRENOS', subcategory: 'TAMBORES DE FRENO', part_type: null,
-  is_OEM: false, active: true, codes: [], stock_record_count: 1, merged_count: merged, images: [], identity: { ref_type: 'unknown', brand: '', status: 'needs_oem' } } as ManagedPart);
+  is_OEM: false, active: true, codes: [], stock_record_count: 1, merged_count: merged, images: [], identity: { ref_type: 'unknown', brand: '' } } as ManagedPart);
 const child = (id: string, sku: string, extra: Partial<SplitPlan['children'][number]>) => ({ id, sku, name: sku, description, category: 'FRENOS', subcategory: 'TAMBORES DE FRENO',
   is_OEM: false, active: false, merged_at: '2026-10-07T08:30:00Z', merged_by: 'motionpartes-matching-service', automatic: true, method: 'Mismo código base y la misma descripción', codes: [], ...extra });
 const plan: SplitPlan = {

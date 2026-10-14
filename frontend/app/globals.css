@@ -1955,13 +1955,7 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
  .suffix-examples,.suffix-actions { min-width:0; }
  .suffix-actions .button { flex:1 1 auto; justify-content:center; }
 }
-/* Revisión OEM (Agrupación inteligente → REVISIÓN OEM) */
-.modal.smart-matching-modal.oem-review-mode { width:min(1180px,calc(100% - 30px)); }
-.oem-review { display:grid; gap:12px; min-width:0; }
-.oem-review .admin-inventory-tabs { margin-bottom:4px; padding-bottom:10px; }
-.oem-review-views button,.oem-tier-tabs button { display:inline-flex; align-items:center; gap:6px; }
-.oem-review-run { font-size:10px; letter-spacing:.4px; line-height:1.7; color:#6d7f60; margin:0; overflow-wrap:anywhere; }
-.oem-review-filters { margin-bottom:0; }
+/* Batch bars and progress (Productos nuevos, Revisión IA), evidence lists and chips (Biblioteca OEM) */
 .oem-bulk-bar { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px; background:#f6f8f1; border-radius:9px; font-size:11px; color:#5d6e51; }
 .oem-bulk { display:grid; gap:12px; padding:16px; border:1px solid #cfdcbf; border-radius:12px; background:#fff; min-width:0; }
 .oem-bulk-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; }
@@ -1969,68 +1963,17 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .oem-bulk p { font-size:12px; line-height:1.6; margin:0; overflow-wrap:anywhere; }
 .oem-progress { height:8px; border-radius:6px; background:#edf0e8; overflow:hidden; }
 .oem-progress span { display:block; height:100%; background:#7fa35c; transition:width .3s; }
-.oem-cases { display:grid; gap:14px; }
-.oem-case { display:grid; gap:10px; border:1px solid var(--line); border-radius:10px; background:#fff; padding:16px; min-width:0; }
-.oem-case.applied { border-color:#b9d5a1; background:#f8fbf3; }
-.oem-case.dismissed,.oem-case.resolved { opacity:.85; }
-.oem-case-heading { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
-.oem-case-heading strong { font-size:14px; overflow-wrap:anywhere; margin-right:auto; }
-.oem-case-heading .pill { display:inline-block; background:#eef2e4; color:#63794f; border-radius:5px; padding:5px 7px; font-size:9px; }
-.oem-case>p { font-size:13px; line-height:1.5; margin:0; overflow-wrap:anywhere; }
-.oem-case>small { font-size:10px; color:#7b896e; overflow-wrap:anywhere; }
-.oem-proposal { display:grid; gap:3px; padding:10px 12px; background:#f3f7ec; border-radius:8px; }
-.oem-proposal span { font-size:9px; letter-spacing:.5px; color:#6d7f60; }
-.oem-proposal strong { font-size:15px; overflow-wrap:anywhere; }
-.oem-proposal small { font-size:10px; color:#5d6e51; overflow-wrap:anywhere; }
 .oem-evidence { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:8px 14px; margin:0; }
 .oem-evidence>div { min-width:0; }
 .oem-evidence>div.wide { grid-column:1/-1; }
 .oem-evidence dt { font-size:9px; letter-spacing:.5px; color:#849773; margin-bottom:3px; }
 .oem-evidence dd { margin:0; font-size:11px; line-height:1.5; overflow-wrap:anywhere; }
 .oem-evidence dd small { display:block; font-size:10px; color:#7b896e; }
-.oem-chain,.oem-chips { display:flex; flex-wrap:wrap; gap:5px; }
+.oem-chips { display:flex; flex-wrap:wrap; gap:5px; }
 .oem-chips span { padding:3px 7px; border-radius:5px; font-size:9px; background:#fbebdf; color:#8d6a45; }
-.oem-reasons { margin:0; padding-left:16px; display:grid; gap:3px; font-size:11px; color:#5d6e51; line-height:1.5; overflow-wrap:anywhere; }
-.oem-decision { font-size:10px; letter-spacing:.3px; color:#607f48; margin:0; overflow-wrap:anywhere; }
-.oem-choices { display:grid; gap:6px; margin:0; padding:10px 12px; border:1px solid var(--line); border-radius:8px; min-width:0; }
-.oem-choices legend { font-size:9px; letter-spacing:.5px; color:#6d7f60; padding:0 4px; }
-.oem-choices label { font-size:12px; overflow-wrap:anywhere; }
-.oem-case .danger-text { font-size:10px; }
-.oem-runs { display:grid; gap:12px; }
-.oem-run-focus td { background:#f6faef; }
 @media(max-width:760px) {
- .oem-case { padding:12px; }
  .oem-evidence { grid-template-columns:1fr; }
- .oem-actions .button,.oem-dismiss .button { flex:1 1 auto; justify-content:center; }
  .oem-bulk { padding:12px; }
- .oem-review .suffix-table { min-width:0; } /* the dialog sits inside .admin-panel, whose tables keep a desktop min-width */
-}
-/* Pendientes de aplicación automática (Inventario → Aplicación OEM) */
-.oem-pending { display:grid; gap:12px; min-width:0; padding:16px; margin:4px 0 22px; border:1px solid var(--line); border-radius:12px; background:#fcfdf9; }
-.oem-pending>.form-footnote { margin-top:0; }
-.oem-pending-heading { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; }
-.oem-pending-heading h3 { font-size:16px; letter-spacing:-.3px; margin-right:auto; }
-.oem-pending-heading>span { font-size:10px; letter-spacing:.4px; color:#6d7f60; overflow-wrap:anywhere; }
-.oem-pending .admin-inventory-tabs { margin-bottom:0; }
-.oem-apply-tiers { display:grid; gap:10px; }
-.oem-apply-tier { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px 14px; padding:12px 14px; border:1px solid #dfe7d4; border-radius:10px; background:#fff; min-width:0; }
-.oem-apply-tier-text { display:grid; gap:4px; min-width:0; }
-.oem-apply-tier-text strong { font-size:12px; overflow-wrap:anywhere; }
-.oem-apply-tier-text>span { font-size:10px; letter-spacing:.3px; color:#6d7f60; line-height:1.9; }
-.oem-apply-tier .suffix-actions { min-width:0; }
-.oem-apply-reason { flex:1 0 100%; display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; margin:0; font-size:11px; line-height:1.5; color:#a1543c; overflow-wrap:anywhere; }
-.oem-confirm { border-color:#c9a27f; }
-.oem-pending-table th:first-child,.oem-pending-table td.oem-pick { width:28px; }
-.oem-pending-table input[type=checkbox],.oem-pending-table th input[type=checkbox] { width:16px; height:16px; accent-color:#607f48; }
-.oem-pending-table tr.oem-picked td { background:#f6faef; }
-.oem-runs-heading { font-size:14px; letter-spacing:-.2px; margin:0 0 10px; }
-.oem-run-focus { outline:none; }
-@media(max-width:760px) {
- .oem-pending { padding:12px; margin-bottom:16px; }
- .oem-apply-tier { padding:10px 12px; }
- .oem-apply-tier .suffix-actions { width:100%; }
- .oem-pending-table td.oem-pick { width:100%; display:flex; align-items:center; gap:8px; }
- .oem-pending-table td.oem-pick::before { margin:0; }
 }
 /* Biblioteca OEM (Inventario → Biblioteca OEM) */
 .oem-library-bar { display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px; margin:-8px 0 14px; }
@@ -2101,8 +2044,7 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .sku-cell strong { color:var(--ink); font-size:13px; letter-spacing:.2px; }
 .sku-cell>span.sku-identity { display:inline-block; margin-top:6px; padding:3px 7px; border-radius:5px; font-size:9px; font-weight:600; letter-spacing:.3px; }
 .sku-identity.oem { background:#e6f2d5; color:#4f7232; }
-.sku-identity.pending { background:#f3f1ea; color:#8d8467; }
-.sku-identity.choose { background:#fbebdf; color:#a06f43; }
+.sku-identity.internal { background:#f3f1ea; color:#8d8467; }
 .sku-cell>span.sku-category { color:#7f9070; }
 .admin-catalog-table .admin-role-list { max-width:340px; }
 .admin-role-list span.more { background:transparent; border:1px dashed #d4dcc8; color:#7d8f6c; cursor:help; }
@@ -2506,22 +2448,6 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
    and scroll exactly where they were. A wide one fits the SKU editor's equivalences table. */
 .modal.drawer.side-panel::backdrop { background:#14201a2e; backdrop-filter:none; }
 .modal.drawer.wide { width:min(770px,100%); }
-/* Marcar como OEM (the grid's right click): one card per SKU with the make of its number */
-.oem-mark-row { gap:8px; }
-.oem-mark-row .grouping-select span { font-weight:600; color:#405238; }
-.oem-mark-description { margin:0; color:#637455; font-size:11px; line-height:1.6; overflow-wrap:anywhere; }
-.oem-mark-make,.oem-mark-citation { display:flex; flex-direction:column; gap:6px; max-width:320px; color:#637455; font-size:11px; }
-.oem-mark-make input,.oem-mark-citation input { padding:9px 10px; border:1px solid var(--line); border-radius:7px; background:white; color:var(--ink); font-size:12px; }
-.oem-mark-citation { max-width:none; }
-.oem-mark-warning { color:#8a5a14; font-size:11px; line-height:1.5; }
-.oem-mark-blocked { color:#a05845; font-size:11px; font-weight:600; }
-.oem-mark-note { color:#5f7d3f; font-size:11px; font-weight:600; }
-.oem-mark-make select { padding:9px 10px; border:1px solid var(--line); border-radius:7px; background:white; color:var(--ink); font-size:12px; }
-.oem-mark-create { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:10px; }
-.oem-mark-create label { display:flex; flex-direction:column; gap:6px; color:#637455; font-size:11px; min-width:0; }
-.oem-mark-create input { padding:9px 10px; border:1px solid var(--line); border-radius:7px; background:white; color:var(--ink); font-size:12px; min-width:0; }
-.oem-mark-switch { flex-wrap:wrap; }
-.oem-mark-switch .button { margin-left:auto; text-decoration:none; }
 /* The SKU code in the Inventario grid opens the SKU editor */
 .sku-open { min-width:0; padding:0; border:0; background:none; color:inherit; font:inherit; text-align:left; cursor:pointer; }
 .sku-open strong { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

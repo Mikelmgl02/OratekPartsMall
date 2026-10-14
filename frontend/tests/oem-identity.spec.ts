@@ -5,7 +5,7 @@ for (const width of [1440, 390]) {
   test.skip(!process.env.E2E_ADMIN_TOKEN, 'Disposable superuser token required.');
   await page.context().addCookies([{name:'partsmall_session',value:process.env.E2E_ADMIN_TOKEN!,url:'http://localhost:8080',httpOnly:true,sameSite:'Strict'}]);
   await page.setViewportSize({width,height:1000});
-  const part={id:'02000000-0000-4000-8000-000000000009',sku:'0110-GSU45A48-FEB',name:'PUNTA FLECHA',description:'PUNTA FLECHA EXT TOY RAV4',active:true,stock_record_count:1,codes:[{code:'0110-GSU45A48',brand:'FEBEST',ref_type:'company',reference_source:''}], identity:{ref_type:'company',status:'needs_oem',brand:'FEBEST'}};
+  const part={id:'02000000-0000-4000-8000-000000000009',sku:'0110-GSU45A48-FEB',name:'PUNTA FLECHA',description:'PUNTA FLECHA EXT TOY RAV4',active:true,stock_record_count:1,codes:[{code:'0110-GSU45A48',brand:'FEBEST',ref_type:'company',reference_source:''}], identity:{ref_type:'company',brand:'FEBEST'}};
   let payload:any;
   await page.route(/\/api\/management\/catalog(?:\?.*)?$/,route=>route.fulfill({json:{count:1,results:[part]}}));
   await page.route('**/api/management/catalog/import/issues?**',route=>route.fulfill({json:{count:0,pending_count:0,results:[]}}));
@@ -13,7 +13,7 @@ for (const width of [1440, 390]) {
   await page.route(`**/api/management/catalog/${part.id}/oem-lookup`,route=>route.fulfill({json:{cached:true,metrics:{total_tokens:0},note:'REVISAR FUENTES',sources:[{url:'https://example.com/catalog',title:'CATÁLOGO'}],search_suggestions:'',references:[{code:'43460-TEST',brand:'TOYOTA',ref_type:'oem',relationship:'equivalent',source_url:'https://example.com/catalog',reference_source:'https://example.com/catalog',reason:'PIEZA INDIVIDUAL'},{code:'43410-ASSEMBLY',brand:'TOYOTA',ref_type:'oem',relationship:'component',source_url:'https://example.com/assembly',reference_source:'https://example.com/assembly',reason:'CONJUNTO COMPLETO'}]}}));
   await page.route(`**/api/management/catalog/${part.id}`,route=>{payload=route.request().postDataJSON();return route.fulfill({json:{...part,...payload,sku:'43460-TEST'}});});
   await page.goto('/administracion?seccion=inventario');
-  await expect(page.getByText('MAIN INTERNO · FEBEST · OEM PENDIENTE',{exact:true})).toBeVisible();
+  await expect(page.getByText('MAIN INTERNO · FEBEST',{exact:true})).toBeVisible();  // the MAIN tag only: no OEM to link
   await page.getByRole('button',{name:`Editar SKU ${part.sku}`,exact:true}).click();
   const dialog=page.getByRole('dialog');
   await dialog.getByRole('tab',{name:/^Alternos/}).click();

@@ -69,17 +69,3 @@ for (const width of [1440, 390]) {
     await page.screenshot({path:`/tmp/motionpartes-matching-progress-${width}.png`});
   });
 }
-
-test('a pass that marked SKUs OEM by the OEM list says so', async ({page}) => {
-  test.skip(!process.env.E2E_ADMIN_TOKEN, 'Disposable superuser token required.');
-  await page.context().addCookies([{name:'partsmall_session',value:process.env.E2E_ADMIN_TOKEN!,url:'http://localhost:8080',httpOnly:true,sameSite:'Strict'}]);
-  const done = {catalog_count:31405,matched_items:0,grouped_skus:0,created_parents:0,promoted_oems:0,marked_exact_oems:240,ai_analyzed:0,ai_status:'no_pending_cases'};
-  await page.route(/\/api\/management\/(catalog|roles|catalog\/import\/issues)(?:\?.*)?$/,route=>route.fulfill({json:route.request().url().includes('/roles')?[]:{count:0,results:[],pending_count:0}}));
-  await page.route(/\/api\/management\/matching(?:\?.*)?$/,route=>route.fulfill({json:{state:'completed',running:false,queued:false,stage:'completed',last_run:'2026-10-12T23:47:37Z',summary:done,error:'',counts:{},count:0,next_offset:null,results:[]}}));
-  await page.goto('/administracion?seccion=inventario');
-  await page.getByRole('button',{name:'Agrupación inteligente',exact:true}).click();
-  const dialog=page.getByRole('dialog');
-  await expect(dialog.getByText('SKU MARCADOS OEM POR LISTA',{exact:true})).toBeVisible();
-  await expect(dialog.locator('dd',{hasText:'240'})).toBeVisible();
-  await expect(dialog.getByText(/Sin cambios en el catálogo/)).toHaveCount(0);
-});

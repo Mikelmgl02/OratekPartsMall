@@ -36,7 +36,7 @@ export type ApiagSyncStatus = { connected: false } | { connected: true; server: 
   interval_minutes: number; last_started_at: string | null; last_finished_at: string | null; last_success_at: string | null; next_run_at: string | null;
   error: { code: string; message: string } | null; last_mode: 'full' | 'changes' | 'day' | null; counts: ApiagSyncCounts; samples: string[];
   progress: ApiagSyncCounts & { mode?: string }; sucursales: { id: string; nombre: string }[] };
-export type ManagedPart = Pick<Part, 'id' | 'sku' | 'is_OEM' | 'name' | 'description' | 'category' | 'subcategory' | 'part_type' | 'codes' | 'images'> & { active: boolean; stock_record_count: number; merged_count?: number; identity?: { ref_type: 'unknown' | 'oem' | 'company'; brand: string; status: 'oem' | 'choose_oem' | 'oem_available' | 'needs_oem' } };
+export type ManagedPart = Pick<Part, 'id' | 'sku' | 'is_OEM' | 'name' | 'description' | 'category' | 'subcategory' | 'part_type' | 'codes' | 'images'> & { active: boolean; stock_record_count: number; merged_count?: number; identity?: { ref_type: 'unknown' | 'oem' | 'company'; brand: string } };
 export type ManagedStockItem = StockItem & { supplier: string; supplier_name: string; part_name: string | null; part_sku: string | null };
 export type ManagedAlternate = PartReference & { id: number; part: string; part_name: string; part_sku: string; code: string; brand: string };
 export type CatalogGroupingPart = Pick<Part, 'id' | 'sku' | 'name' | 'description' | 'category' | 'subcategory' | 'codes'> & { proposed_parent?: boolean };

@@ -10,7 +10,6 @@ export type CatalogGridActions = {
   onEditPart: (part: ManagedPart) => void; onTechnical: (part: ManagedPart) => void; onImages: (part: ManagedPart) => void;
   onEditAlternate: (alternate: ManagedAlternate) => void; onRemoveAlternate: (alternate: ManagedAlternate) => void; onEditMatch: (item: ManagedStockItem) => void;
   onCodesChanged: (partId: string) => void; onSplit: (part: ManagedPart) => void; onMerge: (parts: ManagedPart[]) => void;
-  onMarkOEM: (parts: ManagedPart[], mode: 'mark' | 'create' | 'unmark') => void;
 };
 // Codes pasted into the Alternos cell (comma, semicolon or line separated) wait here until the grid saves them one by one.
 export const pastedCodes = new WeakMap<ManagedPart, string[]>();
@@ -21,9 +20,9 @@ type Cell<T> = CustomCellRendererProps<T, unknown, CatalogGridActions>;
 const ALTERNATES_SHOWN = 4;
 const number = (value: number | null | undefined) => (value ?? 0).toLocaleString('es-PA');
 
+// The SKU's MAIN tag only: a SKU's OEM numbers are references on its line, so there is no OEM to link or choose (owner, 2026-10-14).
 export function identityText(part: ManagedPart) {
-  const main = part.is_OEM ? 'MAIN OEM' : part.identity?.ref_type === 'company' ? `MAIN INTERNO · ${part.identity.brand}` : 'MAIN INTERNO';
-  return `${main}${!part.is_OEM ? part.identity?.status === 'choose_oem' ? ' · ELEGIR OEM' : ' · OEM PENDIENTE' : ''}`;
+  return part.is_OEM ? 'MAIN OEM' : part.identity?.ref_type === 'company' ? `MAIN INTERNO · ${part.identity.brand}` : 'MAIN INTERNO';
 }
 const describe = (part?: ManagedPart) => part ? part.description || (part.name !== part.sku ? part.name : '') : '';
 export const subgroupLabel = (part?: Pick<ManagedPart, 'category' | 'subcategory'>) => [part?.category, part?.subcategory].filter(Boolean).join(' / ');
@@ -33,7 +32,6 @@ const codeText = (part?: ManagedPart) => part?.codes.map(code => `${code.code} �
 // ---------------------------------------------------------------- Inventario interno
 function SkuCell({ data, context }: Cell<ManagedPart>) {
   if (!data) return null;
-  const tone = data.is_OEM ? 'oem' : data.identity?.status === 'choose_oem' ? 'choose' : 'pending';
   const merged = data.merged_count ?? 0;
   // The code opens the SKU editor (so does a double click anywhere in the cell); the badge, the SKUs a grouping retired into this one,
   // opens Separar SKU on it.
@@ -41,7 +39,7 @@ function SkuCell({ data, context }: Cell<ManagedPart>) {
       onClick={() => context.onEditPart(data)}><strong>{data.sku}</strong></button>{merged > 0 && <button type="button" className="sku-merged"
       aria-label={`${merged} ${merged === 1 ? 'SKU agrupado' : 'SKU agrupados'} en ${data.sku}: separar`} title="SKU agrupados en este SKU · clic para separarlos"
       onClick={() => context.onSplit(data)}><Ungroup size={11} aria-hidden="true"/>{merged}</button>}</div>
-    <span className={`sku-identity ${tone}`}>{identityText(data)}</span></div>;
+    <span className={`sku-identity ${data.is_OEM ? 'oem' : 'internal'}`}>{identityText(data)}</span></div>;
 }
 function CodesCell({ data }: Cell<ManagedPart>) {
   if (!data) return null;
@@ -80,27 +78,19 @@ export function selectedParts(api: GridApi<ManagedPart>): ManagedPart[] {
   return [...rows.values()];
 }
 // Right click on a SKU: group it with others (the selected rows, when the click falls inside a selection of several) or split the
-// SKUs grouped into it, mark it (or them) as OEM, add its code to the OEM list or take the mark off; the grid's own items follow.
+// SKUs grouped into it; the grid's own items follow.
 const menuIcon = (name: string) => `<span class="ag-icon ag-icon-${name}" unselectable="on" role="presentation"></span>`;
 export function catalogContextMenu(params: GetContextMenuItemsParams<ManagedPart, CatalogGridActions>): (DefaultMenuItem | MenuItemDef<ManagedPart, CatalogGridActions>)[] {
   const part = params.node?.data, defaults = params.defaultItems ?? [];
   if (!part) return defaults;
   const chosen = selectedParts(params.api), many = chosen.length > 1 && chosen.some(row => row.id === part.id);
   const merged = part.merged_count ?? 0;
-  const targets = (many ? chosen : [part]).slice(0, 200), plain = targets.filter(row => !row.is_OEM), oems = targets.filter(row => row.is_OEM);
   return [
     many ? { name: `Agrupar ${chosen.length > MERGE_LIMIT ? `más de ${MERGE_LIMIT}` : chosen.length} SKU seleccionados…`, icon: menuIcon('linked'), disabled: chosen.length > MERGE_LIMIT,
              tooltip: chosen.length > MERGE_LIMIT ? `Selecciona hasta ${MERGE_LIMIT} SKU.` : undefined, action: () => params.context.onMerge(chosen) }
       : { name: `Agrupar ${part.sku} con…`, icon: menuIcon('linked'), action: () => params.context.onMerge([part]) },
     { name: merged ? `Separar SKU agrupados (${merged})` : 'Separar SKU agrupados', icon: menuIcon('unlinked'), disabled: !merged,
       tooltip: merged ? undefined : 'Este SKU no tiene SKU agrupados.', action: () => params.context.onSplit(part) },
-    'separator',
-    { name: plain.length > 1 ? `Marcar ${plain.length} SKU como OEM…` : 'Marcar como OEM…', icon: menuIcon('tick'), disabled: !plain.length,
-      tooltip: plain.length ? 'Vincula el SKU al ítem de la lista OEM con su código.' : 'Ya es OEM.', action: () => params.context.onMarkOEM(plain, 'mark') },
-    { name: plain.length > 1 ? `Crear OEM desde ${plain.length} SKU…` : 'Crear OEM desde SKU…', icon: menuIcon('plus'), disabled: !plain.length,
-      tooltip: plain.length ? 'Agrega su código a la lista OEM.' : 'Ya es OEM.', action: () => params.context.onMarkOEM(plain, 'create') },
-    ...(oems.length ? [{ name: oems.length > 1 ? `Quitar marca OEM a ${oems.length} SKU…` : 'Quitar marca OEM…', icon: menuIcon('cross'),
-      action: () => params.context.onMarkOEM(oems, 'unmark') }] : []),
     ...(defaults.length ? ['separator' as const, ...defaults] : []),
   ];
 }

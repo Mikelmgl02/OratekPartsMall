@@ -6,7 +6,7 @@ const empty = { count: 0, next: null, previous: null, results: [], pending_count
 const ids = { disc: '0f200000-0000-4000-8000-000000000001', pump: '0f200000-0000-4000-8000-000000000002' };
 const row = (id: string, sku: string, description: string): ManagedPart => ({ id, sku, name: sku, description, category: 'FRENOS', subcategory: 'DISCOS DE FRENO',
   part_type: null, is_OEM: false, active: true, codes: [], stock_record_count: 1, merged_count: 0, images: [],
-  identity: { ref_type: 'unknown', brand: '', status: 'needs_oem' } } as ManagedPart);
+  identity: { ref_type: 'unknown', brand: '' } } as ManagedPart);
 
 // The catalog list and what the SKU editor reads when it opens (part types, suffixes, the SKU's OEM numbers).
 async function fixture(page: Page) {

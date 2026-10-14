@@ -94,13 +94,13 @@ for (const width of [1440, 390]) {
     await dialog.getByRole('checkbox', { name: 'SOLO LOS QUE DESBLOQUEAN SKU (1)', exact: true }).check();
     await expect.poll(() => mock.lists.at(-1)?.get('has_unlock')).toBe('true');
     await dialog.getByRole('button', { name: 'Confirmar TAG U', exact: true }).click();
-    await expect(dialog.getByRole('status')).toHaveText('U confirmado como etiqueta. La próxima revisión OEM usará este cambio.');
+    await expect(dialog.getByRole('status')).toHaveText('U confirmado como etiqueta.');
     expect(mock.patches).toEqual([{ token: 'U', body: { action: 'confirm_tag', version: 1 } }]);
     await expect(dialog.getByText('No hay sufijos con estos filtros.', { exact: true })).toBeVisible();
     await dialog.getByLabel('Clase', { exact: true }).selectOption('');
     await dialog.getByRole('checkbox', { name: 'SOLO LOS QUE DESBLOQUEAN SKU (1)', exact: true }).uncheck();
     await dialog.getByRole('button', { name: 'Es VARIANTE FEB', exact: true }).click();
-    await expect(dialog.getByRole('status')).toHaveText('FEB marcado como variante. La próxima revisión OEM usará este cambio.');
+    await expect(dialog.getByRole('status')).toHaveText('FEB marcado como variante.');
     expect(mock.patches.at(-1)).toEqual({ token: 'FEB', body: { action: 'set_variant', version: 1 } });
     expect(mock.unexpected).toEqual([]);
   });
@@ -149,7 +149,7 @@ test('a stale version is reported instead of overwriting the newer label', async
 
 test('the OEM lookup reads company suffixes from the suffix table', async ({ page }) => {
   const part: ManagedPart = { id: '05000000-0000-4000-8000-000000000001', sku: 'ABC-123456-ACME', name: '', description: 'BOMBA AGUA', active: true,
-    stock_record_count: 0, codes: [], identity: { ref_type: 'company', status: 'needs_oem', brand: 'ACME CORP' } };
+    stock_record_count: 0, codes: [], identity: { ref_type: 'company', brand: 'ACME CORP' } };
   const mock = await fixture(page, { parts: [part], company: { suffixes: { ACME: 'acme corp' }, registry: 'table' } });
   await page.goto('/administracion?seccion=inventario');
   await page.getByRole('button', { name: `Editar SKU ${part.sku}`, exact: true }).click();

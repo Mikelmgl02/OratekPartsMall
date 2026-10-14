@@ -22,14 +22,14 @@ function impact(row: CatalogSuffix) {
   return parts.length ? parts : ['SIN ANÁLISIS OEM'];
 }
 
-export default function CatalogSuffixes({ onClose, initialSearch = '' }: { onClose: () => void; initialSearch?: string }) {
-  return <Modal title="Sufijos de códigos" wide className="suffix-modal" onClose={onClose}><CatalogSuffixesPanel initialSearch={initialSearch}/></Modal>;
+export default function CatalogSuffixes({ onClose }: { onClose: () => void }) {
+  return <Modal title="Sufijos de códigos" wide className="suffix-modal" onClose={onClose}><CatalogSuffixesPanel/></Modal>;
 }
 
-// The suffix table body: a modal from the Inventario toolbar, inline in the OEM admin section (keyed by initialSearch there).
-export function CatalogSuffixesPanel({ initialSearch = '' }: { initialSearch?: string }) {
+// The suffix table body: a modal from the Inventario toolbar, inline in the OEM admin section.
+export function CatalogSuffixesPanel() {
   const [cls, setCls] = useState(''); const [status, setStatus] = useState(''); const [unlock, setUnlock] = useState(false);
-  const [search, setSearch] = useState(initialSearch); const [query, setQuery] = useState(initialSearch); const [page, setPage] = useState(1);
+  const [search, setSearch] = useState(''); const [query, setQuery] = useState(''); const [page, setPage] = useState(1);
   const [data, setData] = useState<CatalogSuffixPage | null>(null); const [error, setError] = useState(''); const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(''); const [revision, setRevision] = useState(0); const [editing, setEditing] = useState<string | null>(null);
   useEffect(() => { const timer = setTimeout(() => { setQuery(search.trim()); setPage(1); }, 300); return () => clearTimeout(timer); }, [search]);
@@ -43,7 +43,7 @@ export function CatalogSuffixesPanel({ initialSearch = '' }: { initialSearch?: s
   function filter(apply: () => void) { apply(); setPage(1); setError(''); setNotice(''); }
   async function label(row: CatalogSuffix, action: SuffixAction) {
     setBusy(`${row.token}:${action}`); setError(''); setNotice('');
-    try { await request(detailUrl(row.token), { method: 'PATCH', body: JSON.stringify({ action, version: row.version }) }); setNotice(`${row.token} ${done[action]}. La próxima revisión OEM usará este cambio.`); setRevision(v => v + 1); }
+    try { await request(detailUrl(row.token), { method: 'PATCH', body: JSON.stringify({ action, version: row.version }) }); setNotice(`${row.token} ${done[action]}.`); setRevision(v => v + 1); }
     catch (e) { setError(errorMessage(e)); setRevision(v => v + 1); }
     finally { setBusy(''); }
   }
@@ -131,7 +131,7 @@ function SuffixEditor({ token, onBack }: { token: string; onBack: () => void }) 
         <div className="form-row three"><label>Clase<select value={cls} onChange={e => { const next = e.target.value as SuffixClass; setCls(next); setKind(next === 'TAG' ? 'brand' : next === 'VARIANT' ? 'spec' : ''); }}>{(Object.keys(classLabels) as SuffixClass[]).map(key => <option key={key} value={key}>{classLabels[key]}</option>)}</select></label>
           {cls !== 'UNKNOWN' && <label>Tipo<select value={kind} onChange={e => setKind(e.target.value)}>{Object.entries(kinds).map(([key, text]) => <option key={key} value={key}>{text}</option>)}</select></label>}
           <label>Atribución<input autoComplete="off" maxLength={200} value={attribution} onChange={e => setAttribution(e.target.value)} placeholder="brand: MARCA"/></label></div>
-        {cls === 'TAG' && companyKinds.includes(kind) && <label className="admin-checkbox"><input type="checkbox" checked={company} onChange={e => setCompany(e.target.checked)}/>Crea referencia de empresa{kind === 'company_code' ? ': la biblioteca de referencias registra el código sin el sufijo como código de esta empresa' : ': se usará al proponer referencias de empresa en la revisión OEM'}</label>}
+        {cls === 'TAG' && companyKinds.includes(kind) && <label className="admin-checkbox"><input type="checkbox" checked={company} onChange={e => setCompany(e.target.checked)}/>Crea referencia de empresa{kind === 'company_code' ? ': la biblioteca de referencias registra el código sin el sufijo como código de esta empresa' : ': el buscador OEM la usará al proponer referencias de empresa'}</label>}
         <button className="button primary">{busy ? 'Guardando…' : 'Guardar clasificación'}</button></fieldset></form>
       <section className="suffix-editor-section" aria-label="Alias"><h4>Alias</h4>
         <p>{row.alias_of ? `Este sufijo es un alias de ${row.alias_of}.` : row.aliases.length ? `Otras escrituras: ${row.aliases.join(', ')}.` : 'Sin otras escrituras registradas.'}</p>

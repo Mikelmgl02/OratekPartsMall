@@ -5,7 +5,7 @@ import { noNewProducts } from './new-products-route';
 const empty = { count: 0, next: null, previous: null, results: [], pending_count: 0 };
 const ids = { pump: '0c000000-0000-4000-8000-000000000001', disc: '0c000000-0000-4000-8000-000000000002' };
 const part = (id: string, sku: string, description: string, codes: PartReference[] = []): ManagedPart => ({ id, sku, name: sku, description, category: '', subcategory: '',
-  part_type: null, is_OEM: false, active: true, codes, stock_record_count: 2, images: [], identity: { ref_type: 'unknown', brand: '', status: 'needs_oem' } } as unknown as ManagedPart);
+  part_type: null, is_OEM: false, active: true, codes, stock_record_count: 2, images: [], identity: { ref_type: 'unknown', brand: '' } } as unknown as ManagedPart);
 
 // Mirrors the catalog API: the batch saves every row or none (the disc's subgroup is refused: it has technical data), alternos are
 // created and retired one by one, and ?ids= re-reads rows.

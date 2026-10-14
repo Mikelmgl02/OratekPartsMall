@@ -8,7 +8,7 @@ const ids = { parent: '0f000000-0000-4000-8000-000000000001', disc: '0f000000-00
   pump: '0f000000-0000-4000-8000-000000000004' };
 const row = (id: string, sku: string, description: string, extra: Partial<ManagedPart> = {}): ManagedPart => ({ id, sku, name: sku, description, category: 'FRENOS',
   subcategory: 'DISCOS DE FRENO', part_type: null, is_OEM: false, active: true, codes: [], stock_record_count: 1, merged_count: 0, images: [],
-  identity: { ref_type: 'unknown', brand: '', status: 'needs_oem' }, ...extra } as ManagedPart);
+  identity: { ref_type: 'unknown', brand: '' }, ...extra } as ManagedPart);
 const disc = 'DISCO FRENO DEL TOY LAND CRUISER';
 
 // The catalog list (with its search), a split plan for the grouped SKU and the merge, which refuses when told to.
@@ -18,7 +18,7 @@ async function fixture(page: Page, { refuse = false } = {}) {
   const rows: Record<string, ManagedPart> = {
     [ids.parent]: row(ids.parent, '58411-08000', 'TAMBOR KIA PICANTO 04-11', { merged_count: 3 }),
     [ids.disc]: row(ids.disc, 'DF-4512', disc),
-    [ids.oem]: row(ids.oem, '43512-60150', disc, { is_OEM: true, identity: { ref_type: 'oem', brand: 'TOYOTA', status: 'oem' } }),
+    [ids.oem]: row(ids.oem, '43512-60150', disc, { is_OEM: true, identity: { ref_type: 'oem', brand: 'TOYOTA' } }),
     [ids.pump]: row(ids.pump, 'BOMBA-9', 'BOMBA AGUA TOY 22R', { active: false }),
   };
   const unexpected: string[] = [], merges: unknown[] = [];
@@ -51,6 +51,7 @@ test('the right click offers to group a SKU or split the SKUs grouped into it, b
   await cell(page, ids.parent).click({ button: 'right' });
   await expect(option(page, 'Agrupar 58411-08000 con…')).toBeVisible();
   await expect(option(page, 'Copiar').first()).toBeVisible();
+  await expect(page.locator('.ag-menu-option', { hasText: /OEM/ })).toHaveCount(0);  // no Marcar como OEM / Crear OEM desde SKU / Quitar marca OEM
   await option(page, 'Separar SKU agrupados (3)').click();
   const dialog = page.getByRole('dialog', { name: 'Separar SKU' });
   await expect(dialog.getByRole('region', { name: 'Separación de 58411-08000' })).toBeVisible();
