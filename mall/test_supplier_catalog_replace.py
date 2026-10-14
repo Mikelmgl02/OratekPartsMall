@@ -214,3 +214,34 @@ class ShaftRetypeReplaceTests(Fresh, TestCase):
         self.assertEqual((kept.description, kept.part_type), ('JUNTA EXT MIT MONTERO', 'SEMIEJES'))
         self.assertFalse(OEMCrossReference.objects.filter(reference__code__in=['MR453384', 'MR980744']).exists())
         self.assertEqual(scr.run(self.path, stdout=io.StringIO())['changes'], {'numbers': {}, 'codes': {}, 'ties': {}})
+
+
+class MazdaJointReplaceTests(Fresh, TestCase):
+    """The owner, 2026-10-14: Mazda's 25-40X/25-50X/25-60X name the CV joint, under Mazda, Ford or Kia. A number the earlier rules
+    filed as a drive shaft listed for the joint takes the joint's type and code back."""
+
+    def test_a_mazda_joint_number_filed_as_a_shaft_goes_back_to_the_joint(self):
+        data = extract([item('MZ-10', 'cv_joint_outer', oem=[('G064-25-500', 'FORD'), ('GA2A-25-60X', 'MAZDA'), ('B005-25-400', 'KIA')],
+                             name_es='JUNTA HOMOCINÉTICA EXTERIOR')], key='asva_cv', title='ASVA CV', brand='ASVA', product_line='cv_joint')
+        handle = tempfile.NamedTemporaryFile('w', suffix='.json', delete=False, encoding='utf-8')
+        json.dump(data, handle, ensure_ascii=False)
+        handle.close()
+        self.addCleanup(os.unlink, handle.name)
+        sci.run([handle.name], apply=True, stdout=io.StringIO())
+        numbers = ['B00525400', 'G06425500', 'GA2A2560X']
+        self.assertEqual(sorted(OEMCrossReference.objects.filter(code='MZ-10').values_list('reference__code', flat=True)), numbers)
+        # What the earlier rules filed: each number typed as the shaft, flagged as listed for the joint, without the joint's code.
+        OEMCrossReference.objects.all().delete()
+        OEMReference.objects.update(description=sci.ASSEMBLY_TEXT[0], part_type=sci.ASSEMBLY_TEXT[1])
+        for source in OEMReferenceSource.objects.all():
+            source.detail = {**source.detail, 'assembly_number_listed_for_component': True}
+            source.save(update_fields=['detail'])
+        result = scr.run(handle.name, stdout=io.StringIO())
+        self.assertEqual((result['changes']['numbers'], result['changes']['codes'], result['import']['cross_reference_new']),
+                         ({'detail': 3, 'retype': 3}, {}, 3))
+        scr.run(handle.name, apply=True, stdout=io.StringIO())
+        for ref in OEMReference.objects.all():
+            self.assertEqual((ref.description, ref.part_type), ('JUNTA HOMOCINÉTICA EXTERIOR', 'JUNTAS HOMOCINÉTICAS'), ref.code)
+            self.assertNotIn('assembly_number_listed_for_component', ref.sources.get().detail)
+        self.assertEqual(sorted(OEMCrossReference.objects.filter(code='MZ-10').values_list('reference__code', flat=True)), numbers)
+        self.assertEqual(scr.run(handle.name, stdout=io.StringIO())['changes'], {'numbers': {}, 'codes': {}, 'ties': {}})

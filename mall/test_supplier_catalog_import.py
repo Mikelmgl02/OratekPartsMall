@@ -384,22 +384,32 @@ class CVAssemblyCheckTests(Fresh, TestCase):
         ref = OEMReference.objects.get(manufacturer=manufacturer, code=number)
         return ref.part_type == 'SEMIEJES' and ref.sources.get().detail.get('assembly_number_listed_for_component', False)
 
-    def test_partner_makes_kia_legacy_and_shaft_sku_numbers_are_shafts(self):
+    def test_mazda_25_40_50_60_numbers_are_the_joint_and_shaft_skus_finder_and_partner_classes_still_make_shafts(self):
         Part.objects.create(sku='28321-FG010', description='EJE COMPLETO SUB FORESTER 08-12 RH')  # a SKU sold as the whole shaft
+        shaft = Part.objects.create(sku='SEM-MAZ-01', description='SEMIEJE MAZ 3 05 RH')
+        PartCode.objects.create(part=shaft, brand='MAZDA', code='BP4K-25-50XA', ref_type='oem')
         run_extract(extract([
-            self.joint('MZ-056A44', [('G565-25-500B', 'FORD'), ('G572-22-510', 'FORD')]),  # Mazda shaft and Mazda joint under Ford
+            # The owner, 2026-10-14: 25-40X/25-50X/25-60X name the joint, X variants included, under Ford, Kia (Mazda-era too) or Mazda.
+            self.joint('MZ-056A44', [('G565-25-500B', 'FORD'), ('G572-22-510', 'FORD')]),
             self.joint('MZ-11', [('0K2N1-25-600', 'KIA'), ('B002-25-400B', 'KIA'), ('KK370-22-510', 'KIA')]),
+            self.joint('MZ-38', [('GA2A-25-60X', 'MAZDA'), ('PP04-25-50XA', 'MAZDA'), ('BP4K-25-50XA', 'MAZDA')]),
             self.joint('SB-12', [('28321-FG010', 'SUBARU'), ('28391-FG010', 'SUBARU')]),
             self.joint('HY-IX35', [('49501-2S300', 'HYUNDAI')]),  # the finder's own class, as before
+            self.joint('HY-GAL', [('3815A068', 'HYUNDAI')]),  # a Mitsubishi shaft class under its partner make
         ], key='asva_cv', title='ASVA CV', brand='ASVA', product_line='cv_joint'))
-        shafts = {('FORD', '565', 'G56525500B'), ('KIA', 'legacy', '0K2N125600'), ('KIA', 'mazda', 'B00225400B'), ('SUBARU', 'sku', '28321FG010'),
-                  ('HYUNDAI', 'finder', '495012S300')}
-        for manufacturer, why, number in shafts:
-            self.assertTrue(self.assembly(manufacturer, number), (why, number))
+        shafts = {('SUBARU', 'sku', '28321FG010'), ('MAZDA', 'sku', 'BP4K2550XA'), ('HYUNDAI', 'finder', '495012S300'),
+                  ('HYUNDAI', 'partner', '3815A068')}
+        for manufacturer, why, number in shafts:  # the SKU's OEM alterno already filed BP4K-25-50XA with the SKU's text
+            source = OEMReferenceSource.objects.get(reference__manufacturer=manufacturer, reference__code=number, kind='aftermarket_catalog')
+            self.assertTrue(source.detail.get('assembly_number_listed_for_component'), (why, number))
             self.assertFalse(OEMCrossReference.objects.filter(reference__code=number).exists(), number)
-        for manufacturer, number in [('FORD', 'G57222510'), ('KIA', 'KK37022510'), ('SUBARU', '28391FG010')]:
+        joints = [('FORD', 'G56525500B'), ('FORD', 'G57222510'), ('KIA', '0K2N125600'), ('KIA', 'B00225400B'), ('KIA', 'KK37022510'),
+                  ('MAZDA', 'GA2A2560X'), ('MAZDA', 'PP042550XA'), ('SUBARU', '28391FG010')]
+        for manufacturer, number in joints:
             self.assertFalse(self.assembly(manufacturer, number), number)  # joint numbers keep the joint's codes
             self.assertTrue(OEMCrossReference.objects.filter(reference__code=number, brand='ASVA').exists(), number)
+            ref = OEMReference.objects.get(manufacturer=manufacturer, code=number)
+            self.assertEqual((ref.description, ref.part_type), ('JUNTA HOMOCINÉTICA EXTERIOR', 'JUNTAS HOMOCINÉTICAS'), number)
 
     def test_a_shaft_sku_makes_its_numbers_shafts_by_its_oem_alterno_its_link_or_its_subgrupo(self):
         alterno = Part.objects.create(sku='SEM-MIT-01', description='SEMIEJE MIT LANCER 05 LH')

@@ -19,9 +19,10 @@ those numbers (PartOEMLink, source catalog) when the makes agree. A number the c
 inner and an outer joint of one drive shaft, a row the extract misread) says nothing about which part replaces it: it files no codes
 and ties no SKU, and a SKU matched to an item only through such numbers is tied to none of the item's numbers. Variants of one part
 (GWT-116A and GWT-116AH, ATE 24.0108-0111.1 and its PowerDisc 24.0308-0111.1) count as one. A drive-shaft assembly number listed for
-a CV component files nothing either: a finder assembly class under the make's own or partner numbering (Ford and Kia print Mazda
-shafts), Kia's Mazda-era 25-40/50/60, or a number linked to a SKU sold as a whole shaft (EJE COMPLETO, SEMIEJE: Mitsubishi's MR
-series names joints as well as shafts, so only such a SKU makes an MR number a shaft). The catalog's own item code is filed even
+a CV component files nothing either: a finder assembly class under the make's own or partner numbering (Mitsubishi prints Hyundai
+shafts), or a number linked to a SKU sold as a whole shaft (EJE COMPLETO, SEMIEJE). Mazda's 25-40X/25-50X/25-60X, printed under
+Mazda, Ford or Kia, name the joint (owner, 2026-10-14), and Mitsubishi's MR series names joints as well as shafts: only such a SKU
+makes one of them a shaft. The catalog's own item code is filed even
 without a digit (ASVA FDWH-FOCMF); a competitor code needs one. A printed number the library does not hold whose twin spelling it
 holds (16100-87795-000 and 16100-87795: mall.refactor.s0_normalize_numbers) is filed under the twin, and in the GM family under the
 make's own canonical spelling when another make of the family holds it; re-run that tool's dry run after an import all the same.
@@ -102,8 +103,9 @@ VARIANT_FOLDS = {'ATE': [(re.compile(r'^2403(\d{7})$'), r'2401\1')]}
 TRAILING_000_MAKES = {'DAIHATSU', 'SUZUKI', 'TOYOTA'}
 GM_FAMILY = {'OPEL', 'VAUXHALL', 'GM', 'CHEVROLET', 'DAEWOO', 'HOLDEN', 'SAAB'}
 OPEL_CATALOG_MAKES = {'OPEL', 'VAUXHALL'}
-# Drive-shaft classes the OEM finder's ASSEMBLY_CLASSES leave out: Kia's Mazda-era numbers (0K2N1-25-600) use Mazda's shaft groups.
-EXTRA_ASSEMBLY_CLASSES = {('KIA_LEGACY', '25-40'), ('KIA_LEGACY', '25-50'), ('KIA_LEGACY', '25-60')}
+# The OEM finder's Mazda drive-shaft classes name only the CV joint (owner, 2026-10-14): 25-40X, 25-50X and 25-60X, X variants
+# included, printed under Mazda, Ford (G565-25-500B) or Kia (B002-25-400B; Kia's Mazda-era 0K2N1-25-600 takes no class of its own).
+JOINT_CLASSES = {('MAZDA', '25-40'), ('MAZDA', '25-50'), ('MAZDA', '25-60')}
 # A SKU sold as a whole drive shaft: the numbers linked to it are shaft numbers, whatever CV component a catalog lists them for. Only
 # a description that starts with it: BOTA SEMIEJE or RETEN SEMIEJE is a part of the shaft.
 SHAFT_RE = re.compile(r'^(?:EJE COMPLETO|SEMI-?EJES?)\b')
@@ -379,16 +381,16 @@ class CatalogImport:
 
     def is_assembly(self, manufacturer, code):
         """A drive-shaft assembly number, e.g. Hyundai 49501-2S300 printed next to a CV joint: an OEM finder assembly class under the
-        make's own or platform-partner numbering (Ford G565-25-500B and Kia B002-25-400B are Mazda shafts), Kia's Mazda-era shafts
-        (0K2N1-25-600), or a number linked to a SKU sold as a whole shaft (build_indexes 'shafts'). Mitsubishi's MR series carries no
-        function code and names joints too (MR222052 is ASVA MT-08's only number, MR-567160-NDK a PUNTA), so an MR number is a shaft
-        only through such a SKU (MR453384)."""
+        make's own or platform-partner numbering (Mitsubishi prints Hyundai shafts), or a number linked to a SKU sold as a whole shaft
+        (build_indexes 'shafts'). Mazda's 25-40X/25-50X/25-60X, under Mazda, Ford or Kia, and Kia's Mazda-era 0K2N1-25-600 name the
+        joint (JOINT_CLASSES), and Mitsubishi's MR series carries no function code and names joints too (MR222052 is ASVA MT-08's
+        only number, MR-567160-NDK a PUNTA): such a number is a shaft only through a shaft SKU (MR453384)."""
         from .oem_finder import ASSEMBLY_CLASSES, MAKE_SYSTEMS, system_hits
         own, partners = MAKE_SYSTEMS.get(manufacturer, ([], []))
         for h in system_hits(code.strip().upper(), self.finder.table):
             if h['system'] not in own and h['system'] not in partners:
                 continue
-            if (h['system'], h.get('lexkey')) in ASSEMBLY_CLASSES or (h['system'], h.get('lexkey')) in EXTRA_ASSEMBLY_CLASSES:
+            if (h['system'], h.get('lexkey')) in ASSEMBLY_CLASSES - JOINT_CLASSES:
                 return True
         return compact(code) in self.ix.get('shafts', ())
 
