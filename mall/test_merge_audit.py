@@ -80,7 +80,7 @@ class MergeAuditTests(TestCase):
     def test_once_d4_is_applied_the_audit_reads_the_table_as_it_is(self):
         self.catalog()
         from .refactor import s0_suffix_revert as revert
-        with patch.object(revert, 'OUTPUT', Path(tempfile.mkdtemp())):
+        with tempfile.TemporaryDirectory() as folder, patch.object(revert, 'OUTPUT', Path(folder)):
             revert.run(apply=True, username='miguel', stdout=io.StringIO())
         result = merge_audit.audit()
         self.assertEqual(result['pending_d4'], 0)
@@ -98,7 +98,9 @@ class MergeAuditTests(TestCase):
         self.catalog()
         before = (CatalogCodeSuffix.objects.order_by('-version').first().version, CatalogCodeSuffixChange.objects.count(),
                   CatalogMerge.objects.count(), MatchingDecision.objects.count(), Part.objects.filter(active=True).count())
-        directory = Path(tempfile.mkdtemp()) / 'merge-audit'
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        directory = Path(folder.name) / 'merge-audit'
         out = io.StringIO()
         self.assertEqual(merge_audit.main(['--report', str(directory), '--json'], stdout=out), 0)
         text = out.getvalue()

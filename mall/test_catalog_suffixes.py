@@ -1,5 +1,6 @@
 import io
 import json
+import shutil
 import tempfile
 from datetime import datetime, timedelta, timezone as dt_timezone
 from pathlib import Path
@@ -513,6 +514,7 @@ class SuffixRevertTests(Fresh, APITestCase):
         self.admin = User.objects.create_superuser('miguel', 'miguel@example.invalid', 'Example938!')
         self.client.force_authenticate(self.admin)
         self.output = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.output, ignore_errors=True)
         patcher = patch.object(revert, 'OUTPUT', self.output)
         patcher.start()
         self.addCleanup(patcher.stop)

@@ -364,7 +364,7 @@ class ReviewCaseTests(Fresh, TestCase):
         self.assertEqual((rh.tier, rh.chain, rh.blockers), ('PROBABLE_BASE', 'RH', ['no_second_unit', 'side_not_confirmed_by_class']))
         self.assertEqual({k: v for k, v in OEMReviewCase.objects.values_list('part_id', 'fingerprint') if k not in reading},
                          {k: v for k, v in before.items() if k not in reading})
-        with patch.object(revert, 'OUTPUT', Path(tempfile.mkdtemp())):
+        with tempfile.TemporaryDirectory() as folder, patch.object(revert, 'OUTPUT', Path(folder)):
             self.assertEqual(revert.run(apply=True, username='miguel', stdout=io.StringIO())['revert'], 45)
         outcome = self.run_finder()
         self.assertEqual(outcome['counts']['cases']['updated'], 2)
