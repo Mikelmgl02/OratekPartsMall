@@ -8,41 +8,81 @@ family (0636160 and 636160). mall.supplier_catalog_import.canonical_number says 
 2026-10-13), the OEMReference of the other spelling is absorbed by the make's canonical one: its sources, aftermarket codes
 (OEMCrossReference), retired codes and SKU links (PartOEMLink) move over, merging with what the keeper has (citations and source
 details add up, and each moved source records the absorbed number under absorbed_numbers), blank descriptive fields fill in and
-the number goes. A make that holds only the other spelling, while another make of the family holds the canonical one, has it
-renamed in place. A twin that needs a person stays as it is and is listed: an OEM alterno files under it (the alterno mirror
-would bring the spelling back), it is disputed or annotated, it chains a supersession, or a code is retired from one twin and live
-on the other.
-An apply needs the catalog freeze when it runs on the live database (/app/.maintenance/freeze holding catalog or all), takes the
-matching worker's lock and writes every group in one transaction. It logs each row it changes or deletes, with its values before,
-to DIR/manifest.jsonl; DIR (by default /app/output/refactor/s0/normalize_numbers) must sit in an existing folder. To undo it,
+the number goes. A supplier catalog's source joined with the keeper's own keeps the pages, item codes and product types of both,
+as a re-import of the catalog would file them. A make that holds only the other spelling, while another make of the family holds
+the canonical one, has it renamed in place. A twin that needs a person stays as it is and is listed: an OEM alterno files under it
+(the alterno mirror would bring the spelling back), it is disputed or annotated, it chains a supersession, or a code is retired
+from one twin and live on the other.
+On the live database an apply needs the S0.11 guard (mall.refactor.guard: the catalog freeze is on and no writer is still busy);
+until S0.11 lands it is refused there outright. It takes the matching worker's lock and writes every group in one transaction. It
+logs each row it changes or deletes, with its values before, to DIR/manifest.jsonl before the transaction commits, so a failed
+write changes nothing; DIR (by default /app/output/refactor/s0/normalize_numbers) must sit in an existing folder. To undo it,
 restore the D1 dump while still frozen. Re-running changes nothing. Afterwards run python -m mall.link_oem_numbers --apply: a SKU's
 name link follows the spelling its own code names.
 """
 import argparse
 import json
 import os
+import shutil
 import sys
 from collections import Counter, defaultdict
 
 EXPECTED_GROUPS = 59  # the plan's count, 2026-10-13
 DEFAULT_MANIFEST_DIR = '/app/output/refactor/s0/normalize_numbers'
-FREEZE_FILE = os.environ.get('MAINTENANCE_FREEZE_FILE', '/app/.maintenance/freeze')
-LIVE_DATABASE = os.environ.get('REFACTOR_LIVE_DATABASE', 'partsmall')
 FILLABLE = ('description', 'part_type', 'applications', 'system', 'family')
+# What a supplier catalog's source lists, added up when two spellings' sources join (the import unions them per number too).
+CATALOG_LISTS = ('pages', 'brand_codes', 'product_types')
 
 
-def frozen():
-    """The catalog write freeze (S0.11) is on."""
+def refusal():
+    """Why --apply may not write now, or None: the S0.11 guard (mall.refactor.guard: on the live database, the catalog freeze and no
+    writer still busy). Until S0.11 lands the live database is refused outright, since a freeze file would hold back neither the
+    screens nor the workers; a test or rehearsal database needs nothing."""
     try:
-        with open(FREEZE_FILE, encoding='utf-8') as handle:
-            return handle.read().strip() in ('catalog', 'all')
-    except OSError:
-        return False
+        from .guard import refusal as shared
+    except ImportError:  # S0.11 has not landed yet
+        from django.conf import settings
+        from django.db import connection
+        live = getattr(settings, 'LIVE_DATABASE_NAME', 'partsmall')
+        if connection.vendor == 'postgresql' and connection.settings_dict['NAME'] == live:
+            return (f'Base de datos en vivo ({live}) sin la seguridad de operaciones de S0.11 (mall.refactor.guard): sin ella el '
+                    'congelamiento del catálogo no detiene las pantallas ni los trabajadores. No se escribe nada; integra S0.11 primero.')
+        return None
+    return shared(True)
 
 
-def live_database():
-    from django.db import connection
-    return connection.settings_dict['NAME'] == LIVE_DATABASE
+def joined_detail(kept, source):
+    """The keeper's source detail after the absorbed spelling's source of the same kind and citation joins it."""
+    from ..oem_reference import merge_detail
+    detail = merge_detail(kept.detail, source.detail)
+    if kept.kind == 'aftermarket_catalog':
+        for key in CATALOG_LISTS:
+            values = {*((kept.detail or {}).get(key) or []), *((source.detail or {}).get(key) or [])}
+            if values:
+                detail[key] = sorted(values)
+    return detail
+
+
+def write_manifest(directory, lines):
+    """Add the lines to DIR/manifest.jsonl through a flushed temporary copy renamed over it, so the file holds all of them or none.
+    Called inside the transaction: a failed write rolls every group back."""
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, 'manifest.jsonl')
+    temporary = f'{path}.{os.getpid()}.tmp'
+    try:
+        with open(temporary, 'w', encoding='utf-8') as handle:
+            if os.path.exists(path):
+                with open(path, encoding='utf-8') as old:
+                    shutil.copyfileobj(old, handle)
+            for line in lines:
+                handle.write(json.dumps(line, ensure_ascii=False, default=str) + '\n')
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return path
 
 
 def plan():
@@ -113,7 +153,7 @@ def values(obj):
 
 def absorb(loser, keeper, counts, log, apply):
     """The keeper takes the loser's sources, codes, retired codes and links; then the loser goes."""
-    from ..oem_reference import merge_detail, refresh_status
+    from ..oem_reference import refresh_status
     from ..oem_reference_models import citation_list
     note = {'id': str(loser.pk), 'manufacturer': loser.manufacturer, 'code': loser.code, 'printed_forms': loser.printed_forms}
 
@@ -143,7 +183,7 @@ def absorb(loser, keeper, counts, log, apply):
         kept = mine.get((source.kind, source.citation))
         if kept is not None:
             counts['sources_joined'] += 1
-            update(kept, detail={**merge_detail(kept.detail, source.detail), 'absorbed_numbers': absorbed(kept.detail, source.detail)})
+            update(kept, detail={**joined_detail(kept, source), 'absorbed_numbers': absorbed(kept.detail, source.detail)})
             delete(source)
         else:
             update(source, reference_id=keeper.pk, detail={**(source.detail or {}), 'absorbed_numbers': absorbed(source.detail)})
@@ -193,49 +233,53 @@ def rename(ref, code, log, apply):
 
 
 def execute(groups, apply):
-    """Run the plan (or count it, apply=False). Returns (counts, manifest rows)."""
-    from django.db import transaction
+    """Run the plan (or count it, apply=False) inside the caller's transaction. Returns (counts, manifest rows)."""
     from ..oem_reference_models import OEMReference
     counts, log = Counter(), []
-    with transaction.atomic():
-        for group in groups:
-            for action in group['actions']:
-                if action['refused']:
-                    counts[f"refused_{action['refused']}"] += 1
-                    continue
-                ref = OEMReference.objects.select_for_update().get(pk=action['ref']) if apply else OEMReference.objects.get(pk=action['ref'])
-                if action['action'] == 'rename':
-                    counts['renamed'] += 1
-                    rename(ref, action['into'], log, apply)
-                else:
-                    counts['merged'] += 1
-                    keeper = OEMReference.objects.select_for_update().get(pk=action['into']) if apply else OEMReference.objects.get(pk=action['into'])
-                    absorb(ref, keeper, counts, log, apply)
+    for group in groups:
+        for action in group['actions']:
+            if action['refused']:
+                counts[f"refused_{action['refused']}"] += 1
+                continue
+            ref = OEMReference.objects.select_for_update().get(pk=action['ref']) if apply else OEMReference.objects.get(pk=action['ref'])
+            if action['action'] == 'rename':
+                counts['renamed'] += 1
+                rename(ref, action['into'], log, apply)
+            else:
+                counts['merged'] += 1
+                keeper = OEMReference.objects.select_for_update().get(pk=action['into']) if apply else OEMReference.objects.get(pk=action['into'])
+                absorb(ref, keeper, counts, log, apply)
     return counts, log
 
 
 def run(*, apply=False, username=None, report_path=None, manifest_dir=DEFAULT_MANIFEST_DIR, stdout=None):
     from django.contrib.auth import get_user_model
+    from django.db import connection, transaction
+    from django.utils import timezone
     from ..oem_finder import matching_lock
     stdout = stdout or sys.stdout
     actor = get_user_model().objects.get(username=username) if username else None
-    if apply and live_database() and not frozen():
-        stdout.write(f'El catálogo no está congelado: crea {FREEZE_FILE} (catalog) antes de aplicar.\n')
-        return None
+    if apply:
+        reason = refusal()
+        if reason:
+            stdout.write(reason + '\n')
+            return None
     if apply and not os.path.isdir(os.path.dirname(os.path.normpath(manifest_dir))):
         stdout.write(f'Falta la carpeta {os.path.dirname(os.path.normpath(manifest_dir))} del registro de cambios.\n')
         return None
 
     def go():
-        groups = plan()
-        counts, log = execute(groups, apply)
-        if apply:
-            os.makedirs(manifest_dir, exist_ok=True)
-            with open(os.path.join(manifest_dir, 'manifest.jsonl'), 'a', encoding='utf-8') as handle:
-                handle.write(json.dumps({'tool': 'mall.refactor.s0_normalize_numbers', 'user': actor.username if actor else '',
-                                         'groups': len(groups)}, ensure_ascii=False) + '\n')
-                for row in log:
-                    handle.write(json.dumps(row, ensure_ascii=False, default=str) + '\n')
+        try:
+            with transaction.atomic():
+                groups = plan()
+                counts, log = execute(groups, apply)
+                if apply:  # before the commit: a failed write rolls every group back
+                    write_manifest(manifest_dir, [{'tool': 'mall.refactor.s0_normalize_numbers', 'database': connection.settings_dict['NAME'],
+                                                   'user': actor.username if actor else '', 'at': timezone.now().isoformat(),
+                                                   'groups': len(groups)}, *log])
+        except OSError as error:
+            stdout.write(f'No se pudo escribir el registro de cambios ({error}): no se cambia nada.\n')
+            return None
         result = {'mode': 'apply' if apply else 'dry_run', 'groups': len(groups), 'expected_groups': EXPECTED_GROUPS, 'counts': dict(counts),
                   'rows_logged': len(log), 'plan': groups}
         refused = sum(v for k, v in counts.items() if k.startswith('refused_'))

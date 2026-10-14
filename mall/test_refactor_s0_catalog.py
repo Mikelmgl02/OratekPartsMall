@@ -3,12 +3,16 @@ import io
 import json
 import os
 import shutil
+import sys
 import tempfile
+from types import SimpleNamespace
 from unittest import mock
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.db import connection
+from django.test import TestCase, override_settings
 
+from . import supplier_catalog_replace as scr
 from .models import Part, PartCode
 from .oem_reference import upsert_reference
 from .oem_reference_models import OEMCrossReference, OEMCrossReferenceRetired, OEMReference, OEMReferenceSource, PartOEMLink
@@ -45,9 +49,22 @@ class OwnCodeAuditTests(Fresh, TestCase):
             with open(os.path.join(directory, 'own.json'), encoding='utf-8') as handle:
                 self.assertEqual(json.load(handle), result)
         counts = result['catalogs'][0]['counts']
-        self.assertEqual(counts, {'filed': 1, 'refile': 1, 'shared': 1, 'assembly': 1, 'no_key': 1, 'retired': 1})
+        self.assertEqual(counts, {'filed': 1, 'refile': 1, 'retire': 0, 'shared': 1, 'assembly': 1, 'no_key': 1, 'retired': 1})
         self.assertEqual(result['catalogs'][0]['samples'], {'refile': ['TY-02'], 'shared': ['TY-03'], 'assembly': ['TY-04'], 'no_key': ['X'],
                                                             'retired': ['TY-05']})
+
+    def test_a_code_filed_only_under_numbers_that_no_longer_take_it_is_to_retire_and_a_twin_counts_as_its_number(self):
+        joint = lambda code, oem: item(code, 'cv_joint_outer', oem=oem, name_es='JUNTA HOMOCINÉTICA EXTERIOR')
+        data = extract([joint('MT-08', [('MR222052', 'MITSUBISHI')]), joint('DH-01', [('43460-87Z01-000', 'DAIHATSU')])],
+                       key='asva_cv', title='ASVA CV', brand='ASVA', product_line='cv_joint')
+        path = write(data)
+        self.addCleanup(os.unlink, path)
+        import_catalog([path], apply=True, stdout=io.StringIO())
+        shaft = Part.objects.create(sku='SEM-MIT-01', description='EJE COMPLETO MIT LANCER')  # MR222052 turns out to be a shaft's
+        PartCode.objects.create(part=shaft, brand='MITSUBISHI', code='MR222052', ref_type='oem')
+        OEMReference.objects.filter(code='4346087Z01000').update(code='4346087Z01')  # the library keeps the other spelling
+        counts = s0_own_codes.run([path], stdout=io.StringIO())['catalogs'][0]['counts']
+        self.assertEqual((counts['retire'], counts['filed']), (1, 1))  # MT-08 goes with the replace; DH-01 is filed under the twin
 
 
 GMB = 'GMB Water Pump Catalog 2016'
@@ -70,9 +87,10 @@ class TwinNumberTests(Fresh, TestCase):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.pump = Part.objects.create(sku='16100-59145-GMB', description='BOMBA AGUA DAI TERIOS')
-        self.daihatsu = number('DAIHATSU', '16100-59145', codes=[('GMB', 'GWD-55A', [f'{GMB} · pág. 40'])], brand_codes=['GWD-55A'])
+        self.daihatsu = number('DAIHATSU', '16100-59145', codes=[('GMB', 'GWD-55A', [f'{GMB} · pág. 40'])], brand_codes=['GWD-55A'], pages=[40],
+                               catalog='gmb_wp_2016')
         self.zeros = number('DAIHATSU', '16100-59145-000', codes=[('GMB', 'GWD-55A', [f'{GMB} · pág. 41']), ('AISIN', 'WPD-001', [f'{GMB} · pág. 550'])],
-                            brand_codes=['GWD-55A'])
+                            brand_codes=['GWD-55A', 'GWD-55AH'], pages=[41, 550], catalog='gmb_wp_2016')
         PartOEMLink.objects.create(part=self.pump, reference=self.daihatsu, source='catalog', citations=[f'{GMB} · pág. 40 · GWD-55A'])
         PartOEMLink.objects.create(part=self.pump, reference=self.zeros, source='catalog', citations=[f'{GMB} · pág. 41 · GWD-55A'])
         self.lone = number('DAIHATSU', '16100-28030-000')  # no twin: stays as printed
@@ -120,6 +138,13 @@ class TwinNumberTests(Fresh, TestCase):
         self.assertEqual(PartOEMLink.objects.get(part=self.pump).citations, [f'{GMB} · pág. 40 · GWD-55A', f'{GMB} · pág. 41 · GWD-55A'])
         source = self.daihatsu.sources.get()
         self.assertEqual([e['code'] for e in source.detail['absorbed_numbers']], ['1610059145000'])
+        # the joined source lists what both spellings' pages printed, as a re-import files it under the kept number
+        self.assertEqual((source.detail['pages'], source.detail['brand_codes'], source.detail['catalog']), ([40, 41, 550], ['GWD-55A', 'GWD-55AH'], 'gmb_wp_2016'))
+        logged = {(row['table'], row['action'], row['id']): row for row in manifest[1:]}
+        moved = logged[('mall_oemreferencesource', 'update', self.extra.sources.model.objects.get(reference=self.plain, citation=GMB).pk)]
+        self.assertEqual(moved['before']['reference_id'], str(self.extra.pk))  # a moved row records where it was
+        self.assertEqual(logged[('mall_oemreference', 'update', str(self.vauxhall.pk))]['before']['code'], '636160')
+        self.assertEqual(manifest[0]['database'], connection.settings_dict['NAME'])
         self.daihatsu.refresh_from_db()
         self.assertEqual(self.daihatsu.version, 2)  # the merge takes the next version
         self.assertEqual(sorted(self.plain.sources.values_list('citation', flat=True)), [GMB, 'OTRO CATÁLOGO'])  # moved, not joined
@@ -144,18 +169,44 @@ class TwinNumberTests(Fresh, TestCase):
         self.vauxhall.refresh_from_db()
         self.assertEqual(self.vauxhall.code, '0636160')
 
-    def test_an_apply_on_the_live_database_needs_the_freeze_and_the_manifest_folder(self):
+    def test_a_twin_merged_into_a_keeper_that_could_not_be_renamed_or_chaining_a_supersession_is_left(self):
+        doubled = number('VAUXHALL', '00636160', citation=ASVA)  # VAUXHALL holds two other spellings: 00636160 is renamed, 636160 joins it
+        PartCode.objects.create(part=self.pump, brand='VAUXHALL', code='00636160', ref_type='oem')  # ...but an alterno files under it
+        self.extra.superseded_by = number('OPEL', '9128451')
+        self.extra.save()
+        result = s0n.run(apply=True, manifest_dir=os.path.join(self.tmp, 'refused'), stdout=io.StringIO())
+        refused = {(a['manufacturer'], a['code']): a['refused'] for g in result['plan'] for a in g['actions'] if a['refused']}
+        self.assertEqual(refused, {('VAUXHALL', '00636160'): 'alterno', ('VAUXHALL', '636160'): 'keeper', ('OPEL', '02898355'): 'supersession'})
+        self.assertTrue(OEMReference.objects.filter(pk__in=[doubled.pk, self.vauxhall.pk, self.extra.pk]).count() == 3)
+
+    def test_on_the_live_database_an_apply_needs_the_s0_11_guard_and_the_manifest_folder(self):
+        if connection.vendor != 'postgresql':
+            self.skipTest('PostgreSQL only: the live database is the PostgreSQL one')
+        before, frozen = self.state(), []
+        guard = SimpleNamespace(refusal=lambda applying=True, alias='default': None if frozen else 'Base de datos en vivo sin el congelamiento del catálogo')
+        with override_settings(LIVE_DATABASE_NAME=connection.settings_dict['NAME']):
+            with mock.patch.dict(sys.modules, {'mall.refactor.guard': None}):  # before S0.11 lands the live database is refused outright
+                out = io.StringIO()
+                self.assertIsNone(s0n.run(apply=True, manifest_dir=os.path.join(self.tmp, 'm'), stdout=out))
+                self.assertIn('integra S0.11 primero', out.getvalue())
+                self.assertEqual(s0n.run(stdout=io.StringIO())['groups'], 3)  # a dry run never needs it
+            with mock.patch.dict(sys.modules, {'mall.refactor.guard': guard}):  # then its guard decides
+                out = io.StringIO()
+                self.assertIsNone(s0n.run(apply=True, manifest_dir=os.path.join(self.tmp, 'm'), stdout=out))
+                self.assertIn('sin el congelamiento del catálogo', out.getvalue())
+                frozen.append(True)
+                self.assertIsNone(s0n.run(apply=True, manifest_dir=os.path.join(self.tmp, 'missing', 'm'), stdout=io.StringIO()))
+                self.assertEqual(self.state(), before)
+                self.assertEqual(s0n.run(apply=True, manifest_dir=os.path.join(self.tmp, 'm'), stdout=io.StringIO())['counts']['merged'], 3)
+
+    def test_a_manifest_that_cannot_be_written_changes_nothing(self):
         before = self.state()
-        with tempfile.TemporaryDirectory() as directory, mock.patch.object(s0n, 'live_database', return_value=True), \
-                mock.patch.object(s0n, 'FREEZE_FILE', os.path.join(directory, 'freeze')):
+        with mock.patch.object(s0n.os, 'fsync', side_effect=OSError(28, 'No space left on device')):
             out = io.StringIO()
-            self.assertIsNone(s0n.run(apply=True, manifest_dir=os.path.join(directory, 'm'), stdout=out))
-            self.assertIn('no está congelado', out.getvalue())
-            with open(os.path.join(directory, 'freeze'), 'w') as handle:
-                handle.write('catalog\n')
-            self.assertIsNone(s0n.run(apply=True, manifest_dir=os.path.join(directory, 'missing', 'm'), stdout=io.StringIO()))
-            self.assertEqual(self.state(), before)
-            self.assertEqual(s0n.run(apply=True, manifest_dir=os.path.join(directory, 'm'), stdout=io.StringIO())['counts']['merged'], 3)
+            self.assertIsNone(s0n.run(apply=True, manifest_dir=os.path.join(self.tmp, 'full'), stdout=out))
+        self.assertIn('No se pudo escribir el registro de cambios', out.getvalue())
+        self.assertEqual(self.state(), before)
+        self.assertEqual(os.listdir(os.path.join(self.tmp, 'full')), [])  # no half-written manifest or temporary copy
 
     def test_after_the_merge_the_import_files_a_printed_twin_under_the_kept_number(self):
         data = extract([item('GWD-55A', 'water_pump', oem=[('16100-59145-000', 'DAIHATSU'), ('16100-59145', 'DAIHATSU')], cross_refs=[('AISIN', 'WPD-001')])],
@@ -168,6 +219,34 @@ class TwinNumberTests(Fresh, TestCase):
         after = import_catalog([path], apply=True, stdout=io.StringIO())['catalogs'][0]['counts']
         self.assertEqual((after['oem_numbers'], after['oem_new']), (1, 0))
         self.assertFalse(OEMReference.objects.filter(code='1610059145000').exists())
+
+    def test_after_a_gm_rename_an_import_files_the_printed_spelling_under_the_make_s_canonical_one(self):
+        data = extract([item('VKBA-1', 'tensioner', oem=[('636160', 'VAUXHALL'), ('16100-28030', 'DAIHATSU')], name_es='TENSOR')],
+                       title='ASVA Tensioner & Idler Bearings Catalogue', brand='ASVA', product_line='tensioner')
+        path = write(data)
+        self.addCleanup(os.unlink, path)
+        s0n.run(apply=True, manifest_dir=os.path.join(self.tmp, 'gm'), stdout=io.StringIO())
+        self.vauxhall.delete()  # only OPEL holds 0636160 now
+        import_catalog([path], apply=True, stdout=io.StringIO())
+        self.assertEqual(sorted(OEMReference.objects.filter(manufacturer='VAUXHALL').values_list('code', flat=True)), ['0636160'])
+        # a lone 16100-28030-000 takes the printed 16100-28030: no pair comes back
+        self.assertEqual(sorted(OEMReference.objects.filter(code__startswith='1610028030').values_list('code', flat=True)), ['1610028030000'])
+        self.assertEqual(s0n.run(stdout=io.StringIO())['groups'], 0)
+
+    def test_after_the_merge_a_replace_of_the_catalog_that_printed_both_spellings_changes_nothing(self):
+        Part.objects.create(sku='17400-77E00', description='BOMBA AGUA SUZ VITARA')
+        data = extract([item('GWS-10A', 'water_pump', oem=[('17400-77E00', 'SUZUKI')], cross_refs=[('AISIN', 'WPS-010')]),
+                        item('GWS-10AH', 'water_pump', oem=[('17400-77E00-000', 'SUZUKI')], cross_refs=[('AISIN', 'WPS-011')])],
+                       title='GMB Water Pump Catalog', brand='GMB')
+        data['items'][1]['oem'][0]['page'] = 6
+        path = write(data)
+        self.addCleanup(os.unlink, path)
+        import_catalog([path], apply=True, stdout=io.StringIO())
+        self.assertEqual(OEMReference.objects.filter(code__startswith='1740077E00').count(), 2)
+        s0n.run(apply=True, manifest_dir=os.path.join(self.tmp, 'replace'), stdout=io.StringIO())
+        kept = OEMReference.objects.get(code__startswith='1740077E00')
+        self.assertEqual((kept.code, kept.sources.get().detail['pages'], kept.sources.get().detail['brand_codes']), ('1740077E00', [5, 6], ['GWS-10A', 'GWS-10AH']))
+        self.assertEqual(scr.run(path, stdout=io.StringIO())['changes'], {'numbers': {}, 'codes': {}, 'ties': {}})
 
     def test_one_spelling_under_several_makes_is_no_twin(self):
         number('OPEL', '569000', citation=ASVA)
