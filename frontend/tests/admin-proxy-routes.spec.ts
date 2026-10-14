@@ -12,7 +12,7 @@ test('the proxy forwards the routes of Editar celdas (Inventario and Biblioteca 
   const first = (await catalog.json()).results[0]?.id;
   const paths = ['/api/management/catalog/taxonomy', '/api/management/alternate-review', '/api/management/catalog/merged?page=1&origin=automatic',
     '/api/management/oem-references/part-types',
-    ...(first ? [`/api/management/catalog/${first}/oem-equivalents`, `/api/management/catalog/${first}/split`, `/api/management/catalog/mark-oem?ids=${first}`, `/api/management/catalog/create-oem?ids=${first}`] : [])];
+    ...(first ? [`/api/management/catalog/${first}/oem-equivalents`, `/api/management/catalog/${first}/split`] : [])];
   for (const path of paths) {
     const response = await page.request.get(path);
     expect(response.status(), `${path}: ${await response.text()}`).toBe(200);
@@ -27,10 +27,29 @@ test('the proxy forwards the routes of Editar celdas (Inventario and Biblioteca 
     expect((await reread.json()).results.map((row: { id: string }) => row.id)).toEqual([first]);
   }
   // Empty batches reach the backend and are refused there, so nothing is written.
-  for (const path of ['/api/management/catalog/bulk-edit', '/api/management/catalog/mark-oem', '/api/management/catalog/create-oem', '/api/management/catalog/unmark-oem', '/api/management/oem-references/bulk-edit']) {
+  for (const path of ['/api/management/catalog/bulk-edit', '/api/management/oem-references/bulk-edit']) {
     const batch = await page.request.post(path, { data: { rows: [] }, headers: { Origin: origin } });
     expect(batch.status(), `${path}: ${await batch.text()}`).toBe(400);
     expect(await batch.text()).not.toContain('La ruta solicitada no existe');
+  }
+});
+
+test('the proxy no longer forwards the OEM-link routes the owner retired on 2026-10-14', async ({ page }) => {
+  test.skip(!process.env.E2E_ADMIN_TOKEN, 'A disposable superuser token is required.');
+  await page.context().addCookies([{ name: 'partsmall_session', value: process.env.E2E_ADMIN_TOKEN!, url: origin, httpOnly: true, sameSite: 'Strict' }]);
+  // Marcar como OEM, Revisión OEM and Aplicación automática: the proxy answers itself. Only reads and empty batches are sent, which an
+  // older proxy would forward and the backend refuse, so nothing is written either way.
+  const zero = '00000000-0000-4000-8000-000000000000';
+  for (const path of [`/api/management/catalog/mark-oem?ids=${zero}`, `/api/management/catalog/create-oem?ids=${zero}`, '/api/management/oem-review/summary',
+    '/api/management/oem-review?status=review', '/api/management/oem-finder/pending', '/api/management/oem-finder/runs?mode=apply_auto']) {
+    const response = await page.request.get(path);
+    expect(response.status(), path).toBe(404);
+    expect(await response.text()).toContain('La ruta solicitada no existe');
+  }
+  for (const path of ['/api/management/catalog/mark-oem', '/api/management/catalog/create-oem', '/api/management/catalog/unmark-oem']) {
+    const response = await page.request.post(path, { data: { rows: [] }, headers: { Origin: origin } });
+    expect(response.status(), path).toBe(404);
+    expect(await response.text()).toContain('La ruta solicitada no existe');
   }
 });
 
