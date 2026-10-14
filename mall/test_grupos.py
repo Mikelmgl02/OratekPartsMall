@@ -14,7 +14,7 @@ from . import lines
 from .models import Grupo, Part, PartType, TechnicalTemplate
 from .refactor import s5_grupos
 from .technical_data import bind_part_types, classification, grupo_for, part_type_for
-from .test_factories import make_line, make_user
+from .test_factories import make_line, make_user, run_migration_function
 
 
 def allow_no_grupo():
@@ -283,3 +283,36 @@ class GrupoBackfillTests(TestCase):
         self.assertIn('otra base', out)
         self.assertFalse(Grupo.objects.exists())
 
+
+class GrupoTightenTests(TestCase):
+    """0082: every subgrupo has a grupo and one name per grupo; its repair attaches the subgrupos old writers leave without one, and
+    stops on what needs a person."""
+
+    def test_a_subgrupo_needs_a_grupo_and_a_grupo_one_name(self):
+        discs = part_type_for('FRENOS', 'DISCOS')
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            PartType.objects.filter(pk=discs.pk).update(grupo=None)
+        with self.assertRaises(IntegrityError), transaction.atomic():  # another text, so only the new constraint can refuse it
+            PartType.objects.bulk_create([PartType(grupo=discs.grupo, category='FRENOS 2', name='discos')])
+
+    def test_the_repair_attaches_what_old_writers_leave_and_passes_on_an_empty_catalog(self):
+        run_migration_function('0082_grupo_checks', 'repair_grupos')  # nothing to repair
+        allow_no_grupo()
+        discs = part_type_for('FRENOS', 'DISCOS')
+        oil = PartType.objects.create(category='FILTROS', name='ACEITE')
+        PartType.objects.filter(pk=discs.pk).update(grupo=None, category='frenos')  # the code before S5, case aside
+        PartType.objects.filter(pk=oil.pk).update(grupo=None)
+        Grupo.objects.filter(nombre='FILTROS').delete()
+        for _ in range(2):  # idempotent
+            run_migration_function('0082_grupo_checks', 'repair_grupos')
+        self.assertEqual({name: (grupo, category) for name, grupo, category in PartType.objects.values_list('name', 'grupo__nombre', 'category')},
+                         {'DISCOS': ('FRENOS', 'FRENOS'), 'ACEITE': ('FILTROS', 'FILTROS')})
+        blank = PartType.objects.create(category='X', name='SIN GRUPO')
+        PartType.objects.filter(pk=blank.pk).update(grupo=None, category='')
+        moved = PartType.objects.create(category='MOTOR', name='BIELAS')
+        PartType.objects.filter(pk=moved.pk).update(category='TRANSMISION')
+        twice = PartType.objects.create(category='TMP', name='discos')
+        PartType.objects.filter(pk=twice.pk).update(grupo=None, category='FRENOS ')
+        with self.assertRaisesMessage(RuntimeError, '1 subgrupos sin grupo y sin texto de grupo; 1 subgrupos cuyo texto nombra otro grupo '
+                                                    'que el suyo; 2 subgrupos repetidos en un grupo'):
+            run_migration_function('0082_grupo_checks', 'repair_grupos')

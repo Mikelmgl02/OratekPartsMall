@@ -2,7 +2,7 @@
 import uuid
 
 from django.db import models, transaction
-from django.db.models import Q
+from django.db.models import F, Q
 from django.db.models.functions import Lower
 
 
@@ -37,13 +37,14 @@ class PartType(models.Model):
     """A subgrupo: a kind of part within its grupo, with its TechnicalTemplate (1:1). Until S10 `category` keeps the grupo's nombre as
     text: save() and the writers of mall.technical_data keep the two in step, and the code before S5 only knows the text."""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    grupo = models.ForeignKey(Grupo, on_delete=models.PROTECT, null=True, blank=True, related_name='subgrupos', verbose_name='grupo')
+    grupo = models.ForeignKey(Grupo, on_delete=models.PROTECT, blank=True, related_name='subgrupos', verbose_name='grupo')  # filled by save()
     category = models.CharField(max_length=120, verbose_name='grupo')
     name = models.CharField(max_length=120, verbose_name='subgrupo')
 
     class Meta:
         ordering = ['category', 'name']
-        constraints = [models.UniqueConstraint(Lower('category'), Lower('name'), name='unique_part_type_group_name')]
+        constraints = [models.UniqueConstraint(Lower('category'), Lower('name'), name='unique_part_type_group_name'),  # leaves in S10
+                       models.UniqueConstraint(F('grupo'), Lower('name'), name='subgrupo_unique_in_grupo')]
 
     def __str__(self):
         return f'{self.category} / {self.name}'
