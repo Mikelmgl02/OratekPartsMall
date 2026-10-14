@@ -86,7 +86,7 @@ test('live sign-in, catalog, supplier update, and ledger', async ({ page }) => {
   await page.getByRole('button', { name: /^Agregar FE-QA-001 de .* a la cesta$/ }).click();
   await page.getByRole('button', { name: 'Cerrar ventana' }).click();
   await page.getByRole('button', { name: 'Abrir cesta, 1 artículo' }).click();
-  await expect(page.getByText('BORRADOR DE SOLICITUD', { exact: true })).toBeVisible();
+  await expect(page.getByRole('main', { name: 'Cesta de solicitudes', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Volver al catálogo', exact: true }).click();
   await page.getByRole('button', { name: 'Cuenta y listas', exact: true }).click();
   await page.getByRole('button', { name: 'Cerrar sesión', exact: true }).click();

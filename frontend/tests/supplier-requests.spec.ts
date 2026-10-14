@@ -390,7 +390,7 @@ test('client submission survives a lost response, clears the confirmed draft and
     await expect(basket.getByRole('alert')).toBeVisible();
     await expect(basket.getByRole('button', { name: 'Enviar solicitud', exact: true })).toBeEnabled();
     await page.reload();
-    await expect(basket.getByRole('article')).toHaveCount(3);
+    await expect(basket.locator('.basket-grid .ag-center-cols-container .ag-row')).toHaveCount(3);
     await basket.getByRole('button', { name: 'Enviar solicitud', exact: true }).click();
     const sent = page.getByRole('main', { name: 'Solicitudes enviadas', exact: true });
     await expect(sent.getByRole('status').filter({ hasText: 'Solicitud enviada' })).toBeVisible();
@@ -411,7 +411,7 @@ test('client submission survives a lost response, clears the confirmed draft and
     await expect(basket.getByRole('region', { name: 'Cesta vacía', exact: true })).toBeVisible();
     await page.evaluate(({ accountId, lines }) => localStorage.setItem(`partsmall:basket:${accountId}`, JSON.stringify(lines)), { accountId: clientAccount, lines: draft });
     await page.reload();
-    await expect(basket.getByRole('article')).toHaveCount(3);
+    await expect(basket.locator('.basket-grid .ag-center-cols-container .ag-row')).toHaveCount(3);
     await basket.getByRole('button', { name: 'Enviar solicitud', exact: true }).click();
     await expect(sent.getByRole('status').filter({ hasText: 'Solicitud enviada' })).toBeVisible();
     expect(submissions).toHaveLength(3);
@@ -431,14 +431,14 @@ test('preview and supplier-only baskets cannot send requests even with selected 
   await page.addInitScript(lines => localStorage.setItem('partsmall:basket:preview', JSON.stringify(lines)), clientDraft());
   await page.goto('/?vista=cesta');
   const basket = page.getByRole('main', { name: 'Cesta de solicitudes', exact: true });
-  await expect(basket.getByRole('article')).toHaveCount(3);
+  await expect(basket.locator('.basket-grid .ag-center-cols-container .ag-row')).toHaveCount(3);
   await expect(basket.getByRole('button', { name: 'Enviar solicitud de ejemplo', exact: true })).toBeDisabled();
   await expect(basket).toContainText(/inicia sesión/i);
   expect(writes).toEqual([]);
   const unexpected = await mockSession(page);
   await page.evaluate(({ accountId, lines }) => localStorage.setItem(`partsmall:basket:${accountId}`, JSON.stringify(lines)), { accountId: supplierAccount, lines: clientDraft() });
   await page.reload();
-  await expect(basket.getByRole('article')).toHaveCount(3);
+  await expect(basket.locator('.basket-grid .ag-center-cols-container .ag-row')).toHaveCount(3);
   await expect(basket.getByRole('button', { name: 'Enviar solicitud', exact: true })).toBeDisabled();
   await expect(basket).toContainText('Selecciona una cuenta con rol de cliente');
   expect(unexpected).toEqual([]);
@@ -473,7 +473,7 @@ test('reselecting a remapped supplier item recovers a stale submission with fres
   await dialog.getByRole('button', { name: `Agregar CODIGO-ACTUALIZADO de ${supplierAccounts[0].name} a la cesta`, exact: true }).click();
   await dialog.getByRole('button', { name: 'Cerrar ventana', exact: true }).click();
   await page.getByRole('button', { name: 'Abrir cesta, 1 artículo', exact: true }).click();
-  await expect(basket.getByRole('article')).toHaveCount(1);
+  await expect(basket.locator('.basket-grid .ag-center-cols-container .ag-row')).toHaveCount(1);
   await expect(basket.getByRole('heading', { name: 'CODIGO-ACTUALIZADO', exact: true })).toBeVisible();
   await expect(basket.getByText('CODIGO-ACTUALIZADO · MARCA ACTUALIZADA', { exact: true })).toBeVisible();
   await expect(basket.getByLabel('Cantidad de CODIGO-ACTUALIZADO', { exact: true })).toHaveValue('3');
@@ -542,7 +542,7 @@ test('an account that both buys and sells never orders from itself: its own item
   ] }));
   await page.goto('/?vista=cesta');
   const basket = page.getByRole('main', { name: 'Cesta de solicitudes', exact: true });
-  await expect(basket.getByRole('article')).toHaveCount(1);  // DISTRIBUIDORA MOTOR's item moved in; the server refused its own two
+  await expect(basket.locator('.basket-grid .ag-center-cols-container .ag-row')).toHaveCount(1);  // DISTRIBUIDORA MOTOR's item moved in; the server refused its own two
   await expect(page.getByRole('status').filter({ hasText: 'de la cesta de este navegador' })).toHaveText(/2 artículos de la cesta de este navegador ya no se pueden solicitar y se quitaron\./);
   await expect(basket.getByRole('region', { name: 'Solicitud para REPUESTOS CENTRAL', exact: true })).toHaveCount(0);
   expect(cesta.lines[supplierAccount].map(line => line.offer.selected_item!.id)).toEqual([itemC]);

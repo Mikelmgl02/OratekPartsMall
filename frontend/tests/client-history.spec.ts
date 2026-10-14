@@ -162,7 +162,7 @@ test('successful send keeps what another device or WhatsApp added to the cesta w
     await expect(sent(page)).toBeVisible();
     await page.getByRole('button', { name: 'Abrir cesta, 1 artículo', exact: true }).click();
     const basket = page.getByRole('main', { name: 'Cesta de solicitudes', exact: true });
-    await expect(basket.getByRole('article')).toHaveCount(1);
+    await expect(basket.locator('.basket-grid .ag-center-cols-container .ag-row')).toHaveCount(1);
     await expect(basket.getByRole('heading', { name: 'FILTRO-NUEVO', exact: true })).toBeVisible();
     expect(cesta.lines[clientId]).toEqual([fresh]);
     expect(await page.evaluate(clientId => localStorage.getItem(`partsmall:basket:${clientId}`), clientId)).toBeNull();  // nothing kept in the browser

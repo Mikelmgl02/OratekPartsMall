@@ -1,33 +1,14 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, Boxes, History, LockKeyhole, MessageCircle, Minus, PackageSearch, Plus, ShoppingBag, Sparkles, Store, Trash2, TriangleAlert, Truck } from 'lucide-react';
-import { CatalogPhoto } from './part-image';
+import { ArrowLeft, ArrowRight, Boxes, History, LockKeyhole, MessageCircle, ShoppingBag, Sparkles, Store, Trash2 } from 'lucide-react';
 import BasketSubmission from './basket-submission';
+import dynamic from 'next/dynamic';
 import ClientRequestNavigation from './client-request-navigation';
 import { Account, BasketEvent, BasketLine, request } from '@/lib/types';
-import type { RequestSubmissionResult } from '@/lib/request-types';
-import { visibleReferences } from '@/lib/reference-label';
 
-function QuantityControl({ name, quantity, onChange, disabled }: { name: string; quantity: number; onChange: (quantity: number) => void; disabled: boolean }) {
-  const [value, setValue] = useState(String(quantity));
-  useEffect(() => { setValue(String(quantity)); }, [quantity]);
-  function finish() {
-    const parsed = Number(value);
-    const next = Number.isFinite(parsed) ? Math.max(1, Math.min(9999, Math.trunc(parsed))) : quantity;
-    setValue(String(next));
-    if (next !== quantity) onChange(next);
-  }
-  return <div className="basket-page-quantity"><span>Cantidad</span><div>
-    <button type="button" aria-label={`Reducir cantidad de ${name}`} disabled={disabled || quantity <= 1} onClick={() => onChange(quantity - 1)}><Minus size={15}/></button>
-    <input type="number" min={1} max={9999} step={1} inputMode="numeric" autoComplete="off" disabled={disabled} aria-label={`Cantidad de ${name}`} value={value} onChange={event => {
-      const draft = event.target.value; setValue(draft);
-      const next = Number(draft);
-      if (draft && Number.isInteger(next) && next >= 1 && next <= 9999) onChange(next);
-    }} onBlur={finish} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }}/>
-    <button type="button" aria-label={`Aumentar cantidad de ${name}`} disabled={disabled || quantity >= 9999} onClick={() => onChange(quantity + 1)}><Plus size={15}/></button>
-  </div></div>;
-}
+const BasketGrid = dynamic(() => import('./basket-grid'), { ssr: false, loading: () => <div className="quotation-grid-loading" role="status">Cargando artículos…</div> });
+import type { RequestSubmissionResult } from '@/lib/request-types';
 
 // What each entry of the cesta's ledger says, in the person's words.
 function eventText(entry: BasketEvent) {
@@ -78,9 +59,9 @@ function BasketActivity({ accountId, version }: { accountId: string; version: st
 
 // synced: the cesta lives on the server (a client account signed in), the same on every device; otherwise in this browser.
 export default function Basket({ lines, onChange, onClose, preview, account, synced = false, onSent, onSentView }: { lines: BasketLine[]; onChange: (lines: BasketLine[]) => void; onClose: () => void; preview: boolean; account?: Account; synced?: boolean; onSent: (receipt: RequestSubmissionResult, remaining: BasketLine[]) => void; onSentView: () => void }) {
-  const heading = useRef<HTMLHeadingElement>(null);
+  const page = useRef<HTMLElement>(null);
   const [sending, setSending] = useState(false);
-  useEffect(() => { heading.current?.focus({ preventScroll: true }); }, []);
+  useEffect(() => { page.current?.focus({ preventScroll: true }); }, []);  // keyboard and screen readers start on the cesta
   const groups = Map.groupBy(lines, line => line.offer.supplier_id);
   const articleCount = new Set(lines.map(line => line.key)).size;
   const unitCount = lines.reduce((sum, line) => sum + line.quantity, 0);
@@ -91,10 +72,9 @@ export default function Basket({ lines, onChange, onClose, preview, account, syn
   const staleLines = lines.filter(line => line.offer.supplier_id !== ownSupplier && (line.available === false || line.changed));
   function setQuantity(key: string, quantity: number) { onChange(lines.map(line => line.key === key ? { ...line, quantity } : line)); }
 
-  return <main className="basket-page" aria-label="Cesta de solicitudes"><div className="section-container basket-page-container">
+  return <main ref={page} tabIndex={-1} className="basket-page" aria-label="Cesta de solicitudes"><div className="section-container basket-page-container">
     <button type="button" className="basket-page-back" onClick={onClose}><ArrowLeft size={16}/>Volver al catálogo</button>
     <ClientRequestNavigation selected="draft" count={articleCount} canViewSent={!preview && !!account?.capabilities.includes('client')} onDraft={() => {}} onSent={onSentView}/>
-    <div className="basket-page-heading"><div><span className="eyebrow">{preview ? 'BORRADOR DE EJEMPLO' : 'BORRADOR DE SOLICITUD'}</span><h1 tabIndex={-1} ref={heading}>Tu cesta de solicitudes</h1><p>Revisa tus repuestos y cantidades. Cada proveedor recibirá solo los artículos que le solicites.</p></div><span className="basket-page-total"><ShoppingBag size={16}/>{articleCount} {articleCount === 1 ? 'artículo' : 'artículos'}</span></div>
     {preview && <div className="basket-page-preview"><Sparkles size={17}/><span>Esta cesta usa repuestos y proveedores de ejemplo para que pruebes cómo preparar una solicitud.</span></div>}
     <div className="basket-page-layout">
       <div className="basket-page-items">
@@ -102,20 +82,7 @@ export default function Basket({ lines, onChange, onClose, preview, account, syn
           <div className="basket-page-supplier-heading"><span className="basket-page-store"><Store size={21}/></span><div><span>Solicitud para</span><h2>{entries[0].offer.supplier_name}</h2></div><span className="basket-page-supplier-count">{entries.length} {entries.length === 1 ? 'artículo' : 'artículos'}</span></div>
           {supplierId === ownSupplier && <div className="notice basket-own-warning" role="alert"><span>Estos artículos son de tu propia cuenta. No puedes pedirte una cotización a ti mismo: quítalos para enviar el resto de tu solicitud.</span>
             <button type="button" className="button soft small" disabled={sending} onClick={() => onChange(lines.filter(line => line.offer.supplier_id !== supplierId))}><Trash2 size={14}/>Quitar estos artículos</button></div>}
-          {entries.map(line => {
-            const selected = line.offer.selected_item;
-            const name = selected?.codigo || line.part.name || line.part.sku;
-            const description = selected?.description || line.part.description;
-            const firstCode = visibleReferences({ codes: line.part.codes ?? [], equivalents: line.part.equivalents })[0];
-            return <article className="basket-page-item" data-line-key={line.key} key={line.key} aria-label={`Artículo ${name} de ${line.offer.supplier_name}`}>
-              <div className="basket-page-art"><CatalogPhoto image={line.part.images?.[0]} alt={line.part.name || description || line.part.sku} thumbnail/></div>
-              <div className="basket-page-item-info">{line.source === 'whatsapp' && <span className="basket-page-source"><MessageCircle size={12}/>Agregado por WhatsApp</span>}{line.source === 'faltante' && <span className="basket-page-source missing"><PackageSearch size={12}/>Lo que faltó en otra orden</span>}<span className="basket-page-sku">SKU INTERNO {line.part.sku || line.part.name}</span><h3>{name}</h3>{selected ? <span className="basket-page-code">{selected.codigo} · {selected.brand || 'SIN MARCA INDICADA'}</span> : <span className="basket-page-code">{firstCode ? `${firstCode.code} · ${firstCode.brand || 'SIN MARCA INDICADA'}` : line.part.sku}</span>}{selected && line.part.name && line.part.name !== name && <p className="basket-page-part-name">{line.part.name}</p>}{description && <p className="basket-page-description">{description}</p>}
-                {line.available === false ? <p className="basket-page-stale" role="note"><TriangleAlert size={14}/>Este artículo ya no se puede solicitar. Quítalo de la cesta.</p>
-                  : line.changed ? <p className="basket-page-stale" role="note"><TriangleAlert size={14}/>Cambió desde que lo agregaste. Quítalo y vuelve a elegirlo en el catálogo.</p> : null}</div>
-              <div className="basket-page-item-service"><div><LockKeyhole size={16}/><span><strong>Cotización privada</strong><small>El precio lo indica tu proveedor.</small></span></div><div><Truck size={17}/><span><strong>Entrega del proveedor</strong><small>Coordina la entrega o el retiro al reservar.</small></span></div></div>
-              <div className="basket-page-item-actions"><QuantityControl name={name} quantity={line.quantity} disabled={sending} onChange={quantity => setQuantity(line.key, quantity)}/><button type="button" className="basket-page-remove" disabled={sending} aria-label={`Eliminar ${name}`} onClick={() => onChange(lines.filter(item => item.key !== line.key))}><Trash2 size={15}/>Eliminar</button></div>
-            </article>;
-          })}
+          <BasketGrid supplier={entries[0].offer.supplier_name} lines={entries} sending={sending} setQuantity={setQuantity} remove={key => onChange(lines.filter(item => item.key !== key))}/>
           <div className="basket-page-supplier-note"><LockKeyhole size={14}/><span>Los artículos de esta sección se cotizan únicamente con este proveedor.</span></div>
         </section>)}
         {synced && account && <BasketActivity accountId={account.id} version={lines.map(line => `${line.key}:${line.quantity}`).join('|')}/>}

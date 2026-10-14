@@ -45,7 +45,9 @@ async function seedDrafts(page: Page, drafts: Record<string, BasketLine[]>) {
 }
 
 function basket(page: Page) { return page.getByRole('main', { name: 'Cesta de solicitudes', exact: true }); }
-function item(page: Page, code: string, supplier: string) { return basket(page).getByRole('article', { name: `Artículo ${code} de ${supplier}`, exact: true }); }
+// The cesta's items: one grid per supplier, one row per item.
+const rows = (scope: ReturnType<Page['locator']>) => scope.locator('.basket-grid .ag-center-cols-container .ag-row');
+function item(page: Page, code: string, supplier: string) { return rows(basket(page).getByRole('region', { name: `Solicitud para ${supplier}`, exact: true })).filter({ hasText: code }); }
 async function expectSummary(page: Page, suppliers: number, articles: number, units: number) {
   const summary = page.getByRole('complementary', { name: 'Resumen de solicitud', exact: true });
   for (const [label, value] of [['Proveedores', suppliers], ['Artículos', articles], ['Unidades solicitadas', units]] as const) {
@@ -79,13 +81,13 @@ test('full-page basket keeps equivalent supplier items separate, edits quantitie
   await page.getByRole('button', { name: 'Abrir cesta, 3 artículos', exact: true }).click();
   await expect(basket(page)).toBeVisible();
   await expect(page.getByRole('dialog')).toHaveCount(0);
-  await expect(basket(page).getByRole('heading', { level: 1, name: 'Tu cesta de solicitudes', exact: true })).toBeFocused();
+  await expect(basket(page)).toBeFocused();
   expect(new URL(page.url()).searchParams.get('vista')).toBe('cesta');
   expect(new URL(page.url()).searchParams.get('campana')).toBe('cesta-prueba');
   expect(new URL(page.url()).hash).toBe('#inicio');
-  await expect(basket(page).getByRole('article')).toHaveCount(3);
-  await expect(basket(page).getByRole('region', { name: `Solicitud para ${supplierA.supplier_name}`, exact: true }).getByRole('article')).toHaveCount(2);
-  await expect(basket(page).getByRole('region', { name: `Solicitud para ${supplierB.supplier_name}`, exact: true }).getByRole('article')).toHaveCount(1);
+  await expect(rows(basket(page))).toHaveCount(3);
+  await expect(rows(basket(page).getByRole('region', { name: `Solicitud para ${supplierA.supplier_name}`, exact: true }))).toHaveCount(2);
+  await expect(rows(basket(page).getByRole('region', { name: `Solicitud para ${supplierB.supplier_name}`, exact: true }))).toHaveCount(1);
   await expectSummary(page, 2, 3, 3);
   await expect(basket(page).getByRole('button', { name: 'Enviar solicitud', exact: true })).toBeEnabled();
   await expect(basket(page).getByText('Precios en cotizaciones privadas', { exact: true })).toBeVisible();
@@ -117,15 +119,16 @@ test('full-page basket keeps equivalent supplier items separate, edits quantitie
 });
 
 test('desktop basket has wide supplier groups and a sticky summary, while mobile stacks without overflow', async ({ page }) => {
-  const lines = Array.from({ length: 10 }, (_, index) => {
+  const lines = Array.from({ length: 30 }, (_, index) => {
     const part: Part = { id: `basket-layout-part-${index}`, sku: `SKU-${index + 1}`, name: index % 2 ? 'FILTRO DE ACEITE' : 'DISCO DE FRENO', description: 'REPUESTO DE PRUEBA PARA UNA SOLICITUD CON VARIOS ARTÍCULOS', codes: [] };
-    return line(part, index < 5 ? supplierA : supplierB, `basket-layout-item-${index}`, `CODIGO-${index + 1}`);
+    return line(part, index < 15 ? supplierA : supplierB, `basket-layout-item-${index}`, `CODIGO-${index + 1}`);
   });
   const writes = await mockClient(page, lines.map(line => line.part));
   await fakeServerBasket(page, { known: lines });  // the browser's cesta moves in
   await seedDrafts(page, { [accounts[0].id]: lines });
   await page.goto('/?vista=cesta');
-  await expectSummary(page, 2, 10, 10);
+  await expectSummary(page, 2, 30, 30);
+  await expect(rows(basket(page))).toHaveCount(30);  // the grids load after the page: measure once they are in
   const firstGroup = basket(page).getByRole('region', { name: `Solicitud para ${supplierA.supplier_name}`, exact: true });
   const summary = page.getByRole('complementary', { name: 'Resumen de solicitud', exact: true });
   const left = (await firstGroup.boundingBox())!;
@@ -142,25 +145,25 @@ test('desktop basket has wide supplier groups and a sticky summary, while mobile
   expect(later.y).toBeGreaterThanOrEqual((await page.getByTestId('page-viewport').boundingBox())!.y);
   expect((await page.locator('.app-toolbar').boundingBox())!.y).toBe(0);
   expect(later.y + later.height).toBeLessThan(page.viewportSize()!.height);
-  expect((await firstGroup.getByRole('article').first().boundingBox())!.y).toBeLessThan(0);
+  expect((await rows(firstGroup).first().boundingBox())!.y).toBeLessThan(0);
   await page.screenshot({ path: '/tmp/motionpartes-basket-sticky.png', fullPage: false });
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByTestId('page-viewport').evaluate(viewport => viewport.scrollTo({ top: 0, behavior: 'instant' }));
-  await expect(basket(page).getByRole('article')).toHaveCount(10);
+  await expect(rows(basket(page))).toHaveCount(30);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
-  const lastItem = (await basket(page).getByRole('article').last().boundingBox())!;
+  const lastItem = (await rows(basket(page)).last().boundingBox())!;
   const mobileSummary = (await summary.boundingBox())!;
   expect(mobileSummary.y).toBeGreaterThanOrEqual(lastItem.y + lastItem.height);
-  for (const article of await basket(page).getByRole('article').all()) {
-    const box = (await article.boundingBox())!;
+  for (const grid of await basket(page).locator('.basket-grid').all()) {  // each grid fits the screen; its columns scroll inside it
+    const box = (await grid.boundingBox())!;
     expect(box.x).toBeGreaterThanOrEqual(0);
     expect(box.x + box.width).toBeLessThanOrEqual(390);
   }
-  const firstItem = firstGroup.getByRole('article').first();
+  const firstItem = rows(firstGroup).first();
   await firstItem.getByRole('button', { name: 'Aumentar cantidad de CODIGO-1', exact: true }).click();
   await expect(firstItem.getByLabel('Cantidad de CODIGO-1', { exact: true })).toHaveValue('2');
-  await expectSummary(page, 2, 10, 11);
+  await expectSummary(page, 2, 30, 31);
   await page.getByTestId('page-viewport').evaluate(viewport => viewport.scrollTo({ top: 0, behavior: 'instant' }));
   await page.screenshot({ path: '/tmp/motionpartes-basket-mobile.png', fullPage: false });
   expect(writes).toEqual([]);
@@ -200,7 +203,7 @@ test('account drafts stay isolated through reload, quantity correction and an em
   await expect(item(page, 'CUENTA-A', supplierA.supplier_name).getByLabel('Cantidad de CUENTA-A', { exact: true })).toHaveValue('2');
   await item(page, 'CUENTA-A', supplierA.supplier_name).getByRole('button', { name: 'Eliminar CUENTA-A', exact: true }).click();
   await expectSummary(page, 0, 0, 0);
-  await expect(basket(page).getByRole('article')).toHaveCount(0);
+  await expect(rows(basket(page))).toHaveCount(0);
   await expect(basket(page).getByRole('region', { name: 'Cesta vacía', exact: true })).toBeVisible();
   await expect.poll(() => cesta.lines[accounts[0].id]).toEqual([]);
   expect(cesta.lines[accounts[1].id][0].quantity).toBe(4);
