@@ -7,6 +7,8 @@ import ClientGrid from './client-grid';
 import { CatalogPhoto } from './part-image';
 import type { BasketLine } from '@/lib/types';
 import { visibleReferences } from '@/lib/reference-label';
+import { stockHelp, stockLabel, stockOf, stockRank, stockShort } from '@/lib/basket-stock';
+import QuantityInput from './quantity-input';
 
 // One supplier's cesta items as a grid (basket.tsx), by grupo, subgrupo and description: photo, grupo, the article (its code, brand and where it came from), its description with any
 // warning (changed since it was added, or no longer available), the internal SKU, Disponible (the supplier's stock band, as the catalog's: no
@@ -20,51 +22,6 @@ const collate = (a = '', b = '') => (a ? b ? a.localeCompare(b, 'es') : -1 : b ?
 // Like the order's document: by grupo, subgrupo and description (the headers can still sort it another way).
 export const sortedLines = (lines: BasketLine[]) => [...lines].sort((a, b) => collate(a.part.category, b.part.category) || collate(a.part.subcategory, b.part.subcategory)
   || descriptionOf(a).localeCompare(descriptionOf(b), 'es') || lineName(a).localeCompare(lineName(b)));
-
-// A typed quantity is saved once typing pauses (or the field is left, or Enter), not on every key. While there is unsaved typing, a quantity
-// coming back from the server does not overwrite it; once saved, the server's (WhatsApp, another device) shows. Escape drops unsaved typing
-// and, when this field already saved a quantity since it was entered, puts back the one it had then.
-const SAVE_AFTER_MS = 400;
-const clamp = (value: number) => Math.max(1, Math.min(9999, Math.trunc(value)));
-function QuantityControl({ name, quantity, onChange, disabled }: { name: string; quantity: number; onChange: (quantity: number) => void; disabled: boolean }) {
-  const [value, setValue] = useState(String(quantity));
-  // The typing is kept here too: on unmount (leaving the page) React has already let go of the input when the last save runs.
-  const draft = useRef(String(quantity)), dirty = useRef(false), sent = useRef(false), entered = useRef(quantity);
-  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const latest = useRef({ quantity, onChange });
-  useLayoutEffect(() => { latest.current = { quantity, onChange }; });
-  useEffect(() => { if (!dirty.current) setValue(String(quantity)); }, [quantity]);
-  function save() {
-    clearTimeout(timer.current);
-    if (!dirty.current) return;
-    dirty.current = false;
-    const parsed = Number(draft.current);  // an empty field counts as 1, the least that can be asked for
-    const next = Number.isFinite(parsed) ? clamp(parsed) : latest.current.quantity;
-    setValue(String(next));
-    if (next !== latest.current.quantity) { sent.current = true; latest.current.onChange(next); }
-  }
-  useEffect(() => () => save(), []);  // eslint-disable-line react-hooks/exhaustive-deps -- leaving the page keeps what was typed
-  return <input className="basket-grid-number" type="number" min={1} max={9999} step={1} inputMode="numeric" autoComplete="off" disabled={disabled}
-    aria-label={`Cantidad de ${name}`} value={value} onFocus={event => { entered.current = latest.current.quantity; sent.current = false; event.currentTarget.select(); }}
-    onChange={event => {
-      draft.current = event.target.value; setValue(event.target.value); dirty.current = true;
-      clearTimeout(timer.current);
-      const next = Number(event.target.value);
-      if (event.target.value && Number.isInteger(next) && next >= 1 && next <= 9999) timer.current = setTimeout(save, SAVE_AFTER_MS);
-    }}
-    onBlur={() => { if (dirty.current) save(); else setValue(String(latest.current.quantity)); }}
-    onKeyDown={event => {
-      if (event.key === 'Enter') event.currentTarget.blur();
-      if (event.key === 'Escape') {
-        clearTimeout(timer.current); dirty.current = false;
-        const back = sent.current && entered.current !== latest.current.quantity;
-        setValue(String(back ? entered.current : latest.current.quantity));
-        if (back) latest.current.onChange(entered.current);
-        sent.current = false;
-        event.currentTarget.blur();
-      }
-    }}/>;
-}
 
 function PhotoCell({ data }: Cell) {
   return data ? <div className="basket-grid-photo"><CatalogPhoto image={data.part.images?.[0]} alt={data.part.name || data.part.description || data.part.sku} thumbnail/></div> : null;
@@ -89,23 +46,18 @@ function DescriptionCell({ data }: Cell) {
       : data.changed ? <span className="basket-page-stale" role="note"><TriangleAlert size={13}/>Cambió desde que lo agregaste. Quítalo y vuelve a elegirlo en el catálogo.</span> : null}
   </div>;
 }
-const stockLabels = { high: 'Existencia alta', medium: 'Existencia media', low: 'Baja existencia', sold_out: 'Sin existencias' } as const;
-const stockShort = { high: 'Alta', medium: 'Media', low: 'Baja', sold_out: 'Sin exist.', off: 'No disp.', unknown: 'Hay' } as const;
-const stockOf = (line: BasketLine) => line.available === false ? 'off' : line.offer.stock ?? (line.offer.in_stock ? 'unknown' : 'sold_out');
-const stockLabel = (line: BasketLine) => { const stock = stockOf(line); return stock === 'off' ? 'No disponible' : stock === 'unknown' ? 'Con existencias' : stockLabels[stock]; };
 function StockCell({ data }: Cell) {
   if (!data) return null;
   const stock = stockOf(data);
-  return <span className={`basket-grid-stock ${stock}`} data-short={stockShort[stock]} title="Existencias que reporta este proveedor, descontando las reservadas. Las confirma al cotizar.">{stockLabel(data)}</span>;
+  return <span className={`basket-grid-stock ${stock}`} data-short={stockShort[stock]} title={stockHelp}>{stockLabel(data)}</span>;
 }
 function QuantityCell({ data, context }: Cell) {
-  return data ? <QuantityControl name={lineName(data)} quantity={data.quantity} disabled={context.sending} onChange={quantity => context.setQuantity(data.key, quantity)}/> : null;
+  return data ? <QuantityInput name={lineName(data)} quantity={data.quantity} disabled={context.sending} onChange={quantity => context.setQuantity(data.key, quantity)}/> : null;
 }
 function RemoveCell({ data, context }: Cell) {
   return data ? <button type="button" className="basket-page-remove" disabled={context.sending} aria-label={`Eliminar ${lineName(data)}`} onClick={() => context.remove(data.key)}><Trash2 size={14}/>Eliminar</button> : null;
 }
 
-const stockRank = (line?: BasketLine) => line ? ['off', 'sold_out', 'low', 'unknown', 'medium', 'high'].indexOf(stockOf(line)) : 0;
 const columns: ColDef<BasketLine>[] = [
   { colId: 'photo', headerName: '', width: 76, cellRenderer: PhotoCell, sortable: false, resizable: false, suppressHeaderMenuButton: true },
   { colId: 'group', headerName: 'Grupo', width: 170, valueGetter: ({ data }) => data ? groupOf(data) || 'Sin grupo' : '', cellClass: 'admin-grid-text muted', tooltipValueGetter: ({ value }) => value },

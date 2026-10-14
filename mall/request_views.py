@@ -313,18 +313,24 @@ class ClientPartRequestState(APIView):
                                     **{key: row[key] for key in quantities}} for row in items]})
 
 
-def open_unit_rows(client, storefront=False):
-    """Per catalog SKU (a merged one under the SKU it merged into), the units of the client's open orders and how many orders hold any:
-    what it asked for until the handshake, then what the accepted quotation agreed less the shortfalls it accepted, until its Recibido.
-    storefront: only the SKUs the catalog lists."""
+def open_lines(client):
+    """The lines of the client's open orders, each with its catalog SKU (catalog_part: a merged one under the SKU it merged into) and its
+    open units: what was asked for until the handshake, then what the accepted quotation agreed less the shortfalls the client accepted,
+    until its Recibido. Received and cancelled orders have none."""
     from .request_models import PRE_HANDSHAKE, DealShortfallLine
     agreed = DealQuotationLine.objects.filter(order_line=OuterRef('pk'), quotation__client_confirmed_at__isnull=False).order_by('-quotation__revision').values('quantity')[:1]
     short = DealShortfallLine.objects.filter(quotation_line__order_line=OuterRef('pk'), shortfall__status='accepted').values(
         'quotation_line__order_line').annotate(units=Sum('missing')).values('units')[:1]
-    rows = (SupplierRequestLine.objects.filter(request__client=client, request__status__in=[*PRE_HANDSHAKE, *OPEN_AGREEMENT])
+    return (SupplierRequestLine.objects.filter(request__client=client, request__status__in=[*PRE_HANDSHAKE, *OPEN_AGREEMENT])
             .annotate(catalog_part=Coalesce('part__merged_into_id', 'part_id'),
                       open_units=Case(When(request__status__in=PRE_HANDSHAKE, then='quantity'),
                                       default=Coalesce(Subquery(agreed), 0) - Coalesce(Subquery(short), 0), output_field=IntegerField())))
+
+
+def open_unit_rows(client, storefront=False):
+    """Per catalog SKU, the units of the client's open orders (open_lines) and how many orders hold any. storefront: only the SKUs the
+    catalog lists."""
+    rows = open_lines(client)
     if storefront:
         rows = rows.filter(catalog_part__in=storefront_lines().values('pk'))
     # An order counts once it holds a unit of the SKU: a line quoted at 0, or whose units all went short, does not.
@@ -339,6 +345,26 @@ class ClientOpenUnits(APIView):
     def get(self, request, account_id):
         rows = open_unit_rows(account_for(request.user, account_id, 'client'), storefront=True)
         return Response({'parts': {str(row['catalog_part']): {'units': row['units'], 'orders': row['orders']} for row in rows if row['units'] > 0}})
+
+
+class ClientOpenUnitOrders(APIView):
+    """The open orders behind a catalog card's "N en órdenes", newest first: each with its reference, supplier, status and date, its units of
+    the SKU (open_lines) and the lines they come from (what was asked for and what is open now). Only orders that hold units of it."""
+    @extend_schema(operation_id='v1_accounts_open_units_part_retrieve', responses=OpenApiTypes.OBJECT)
+    def get(self, request, account_id, part_id):
+        client = account_for(request.user, account_id, 'client')
+        lines = (open_lines(client).filter(catalog_part=part_id).select_related('request')
+                 .order_by('-request__created_at', 'request_id', 'codigo', 'brand', 'id'))
+        orders = {}
+        for line in lines:
+            order = line.request
+            entry = orders.setdefault(order.pk, {
+                'id': str(order.pk), 'reference': order.reference, 'status': order.status, 'created_at': order.created_at.isoformat(),
+                'supplier': {'id': str(order.supplier_id), 'name': order.supplier_name}, 'units': 0, 'requested': 0, 'lines': []})
+            entry['units'] += line.open_units
+            entry['requested'] += line.quantity
+            entry['lines'].append({'codigo': line.codigo, 'brand': line.brand, 'requested': line.quantity, 'units': line.open_units})
+        return Response({'part_id': str(part_id), 'orders': [entry for entry in orders.values() if entry['units'] > 0]})
 
 
 def submission_result(submission):

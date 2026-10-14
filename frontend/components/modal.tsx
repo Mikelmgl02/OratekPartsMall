@@ -24,6 +24,7 @@ export default function Modal({ title, children, onClose, wide = false, drawer =
     const dialog = ref.current;
     if (!dialog) return;
     let mounted = true;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     opened.current = performance.now(); dialog.showModal();
     // The browser can close a dialog on Escape without a cancel event the page may refuse (repeated close requests): ask the owner, and
     // open it again when the owner keeps it (a batch in progress), so what shows always matches what React renders.
@@ -33,7 +34,12 @@ export default function Modal({ title, children, onClose, wide = false, drawer =
       requestAnimationFrame(() => { if (mounted && !dialog.open) dialog.showModal(); });
     };
     dialog.addEventListener('close', closed);
-    return () => { mounted = false; dialog.removeEventListener('close', closed); dialog.close(); };
+    return () => {
+      mounted = false; dialog.removeEventListener('close', closed); dialog.close();
+      // React removed the dialog before this runs, so the browser no longer hands focus back to what opened it: the keyboard goes on from
+      // there, unless that is gone (the page changed) or something else already took focus.
+      if (opener?.isConnected && (!document.activeElement || document.activeElement === document.body)) opener.focus({ preventScroll: true });
+    };
   }, []);
   return <dialog ref={ref} aria-labelledby={label} className={`modal ${wide ? 'wide' : ''} ${drawer ? 'drawer' : ''} ${className}`} {...dragEvents}
     onKeyDownCapture={event => {

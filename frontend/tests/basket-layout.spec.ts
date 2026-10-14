@@ -302,7 +302,47 @@ test('each catalog card shows its units in the cesta and in the open orders', as
   const badges = page.getByRole('article', { name: `Repuesto ${sharedPart.sku}`, exact: true }).getByRole('group', { name: `Tus unidades de ${sharedPart.sku}`, exact: true });
   await expect(badges).toContainText('5 en cesta');
   await expect(badges).toContainText('7 en órdenes');
-  await expect(badges.locator('.part-card-badge.ordered')).toHaveAttribute('title', '7 unidades en 2 órdenes abiertas: enviadas y aún sin recibir');
+  await expect(badges.locator('.part-card-badge.ordered')).toHaveAttribute('title', '7 unidades en 2 órdenes abiertas: enviadas y aún sin recibir. Ver el resumen');
+
+  // Each one opens its summary: the cesta's lines of the SKU per supplier, and the open orders that hold it.
+  await badges.getByRole('button', { name: /5 en cesta/ }).click();
+  const cestaSummary = page.getByRole('dialog', { name: `En tu cesta · DISCO DE FRENO · ${sharedPart.sku}` });
+  await expect(cestaSummary).toContainText('5 unidades en tu cesta, con 2 proveedores.');
+  const cestaRows = cestaSummary.getByRole('list', { name: 'Artículos en tu cesta' }).getByRole('listitem');
+  await expect(cestaRows).toHaveCount(2);
+  await expect(cestaRows.filter({ hasText: supplierA.supplier_name })).toContainText('Existencia alta');
+  await expect(cestaRows.filter({ hasText: supplierB.supplier_name })).toContainText('Baja existencia');
+  await expect(cestaSummary.getByLabel(`Cantidad de B-100 de ${supplierB.supplier_name}`, { exact: true })).toHaveValue('3');
+  await page.keyboard.press('Escape');
+  await expect(cestaSummary).toHaveCount(0);
+  await expect(badges.getByRole('button', { name: /5 en cesta/ })).toBeFocused();  // the keyboard goes on from the card
+  await page.route(new RegExp(`/api/market/accounts/[^/]+/open-units/${sharedPart.id}$`), route => route.fulfill({ json: { part_id: sharedPart.id, orders: [
+    { id: 'order-new', reference: 'MP-0002', status: 'processing', created_at: '2026-10-13T15:00:00Z', supplier: { id: supplierA.supplier_id, name: supplierA.supplier_name },
+      units: 4, requested: 5, lines: [{ codigo: 'A-100', brand: '', requested: 5, units: 4 }] },
+    { id: 'order-old', reference: 'MP-0001', status: 'pending', created_at: '2026-10-10T15:00:00Z', supplier: { id: supplierB.supplier_id, name: supplierB.supplier_name },
+      units: 3, requested: 3, lines: [{ codigo: 'B-100', brand: '', requested: 3, units: 3 }] }] } }));
+  await badges.getByRole('button', { name: /7 en órdenes/ }).click();
+  const ordersSummary = page.getByRole('dialog', { name: `En órdenes · DISCO DE FRENO · ${sharedPart.sku}` });
+  await expect(ordersSummary).toContainText('7 unidades en 2 órdenes abiertas: enviadas y aún sin recibir.');
+  const orderRows = ordersSummary.getByRole('list', { name: 'Órdenes abiertas con este repuesto' }).getByRole('listitem');
+  await expect(orderRows.first()).toContainText('Procesando');
+  await expect(orderRows.first()).toContainText('4 unidades de 5 pedidas');
+  await expect(orderRows.nth(1)).toContainText('Enviada · por revisar');
+  await ordersSummary.getByRole('button', { name: 'Abrir orden MP-0002', exact: true }).click();
+  const order = page.getByRole('dialog', { name: 'Orden MP-0002', exact: true });
+  await expect(order).toBeVisible();  // the order itself, in place of the summary
+  await expect(ordersSummary).toHaveCount(0);
+  await order.getByRole('button', { name: 'Cerrar ventana', exact: true }).first().click();
+  await expect(order).toHaveCount(0);
+  await badges.getByRole('button', { name: /7 en órdenes/ }).click();
+  await ordersSummary.getByRole('button', { name: 'Ver Cotizaciones', exact: true }).click();
+  await expect(ordersSummary).toHaveCount(0);
+  await expect(page).toHaveURL(/vista=solicitudes/);
+  await page.goBack();
+  await badges.getByRole('button', { name: /5 en cesta/ }).click();
+  await page.getByRole('dialog', { name: /^En tu cesta/ }).getByRole('button', { name: 'Ir a la cesta' }).click();
+  await expect(basket(page)).toBeVisible();
+  await page.goBack();
 
   // Mis repuestos: the catalog of what is in the cesta and/or the open orders, filtered by the server.
   const mine = page.getByRole('complementary', { name: 'Filtros del catálogo', exact: true }).getByRole('group', { name: 'Mis repuestos', exact: true });
@@ -360,4 +400,61 @@ test('a quantity typed in the cesta is saved when typing pauses, when the page i
   await quantity().fill('10000');
   await page.goBack();
   await expect.poll(saved).toBe(9999);  // never above 9.999
+});
+
+test('the En cesta summary edits a line, swaps it for another supplier or article of the same SKU and takes it out', async ({ page }) => {
+  const item = (id: string, codigo: string, brand = 'MARCA DE PRUEBA') => ({ id, codigo, brand, description: sharedPart.description });
+  const offers = { [sharedPart.id]: [
+    { ...supplierA, items: [item('swap-item-a', 'A-100'), item('swap-item-a2', 'A-200', 'OTRA MARCA')] },
+    { ...supplierB, items: [item('swap-item-b', 'B-100')] },
+    { supplier_id: accounts[0].id, supplier_name: 'MI CUENTA', in_stock: true, items: [item('own-item', 'PROPIO-1')] },  // the account's own: never offered
+  ] };
+  const draft = [line(sharedPart, supplierA, 'swap-item-a', 'A-100', 2), line(sharedPart, supplierB, 'swap-item-b', 'B-100', 3)];
+  await mockClient(page, [sharedPart], offers);
+  const cesta = await fakeServerBasket(page, { known: draft, parts: [sharedPart], offers });
+  await seedDrafts(page, { [accounts[0].id]: draft });
+  await page.goto('/');
+  const card = page.getByRole('article', { name: `Repuesto ${sharedPart.sku}`, exact: true });
+  await card.getByRole('button', { name: /5 en cesta/ }).click();
+  const summary = page.getByRole('dialog', { name: /^En tu cesta/ });
+  const saved = () => (cesta.lines[accounts[0].id] || []).map(line => [line.offer.selected_item!.codigo, line.quantity]).sort();
+
+  // Its quantity, typed in place; Escape undoes the typing and leaves the summary open.
+  const quantityB = summary.getByLabel(`Cantidad de B-100 de ${supplierB.supplier_name}`, { exact: true });
+  await quantityB.fill('9');
+  await quantityB.press('Escape');
+  await expect(summary).toBeVisible();
+  await expect(quantityB).toHaveValue('3');
+  await quantityB.fill('4');
+  await expect.poll(saved).toEqual([['A-100', 2], ['B-100', 4]]);
+  await expect(card.getByRole('button', { name: /6 en cesta/ })).toBeVisible();
+
+  // Cambiar: the SKU's other articles and suppliers (not the current one, never the account's own); the quantity goes along.
+  await summary.getByRole('button', { name: `Cambiar A-100 de ${supplierA.supplier_name}`, exact: true }).click();
+  const options = summary.getByRole('group', { name: `Otras opciones para A-100 de ${supplierA.supplier_name}`, exact: true });
+  await expect(options.getByRole('button', { name: /^Elegir/ })).toHaveCount(2);
+  await expect(options.getByRole('button', { name: 'Elegir PROPIO-1 de MI CUENTA' })).toHaveCount(0);
+  await options.getByRole('button', { name: `Elegir A-200 de ${supplierA.supplier_name}`, exact: true }).click();
+  await expect.poll(saved).toEqual([['A-200', 2], ['B-100', 4]]);
+  await expect(summary.getByRole('listitem').filter({ hasText: 'A-200 · OTRA MARCA' })).toBeVisible();
+  await expect(summary.getByRole('status').filter({ hasText: `A-100 de ${supplierA.supplier_name} se cambió por A-200 de ${supplierA.supplier_name}.` })).toBeVisible();  // said in the dialog
+  await expect(summary.getByRole('button', { name: `Cambiar A-200 de ${supplierA.supplier_name}`, exact: true })).toBeFocused();  // the keyboard stays on the line
+  // Onto a line already in the cesta, the quantities add up.
+  await summary.getByRole('button', { name: `Cambiar A-200 de ${supplierA.supplier_name}`, exact: true }).click();
+  await expect(summary.getByRole('group', { name: `Otras opciones para A-200 de ${supplierA.supplier_name}`, exact: true }).getByRole('listitem')
+    .filter({ hasText: 'Ya está en tu cesta: las cantidades se suman' })).toContainText('B-100');
+  const writes = cesta.changes.length;
+  await summary.getByRole('button', { name: `Elegir B-100 de ${supplierB.supplier_name}`, exact: true }).click();
+  await expect.poll(saved).toEqual([['B-100', 6]]);
+  // One change to the server: the old line out and its units added onto the line already there (brought up to date, as from the catalog).
+  expect(cesta.changes.slice(writes).map(write => write.changes)).toEqual([[{ supplier_item_id: 'swap-item-a2', quantity: 0, mode: 'set' },
+    { supplier_item_id: 'swap-item-b', quantity: 2, mode: 'add', expected_part_id: sharedPart.id }]]);
+  await expect(summary).toContainText('6 unidades en tu cesta, con 1 proveedor.');
+
+  // Quitar takes it out of the cesta.
+  await summary.getByRole('button', { name: `Quitar B-100 de ${supplierB.supplier_name} de la cesta`, exact: true }).click();
+  await expect.poll(saved).toEqual([]);
+  await expect(summary).toContainText('Ya no tienes este repuesto en tu cesta.');
+  await expect(summary.getByRole('button', { name: 'Cerrar', exact: true })).toBeFocused();  // nothing left to go on from
+  await expect(card.getByRole('button', { name: /en cesta/ })).toHaveCount(0);
 });

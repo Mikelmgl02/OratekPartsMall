@@ -19,6 +19,8 @@ import AccountMenu from './account-menu';
 import PartDetail from './part-detail';
 import Basket from './basket';
 import ClientRequests from './client-requests';
+import DealDetail from './deal-detail';
+import { BasketSummary, OrdersSummary } from './part-units-summary';
 import ClientActivity from './client-activity';
 import PurchaseHistory from './purchase-history';
 import Wishlist from './wishlist';
@@ -73,6 +75,9 @@ export default function Catálogo() {
   // The filter Solicitudes opens on: ?estado=por-recibir (the Recibido reminder's Ver todas) opens Por recibir.
   const [sentStatus, setSentStatus] = useState<RequestStatusFilter>('');
   const [detail, setDetail] = useState<Part | null>(null);
+  // A card's En cesta / En órdenes summary, and an order opened from the latter.
+  const [unitsSummary, setUnitsSummary] = useState<{ kind: 'cesta' | 'ordenes'; part: Part } | null>(null);
+  const [openedOrder, setOpenedOrder] = useState<{ id: string; reference: string } | null>(null);
   const [search, setSearch] = useState('');
   const [appliedSearch, setAppliedSearch] = useState('');
   const [filters, setFilters] = useState<CatalogFilters>(emptyFilters);
@@ -218,7 +223,7 @@ export default function Catálogo() {
       const params = new URL(window.location.href).searchParams, destination = params.get('vista');
       setBasketOpen(destination === 'cesta'); setSentOpen(destination === 'solicitudes'); setWishlistOpen(destination === 'favoritos'); setPurchasesOpen(destination === 'compras'); setActivityOpen(destination === 'actividad');
       setSentStatus(destination === 'solicitudes' && params.get('estado') === 'por-recibir' ? 'delivered' : '');
-      setView(destination === 'proveedor' ? 'inventory' : 'catalog'); setDetail(null);
+      setView(destination === 'proveedor' ? 'inventory' : 'catalog'); setDetail(null); setUnitsSummary(null); setOpenedOrder(null);
     };
     restorePage();
     window.addEventListener('popstate', restorePage);
@@ -372,18 +377,44 @@ export default function Catálogo() {
   }
   // The difference between two cestas as server changes: units added from the catalog, quantities set or articles taken out on the
   // cesta's page. Shown at once; the server's answer to the latest change replaces it, and a refusal brings back the server's cesta.
-  function saveBasket(before: BasketLine[], next: BasketLine[], added?: { line: BasketLine; units: number }) {
+  // explicit: the changes to send as they are, in place of the difference (a line moved onto one already in the cesta adds its units there).
+  function saveBasket(before: BasketLine[], next: BasketLine[], added?: { line: BasketLine; units: number }, explicit?: { supplier_item_id?: string; quantity: number; mode: string; expected_part_id?: string }[]) {
     const id = (line: BasketLine) => line.offer.selected_item?.id;
-    const changes = added
+    const changes = explicit ?? (added
       ? [{ supplier_item_id: id(added.line), quantity: added.units, mode: 'add', expected_part_id: added.line.part.id }]
       : [...before.filter(line => !next.some(other => id(other) === id(line))).map(line => ({ supplier_item_id: id(line), quantity: 0, mode: 'set' })),
-         ...next.filter(line => before.find(other => id(other) === id(line))?.quantity !== line.quantity).map(line => ({ supplier_item_id: id(line), quantity: line.quantity, mode: 'set', expected_part_id: line.part.id }))];
+         ...next.filter(line => before.find(other => id(other) === id(line))?.quantity !== line.quantity).map(line => ({ supplier_item_id: id(line), quantity: line.quantity, mode: 'set', expected_part_id: line.part.id }))]);
     if (!changes.length || changes.some(change => !change.supplier_item_id)) return;
     setLines(next);
     const change = ++basketChange.current, key = basketKey, path = basketPath;
     basketQueue.current = basketQueue.current.then(() => request<ServerBasket>(path, { method: 'POST', body: JSON.stringify({ changes }) })
       .then(data => { if (change === basketChange.current && activeBasketKey.current === key) setLines(data.lines); })
       .catch(caught => { setNotice(caught instanceof Error ? caught.message : 'No se pudo guardar tu cesta.'); if (activeBasketKey.current === key) void reloadBasket(); }));
+  }
+  // From a card's En cesta summary: a line's quantity, taking it out, or moving it to another supplier or article of the same SKU (its quantity
+  // goes along; onto a line already in the cesta, they add up). One change to the server: the old line out and the new one in, together.
+  function setLineQuantity(key: string, quantity: number) { updateBasket(currentBasket.map(line => line.key === key ? { ...line, quantity } : line)); }
+  function removeLine(key: string) { updateBasket(currentBasket.filter(line => line.key !== key)); }
+  function replaceLine(key: string, part: Part, offer: Offer) {
+    const from = currentBasket.find(line => line.key === key);
+    if (!from || loadedBasketKey !== basketKey) return;
+    if (!preview && offer.supplier_id === accountId) { setNotice('Es tu propio inventario: no puedes pedirte una cotización a ti mismo.'); return; }
+    if (serverBasket && !offer.selected_item) { setNotice('Elige el artículo del proveedor para tu cesta.'); return; }
+    const target = `${part.id}:${offer.supplier_id}${offer.selected_item ? `:${offer.selected_item.id}` : ''}`;
+    const same = (line: BasketLine) => line.key !== key && line.offer.supplier_id === offer.supplier_id
+      && (offer.selected_item ? line.offer.selected_item?.id === offer.selected_item.id : !line.offer.selected_item && line.key === target);
+    const into = currentBasket.find(same);
+    const { items: _, ...supplier } = offer;
+    const moved: BasketLine = into ? { ...into, part, offer: supplier, quantity: Math.min(9999, into.quantity + from.quantity) }
+      : { key: target, part, offer: supplier, quantity: from.quantity, catalog_part_id: part.id, listed: true };
+    const next = currentBasket.flatMap(line => line.key === key ? (into ? [] : [moved]) : line === into ? [moved] : [line]);
+    // Onto a line already in the cesta its units are added on the server (as choosing it in the catalog does: the line comes up to date, and
+    // units WhatsApp added meanwhile stay), together with taking the old line out.
+    if (serverBasket && into && from.offer.selected_item && offer.selected_item) saveBasket(currentBasket, next, undefined, [
+      { supplier_item_id: from.offer.selected_item.id, quantity: 0, mode: 'set' },
+      { supplier_item_id: offer.selected_item.id, quantity: from.quantity, mode: 'add', expected_part_id: part.id }]);
+    else updateBasket(next);
+    setNotice(`${from.offer.selected_item?.codigo || part.sku} de ${from.offer.supplier_name} se cambió por ${offer.selected_item?.codigo || part.sku} de ${offer.supplier_name}.`);
   }
   function addToBasket(part: Part, offer: Offer, quantity: number) {
     if (loadedBasketKey !== basketKey || !Number.isFinite(quantity)) return;
@@ -438,7 +469,7 @@ export default function Catálogo() {
     if (next !== `${window.location.pathname}${window.location.search}${window.location.hash}`) window.history[replace ? 'replaceState' : 'pushState'](window.history.state, '', next);
     setBasketOpen(destination === 'cesta'); setSentOpen(destination === 'solicitudes'); setWishlistOpen(destination === 'favoritos');
     setPurchasesOpen(destination === 'compras'); setActivityOpen(destination === 'actividad'); setSentStatus('');
-    if (destination) { setDetail(null); viewport.current?.scrollTo({ top: 0, behavior: 'instant' }); }
+    if (destination) { setDetail(null); setUnitsSummary(null); setOpenedOrder(null); viewport.current?.scrollTo({ top: 0, behavior: 'instant' }); }
   }
   function setBasketPage(open: boolean) { setClientPage(open ? 'cesta' : null); }
   function requestSent(receipt: RequestSubmissionResult, remaining: BasketLine[]) {
@@ -448,7 +479,7 @@ export default function Catálogo() {
   }
   function explore() { setBasketPage(false); setView('catalog'); setTimeout(() => { document.getElementById('catalog')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); searchRef.current?.focus({ preventScroll: true }); }, 20); }
   function selectAccount(id: string) {
-    setAccountId(id); setView('catalog'); setDetail(null); setPage(1); setSentStatus('');  // a filter from the URL went with it
+    setAccountId(id); setView('catalog'); setDetail(null); setUnitsSummary(null); setOpenedOrder(null); setPage(1); setSentStatus('');  // a filter from the URL went with it
     const url = new URL(window.location.href);
     if (url.searchParams.get('vista') === 'proveedor') url.searchParams.delete('vista');
     for (const key of ['seccion', 'cuenta', 'pestana', 'cliente', 'estado']) url.searchParams.delete(key);
@@ -457,7 +488,7 @@ export default function Catálogo() {
   }
   async function logout() {
     sessionGeneration.current += 1;
-    try { await forgetPush(); await request('/api/session', { method: 'DELETE' }); inboxChanged(); sessionGeneration.current += 1; setAuthenticated(false); setUser(null); setAccounts([]); setAccountId(''); setView('catalog'); setDetail(null); setBasketPage(false); setError(''); }
+    try { await forgetPush(); await request('/api/session', { method: 'DELETE' }); inboxChanged(); sessionGeneration.current += 1; setAuthenticated(false); setUser(null); setAccounts([]); setAccountId(''); setView('catalog'); setDetail(null); setUnitsSummary(null); setOpenedOrder(null); setBasketPage(false); setError(''); }
     catch (error) { setNotice(error instanceof Error ? error.message : 'No se pudo cerrar la sesión.'); }
   }
   const totalParts = preview ? visibleParts.length : catalog.count;
@@ -527,7 +558,7 @@ export default function Catálogo() {
         <div className="catalog-results-column">
         {error && <div className="notice error" role="alert">{error}<button onClick={() => {setRevision(revision+1); loadSession().catch(error => setError(error.message));}}>Intentar de nuevo</button></div>}
         <div className="catalog-results" role="region" aria-label="Resultados del catálogo" aria-busy={busy || initialLoading}>
-        {initialLoading || (busy && !visibleParts.length) ? <><span className="sr-only" role="status">Cargando el catálogo…</span><div className={`parts-grid ${listView ? 'list-view' : ''}`} aria-hidden="true">{Array.from({length:6}, (_, index) => <div className="part-card skeleton-card" key={index}><CatalogSkeleton/></div>)}</div></> : visibleParts.length ? <div className={`parts-grid ${listView ? 'list-view' : ''}`}>{visibleParts.map(part => <CatalogCard key={part.id} part={part} preview={preview} own={ownCatalog} busy={busy} onOpen={() => openPart(part)} saved={wishlist.ids.has(part.id)} saving={wishlist.pending.has(part.id)} onFavorite={() => toggleFavorite(part)} inBasket={basketUnits.get(part.id) || 0} inOrders={ordered[part.id]}/>)}</div> : (!authenticated || accountId) && !error ? <div className="empty-state"><Search size={35}/><h3>{filterCount(filters) ? 'No encontramos repuestos con estos criterios.' : completedSearch ? 'No encontramos repuestos para esta búsqueda.' : ownCatalog ? 'Aún no tienes artículos en el catálogo.' : 'Tu catálogo está listo para crecer.'}</h3><p>{filterCount(filters) ? 'Quita algún filtro o cambia tu búsqueda para ver más repuestos.' : completedSearch ? (ownCatalog ? 'Solo buscamos entre tus artículos. Prueba con otro nombre o código.' : 'Prueba con otro nombre, marca o código de repuesto.') : ownCatalog ? 'Tus artículos aparecen aquí cuando el catálogo reconoce los códigos de tu inventario.' : 'Los repuestos aprobados aparecerán aquí cuando tu equipo los agregue.'}</p>{filterCount(filters) > 0 ? <button className="button primary" onClick={() => changeFilters(emptyFilters)}>Limpiar filtros<ArrowRight size={16}/></button> : completedSearch ? <button className="button primary" onClick={() => applySearch('')}>Limpiar búsqueda<ArrowRight size={16}/></button> : ownCatalog && <button className="button primary" onClick={openSupplier}>Ir a tu inventario<ArrowRight size={16}/></button>}</div> : null}
+        {initialLoading || (busy && !visibleParts.length) ? <><span className="sr-only" role="status">Cargando el catálogo…</span><div className={`parts-grid ${listView ? 'list-view' : ''}`} aria-hidden="true">{Array.from({length:6}, (_, index) => <div className="part-card skeleton-card" key={index}><CatalogSkeleton/></div>)}</div></> : visibleParts.length ? <div className={`parts-grid ${listView ? 'list-view' : ''}`}>{visibleParts.map(part => <CatalogCard key={part.id} part={part} preview={preview} own={ownCatalog} busy={busy} onOpen={() => openPart(part)} saved={wishlist.ids.has(part.id)} saving={wishlist.pending.has(part.id)} onFavorite={() => toggleFavorite(part)} inBasket={basketUnits.get(part.id) || 0} inOrders={ordered[part.id]} onSummary={kind => setUnitsSummary({ kind, part })}/>)}</div> : (!authenticated || accountId) && !error ? <div className="empty-state"><Search size={35}/><h3>{filterCount(filters) ? 'No encontramos repuestos con estos criterios.' : completedSearch ? 'No encontramos repuestos para esta búsqueda.' : ownCatalog ? 'Aún no tienes artículos en el catálogo.' : 'Tu catálogo está listo para crecer.'}</h3><p>{filterCount(filters) ? 'Quita algún filtro o cambia tu búsqueda para ver más repuestos.' : completedSearch ? (ownCatalog ? 'Solo buscamos entre tus artículos. Prueba con otro nombre o código.' : 'Prueba con otro nombre, marca o código de repuesto.') : ownCatalog ? 'Tus artículos aparecen aquí cuando el catálogo reconoce los códigos de tu inventario.' : 'Los repuestos aprobados aparecerán aquí cuando tu equipo los agregue.'}</p>{filterCount(filters) > 0 ? <button className="button primary" onClick={() => changeFilters(emptyFilters)}>Limpiar filtros<ArrowRight size={16}/></button> : completedSearch ? <button className="button primary" onClick={() => applySearch('')}>Limpiar búsqueda<ArrowRight size={16}/></button> : ownCatalog && <button className="button primary" onClick={openSupplier}>Ir a tu inventario<ArrowRight size={16}/></button>}</div> : null}
         {authenticated && catalog.count > 0 && <div className="pagination"><span>{catalog.count} repuestos</span><div><button className="button soft small" onClick={() => setPage(page-1)} disabled={!catalog.previous || busy}>Anterior</button><span>Página {catalogSnapshot?.page ?? page}</span><button className="button soft small" onClick={() => setPage(page+1)} disabled={!catalog.next || busy}>Siguiente</button></div></div>}
         </div>
         </div>
@@ -547,6 +578,15 @@ export default function Catálogo() {
     </footer>
     {filtersOpen && <Modal title="Filtrar repuestos" drawer className="catalog-filter-drawer" onClose={() => setFiltersOpen(false)}><CatalogFilterPanel facets={facets} filters={filters} loading={busy || initialLoading} onChange={changeFilters} suppliers={!ownCatalog} mine={mineCounts}/><div className="filter-drawer-footer"><button className="button primary" onClick={() => setFiltersOpen(false)}>{busy ? 'Ver resultados · Actualizando…' : `Ver ${totalParts.toLocaleString('es')} ${totalParts === 1 ? 'repuesto' : 'repuestos'}`}<ArrowRight size={16}/></button></div></Modal>}
     {authOpen && <AuthModal initialMode={authMode} initialUsername={authUsername} onClose={() => setAuthOpen(false)} onSuccess={async () => {applySearch(''); changeFilters(emptyFilters); setView('catalog'); await loadSession();}}/>}
+    {unitsSummary?.kind === 'cesta' && <BasketSummary part={unitsSummary.part} lines={currentBasket.filter(line => (line.catalog_part_id || line.part.id) === unitsSummary.part.id)}
+      basket={currentBasket} preview={preview} accountId={accountId} onQuantity={setLineQuantity} onRemove={removeLine} onReplace={(key, offer) => replaceLine(key, unitsSummary.part, offer)}
+      notice={notice} onNoticeClose={() => setNotice('')}
+      onClose={() => setUnitsSummary(null)} onBasket={() => { setUnitsSummary(null); setBasketPage(true); }}/>}
+    {unitsSummary?.kind === 'ordenes' && account && <OrdersSummary part={unitsSummary.part} account={account} onClose={() => setUnitsSummary(null)}
+      onOpenOrder={order => { setUnitsSummary(null); setOpenedOrder({ id: order.id, reference: order.reference }); }}
+      onOrders={() => { setUnitsSummary(null); setClientPage('solicitudes'); }}/>}
+    {openedOrder && account && <DealDetail key={openedOrder.id} account={account} orderId={openedOrder.id} reference={openedOrder.reference} side="client"
+      onClose={() => { setOpenedOrder(null); setOpenUnitsRevision(value => value + 1); }} onChanged={() => setOpenUnitsRevision(value => value + 1)}/>}
     {detail && <PartDetail key={`${accountId}:${detail.id}`} part={detail} preview={preview} canQuote={canQuote} accountId={accountId} basketLines={currentBasket} onClose={() => setDetail(null)} onAdd={(offer, quantity) => addToBasket(detail, offer, quantity)} onAsk={serverBasket ? offer => void ask(detail, offer) : undefined} onBasket={() => setBasketPage(true)} saved={wishlist.ids.has(detail.id)} saving={wishlist.pending.has(detail.id)} onFavorite={() => toggleFavorite(detail)}/>}
     {helpOpen && <Modal title="Una forma más fácil de encontrar repuestos" onClose={() => setHelpOpen(false)}><div className="how-steps">{[{Icon: Search, title: 'Encuentra tu repuesto', text: 'Busca en el catálogo compartido por nombre, marca o código.'}, {Icon: Store, title: 'Elige tus proveedores', text: 'Consulta quién tiene existencias y agrega repuestos a tu cesta.'}, {Icon: LockKeyhole, title: 'Solicita una cotización privada', text: 'Cada proveedor cotizará sus propios repuestos. Los precios serán privados.'}, {Icon: Truck, title: 'Confirma tu acuerdo', text: 'Revisa la cotización, solicita ajustes si los necesitas y confirma las condiciones con el proveedor.'}].map(({Icon, title, text}, i) => <div key={title}><span className="round-icon"><Icon size={21}/></span><div><small>0{i+1}</small><h3>{title}</h3><p>{text}</p></div></div>)}</div><div className="notice">Envía tu cesta para crear órdenes por proveedor. El proveedor revisa y cotiza; tú confirmas o solicitas ajustes. Cuando ambas partes confirman, el acuerdo queda cerrado y aparece en tu historial.</div><p className="private-note">Estadísticas para mejorar el catálogo: al iniciar sesión registramos tus visitas, búsquedas, repuestos consultados y artículos agregados a la cesta. Solo los superusuarios pueden consultar estas estadísticas; no usamos rastreadores externos.</p></Modal>}
     {/* Reminders, bottom left, one above the other: Productos nuevos (administrators) and the orders waiting for the person's Recibido. */}
@@ -554,6 +594,6 @@ export default function Catálogo() {
       {user.is_superuser && <NewProductsSnackbar key={user.id} userId={user.id}/>}
       <ReceiptReminderSnackbar key={user.id} userId={user.id}/>
     </div>}
-    {notice && <div className="toast" role="status"><Check size={17}/>{notice}<button aria-label="Cerrar notificación" onClick={() => setNotice('')}><X size={14}/></button></div>}
+    {notice && unitsSummary?.kind !== 'cesta' && <div className="toast" role="status"><Check size={17}/>{notice}<button aria-label="Cerrar notificación" onClick={() => setNotice('')}><X size={14}/></button></div>}
   </>;
 }

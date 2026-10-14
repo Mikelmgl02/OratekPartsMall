@@ -12,9 +12,9 @@ from rest_framework.test import APITestCase
 from . import test_deals as deal_tests
 from .check_stock_ledger import check
 from .deal_views import DECIDE_DENIED, DealActionSerializer
-from .models import Membership, Role, StockEntry, SupplierItem, User
+from .models import Membership, Part, Role, StockEntry, SupplierItem, User
 from .pricing_models import SupplierPricingSettings
-from .request_models import DealEvent, DealShortfall, StockReservation, SupplierRequest
+from .request_models import DealEvent, DealShortfall, StockReservation, SupplierRequest, SupplierRequestLine
 from .test_factories import make_line, make_variant
 
 
@@ -100,11 +100,15 @@ class DealLifecycleTests(APITestCase):
         self.assertEqual(open_units()[part]['units'], 3)  # a shortfall counts once the client accepts it
         self.assertEqual(self.buyer_does(order, 'accept_shortfall', quotation).status_code, 200)
         self.assertEqual(open_units(), {part: {'units': 1, 'orders': 1}})
+        [entry] = self.client.get(f'/api/v1/accounts/{self.client_account.pk}/open-units/{part}/').data['orders']
+        self.assertEqual((entry['units'], entry['requested'], sorted((line['codigo'], line['requested'], line['units']) for line in entry['lines'])),
+                         (1, 5, [('58411-1R000-G', 3, 1), ('58411-1R000-KSM', 2, 0)]))  # agreed less the accepted shortfall, beside what was asked
         self.assertEqual(self.supplier(order, 'process', quotation).status_code, 200)
         self.assertEqual(self.supplier(order, 'deliver', quotation).status_code, 200)
         self.assertEqual(open_units()[part]['units'], 1)  # delivered still waits for the client's Recibido
         self.assertEqual(self.buyer_does(order, 'receive', quotation).status_code, 200)
         self.assertEqual(open_units(), {})
+        self.assertEqual(self.client.get(f'/api/v1/accounts/{self.client_account.pk}/open-units/{part}/').data['orders'], [])  # received: none open
         self.assertEqual(self.client.get(f'{catalog}&mine=ordenes').data['count'], 0)
         self.client.force_authenticate(self.seller_a)  # a client's own figures only
         self.assertEqual(self.client.get(f'/api/v1/accounts/{self.supplier_a.pk}/open-units/').status_code, 403)
@@ -130,6 +134,32 @@ class DealLifecycleTests(APITestCase):
         self.assertEqual(self.buyer_does(second, 'accept', quoted.data['quotation']['id']).status_code, 200)
         # The second order quoted none of the part: it holds no unit of it, so it is not one of its orders.
         self.assertEqual(open_units(), {str(self.part.pk): {'units': 5, 'orders': 1}, str(other.pk): {'units': 1, 'orders': 1}})
+        # Its summary: the open orders that hold units of the SKU, newest first, with the lines they come from.
+        summary = self.client.get(f'/api/v1/accounts/{self.client_account.pk}/open-units/{self.part.pk}/').data
+        [entry] = summary['orders']
+        self.assertEqual({key: entry[key] for key in ('id', 'reference', 'status', 'units', 'requested')},
+                         {'id': str(first.pk), 'reference': first.reference, 'status': 'handshaked', 'units': 5, 'requested': 5})
+        self.assertEqual((entry['supplier']['name'], sorted((line['codigo'], line['requested'], line['units']) for line in entry['lines'])),
+                         ('PROVEEDOR A', [('58411-1R000-G', 3, 3), ('58411-1R000-KSM', 2, 2)]))
+        # A line on a SKU that merged into the card's SKU counts under the card's SKU, in the badge and in its summary.
+        old = Part.objects.create(sku='OLD-SKU', name='VIEJO', active=False, merged_into=self.part)
+        SupplierRequestLine.objects.filter(request=first, supplier_item=self.item_a2).update(part=old, sku=old.sku)
+        self.assertEqual(open_units()[str(self.part.pk)], {'units': 5, 'orders': 1})
+        [entry] = self.client.get(f'/api/v1/accounts/{self.client_account.pk}/open-units/{self.part.pk}/').data['orders']
+        self.assertEqual((entry['id'], entry['units']), (str(first.pk), 5))
+        [entry] = self.client.get(f'/api/v1/accounts/{self.client_account.pk}/open-units/{other.pk}/').data['orders']
+        self.assertEqual((entry['id'], entry['units']), (str(second.pk), 1))
+        # A newer order, still pending, holds what it asked for and comes first; the second order (none of the part) stays out.
+        response = self.submit(self.payload([(self.item_a, 4)]))
+        self.assertEqual(response.status_code, 200, response.data)
+        third = SupplierRequest.objects.get(pk=response.data['requests'][0]['id'])
+        orders = self.client.get(f'/api/v1/accounts/{self.client_account.pk}/open-units/{self.part.pk}/').data['orders']
+        self.assertEqual([(order['id'], order['status'], order['units'], order['requested']) for order in orders],
+                         [(str(third.pk), 'pending', 4, 4), (str(first.pk), 'handshaked', 5, 5)])
+        self.client.force_authenticate(self.seller_a)
+        self.assertEqual(self.client.get(f'/api/v1/accounts/{self.supplier_a.pk}/open-units/{self.part.pk}/').status_code, 403)  # a client's own
+        self.assertEqual(self.client.get(f'/api/v1/accounts/{self.client_account.pk}/open-units/{self.part.pk}/').status_code, 404)  # not a member
+        self.client.force_authenticate(self.buyer)
         self.assertEqual(self.client.put(f'/api/v1/wishlist/{other.pk}/').status_code, 200)
         other.estado = 'retirada'
         other.save()

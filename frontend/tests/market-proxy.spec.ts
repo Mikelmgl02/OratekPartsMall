@@ -17,12 +17,14 @@ test('the catalog passes Mis repuestos and the active account on, and nothing it
   expect(forwardedQuery('catalog', new URLSearchParams('account=not-a-uuid')).has('account')).toBe(false);
 });
 
-test('open-units is a readable market route', async ({ request }) => {
+test('open-units and one SKU\'s open orders are readable market routes', async ({ request }) => {
   const units = `/api/market/accounts/${account}/open-units`;
   expect((await request.get(units)).status()).toBe(401);  // a session first
   // With a session cookie the proxy passes it on (Django then answers for the token); an unknown route stops at the proxy.
   const foreign = { Cookie: 'partsmall_session=invalid-test-token' };
   expect(await (await request.get(units, { headers: foreign })).text()).not.toContain('La ruta solicitada no existe');
+  expect(await (await request.get(`${units}/${account}`, { headers: foreign })).text()).not.toContain('La ruta solicitada no existe');  // one SKU's orders
+  expect((await request.get(`${units}/${account}`)).status()).toBe(401);
   expect((await request.get(`${units}/extra`, { headers: foreign })).status()).toBe(404);
   expect((await request.post(units, { headers: { ...foreign, Origin: 'http://localhost:8080' }, data: {} })).status()).toBe(404);  // read only
 });

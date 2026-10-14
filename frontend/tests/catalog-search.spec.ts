@@ -203,6 +203,10 @@ test('typing previews the first results without searching; Enter or the last row
   await list.getByRole('option').first().click();
   await expect(page.getByRole('dialog').getByRole('heading', { name: 'SUGERIDO-001', exact: true })).toBeVisible();
   expect(searches).toEqual(['', 'disco', 'disco freno']);
+  // Closing the part does not open the suggestions again.
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(list).toBeHidden();
 });
 
 test('an obsolete delayed search cannot replace newer accepted results', async ({ page }) => {

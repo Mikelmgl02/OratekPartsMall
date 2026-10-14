@@ -58,7 +58,8 @@ export default function StoreSearch({ value, onChange, onSearch, onOpen, filters
   const total = parts.length + 1;
 
   function search() { setOpen(false); setActive(-1); onSearch(value); }
-  function choose(part: Part) { setOpen(false); setActive(-1); onOpen(part); }
+  // The search box lets go of focus first: closing the part's dialog hands focus back to what opened it, which would open the list again.
+  function choose(part: Part) { setOpen(false); setActive(-1); inputRef.current?.blur(); onOpen(part); }
   function keyDown(event: KeyboardEvent<HTMLInputElement>) {
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
