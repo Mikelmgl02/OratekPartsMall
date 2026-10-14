@@ -11,6 +11,8 @@ media/
 # Chat files on a machine without Spaces (CHAT_MEDIA_STORAGE=local): private, never committed.
 private_media/
 docker_backups/
+# The catalog write freeze of a deploy window (mall.maintenance): local state, never committed.
+.maintenance/
 node_modules/
 .next/
 *.tsbuildinfo

@@ -10,13 +10,18 @@ if not SECRET_KEY:
     SECRET_KEY = "local-development-only-do-not-deploy"
 ALLOWED_HOSTS = os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
 INSTALLED_APPS = ["config.apps.SuperuserAdminConfig", "django.contrib.auth", "django.contrib.contenttypes", "django.contrib.sessions", "django.contrib.messages", "django.contrib.staticfiles", "rest_framework", "rest_framework.authtoken", "drf_spectacular", "mall"]
-MIDDLEWARE = ["django.middleware.security.SecurityMiddleware", "django.contrib.sessions.middleware.SessionMiddleware", "django.middleware.common.CommonMiddleware", "django.middleware.csrf.CsrfViewMiddleware", "django.contrib.auth.middleware.AuthenticationMiddleware", "django.contrib.messages.middleware.MessageMiddleware", "django.middleware.clickjacking.XFrameOptionsMiddleware"]
+MIDDLEWARE = ["django.middleware.security.SecurityMiddleware", "mall.maintenance.MaintenanceFreezeMiddleware", "django.contrib.sessions.middleware.SessionMiddleware", "django.middleware.common.CommonMiddleware", "django.middleware.csrf.CsrfViewMiddleware", "django.contrib.auth.middleware.AuthenticationMiddleware", "django.contrib.messages.middleware.MessageMiddleware", "django.middleware.clickjacking.XFrameOptionsMiddleware"]
 ROOT_URLCONF = "config.urls"
 TEMPLATES = [{"BACKEND": "django.template.backends.django.DjangoTemplates", "DIRS": [], "APP_DIRS": True, "OPTIONS": {"context_processors": ["django.template.context_processors.request", "django.contrib.auth.context_processors.auth", "django.contrib.messages.context_processors.messages"]}}]
 WSGI_APPLICATION = "config.wsgi.application"
 DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": BASE_DIR / "db.sqlite3"}}
+
 if os.getenv("POSTGRES_DB"):
     DATABASES = {"default": {"ENGINE": "django.db.backends.postgresql", "NAME": os.environ["POSTGRES_DB"], "USER": os.getenv("POSTGRES_USER", "partsmall"), "PASSWORD": os.getenv("POSTGRES_PASSWORD", ""), "HOST": os.getenv("POSTGRES_HOST", "localhost"), "PORT": os.getenv("POSTGRES_PORT", "5432")}}
+# The main checkout: BASE_DIR, or the repository a .claude/worktrees/<name> checkout belongs to, so code run from a worktree sees the
+# same freeze. MAINTENANCE_DIR holds the freeze files (mall.maintenance): /app/.maintenance in the containers.
+MAIN_CHECKOUT = BASE_DIR.parents[2] if (BASE_DIR.parent.name, BASE_DIR.parent.parent.name) == ("worktrees", ".claude") else BASE_DIR
+MAINTENANCE_DIR = Path(os.getenv("MAINTENANCE_DIR") or MAIN_CHECKOUT / ".maintenance")
 AUTH_USER_MODEL = "mall.User"
 AUTH_PASSWORD_VALIDATORS = [{"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"}, {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"}, {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"}, {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"}]
 LANGUAGE_CODE = "es"
