@@ -107,6 +107,25 @@ h1,h2,h3,h4 { font-family:'Manrope',Arial,sans-serif; }
 .header-actions { display:flex; align-items:center; gap:20px; }
 .basket-button { display:flex; align-items:center; gap:8px; font-size:12px; }
 .basket-count { width:21px; height:21px; border-radius:50%; background:#ecf0e5; display:grid; place-items:center; font-size:10px; font-weight:700; }
+/* The header's Mensajes, Notificaciones and Cesta answer the pointer like Cuenta y listas beside them: its tile fades in (an inset shadow for
+   its edge, so nothing grows) and the icon lifts, the bell swings. 6px is the padding these buttons always had, so nothing moves. */
+.header-actions .basket-button { min-height:44px; padding:5px 6px; border-radius:7px; transition:background-color .15s ease, box-shadow .15s ease; }
+.header-actions .basket-button>svg { transition:transform .18s ease; }
+.header-actions .basket-button[aria-expanded="true"], .header-actions .basket-button[aria-current="page"] { background:#f5f8ef; box-shadow:inset 0 0 0 1px #d8e1cf; }
+.account-menu-trigger { transition:background-color .15s ease, border-color .15s ease; }
+@media(hover:hover) {
+ .header-actions .basket-button:hover { background:#f5f8ef; box-shadow:inset 0 0 0 1px #d8e1cf; }
+ .header-actions .basket-button:hover>svg { transform:translateY(-2px); }
+ .header-actions .inbox-notifications .basket-button:hover>svg { transform:none; animation:header-bell .6s ease; }
+}
+.header-actions .basket-button:active>svg, .header-actions .inbox-notifications .basket-button:active>svg { transform:scale(.92); transition-duration:.06s; }
+@keyframes header-bell { 0%,100% { transform:rotate(0); } 20% { transform:rotate(14deg); } 40% { transform:rotate(-11deg); } 60% { transform:rotate(7deg); } 80% { transform:rotate(-3deg); } }
+.header-actions .inbox-notifications .basket-button>svg { transform-origin:50% 3px; }
+/* A phone's row is tight (no padding, 4px apart): it keeps it, with no tile; the open menu or page shows the state. */
+@media(max-width:760px) {
+ .header-actions .basket-button { padding:0; }
+ .header-actions .basket-button:hover, .header-actions .basket-button[aria-expanded="true"], .header-actions .basket-button[aria-current="page"] { background:none; box-shadow:none; }
+}
 .button { min-height:43px; display:inline-flex; align-items:center; justify-content:center; gap:13px; border-radius:8px; padding:11px 18px; font-weight:600; font-size:12px; border:1px solid transparent; transition:background .2s,transform .2s; white-space:nowrap; }
 .button:not(:disabled):hover { transform:translateY(-1px); }
 .button.dark { background:var(--ink); color:#fff; }

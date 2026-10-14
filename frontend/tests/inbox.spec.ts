@@ -82,6 +82,60 @@ test('signed-out visitors get no inbox; members see unread messages and new noti
   await expect(page.getByRole('button', { name: 'Notificaciones, 2 nuevas', exact: true })).toBeVisible();
 });
 
+test('the header’s Mensajes, Notificaciones and Cesta answer the pointer: a tile fades in, the icon lifts, the bell swings, and nothing moves', async ({ page }) => {
+  await mockInbox(page, { current: pending() });
+  await page.goto('/');
+  const messages = page.getByRole('button', { name: 'Mensajes, 3 sin leer', exact: true });
+  const bell = page.getByRole('button', { name: 'Notificaciones, 2 nuevas', exact: true });
+  const basket = page.getByRole('button', { name: /^Abrir cesta/ });
+  await expect(messages).toBeVisible();
+  // Where the header's icons sit, and the same once the hover rules are taken out: the header as it was before them.
+  const icons = () => page.locator('.header-actions').evaluate(element => [...element.querySelectorAll('svg')].map(svg => Math.round(svg.getBoundingClientRect().left)));
+  const withoutHover = () => page.evaluate(() => {
+    let removed = 0;
+    const strip = (list: CSSRuleList) => { for (let index = list.length - 1; index >= 0; index--) { const rule = list[index];
+      if (rule instanceof CSSMediaRule) strip(rule.cssRules);
+      else if (rule instanceof CSSStyleRule && (/\.header-actions .*\.basket-button/.test(rule.selectorText) || (rule.selectorText === '.account-menu-trigger' && rule.style.transition))) {
+        ((rule.parentRule as CSSGroupingRule | null) ?? rule.parentStyleSheet)!.deleteRule(index); removed++;
+      } } };
+    for (const sheet of document.styleSheets) strip(sheet.cssRules);
+    return removed;
+  });
+  const widths = [1440, 1000, 390];
+  const placed: number[][] = [];
+  for (const width of widths) {
+    await page.setViewportSize({ width, height: 900 });
+    placed.push(await icons());
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `${width}px`).toBe(true);
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect(basket).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await basket.hover();
+  await expect(basket).toHaveCSS('background-color', 'rgb(245, 248, 239)');
+  await expect(basket.locator('svg').first()).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 0, -2)');
+  await messages.hover();
+  await expect(messages).toHaveCSS('background-color', 'rgb(245, 248, 239)');
+  await expect(basket).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await bell.hover();
+  await expect(bell.locator('svg').first()).toHaveCSS('animation-name', 'header-bell');
+  await page.locator('.header-actions').screenshot({ path: '../output/ui/header-hover.png' });
+  // Open, the bell keeps its tile and the menu hangs from the tile's edge.
+  await bell.click();
+  await page.mouse.move(0, 400);
+  await expect(bell).toHaveCSS('background-color', 'rgb(245, 248, 239)');
+  const menu = page.getByRole('region', { name: 'Notificaciones', exact: true });
+  expect(Math.abs((await menu.boundingBox())!.x + (await menu.boundingBox())!.width - ((await bell.boundingBox())!.x + (await bell.boundingBox())!.width))).toBeLessThanOrEqual(1);
+  // A phone keeps its tight row and shows no tile: the menu under the header shows it is open.
+  await page.setViewportSize({ width: 390, height: 900 });
+  await expect(bell).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await page.keyboard.press('Escape');
+  expect(await withoutHover()).toBe(11);
+  for (const [index, width] of widths.entries()) {
+    await page.setViewportSize({ width, height: 900 });
+    expect(await icons(), `${width}px`).toEqual(placed[index]);
+  }
+});
+
 test('a notification opens the panel on its deal: the quotation beside the chat, marked seen and read', async ({ page }) => {
   const summary = { current: pending() };
   const calls = await mockInbox(page, summary);
