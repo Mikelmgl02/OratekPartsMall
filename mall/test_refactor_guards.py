@@ -10,10 +10,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.core.management import call_command
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from config import network_guard
 from config.test_runner import unsafe_test_name
+
+from .refactor import output
 
 MIGRATIONS = Path(__file__).resolve().parent / 'migrations'
 
@@ -98,3 +100,13 @@ class TestDatabaseNameTests(SimpleTestCase):
                                  ('test_live', 'other')):
             self.assertIn('debe empezar por test_', unsafe_test_name({'NAME': configured, 'TEST': {'NAME': name}}, live='test_live'), name)
 
+
+class OutputTests(SimpleTestCase):
+    def test_a_manifest_goes_to_the_main_checkout_or_to_the_rehearsals_folder(self):
+        with patch.dict('os.environ', {'REFACTOR_OUTPUT': ''}):
+            with override_settings(MAIN_CHECKOUT=None, BASE_DIR=Path('/app/.claude/worktrees/refactor-s1')):
+                self.assertEqual(output.manifest_path('s1'), Path('/app/output/refactor/s1/manifest.jsonl'))
+            with override_settings(MAIN_CHECKOUT=None, BASE_DIR=Path('/app')):
+                self.assertEqual(output.stage_dir('s2a'), Path('/app/output/refactor/s2a'))
+        with patch.dict('os.environ', {'REFACTOR_OUTPUT': '/app/output/refactor/s1/rehearsal-20261013-120000/output-refactor/s1'}):
+            self.assertEqual(output.manifest_path('s1'), Path('/app/output/refactor/s1/rehearsal-20261013-120000/output-refactor/s1/manifest.jsonl'))
