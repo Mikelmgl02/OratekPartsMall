@@ -113,6 +113,34 @@ class LinePairTests(TestCase):
         line.save()
         self.assertEqual(stored(line), ('retirada', False))
 
+    def test_active_alone_never_moves_a_line_off_the_catalog(self):
+        draft = make_line('OFF-1', estado='preparacion')
+        for fields in (None, ['active']):
+            line = Part.objects.get(pk=draft.pk)
+            line.active = True
+            with self.subTest(update_fields=fields), self.assertRaises(lines.LineStateError):
+                line.save(update_fields=fields)
+        self.assertEqual(stored(draft), ('preparacion', False))
+        line = Part.objects.get(pk=draft.pk)
+        line.active, line.description = False, 'EN PREPARACION'  # already in step: nothing to refuse
+        line.save()
+        self.assertEqual(stored(line), ('preparacion', False))
+        lines.set_estado(line, 'publicada')  # what moves it
+        self.assertEqual(stored(line), ('publicada', True))
+
+    def test_a_deferred_estado_assigned_since_load_wins_and_save_loads_nothing_more(self):
+        line = make_line('DEFER-1')
+        loaded = Part.objects.only('pk', 'sku').get(pk=line.pk)
+        loaded.estado = 'retirada'
+        loaded.save()
+        self.assertEqual(stored(line), ('retirada', False))
+        loaded = Part.objects.only('pk', 'sku', 'description').get(pk=line.pk)
+        loaded.description = 'SOLO LA DESCRIPCION'
+        loaded.save(update_fields=['description'])
+        self.assertNotIn('active', loaded.__dict__)  # the pair it remembers is read from what it holds, not loaded
+        self.assertNotIn('estado', loaded.__dict__)
+        self.assertEqual(stored(line), ('retirada', False))
+
     def test_repaired_estado_is_the_rule_old_writers_leave(self):
         cases = {(True, None, 'publicada'): ('publicada', True), (False, None, 'publicada'): ('retirada', False),
                  (True, 'X', 'publicada'): ('unificada', False), (False, None, 'unificada'): ('retirada', False),
@@ -267,6 +295,10 @@ class LineWriterFlowTests(APITestCase):
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(response.json()['updated'][0]['estado'], 'retirada')
         self.assertEqual(stored(line), ('retirada', False))
+        line.refresh_from_db()  # recorded as mall.lines.set_estado records a person's decision
+        self.assertEqual((line.version, line.decided_by), (2, self.root))
+        self.assertIsNotNone(line.decided_at)
+        self.assertEqual(line.changed_at, line.decided_at)
         self.assertEqual(post([{'id': str(line.pk), 'active': True}]).json()['updated'][0]['estado'], 'publicada')
         refused = post([{'id': str(draft.pk), 'active': True}])
         self.assertEqual(refused.status_code, 400)
@@ -281,6 +313,39 @@ class LineWriterFlowTests(APITestCase):
         created = self.client.post('/api/v1/management/catalog/', {'sku': 'API-2', 'active': False}, format='json')
         self.assertEqual(created.status_code, 201, created.content)
         self.assertEqual(created.json()['estado'], 'retirada')
+
+    def test_a_caller_of_the_part_serializer_may_choose_the_estado(self):
+        from types import SimpleNamespace
+        from .management import ManagedPartSerializer
+        serializer = ManagedPartSerializer(data={'sku': 'API-3'}, context={'request': SimpleNamespace(user=self.root)})
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        line = serializer.save(estado='preparacion', origen='proveedor')
+        self.assertEqual((stored(line), Part.objects.get(pk=line.pk).origen), (('preparacion', False), 'proveedor'))
+
+    def test_an_import_never_moves_a_line_off_the_catalog(self):
+        draft = make_line('IMP-P', estado='preparacion')
+        for fields in ({'description': 'FILTRO', 'active': True}, {'description': 'FILTRO'}):
+            groups = {draft.sku: {'sku': draft.sku, 'row': 2, 'fields': fields, 'codes': {}}}
+            plan, _ = build_plan(groups, [], 1)
+            self.assertFalse(plan['valid'])
+            self.assertIn('está en preparación y no forma parte del catálogo', plan['errors'][0]['message'])
+        self.assertEqual(stored(draft), ('preparacion', False))
+
+    def test_an_import_issue_for_a_line_off_the_catalog_stays_pending(self):
+        from .models import CatalogImportIssue, CatalogImportJob
+        line = make_line('MR-968365', estado='referencia', origen='biblioteca')
+        job = CatalogImportJob.objects.create(owner=self.root, filename='LINEAS.xlsx', status='completed', expires_at=timezone.now())
+        issue = CatalogImportIssue.objects.create(job=job, row=7, values={**dict.fromkeys(['sku', 'name', 'description', 'code', 'brand', 'active',
+                                                                                             'category', 'subcategory'], ''), 'sku': line.sku},
+                                                  original={}, errors=[{'row': 7, 'column': 'SKU', 'message': 'Revisa la fila.'}])
+        response = self.client.post(f'/api/v1/management/catalog/import/issues/{issue.pk}/', {'values': {'description': 'EJE', 'active': 'NO'}},
+                                    format='json')
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse(response.json()['valid'])
+        self.assertIn('en referencia', str(response.json()['errors']))
+        issue.refresh_from_db()
+        self.assertEqual((issue.status, issue.part_id), ('pending', None))
+        self.assertEqual(stored(line), ('referencia', False))
 
     def test_an_import_with_activo_0_retires_and_activo_1_publishes(self):
         def run(active):
@@ -395,6 +460,21 @@ class LifecycleBackfillTests(TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn('0 filas restauradas · 0 marcas o alias borrados · 0 cambiadas', out)
 
+    def test_rollback_after_two_applies_keeps_a_change_made_between_them(self):
+        self.run_cli('--apply', '--user', self.root.username)
+        Part.objects.filter(pk=self.retired.pk).update(active=True)  # reactivated meanwhile by a writer that only knows active
+        code, out = self.run_cli('--apply', '--user', self.root.username)  # the catch-up publishes it
+        self.assertEqual((code, stored(self.retired)), (0, ('publicada', True)), out)
+        code, out = self.run_cli('--rollback', '--user', self.root.username)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(stored(self.retired), ('retirada', True))  # as the reactivation left it, not retired again
+        self.assertIn('B-RETIRED: cambió entre dos aplicaciones', out)
+        self.assertEqual(stored(self.merged), ('publicada', False))
+        code, out = self.run_cli('--rollback')  # --user is optional here (plan §1.2.3)
+        self.assertEqual(code, 0, out)
+        self.assertIn('0 filas restauradas · 0 marcas o alias borrados · 0 cambiadas', out)
+        self.assertEqual(self.run_cli('--rollback', '--user', 'nadie')[0], 1)
+
     def test_rollback_refuses_while_the_tighten_checks_are_in_place(self):
         with patch.object(s1_lifecycle, 'checks_in_place', return_value=True):
             code, out = self.run_cli('--rollback', '--user', self.root.username)
@@ -408,3 +488,72 @@ class LifecycleBackfillTests(TestCase):
         self.assertEqual(code, 1)
         self.assertIn('otra base', out)
         self.assertEqual(stored(self.merged), ('publicada', False))
+
+
+def suffix(token, attribution, *, confidence='low', status='owner_confirmed', kind='brand'):
+    """A brand TAG row of the code suffix table as catalog_suffixes reads it."""
+    return {'token': token, 'match': 'exact', 'cls': 'TAG', 'tag_kind': kind, 'variant_kind': '', 'attribution': attribution,
+            'creates_company_reference': False, 'scope_overrides': [], 'confidence': confidence, 'status': status,
+            'owner_confirmed': status == 'owner_confirmed', 'alias_of': None, 'notes': ''}
+
+
+class BrandSeedTests(TestCase):
+    """The Brand seed of mall.refactor.s1_lifecycle: the 13 brand columns plus the suffix TAG names that identify one brand."""
+
+    def setUp(self):
+        from .oem_reference_models import OEMCrossReference
+        from .test_factories import make_library_number
+        for make, code in (('TOYOTA', '90915-YZZE1'), ('LEXUS', '90915-YZZE2'), ('KAIYI', 'KY-0001'), ('CHERY', 'CH-0001'), ('NISSAN', '15208-65F0E')):
+            make_library_number(make, code)
+        OEMCrossReference.objects.create(reference=make_library_number('TOYOTA', '04465-0K290'), brand='LEX', code='LX-1', number='LX1')
+        line = make_line('SEED-1')
+        for code, brand in (('S-1', 'TOY'), ('S-2', 'VAG'), ('S-3', 'AISAN'), ('S-4', 'MOTION  MOTORS')):
+            make_reference(line, code, brand=brand, tipo='otro')  # not a company code: a company brand keeps its own spelling (LEX)
+        self.rows = [
+            suffix('DG', 'brand: DONGIL', confidence='high', status='seed_confirmed'),              # names another brand than its token
+            suffix('DENSO', 'brand: DENSO', confidence='high', status='seed_confirmed'),           # a confident seed row names itself
+            suffix('MON', 'brand: MONROE', confidence='high', status='seed_confirmed'),
+            suffix('V', 'brand: VALEO (descriptions of -V items say VALEO)', confidence='high', status='seed_confirmed'),
+            suffix('PRO', 'brand: PROFIX', confidence='high', status='seed_confirmed'),
+            suffix('NIS', 'brand: NISSIN', confidence='high', status='seed_confirmed'),             # NIS is NISSAN's abbreviation too
+            suffix('AMARILLA', 'brand: AMARILLA (unverified)'),                                    # only repeats its token
+            suffix('OEM', 'brand: OEM'),
+            suffix('DAI', 'DAI (unidentified mount/rubber brand)', confidence='medium'),
+            suffix('AISAN', 'brand: AISAN (unverified)'),                                          # unverified, but a column has it
+            suffix('SPK/WAP', 'brand: SPK/WAP'),
+            suffix('RAZ/NDK', 'brands: alternatives', confidence='medium', status='seed_confirmed'),
+            suffix('PC', 'brand: PC'),
+        ]
+
+    def plan(self):
+        with patch.object(s1_lifecycle, 'suffix_rows', return_value=self.rows):
+            return s1_lifecycle.brand_plan()
+
+    def test_a_tag_name_is_a_brand_only_when_it_identifies_one(self):
+        plan = self.plan()
+        brands, skipped = plan['brands'], {row['name']: row['reason'] for row in plan['skipped_tags']}
+        for name in ('DONGIL', 'DENSO', 'MONROE', 'VALEO', 'PROFIX', 'NISSIN', 'AISAN'):
+            self.assertEqual(brands.get(name, {}).get('tipo'), 'repuesto', name)
+        self.assertEqual(skipped, {'AMARILLA': 'unidentified', 'OEM': 'unidentified', 'DAI': 'unidentified', 'SPK/WAP': 'compound',
+                                   'ALTERNATIVES': 'compound', 'PC': 'short'})
+        self.assertFalse({'AMARILLA', 'OEM', 'DAI', 'SPK/WAP', 'ALTERNATIVES', 'PC'} & set(brands))
+
+    def test_makes_keep_the_library_spelling_and_their_tipo(self):
+        plan = self.plan()
+        brands = plan['brands']
+        self.assertNotIn('TOY', brands)  # folded into TOYOTA
+        self.assertEqual(plan['aliases']['TOY'], 'TOYOTA')
+        self.assertEqual(brands['LEX']['tipo'], 'repuesto')  # its own cross-reference brand, not LEXUS
+        for make in ('TOYOTA', 'LEXUS', 'KAIYI', 'CHERY', 'NISSAN', 'VAG'):
+            self.assertEqual(brands[make]['tipo'], 'vehiculo', make)
+        self.assertEqual(plan['familias'], {'KAIYI': 'CHERY', 'LEXUS': 'TOYOTA'})
+
+    def test_aliases_leave_out_compound_short_generic_and_ambiguous_tokens(self):
+        plan = self.plan()
+        aliases = plan['aliases']
+        self.assertEqual((aliases['DG'], aliases['MON'], aliases['MOTION  MOTORS']), ('DONGIL', 'MONROE', 'MOTION MOTORS'))
+        skipped = {row['alias']: row['reason'] for row in plan['skipped_aliases']}
+        self.assertFalse({'V', 'PRO', 'NIS', 'RAZ/NDK', 'SPK/WAP'} & set(aliases))
+        self.assertIn('menos de 2 letras', skipped['V'])
+        self.assertIn('genérica', skipped['PRO'])
+        self.assertEqual(skipped['NIS'], 'nombraría dos marcas')

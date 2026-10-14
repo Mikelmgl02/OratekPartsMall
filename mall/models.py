@@ -123,7 +123,7 @@ class Part(models.Model):
             if fields is not None:
                 kwargs['update_fields'] = set(fields) | {'category', 'subcategory', 'part_type'}
         super().save(*args, **kwargs)
-        self._lifecycle = (self.active, self.estado)
+        self._lifecycle = (self.__dict__.get('active'), self.__dict__.get('estado'))  # a deferred one stays unloaded
     class Meta:
         verbose_name = 'repuesto'
         verbose_name_plural = 'repuestos'

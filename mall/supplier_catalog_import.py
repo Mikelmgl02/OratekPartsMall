@@ -714,7 +714,8 @@ def catalog_citations(datasets=()):
 def build_indexes(finder, imported=()):
     """Matching keys (raw, oem) from the catalog's own data only, never from alternos citing a supplier catalog (imported); the
     ownership indexes (codes, skus) hold every code so an imported alterno still counts as present or as owned."""
-    from .models import Part, PartCode
+    from .lines import all_lines
+    from .models import PartCode
     raw, oem, codes, skus = defaultdict(set), defaultdict(set), defaultdict(set), defaultdict(set)
     from .catalog_suffixes import clean_code
 
@@ -738,7 +739,7 @@ def build_indexes(finder, imported=()):
     # Finder snapshot ids and ORM ids differ in type (str vs UUID): every index keys parts by str(id).
     for pid, code in PartCode.objects.values_list('part_id', 'code'):
         codes[compact(code)].add(str(pid))
-    for pid, sku in Part.objects.values_list('pk', 'sku'):
+    for pid, sku in all_lines().values_list('pk', 'sku'):  # estado: a line in any estado holds its codigo (UNIQUE(sku) until S4)
         skus[compact(sku)].add(str(pid))
     return {'raw': raw, 'oem': oem, 'codes': codes, 'skus': skus, 'claims': {}, 'shafts': shaft_numbers(finder.table)}
 

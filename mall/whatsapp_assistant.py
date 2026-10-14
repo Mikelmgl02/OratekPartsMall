@@ -391,8 +391,9 @@ def search(turn, queries, codes, words):
 def offer_items(account):
     """The articles a client account may ask a quotation for, of suppliers with stock: never its own."""
     from .models import SupplierItem
-    return (SupplierItem.objects.filter(matching_status='matched', supplier__active=True, supplier__roles__capability='supplier',
-                                        part__active=True, part__merged_into__isnull=True, reported_quantity__gt=F('reserved_quantity'))
+    from .lines import storefront_q
+    return (SupplierItem.objects.filter(storefront_q('part__'), matching_status='matched', supplier__active=True, supplier__roles__capability='supplier',
+                                        reported_quantity__gt=F('reserved_quantity'))
             .exclude(supplier=account).select_related('supplier', 'part').distinct())
 
 

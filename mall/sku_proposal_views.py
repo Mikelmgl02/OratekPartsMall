@@ -12,6 +12,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import sku_proposals
+from .lines import storefront_q
 from .list_ordering import StableOrdering
 from .management import IsSuperuser
 from .sku_proposal_models import SkuProposal, SkuProposalItem
@@ -67,7 +68,7 @@ def proposal_json(proposal, *, all_items=False):
 
 
 def proposals():
-    decided = (SkuProposal.objects.filter(key=OuterRef('key'), status__in=['approved', 'linked'], part__active=True, part__merged_into__isnull=True)
+    decided = (SkuProposal.objects.filter(storefront_q('part__'), key=OuterRef('key'), status__in=['approved', 'linked'])  # its line is on sale
                .exclude(pk=OuterRef('pk')).order_by('-decided_at'))
     from .sku_review import given
     from .sku_review_models import SkuReviewVerdict

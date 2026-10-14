@@ -41,24 +41,69 @@ class PartAdmin(admin.ModelAdmin):
             obj.version, obj.changed_at = (obj.version or 0) + 1, obj.decided_at
         super().save_model(request, obj, form, change)
 
+class BrandAliasForm(forms.ModelForm):
+    class Meta:
+        model = BrandAlias
+        fields = '__all__'
+    def clean_alias(self):
+        alias = (self.cleaned_data.get('alias') or '').strip().upper()
+        if Brand.objects.filter(nombre=' '.join(alias.split())).exists():
+            raise forms.ValidationError('Ya es el nombre de una marca: para juntarlas usa mall.brands.merge.')
+        return alias
+
 class BrandAliasInline(admin.TabularInline):
+    """Aliases are added here; one that exists is read only, as codes may carry its spelling (mall.brands.rename/merge move them)."""
     model = BrandAlias
+    form = BrandAliasForm
     extra = 0
+    can_delete = False
+    def has_change_permission(self, request, obj=None):
+        return False
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+class BrandAdminForm(forms.ModelForm):
+    class Meta:
+        model = Brand
+        fields = '__all__'
+    def clean(self):
+        data = super().clean()
+        familia, brand = data.get('familia'), self.instance if self.instance.pk else None
+        nombre = ' '.join((data.get('nombre') or '').upper().split())
+        if brand is None and nombre and BrandAlias.objects.filter(alias=nombre).exists():
+            self.add_error('nombre', 'Ya es un alias de otra marca.')
+        if familia is not None:  # the rule of mall.brands.set_familia: one level
+            if brand is not None and familia.pk == brand.pk:
+                self.add_error('familia', 'Una marca no puede ser su propia familia.')
+            elif familia.familia_id:
+                self.add_error('familia', f'{familia.nombre} ya pertenece a la familia {familia.familia.nombre}: elige esa.')
+            elif brand is not None and brand.miembros.exists():
+                self.add_error('familia', f'{brand.nombre} encabeza una familia: no puede pertenecer a otra.')
+        return data
 
 @admin.register(Brand)
 class BrandAdmin(admin.ModelAdmin):
-    """The nombre of an existing brand changes only through mall.brands.rename or merge, which re-key the codes that carry it."""
+    """The nombre of an existing brand changes only through mall.brands.rename or merge, which re-key the codes that carry it; a brand
+    is merged into another, never deleted, so no code keeps a spelling no brand holds."""
+    form = BrandAdminForm
     list_display = ['nombre', 'tipo', 'familia']
     list_filter = ['tipo']
     search_fields = ['nombre', 'aliases__alias']
     inlines = [BrandAliasInline]
     def get_readonly_fields(self, request, obj=None):
         return ['nombre', 'created_at', 'updated_at'] if obj is not None else ['created_at', 'updated_at']
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 @admin.register(BrandAlias)
 class BrandAliasAdmin(admin.ModelAdmin):
+    form = BrandAliasForm
     list_display = ['alias', 'brand']
     search_fields = ['alias', 'brand__nombre']
+    def has_change_permission(self, request, obj=None):
+        return obj is None and super().has_change_permission(request, obj)  # the list opens; an alias that exists is read only
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 @admin.register(SupplierItem)
 class SupplierItemAdmin(admin.ModelAdmin):

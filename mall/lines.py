@@ -255,23 +255,40 @@ def repaired_estado(active, merged, estado):
 def pair_lifecycle(line):
     """Put an unsaved change of estado, active or merged_into in step before it is written (Part.save and the bulk writers call it).
     merged_into forces unificada; a line no longer merged follows active; otherwise whichever of the two changed since the line was
-    loaded (or since its defaults, for a new line) wins, estado when both did. A stored pair out of step with neither changed
-    follows active, as repaired_estado does."""
+    loaded (or since its defaults, for a new line) wins, estado when both did. A field deferred at load and assigned since counts as
+    changed. A stored pair out of step with neither changed follows active, as repaired_estado does. active alone never moves a line
+    in referencia, preparacion or rechazada (LineStateError): only set_estado does, as only a person can say which estado it takes."""
     if line.merged_into_id is not None:
         line.estado, line.active = 'unificada', False
         return line
-    if line._state.adding and not hasattr(line, '_lifecycle'):
-        loaded_active, loaded_estado = True, 'publicada'
+    if hasattr(line, '_lifecycle'):
+        (loaded_active, loaded_estado), tracked = line._lifecycle, True
+    elif line._state.adding:
+        (loaded_active, loaded_estado), tracked = (True, 'publicada'), True
     else:
-        loaded_active, loaded_estado = getattr(line, '_lifecycle', (None, None))
-    estado_changed = loaded_estado is not None and line.estado != loaded_estado
-    active_changed = loaded_active is not None and line.active != loaded_active
+        (loaded_active, loaded_estado), tracked = (None, None), False
+    values = line.__dict__  # read before line.estado or line.active may load a deferred field
+
+    def changed(name, loaded):
+        if loaded is None:  # deferred at load: changed when it has been assigned since without being read
+            return tracked and name in values
+        return values.get(name, loaded) != loaded
+
+    estado_changed, active_changed = changed('estado', loaded_estado), changed('active', loaded_active)
     if line.estado == 'unificada':
         line.estado = 'publicada' if line.active else 'retirada'
     elif not estado_changed and (active_changed or line.active != (line.estado == 'publicada')):
-        line.estado = 'publicada' if line.active else ('retirada' if line.estado == 'publicada' else line.estado)
+        if line.estado in CATALOG:
+            line.estado = 'publicada' if line.active else 'retirada'
+        elif line.active:
+            raise LineStateError(f'Esta línea está {phrase(line.estado)}: cambia su estado (mall.lines.set_estado), no «activo».')
     line.active = line.estado == 'publicada'
     return line
+
+
+def loaded_pair(line):
+    """(active, estado) as the line holds them, without loading a deferred one (None then): what pair_lifecycle compares against."""
+    return line.__dict__.get('active'), line.__dict__.get('estado')
 
 
 def validate_codes(estado, origen):
@@ -303,7 +320,7 @@ def bulk_create_lines(lines, *, batch_size=500):
         line.created_at = line.created_at or now
     Part.objects.bulk_create(lines, batch_size=batch_size)
     for line in lines:
-        line._lifecycle = (line.active, line.estado)
+        line._lifecycle = loaded_pair(line)
     return lines
 
 
@@ -321,14 +338,15 @@ def bulk_update_lines(lines, fields, *, batch_size=500):
         line.updated_at = now
     count = Part.objects.bulk_update(lines, [*fields, 'updated_at'], batch_size=batch_size) if lines else 0
     for line in lines:
-        line._lifecycle = (line.active, line.estado)
+        line._lifecycle = loaded_pair(line)
     return count
 
 
-def set_estado(line, estado, *, user=None, reason='', note='', at=None):
-    """Move a line (already locked by the caller when it matters) to another estado and save it: active in step, version + 1,
-    changed_at stamped, and the decision recorded when someone made it (user) or when it is a rejection, which needs one of
-    REASONS. Merging (unificada) and Separar SKU (leaving it) go through their own tools. Returns the line."""
+def stage_estado(line, estado, *, user=None, reason='', note='', at=None):
+    """Move a loaded line to another estado without saving it, and return the fields to write: active in step (on save), version + 1,
+    changed_at stamped, and the decision recorded when someone made it (user) or when it is a rejection, which needs one of REASONS.
+    Merging (unificada) and Separar SKU (leaving it) go through their own tools. set_estado saves it; a writer that saves the line
+    itself (the part API) stages the move and saves the fields with its own."""
     validate_codes(estado, line.origen)
     if estado == 'unificada':
         raise LineStateError('Para unificar una línea, agrúpala con otra (Agrupar SKU).')
@@ -348,7 +366,12 @@ def set_estado(line, estado, *, user=None, reason='', note='', at=None):
         line.decided_by, line.decided_at = user, at
         fields += ['decided_by', 'decided_at']
     line.estado, line.version, line.changed_at = estado, (line.version or 0) + 1, at
-    line.save(update_fields=fields)
+    return fields
+
+
+def set_estado(line, estado, *, user=None, reason='', note='', at=None):
+    """Move a line (already locked by the caller when it matters) to another estado and save it (stage_estado). Returns the line."""
+    line.save(update_fields=stage_estado(line, estado, user=user, reason=reason, note=note, at=at))
     return line
 
 

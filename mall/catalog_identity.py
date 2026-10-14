@@ -10,7 +10,7 @@ from django.db import transaction
 from django.db.models import Q
 from rest_framework.exceptions import ValidationError
 from .catalog_families import normalized_reference
-from .lines import all_lines, catalog_lines, storefront_lines
+from .lines import LIVE, all_lines, catalog_lines, storefront_lines
 from .models import CatalogIdentityChange, Part, PartCode
 
 
@@ -270,7 +270,8 @@ def unmark_disputed(ref, actor=None):
     if OEMReference.objects.filter(code=ref.code).exclude(status='disputed').exclude(pk=ref.pk).exists():
         return []
     unmarked = []
-    for part in (catalog_lines(queryset=Part.objects.select_for_update()).filter(is_OEM=True).annotate(compact=compact_sql('sku'))
+    # Every live line (any estado but unificada): a line in preparación flagged OEM for a disputed number must not be published as OEM.
+    for part in (catalog_lines(LIVE, queryset=Part.objects.select_for_update()).filter(is_OEM=True).annotate(compact=compact_sql('sku'))
                  .filter(compact=ref.code)):
         part.is_OEM = False
         part.save(update_fields=['is_OEM'])

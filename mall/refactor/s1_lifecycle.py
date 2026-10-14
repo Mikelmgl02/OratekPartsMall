@@ -3,29 +3,38 @@
     python -m mall.refactor.s1_lifecycle --dry-run|--apply|--rollback [--user USERNAME] [--report PATH] [--json]
 
 Lines (Part). estado follows the pair the code before S1 wrote (mall.lines.repaired_estado): a merged line is unificada, an inactive
-one retirada, the rest publicada (2,472 · 232 · 31,526 on 2026-10-13). A line an approved Productos nuevos proposal created comes
-from the supplier (origen proveedor, 123) and takes the proposal's decided_by and decided_at; the rest stay catalogo. An active line
-in referencia, preparacion or rechazada (only a person can say which it is) is listed and left alone.
+one retirada, the rest publicada (2,472 · 232 · 31,526 on 2026-10-13). A line an approved Productos nuevos proposal created comes from
+the supplier (origen proveedor, 123) and takes the proposal's decided_by and decided_at; the rest stay catalogo. An active line in
+referencia, preparacion or rechazada (only a person can say which it is) is listed and left alone.
 
 Brands. One row per brand spelling of the 13 brand columns, normalized (upper case, single spaces: 264), plus the brand names of the
 code suffix table's brand TAGs (with D4 applied in memory until S0.1 is: a no-op afterwards). A TAG name becomes a brand only when it
-names one identified brand: no '/', at least 3 letters, and named by its attribution or already a brand spelling elsewhere;
-compound or unidentified names (SPK/WAP, HELM/NDK, PC, U...) go to the report instead. tipo is vehiculo for a library manufacturer
-or a vehicle make (sku_proposals.vehicle_makes, oem_links.EXTRA_MAKES, CATALOG_EXTRA_MAKES), repuesto for a cross-reference brand, a
-company code's brand or an identified TAG. A make spelled two ways keeps the library's spelling. Aliases: the whitespace variants as
-the columns hold them, the make abbreviations (TOY → TOYOTA, NIS → NISSAN) and the TAG tokens whose brand name differs (DG →
-DONGIL); an alias that would name two brands, or that is a brand's own name, goes to the report. Familias: only KAIYI → CHERY and
-LEXUS → TOYOTA (OD2). Brands and aliases that exist are kept as they are.
+names one identified brand: no '/', at least 3 letters, and identified by its attribution or already a brand spelling elsewhere. An
+attribution identifies it when it names one brand with nothing unverified or unidentified about it, and either names something other
+than the token (DG → DONGIL) or is a confident seed row (DENSO, NGK); an owner-labelled row that only repeats its token ('AMARILLA
+(unverified)', 'OEM') identifies nothing. Compound or unidentified names (SPK/WAP, HELM/NDK, 'brands: alternatives', PC, U,
+AMARILLA...) go to the report instead. tipo is vehiculo for a library manufacturer or a vehicle make (sku_proposals.vehicle_makes,
+oem_links.EXTRA_MAKES and the makes they map to, CATALOG_EXTRA_MAKES), repuesto for a cross-reference brand, a company code's brand or
+an identified TAG. A make spelled two ways keeps the library's spelling. Aliases: the whitespace variants as the columns hold them,
+the make abbreviations (TOY → TOYOTA, NIS → NISSAN) and the TAG tokens whose brand name differs (DG → DONGIL), except a compound token
+(RAZ/NDK), one with fewer than 2 letters (V) or a word that is also another brand's abbreviation (PRO, VAL, VALUE); an alias that
+would name two brands, or that is a brand's own name, goes to the report too. Familias: only KAIYI → CHERY and LEXUS → TOYOTA (OD2).
+Brands and aliases that exist are kept as they are.
 
-It writes in bulk (no signals) under the matching worker's lock, in one transaction; on the live database --apply and --rollback
-need the S0.11 guard (mall.refactor.guard: the catalog freeze is on and no writer is still busy). Every row it changes or creates
-goes, with its values before, to mall.refactor.output.manifest_path('s1') (the main checkout's git-ignored output/refactor/s1/,
+It writes in bulk (no signals) under the matching worker's lock, in one transaction; on the live database --apply and --rollback need
+the S0.11 guard (mall.refactor.guard: the catalog freeze is on and no writer is still busy). Every row it changes or creates goes,
+with its values before, to mall.refactor.output.manifest_path('s1') (the main checkout's git-ignored output/refactor/s1/,
 /app/output/… in the containers, REFACTOR_OUTPUT in a rehearsal) before the transaction commits, so a failed write changes nothing;
 the output folder must exist, and a manifest holding another database's lines is refused. Re-running changes nothing new: it runs
-before landing (the code before S1 ignores the new columns) and again after, as the catch-up. --rollback puts back what the
-applies on this database changed, unless a row changed since: lines to their values before, and the brands and aliases it created
-are deleted while nothing else hangs from them. With 0072's CHECKs in place the lines cannot go back to the pre-S1 defaults:
-reverse 0072 first. --report writes every brand with its tipo, sources and aliases, and everything skipped, for the owner.
+before landing (the code before S1 ignores the new columns) and again after, as the catch-up. --rollback puts back what the applies on
+this database changed and no rollback has put back yet, unless a row changed since: lines to their values before (when a line changed
+between two applies, to the values that change left, and it is listed), and the brands and aliases it created are deleted while
+nothing else hangs from them. With 0072's CHECKs in place the lines cannot go back to the pre-S1 defaults, and the code before S1
+cannot write lines at all (it writes active and merged_into without estado). So S1 rolls back in this order, from the worktree, under
+the freeze: reverse 0072 (python manage.py migrate mall 0071_line_lifecycle; S1's code runs without the CHECKs), then optionally
+--rollback, then revert the code (git revert, reload gunicorn, restart the workers), and last, optionally, reverse 0071 (migrate mall
+0070_deal_progress, from the worktree, since main no longer has the file). Never revert the code while 0072 is applied. --report
+writes every brand with its tipo, sources and aliases, and everything skipped, for the owner.
 """
 import argparse
 import json
@@ -45,10 +54,14 @@ COLUMNS = (('SupplierItem', 'brand'), ('PartCode', 'brand'), ('OEMReference', 'm
 TAG_KINDS = ('brand', 'house_brand', 'company_code')  # the suffix TAGs that name a brand (genuine, origin, lifecycle... do not)
 FAMILIAS = {'KAIYI': 'CHERY', 'LEXUS': 'TOYOTA'}  # OD2: the other candidates wait for the owner
 MIN_LETTERS = 3
+MIN_ALIAS_LETTERS = 2  # a suffix token as short as V names nothing outside a code (DG, MO and SH still do)
+# Suffix tokens that are words or another brand's abbreviation too: as a spelling of a brand field they would name the wrong brand
+# (PRO → PROFIX, VAL → RAZOR VALUE although VAL is VALEO's too). They go to the report for the owner.
+GENERIC_ALIASES = frozenset({'NEW', 'OEM', 'PLUS', 'PRO', 'TOP', 'VAL', 'VALUE'})
 PART_FIELDS = ('estado', 'active', 'origen', 'decided_by_id', 'decided_at')
 CHECK = 'line_active_iff_publicada'  # one of 0072's CHECKs: with it in place the pre-S1 defaults cannot come back
 CHUNK = 2000
-SKIP_REASONS = {'compound': 'compuesta (con /)', 'short': f'menos de {MIN_LETTERS} letras', 'shape': 'forma de código, no un nombre',
+SKIP_REASONS = {'compound': 'compuesta (con / o varias marcas)', 'short': f'menos de {MIN_LETTERS} letras', 'shape': 'forma de código, no un nombre',
                 'unidentified': 'sin identificar (la atribución no la nombra y no es marca en otra columna)'}
 
 
@@ -210,12 +223,25 @@ def write_lines(plan, log, run):
 
 # --- brands --------------------------------------------------------------------------------------------------------------------------
 
-def named_by_attribution(entry):
-    """Whether a TAG's attribution names its brand (catalog_suffixes.Entry.brand_name read it from there, not from the token)."""
-    text = re.sub(r'^\s*(brands?|supplier)\s*:\s*', '', entry.attribution or '', flags=re.I)
+def named_by_attribution(entry, name):
+    """Whether a TAG's attribution identifies the brand `name` it gives (catalog_suffixes.Entry.brand_name): it names one brand, not
+    several ('brands: alternatives'), and says nothing unverified or unidentified about it; and it names something other than the
+    token, or a confident seed row (high or medium) says it is that brand. Most owner-labelled rows only repeat their own token
+    ('AMARILLA' → 'brand: AMARILLA (unverified)', 'OEM' → 'brand: OEM'), which identifies nothing: those names count only when
+    another brand column has them, and otherwise go to the report."""
+    from ..brands import normalize
+    raw = entry.attribution or ''
+    text = re.sub(r'^\s*(brands?|supplier)\s*:\s*', '', raw, flags=re.I)
     text = re.sub(r'\(.*?\)', '', text).strip()
-    return bool(text) and not ('unidentified' in text.lower() or ' or ' in text or '?' in text
-                               or text.lower().startswith(('origin', 'lifecycle', 'commercial')))
+    if (not text or re.match(r'^\s*brands\s*:', raw, flags=re.I) or re.search(r'unidentified|unverified', raw, flags=re.I)
+            or ' or ' in text or '?' in text or text.lower().startswith(('origin', 'lifecycle', 'commercial'))):
+        return False
+    return name not in {normalize(entry.token), normalize(entry.canon)} or entry.confidence in ('high', 'medium')
+
+
+def several_brands(entry):
+    """A TAG whose attribution names several brands at once ('brands: alternatives' for RAZ/NDK, PC/VALUE...)."""
+    return bool(re.match(r'^\s*brands\s*:', entry.attribution or '', flags=re.I))
 
 
 def suffix_rows():
@@ -233,19 +259,20 @@ def tag_names(spellings):
     from ..brands import normalize
     rows = suffix_rows()
     table = cs.SuffixTable(rows, source='db')
-    names = defaultdict(lambda: {'tokens': [], 'named': False, 'shape': False})
+    names = defaultdict(lambda: {'tokens': [], 'named': False, 'shape': False, 'several': True})
     for row in rows:
         if row['cls'] != 'TAG' or row.get('tag_kind') not in TAG_KINDS or row['token'] == cs.DELETED_TOKEN:
             continue
         entry = table._entry(row)
         name = normalize(entry.brand_name())
         names[name]['tokens'].append(row['token'])
-        names[name]['named'] |= named_by_attribution(entry)
+        names[name]['named'] |= named_by_attribution(entry, name)
+        names[name]['several'] &= several_brands(entry)
         names[name]['shape'] |= row.get('match') == 'shape' or row['token'].startswith(('CODE:', 'ALT_TAIL:'))
     identified, skipped = {}, []
     for name, info in sorted(names.items()):
         tokens = sorted(info['tokens'])
-        reason = ('shape' if info['shape'] else 'compound' if '/' in name else 'unidentified' if ':' in name
+        reason = ('shape' if info['shape'] else 'compound' if '/' in name or info['several'] else 'unidentified' if ':' in name
                   else 'short' if len(re.findall('[A-Z]', name)) < MIN_LETTERS
                   else '' if info['named'] or name in spellings else 'unidentified')
         if reason:
@@ -253,6 +280,17 @@ def tag_names(spellings):
         else:
             identified[name] = tokens
     return identified, skipped
+
+
+def alias_refusal(token):
+    """Why a suffix token is not made an alias of the brand its TAG names, or '': compound (SPK/WAP names two), too short, or a word."""
+    if '/' in token:
+        return 'compuesto (con /): nombra varias marcas'
+    if len(re.findall('[A-Z]', token)) < MIN_ALIAS_LETTERS:
+        return f'menos de {MIN_ALIAS_LETTERS} letras'
+    if token in GENERIC_ALIASES:
+        return 'palabra genérica o abreviatura de otra marca'
+    return ''
 
 
 def brand_plan():
@@ -276,7 +314,8 @@ def brand_plan():
     company = {normalize(b) for b in PartCode.objects.filter(ref_type='company').exclude(brand='').values_list('brand', flat=True).distinct()}
     tags, skipped_tags = tag_names(spellings)
     makes = {normalize(token): normalize(make) for token, make in vehicle_makes().items()}
-    vehicle = library | set(makes.values()) | {normalize(make) for make in EXTRA_MAKES} | {normalize(m) for m in settings.CATALOG_EXTRA_MAKES}
+    vehicle = (library | set(makes.values()) | {normalize(make) for make in EXTRA_MAKES} | {normalize(make) for make in EXTRA_MAKES.values()}
+               | {normalize(m) for m in settings.CATALOG_EXTRA_MAKES})
     parts_brand = crossref | company | set(tags)
     # A make spelled two ways keeps the library's spelling (VOLKSWAGEN, not VW; TOYOTA, not the TOY suffix), unless a parts maker's
     # catalog or code uses the other spelling as its own brand (LEX).
@@ -301,8 +340,14 @@ def brand_plan():
             wanted[token][make] = 'abreviatura de la marca de vehículo'
     for name, tokens in tags.items():
         for token in tokens:
-            if token.strip().upper() != name:
-                wanted[token.strip().upper()][name] = 'sufijo del código'
+            token = token.strip().upper()
+            if token == name:
+                continue
+            reason = alias_refusal(token)
+            if reason:
+                skipped_aliases.append({'alias': token, 'brands': [name], 'reason': reason})
+            else:
+                wanted[token][name] = 'sufijo del código'
     aliases = {}
     for alias, targets in sorted(wanted.items()):
         if len(targets) > 1:
@@ -369,12 +414,31 @@ def write_brands(plan, log, run):
 # --- rollback ------------------------------------------------------------------------------------------------------------------------
 
 def applied_lines():
-    """[(model, id) → [lines]] of the applies on this database, oldest first per row."""
+    """{(model, id): [lines]} of what the applies on this database did to each row and no rollback has put back yet, oldest first:
+    a rollback line drops the updates before it (a created row keeps its create until it is deleted), a delete the whole row."""
     rows, database = defaultdict(list), current_database()
     for line in manifest_lines():
-        if line.get('stage') == STAGE and line.get('database') == database and line.get('action') in ('update', 'create'):
-            rows[(line['model'], str(line['id']))].append(line)
+        if line.get('stage') != STAGE or line.get('database') != database or not line.get('model'):
+            continue
+        key, action = (line['model'], str(line['id'])), line.get('action')
+        if action in ('update', 'create'):
+            rows[key].append(line)
+        elif action == 'rollback':
+            rows[key] = [link for link in rows[key] if link['action'] == 'create']
+        elif action == 'delete':
+            rows.pop(key, None)
     return rows
+
+
+def unbroken(chain):
+    """The newest links of a row's chain of updates with no change from outside between them (each one's before is the after of the
+    one before): a rollback puts back the before of the first of them, so a change made between two applies is kept."""
+    run = [chain[-1]]
+    for link in reversed(chain[:-1]):
+        if link['after'] != run[0]['before']:
+            break
+        run.insert(0, link)
+    return run
 
 
 def checks_in_place():
@@ -400,14 +464,18 @@ def undo(log, run):
         for pk, chain in parts.items():
             row = locked.get(pk)
             now = recorded({field: row[field] for field in PART_FIELDS}) if row else None
-            if now is None or now == chain[0]['before']:  # gone, or already back (an earlier rollback)
+            links = unbroken(chain) if chain else None
+            if now is None or links is None or now == links[0]['before']:  # gone, or already back
                 continue
+            sku = chain[-1].get('sku') or pk
             if now != chain[-1]['after']:
-                changed.append(f"línea {chain[-1].get('sku') or pk}: cambió después de aplicar")
+                changed.append(f'línea {sku}: cambió después de aplicar')
                 continue
-            groups[json.dumps(chain[0]['before'], sort_keys=True)].append(pk)
+            if len(links) < len(chain):
+                changed.append(f'línea {sku}: cambió entre dos aplicaciones; vuelve a como la dejó ese cambio, no a antes de S1')
+            groups[json.dumps(links[0]['before'], sort_keys=True)].append(pk)
             log.append({**run, 'model': 'mall.Part', 'id': pk, 'sku': chain[-1].get('sku'), 'action': 'rollback', 'before': now,
-                        'after': chain[0]['before']})
+                        'after': links[0]['before']})
         for values, pks in groups.items():
             values = json.loads(values)
             restored += Part.objects.filter(pk__in=pks).update(**values)
@@ -530,8 +598,9 @@ def run(*, apply=False, rollback=False, username=None, report_path=None, stdout=
             stdout.write(reason + '\n')
             return None
         user = get_user_model().objects.filter(username=username or '').first()
-        if user is None:
-            stdout.write('Indica con --user el usuario que figura como autor del cambio.\n')
+        if user is None and (apply or username):  # --rollback names its actor when it can (plan §1.2.3: --rollback alone)
+            stdout.write('Indica con --user el usuario que figura como autor del cambio.\n' if not username else
+                         f'No existe el usuario {username}.\n')
             return None
         if not expanded():
             stdout.write('Falta la migración 0071_line_lifecycle en esta base: aplícala primero (la simulación funciona sin ella).\n')
@@ -597,7 +666,7 @@ def main(argv=None, stdout=None):
     mode.add_argument('--dry-run', action='store_true', help='Calcula los cambios y las marcas sin escribir nada.')
     mode.add_argument('--apply', action='store_true', help='Escribe todo en una transacción (en vivo requiere el catálogo congelado).')
     mode.add_argument('--rollback', action='store_true', help='Deshace con el manifiesto lo aplicado en esta base (requiere el congelamiento en vivo).')
-    parser.add_argument('--user', help='Usuario que figura como autor (obligatorio con --apply y --rollback).')
+    parser.add_argument('--user', help='Usuario que figura como autor (obligatorio con --apply; opcional con --rollback).')
     parser.add_argument('--report', help='Escribe en esta ruta (JSON) cada marca con su tipo, fuentes y alias, y lo que no se siembra.')
     parser.add_argument('--json', action='store_true', help='Imprime también el resultado en JSON.')
     options = parser.parse_args(argv)

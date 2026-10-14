@@ -102,6 +102,19 @@ class StorefrontReaderTests(APITestCase):
             self.assertEqual(refused.status_code, 400, estado)
             self.assertIn('ya no está disponible', str(refused.data))
 
+    def test_the_dashboard_ranks_no_line_off_the_catalog(self):
+        response = self.client.post('/api/v1/analytics/events/', {'event_id': str(uuid.uuid4()), 'visit_id': str(uuid.uuid4()), 'kind': 'part_view',
+                                                                  'account_id': str(self.client_account.pk), 'part_id': str(self.part.pk)}, format='json')
+        self.assertEqual(response.status_code, 202)
+        event = UsageEvent.objects.get(kind='part_view')
+        for line in self.hidden.values():  # viewed while it was on sale, say: more often than the line on sale
+            for _ in range(3):
+                UsageEvent.objects.create(visit=event.visit, account=event.account, kind='part_view', part=line, sku=line.sku, fingerprint='x')
+        self.client.force_authenticate(make_user('dashboard-root', superuser=True))
+        top = [row['sku'] for row in self.client.get('/api/v1/management/analytics/?days=30').data['top_parts']]
+        self.assertIn(self.part.sku, top)
+        self.assertFalse({line.sku for line in self.hidden.values()} & set(top))
+
     def test_the_whatsapp_assistant_finds_and_offers_only_lines_on_sale(self):
         from .whatsapp_assistant import find, offers
         parts, _ = find(['58411'], [])
@@ -274,16 +287,19 @@ class CatalogToolReaderTests(TestCase):
         line = make_line('MR-968365', estado='referencia')
         plan, _ = build_plan({line.sku: {'sku': line.sku, 'row': 2, 'fields': {'description': 'EJE'}, 'codes': {}}}, [], 1)
         self.assertEqual(plan['summary']['created_skus'], 0)  # UNIQUE(sku) holds it: S4 decides what an import does with one
+        self.assertEqual([error['message'] for error in plan['errors']],
+                         ['El SKU MR-968365 está en referencia y no forma parte del catálogo: la importación no lo cambia.'])
 
-    def test_identity_marks_and_unmarks_only_catalog_lines(self):
+    def test_identity_marks_lines_on_sale_and_a_dispute_unmarks_every_live_line(self):
         from .catalog_identity import exact_items, unmark_disputed
         ref = make_library_number('MITSUBISHI', 'MR453383')
         part = make_line('MR-453383', description='EJE MIT')
         draft = make_line('MR453383', description='EJE MIT', estado='preparacion')
+        merged = make_line('MR 453383', description='EJE MIT', merged_into=part)
         self.assertEqual(set(exact_items()), {part.pk})
-        Part.objects.filter(pk__in=[part.pk, draft.pk]).update(is_OEM=True)
-        self.assertEqual(unmark_disputed(ref), [part.sku])
-        self.assertTrue(Part.objects.get(pk=draft.pk).is_OEM)
+        Part.objects.filter(pk__in=[part.pk, draft.pk, merged.pk]).update(is_OEM=True)
+        self.assertEqual(sorted(unmark_disputed(ref)), sorted([part.sku, draft.sku]))  # a line in preparación is not published as OEM
+        self.assertEqual(list(Part.objects.filter(is_OEM=True).values_list('sku', flat=True)), [merged.sku])
 
     def test_supplier_matching_never_lands_on_a_line_off_sale(self):
         from .matching_engine import MatchIndex, catalog_families, reconcile_items
@@ -325,6 +341,28 @@ class LibraryReaderTests(TestCase):
         self.assertEqual(refresh_name_links(apply=False)['skus'], 0)
         make_line('17801-30070-KSM', description='FILTRO AIRE TOY HILUX')
         self.assertEqual(refresh_name_links(apply=False)['skus'], 1)
+
+    def test_a_line_leaving_or_joining_the_catalog_refreshes_its_name_links(self):
+        from .lines import set_estado
+        from .oem_reference_models import PartOEMLink
+        make_library_number('TOYOTA', '17801-30071')
+        line = make_line('17801-30071-KSM', description='FILTRO AIRE TOY HILUX')
+        links = lambda: PartOEMLink.objects.filter(part=line, source='sku_name').count()
+        self.assertEqual(links(), 1)
+        set_estado(line, 'rechazada', reason='not_a_part')
+        self.assertEqual(links(), 0)
+        set_estado(line, 'publicada')
+        self.assertEqual(links(), 1)
+
+    def test_the_oem_finder_learns_from_lines_on_sale_and_every_codigo_stays_taken(self):
+        from .catalog_suffixes import SuffixTable
+        from .oem_finder import OEMFinder, load_snapshot, norm_key
+        part = make_line('48654-0K050', description='BASE AMORT TOY')
+        lines = hidden('48654-0K059', 'BASE AMORT TOY')
+        finder = OEMFinder(load_snapshot(), SuffixTable.from_fixture())
+        self.assertEqual([row['id'] for row in finder.learn], [str(part.pk)])
+        for line in lines.values():
+            self.assertIn((str(line.pk), 'retired_sku', line.sku), finder.owners[norm_key(line.sku)], line.estado)
 
     def test_a_number_is_linked_by_catalog_lines_only(self):
         from .oem_reference import linked_parts, linked_q, reference_pair

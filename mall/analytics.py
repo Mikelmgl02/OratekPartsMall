@@ -21,7 +21,7 @@ from rest_framework.views import APIView
 from .ai_budget import FEATURE_LABELS, micro_usd
 from .analytics_models import UsageEvent, UsageVisit
 from .catalog_availability import catalog_availability
-from .lines import storefront_lines
+from .lines import catalog_lines, storefront_lines
 from .management import IsSuperuser
 from .models import Part, SupplierItem, User
 from .pricing_models import PricingAuditEvent
@@ -231,7 +231,7 @@ class AnalyticsDashboard(APIView):
                 requested_units=Sum('quantity'), requests=Count('request_id', distinct=True)):
             activity.setdefault(row['canonical'], {'views': 0, 'basket_additions': 0, 'basket_units': 0}).update(row)
         ranked = sorted(activity, key=lambda pk: (-activity[pk]['views'], -activity[pk].get('requested_units', 0), str(pk)))[:12]
-        parts = {part.pk: part for part in Part.objects.filter(pk__in=ranked)}
+        parts = {part.pk: part for part in catalog_lines().filter(pk__in=ranked)}  # the catalog's lines (publicada, retirada) customers acted on
         availability = catalog_availability(list(parts.values()))
         top_parts = [{'id': str(pk), 'sku': parts[pk].sku, 'description': parts[pk].description,
                       'category': parts[pk].category, 'subcategory': parts[pk].subcategory,

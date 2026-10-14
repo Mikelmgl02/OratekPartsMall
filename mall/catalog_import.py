@@ -21,7 +21,7 @@ from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema
 
 from .management import IsSuperuser
-from .lines import all_lines
+from .lines import CATALOG, all_lines, phrase
 from .models import CatalogClassificationState, CatalogImportBatch, CatalogImportIssue, CatalogImportJob, Part, PartCode
 from .catalog_recovery import date_identifier, date_recovery, description_text, recovery_evidence
 from .workbook_reader import header, identifier_text
@@ -330,6 +330,8 @@ def build_plan(groups, errors, row_count, *, lock=False, warnings=None, error_si
         existing = parts.get(sku)
         if existing and existing.merged_into_id:
             errors.append({'row': group['row'], 'column': 'SKU', 'message': f'El SKU {sku} ya se agrupó bajo {existing.merged_into.sku}. Usa el SKU interno de destino y conserva este código como alterno.'})
+        elif existing and existing.estado not in CATALOG:  # referencia, preparación, rechazada: only a person moves it (mall.lines.set_estado)
+            errors.append({'row': group['row'], 'column': 'SKU', 'message': f'El SKU {sku} está {phrase(existing.estado)} y no forma parte del catálogo: la importación no lo cambia.'})
         added = [(brand, code) for brand, code in group['codes'] if (sku, brand, code) not in existing_pairs]
         group['existing'] = existing
         group['added'] = added

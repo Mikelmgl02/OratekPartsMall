@@ -23,7 +23,7 @@ from rest_framework.views import APIView
 from .basket import MAX_QUANTITY, apply_changes, basket_data
 from .basket_models import BasketEvent, BasketItem
 from .deal_lifecycle import agreement
-from .lines import canonical
+from .lines import canonical, storefront_q
 from .models import SupplierItem
 from .request_models import SupplierRequest
 from .request_views import RequestConflict
@@ -54,7 +54,7 @@ def missing_lines(order):
 def offers_for(order, account, parts):
     """{part id: [SupplierItem]} in stock now for these SKUs, from requestable articles of active suppliers other than the order's and the
     account's own (the catalog's offers)."""
-    items = (SupplierItem.objects.filter(part_id__in=parts, matching_status='matched', part__active=True, part__merged_into__isnull=True,
+    items = (SupplierItem.objects.filter(storefront_q('part__'), part_id__in=parts, matching_status='matched',
                                          supplier__active=True, supplier__roles__capability='supplier', reported_quantity__gt=F('reserved_quantity'))
              .exclude(supplier_id__in=[order.supplier_id, account.pk]).select_related('supplier').distinct())
     found = {}

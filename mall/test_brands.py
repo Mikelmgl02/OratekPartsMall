@@ -6,7 +6,7 @@ from . import brands
 from .brand_models import Brand, BrandAlias
 from .matching_models import MatchingCase
 from .models import PartCode
-from .test_factories import make_line, make_reference
+from .test_factories import make_line, make_reference, make_user
 
 
 class BrandSpellingTests(TestCase):
@@ -138,3 +138,44 @@ class BrandRenameMergeTests(TestCase):
         brands.rename(toyota, 'TOYOTA')
         code.refresh_from_db()
         self.assertEqual((code.brand, code.oem_reference.manufacturer), ('TOYOTA', 'TOYOTA'))
+
+
+class BrandAdminTests(TestCase):
+    """The Django admin keeps the brand rules: a brand is merged, never deleted; an alias is added, never edited or deleted (codes
+    may carry its spelling); a familia has one level; a spelling is a nombre or an alias, never both."""
+
+    def setUp(self):
+        from django.test import RequestFactory
+        self.chery = Brand.objects.create(nombre='CHERY', tipo='vehiculo')
+        self.kaiyi = Brand.objects.create(nombre='KAIYI', tipo='vehiculo', familia=self.chery)
+        self.toyota = Brand.objects.create(nombre='TOYOTA', tipo='vehiculo')
+        self.toy = BrandAlias.objects.create(alias='TOY', brand=self.toyota)
+        self.request = RequestFactory().get('/admin/')
+        self.request.user = make_user('brand-admin-root', superuser=True)
+
+    def test_brands_are_never_deleted_and_aliases_only_added(self):
+        from django.contrib import admin
+        from .admin import BrandAdmin, BrandAliasAdmin, BrandAliasForm, BrandAliasInline
+        self.assertFalse(BrandAdmin(Brand, admin.site).has_delete_permission(self.request, self.toyota))
+        aliases = BrandAliasAdmin(BrandAlias, admin.site)
+        self.assertFalse(aliases.has_change_permission(self.request, self.toy))
+        self.assertFalse(aliases.has_delete_permission(self.request, self.toy))
+        self.assertTrue(aliases.has_add_permission(self.request))
+        inline = BrandAliasInline(Brand, admin.site)
+        self.assertFalse(inline.has_change_permission(self.request, self.toyota))
+        self.assertFalse(inline.has_delete_permission(self.request, self.toyota))
+        self.assertTrue(inline.has_add_permission(self.request, self.toyota))
+        self.assertFalse(BrandAliasForm(data={'alias': 'chery', 'brand': self.toyota.pk}).is_valid())  # a nombre already
+        self.assertTrue(BrandAliasForm(data={'alias': 'toyta', 'brand': self.toyota.pk}).is_valid())
+
+    def test_the_familia_keeps_one_level(self):
+        from .admin import BrandAdminForm
+        def valid(instance, familia):
+            data = {'nombre': instance.nombre, 'tipo': instance.tipo, 'notas': '', 'familia': familia.pk if familia else ''}
+            return BrandAdminForm(data=data, instance=instance).is_valid()
+        self.assertFalse(valid(self.toyota, self.kaiyi))  # KAIYI is a member of CHERY's familia
+        self.assertFalse(valid(self.chery, self.toyota))  # CHERY heads a familia
+        self.assertFalse(valid(self.toyota, self.toyota))
+        self.assertTrue(valid(self.toyota, self.chery))
+        self.assertTrue(valid(self.kaiyi, None))
+        self.assertFalse(BrandAdminForm(data={'nombre': 'toy', 'tipo': '', 'notas': ''}).is_valid())  # an alias of TOYOTA

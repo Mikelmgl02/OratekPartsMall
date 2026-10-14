@@ -300,15 +300,23 @@ def guarded(sync, *args):
 
 
 def part_pre_save(sender, instance, raw=False, update_fields=None, **kwargs):
-    """The SKU and grouping an existing Part had before this save, so a rename or a grouping refreshes its name links."""
-    if raw or instance._state.adding or instance.pk is None or (update_fields is not None and not {'sku', 'merged_into'} & set(update_fields)):
+    """The SKU, grouping and estado an existing Part had before this save, so a rename, a grouping or a move into or out of the
+    catalog (refresh_name_links keeps links for mall.lines.catalog_lines only) refreshes its name links."""
+    if raw or instance._state.adding or instance.pk is None or (update_fields is not None and not {'sku', 'merged_into', 'estado'} & set(update_fields)):
         return
-    instance._oem_links_before = sender.objects.filter(pk=instance.pk).values_list('sku', 'merged_into_id').first()
+    instance._oem_links_before = sender.objects.filter(pk=instance.pk).values_list('sku', 'merged_into_id', 'estado').first()
+
+
+def name_link_state(sku, merged_into_id, estado):
+    """What a line's name links depend on: its codigo, its grouping and whether it is in the catalog (publicada or retirada)."""
+    from .lines import CATALOG
+    return sku, merged_into_id, estado in CATALOG
 
 
 def part_saved(sender, instance, created=False, raw=False, **kwargs):
     before = instance.__dict__.pop('_oem_links_before', None)
-    if raw or not (created or (before is not None and before != (instance.sku, instance.merged_into_id))):
+    after = before and name_link_state(instance.sku, instance.merged_into_id, instance.__dict__.get('estado', before[2]))
+    if raw or not (created or (before is not None and name_link_state(*before) != after)):
         return
     guarded(refresh_name_links, [instance.pk])
 

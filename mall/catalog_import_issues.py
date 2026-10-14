@@ -10,7 +10,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .management import IsSuperuser
-from .lines import lines_by_codigo
+from .lines import all_lines, codigo_key
 from .models import CatalogImportIssue, CatalogImportJob
 
 
@@ -199,7 +199,7 @@ class CatalogImportIssueDetail(APIView):
             issue.status = 'resolved'
             issue.errors = []
             issue.resolved_at = timezone.now()
-            issue.part = lines_by_codigo(values['sku'])[0]
+            issue.part = all_lines().get(sku=codigo_key(values['sku']))  # estado: the exact row save_plan just wrote
             issue.applied_summary = plan['summary']
             issue.save(update_fields=['values', 'status', 'errors', 'resolved_at', 'part', 'applied_summary'])
             return self.resolved_response(issue)

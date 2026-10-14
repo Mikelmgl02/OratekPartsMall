@@ -507,9 +507,9 @@ SKU_SOURCES = ('sku', 'sku_segment', 'sku_prefixed')
 
 
 class Snapshot:
-    """Read-only rows: parts {id, sku, name, description, category, subcategory, active, merged_into_id, is_OEM} (every Part,
-    retired included), codes {part_id, code, brand, ref_type, reference_source}, items {supplier_id, part_id, codigo, brand,
-    references, reported_quantity, reserved_quantity}. Ids are strings."""
+    """Read-only rows: parts {id, sku, name, description, category, subcategory, active, merged_into_id, is_OEM, estado} (every
+    Part, retired included; a row without estado is publicada, as before S1), codes {part_id, code, brand, ref_type,
+    reference_source}, items {supplier_id, part_id, codigo, brand, references, reported_quantity, reserved_quantity}. Ids are strings."""
 
     def __init__(self, parts, codes=(), items=(), source='rows'):
         self.parts, self.codes, self.items, self.source = list(parts), list(codes), list(items), source
@@ -519,7 +519,8 @@ def load_snapshot():
     """ORM .values() reads only, in a stable order so lexicon tie-breaks (and fingerprints) repeat run to run. On PostgreSQL the
     three reads share one REPEATABLE READ READ ONLY transaction: an upload committed meanwhile never splits Parts from codes."""
     from django.db import connection, transaction
-    from .models import Part, PartCode, SupplierItem
+    from .lines import all_lines
+    from .models import PartCode, SupplierItem
     outermost = not connection.in_atomic_block
     with transaction.atomic():
         if outermost and connection.vendor == 'postgresql':
@@ -527,8 +528,8 @@ def load_snapshot():
                 cursor.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
         # sorted here by code point, not by the database collation (en_US.utf8 ignores punctuation and changes with glibc)
         parts = sorted((dict(p, id=str(p['id']), merged_into_id=str(p['merged_into_id']) if p['merged_into_id'] else None)
-                        for p in Part.objects.values('id', 'sku', 'name', 'description', 'category', 'subcategory', 'active',
-                                                     'merged_into_id', 'is_OEM').iterator(chunk_size=5000)), key=lambda p: p['sku'])
+                        for p in all_lines().values('id', 'sku', 'name', 'description', 'category', 'subcategory', 'active',  # estado: OEMFinder sorts them
+                                                    'merged_into_id', 'is_OEM', 'estado').iterator(chunk_size=5000)), key=lambda p: p['sku'])
         codes = [dict(c, part_id=str(c['part_id'])) for c in PartCode.objects.order_by('pk').values(
             'part_id', 'code', 'brand', 'ref_type', 'reference_source').iterator(chunk_size=5000)]
         items = [dict(s, part_id=str(s['part_id']), supplier_id=str(s['supplier_id'])) for s in SupplierItem.objects.filter(
@@ -537,19 +538,26 @@ def load_snapshot():
     return Snapshot(parts, codes, items, source='orm')
 
 
+def on_sale(p):
+    """A snapshot row as mall.lines.storefront_lines reads a line: publicada, active and not merged."""
+    return p.get('estado', 'publicada') == 'publicada' and p['active'] and not p['merged_into_id']
+
+
 class OEMFinder:
     """Every derived index of one run, built in memory from a Snapshot and a SuffixTable; evaluate() returns {part_id: result}.
 
-    Populations. parts (active canonical, not OEM) is what a run grades: results, review cases, auto candidates and avail. learn
-    (every active canonical SKU, OEM-flagged included: they are the best examples of their class, and flagging one must not move its
-    neighbours) feeds what a run learns: model hints, makes and parses, the class lexicon, sibling base claims and the SKU claims of
-    pass 3. owners (every Part SKU, retired and OEM included, and every alterno) finds conflicts; by_id, merged_into, codes and items
-    cover every Part. A graded row never counts itself: the lexicon leaves its own key out, siblings and claimants its own Part."""
+    Populations. parts (lines on sale, not OEM) is what a run grades: results, review cases, auto candidates and avail. learn
+    (every line on sale, mall.lines.storefront_lines: publicada, active and not merged, OEM-flagged included: they are the best
+    examples of their class, and flagging one must not move its neighbours) feeds what a run learns: model hints, makes and parses, the
+    class lexicon, sibling base claims and the SKU claims of pass 3. owners (every line's SKU, retired, merged and OEM included, and
+    every alterno) finds conflicts: a line in referencia, preparación or rechazada holds its codigo like a retired one (UNIQUE(sku)
+    covers every line until S4); by_id, merged_into, codes and items cover every Part. A graded row never counts itself: the lexicon
+    leaves its own key out, siblings and claimants its own Part."""
 
     def __init__(self, snapshot, table):
         self.snapshot, self.table = snapshot, table
         self.by_id = {p['id']: p for p in snapshot.parts}
-        self.learn = [p for p in snapshot.parts if p['active'] and not p['merged_into_id']]
+        self.learn = [p for p in snapshot.parts if on_sale(p)]
         self.parts = [p for p in self.learn if not p['is_OEM']]
         self.items_by_part, self.codes_by_part = defaultdict(list), defaultdict(list)
         for s in snapshot.items:
@@ -562,7 +570,7 @@ class OEMFinder:
         self.merged_into = {p['id']: p['merged_into_id'] for p in snapshot.parts}
         self.owners = defaultdict(list)
         for p in snapshot.parts:
-            kind = 'active_sku' if (p['active'] and not p['merged_into_id']) else 'retired_sku'
+            kind = 'active_sku' if on_sale(p) else 'retired_sku'  # referencia, preparación, rechazada, retirada, unificada
             self.owners[norm_key(p['sku'])].append((p['id'], kind, p['sku']))
         for c in snapshot.codes:
             self.owners[norm_key(c['code'])].append((c['part_id'], 'partcode', c['code']))

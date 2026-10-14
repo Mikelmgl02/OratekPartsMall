@@ -17,7 +17,7 @@ from rest_framework.authtoken.models import Token
 from rest_framework.exceptions import ValidationError
 
 from .apiag_tokens import ConnectionData, connection_data
-from .lines import all_lines, catalog_lines, phrase, refuse_unificada
+from .lines import all_lines, catalog_lines, phrase, refuse_unificada, stage_estado
 from .models import Account, Invitation, Membership, Part, PartCode, PartType, Role, SupplierItem, User
 from .serializers import SupplierItemSerializer
 from .media_serializers import PartImageSerializer
@@ -299,7 +299,7 @@ class ManagedPartSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         codes = validated_data.pop('codes', [])
         main = validated_data.pop('main_reference', None)
-        validated_data['estado'] = 'publicada' if validated_data.get('active', True) else 'retirada'
+        validated_data.setdefault('estado', 'publicada' if validated_data.get('active', True) else 'retirada')  # unless a caller chose one
         try:
             with transaction.atomic():
                 part = Part.objects.create(**validated_data)
@@ -322,10 +322,12 @@ class ManagedPartSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError('Este SKU ya fue unificado. Modifica el SKU principal.')
                 if 'active' in validated_data and validated_data['active'] != instance.active:
                     if instance.estado not in ('publicada', 'retirada'):
-                        from .lines import phrase
                         raise serializers.ValidationError({'active': f'Esta línea está {phrase(instance.estado)}: solo una línea '
                                                                      'publicada o retirada se activa o desactiva aquí.'})
-                    validated_data['estado'] = 'publicada' if validated_data['active'] else 'retirada'
+                    # A person publishes or retires it: the decision is recorded as mall.lines.set_estado records it, saved below.
+                    user = getattr(self.context.get('request'), 'user', None)
+                    stage_estado(instance, 'publicada' if validated_data['active'] else 'retirada',
+                                 user=user if getattr(user, 'is_authenticated', False) else None)
                 old_sku = instance.sku
                 old_is_oem = instance.is_OEM
                 # The flag describes this exact main code, not every alternate.
