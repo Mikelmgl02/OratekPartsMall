@@ -1,5 +1,5 @@
 'use client';
-import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { AgGridReact } from 'ag-grid-react';
 import type { AgGridReactProps } from 'ag-grid-react';
@@ -49,12 +49,14 @@ type Props<T> = {
   gridProps?: Partial<AgGridReactProps<T>>;
   /** The grid API once ready, for callers that edit rows in place. */
   onReady?: (api: GridApi<T>) => void;
+  /** Always fill the window down to its bottom edge, however few the rows (the client's Órdenes); otherwise a short list shrinks it. */
+  fillWindow?: boolean;
 };
 
 // Rows load in blocks while scrolling, sorting runs on the server, and the whole list stays one grid however long it is.
 // AG Grid Enterprise server-side row model over a paginated list (admin and supplier panels).
 export default function ServerGrid<T>({ storageKey, label, path, params, columns, rowId, ordering, revision, rowHeight, context, empty, onCount, onPage, className = '',
-  pageSize = GRID_BLOCK, gridProps, onReady }: Props<T>) {
+  pageSize = GRID_BLOCK, gridProps, onReady, fillWindow = false }: Props<T>) {
   const grid = useRef<AgGridReact<T>>(null);
   const frame = useRef<HTMLDivElement>(null);
   // The grid fills the window from where it starts down to the bottom edge (never under MIN_HEIGHT), and shrinks to its rows
@@ -106,7 +108,17 @@ export default function ServerGrid<T>({ storageKey, label, path, params, columns
     grid.current?.api?.refreshServerSide({ purge: false });
   }, [revision]);
   useEffect(() => { onCount?.(count); }, [count, onCount]);
-  const fill = useWindowFill(frame, [count === 0, error]);
+  // fillWindow: what follows the grid in its panel (a note) stays on screen under it; a dialog it opens is out of the flow.
+  const following = useCallback(() => {
+    let total = 0;
+    for (let node = frame.current?.parentElement?.nextElementSibling; node; node = node.nextElementSibling) {
+      const style = getComputedStyle(node);
+      if (style.display === 'none' || style.position === 'absolute' || style.position === 'fixed') continue;
+      total += node.getBoundingClientRect().height + parseFloat(style.marginTop) + parseFloat(style.marginBottom);
+    }
+    return total;
+  }, []);
+  const fill = useWindowFill(frame, [count === 0, error], false, fillWindow ? following : undefined);
   function remember(event: StateUpdatedEvent<T>) {
     // Only what someone changed is kept: the grid also reports its own start, which would freeze today's default layout.
     if (event.sources.includes('gridInitializing')) return;
@@ -114,7 +126,7 @@ export default function ServerGrid<T>({ storageKey, label, path, params, columns
     try { localStorage.setItem(key, JSON.stringify(state)); } catch { /* storage blocked: the layout is simply not remembered */ }
   }
   const available = fill ?? 600;
-  const height = count === null ? available : Math.min(available, HEADER + Math.max(count, count === 0 ? 4 : 2) * rowHeight + 2);
+  const height = count === null || fillWindow ? available : Math.min(available, HEADER + Math.max(count, count === 0 ? 4 : 2) * rowHeight + 2);
   const defaultColumn = useMemo<ColDef<T>>(() => ({ ...fixedColumns, sortable: false, resizable: true, suppressHeaderMenuButton: false }), []);
   const columnDefs = useMemo(() => columns.map(column => ({ ...column, sortable: !!column.colId && column.colId in ordering })), [columns, ordering]);
   return <div className="admin-grid-shell">

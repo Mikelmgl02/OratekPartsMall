@@ -75,6 +75,17 @@ test('the orders’ stages as cards over the list: how many in each, what each w
   // At a desktop's width all nine fit in the row, each note whole.
   expect(await cards.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
   expect(await cards.locator('em').evaluateAll(notes => notes.filter(note => note.scrollWidth > note.clientWidth).map(note => note.textContent))).toEqual([]);
+  // The list runs down to the window's bottom edge however few its rows, as a desktop list does, with the note under it still on screen.
+  const list = sent(page).getByRole('region', { name: 'Órdenes enviadas', exact: true });
+  await expect(list.getByRole('row').filter({ hasText: 'SOL-ENVIADA-001' })).toHaveCount(1);
+  const reachesBottom = () => list.evaluate(element => { const scroller = element.closest('.app-viewport')!, note = element.closest('section')!.querySelector('.supplier-request-private-note')!;
+    return Math.abs(note.getBoundingClientRect().top - element.getBoundingClientRect().bottom) <= 2
+      && Math.abs(scroller.getBoundingClientRect().bottom - 26 - note.getBoundingClientRect().bottom) <= 2; });
+  await expect.poll(reachesBottom).toBe(true);
+  await page.setViewportSize({ width: 1440, height: 1200 });
+  await expect.poll(reachesBottom, 'it follows the window').toBe(true);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await expect.poll(reachesBottom, 'and shrinks with it').toBe(true);
   await page.screenshot({ path: '../output/ui/order-stages.png' });
   // Each card filters the list; Todas shows them all again.
   await card('Por confirmar').click();
