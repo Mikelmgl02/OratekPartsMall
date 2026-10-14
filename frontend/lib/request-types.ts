@@ -28,6 +28,13 @@ export type RequestSubmissionResult = {
   submission_id: string; created_at: string;
   requests: { id: string; reference: string; supplier: { id: string; name: string }; line_count: number; unit_count: number; appended?: boolean; added_unit_count?: number }[];
 };
+// GET accounts/<client>/sent-requests/summary: the client's orders by stage, for the cards over its list. Amounts come per currency; in_progress
+// and to_receive are what the confirmed orders come to after the shortfalls the client accepted; oldest is when the oldest order of each
+// stage that waits on the supplier was sent.
+export type MoneyTotal = { currency: string; total: string };
+export type SentRequestStages = { total: number; statuses: Record<DealStatus, number>; oldest: Partial<Record<'pending' | 'reviewed' | 'adjustment', string>>;
+  to_confirm: MoneyTotal[]; in_progress: MoneyTotal[]; to_receive: MoneyTotal[]; shortfall_pending: number; month_start: string;
+  sent_this_month: number; received_this_month: number; updated_at: string };
 export type ClientRequestSummary = Omit<SupplierRequestSummary, 'client'> & {
   supplier: { id: string; name: string }; submission_id: string;
 };

@@ -4,6 +4,7 @@ import { signedOutInbox } from './inbox-route';
 import type { Account, BasketLine } from '../lib/types';
 import { requestPayloadLines } from '../lib/basket-submissions';
 import { fakeServerBasket } from './server-basket';
+import { sentStages, sentStagesRoute } from './sent-stages';
 
 const clientId = '11111111-1111-4111-8111-111111111111';
 const otherClientId = '22222222-2222-4222-8222-222222222222';
@@ -25,6 +26,9 @@ function draft(id = '66666666-6666-4666-8666-666666666666', codigo = '58411-1R00
   return { key: `part:${supplierId}:${id}`, part: { id: '77777777-7777-4777-8777-777777777777', sku: '58411-1R000', name: 'DISCO DE FRENO', description: '', codes: [] },
     offer: { supplier_id: supplierId, supplier_name: 'REPUESTOS CENTRAL', in_stock: true, selected_item: { id, codigo, brand: 'MARCA A', description: 'DISCO EQUIVALENTE' } }, quantity: 3 };
 }
+function stages(counts: Partial<Record<string, number>> = { pending: 1, reviewed: 1 }, extra: Record<string, unknown> = {}) {
+  return sentStages(counts, { sent_this_month: 2, ...extra });
+}
 async function mock(page: Page, known: BasketLine[] = []) {
   const unexpected: string[] = [];
   await page.route('**/api/**', route => { if (signedOutInbox(route)) return; unexpected.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`); return route.fulfill({ status: 404, json: { detail: 'Ruta no prevista.' } }); });
@@ -34,9 +38,90 @@ async function mock(page: Page, known: BasketLine[] = []) {
   await page.route(/\/api\/market\/catalog(?:\?.*)?$/, route => route.fulfill({ json: empty }));
   await page.route(new RegExp(`/api/market/accounts/${otherClientId}/sent-requests(?:\\?.*)?$`), route => route.fulfill({ json: { ...empty, count: 1, results: [summary('88888888-8888-4888-8888-888888888888', 'SOL-OTRO-001', 'PROVEEDOR DEL OTRO TALLER')] } }));
   await page.route(/\/api\/market\/accounts\/[^/]+\/deals\/[^/]+\/messages(?:\?.*)?$/, route => route.fulfill({ json: { results: [], cursor: 0, has_more: false, has_earlier: false } }));
+  await page.route(sentStagesRoute, route => route.fulfill({ json: stages() }));
   const cesta = await fakeServerBasket(page, { known });
   return { unexpected, cesta };
 }
+
+test('the orders’ stages as cards over the list: how many in each, what each waits on, the client’s turn highlighted, and each one filters the list', async ({ page }) => {
+  const { unexpected } = await mock(page);
+  const days = (count: number) => new Date(Date.now() - count * 86400000 - 3600000).toISOString();
+  await page.route(sentStagesRoute, route => route.fulfill({ json: stages(
+    { pending: 1, reviewed: 1, quoted: 2, handshaked: 1, processing: 1, in_transit: 1, delivered: 1, received: 3 },
+    { oldest: { pending: days(3), reviewed: days(0) }, to_confirm: [{ currency: 'USD', total: '1234.50' }], in_progress: [{ currency: 'USD', total: '310.00' }],
+      to_receive: [{ currency: 'USD', total: '61.75' }], sent_this_month: 4, received_this_month: 2 }) }));
+  const statuses: string[] = [];
+  await page.route(new RegExp(`${root}(?:\\?.*)?$`), route => {
+    statuses.push(new URL(route.request().url()).searchParams.get('status') || '');
+    return route.fulfill({ json: { ...empty, count: 1, results: [summary()] } });
+  });
+  await page.goto('/?vista=solicitudes');
+  const cards = sent(page).getByRole('group', { name: 'Estado de solicitudes enviadas', exact: true });
+  const card = (name: string) => cards.getByRole('button', { name, exact: true });
+  await expect(cards.getByRole('button')).toHaveText([/^Todas/, /^Enviadas/, /^En revisión/, /^Por confirmar/, /^Ajustes/, /^En curso/, /^Por recibir/, /^Recibidos/, /^Cancelados/]);
+  await expect(card('Todas')).toHaveAccessibleDescription('11 órdenes 4 este mes');
+  await expect(card('Todas')).toHaveAttribute('aria-pressed', 'true');
+  await expect(card('Enviadas')).toHaveAccessibleDescription('1 orden más antigua: 3 d');
+  await expect(card('En revisión')).toHaveAccessibleDescription('1 orden más antigua: 1 h');
+  await expect(card('Por confirmar')).toHaveAccessibleDescription('2 órdenes USD 1,234.50');
+  await expect(card('Ajustes')).toHaveAccessibleDescription('0 órdenes —');
+  await expect(card('En curso')).toHaveAccessibleDescription('3 órdenes 1 en camino');
+  await expect(card('Por recibir')).toHaveAccessibleDescription('1 orden USD 61.75');
+  await expect(card('Recibidos')).toHaveAccessibleDescription('3 órdenes 2 este mes');
+  // The client's turn: a quotation to confirm and an order to receive.
+  for (const name of ['Por confirmar', 'Por recibir']) await expect(card(name)).toHaveClass(/attention/);
+  for (const name of ['Todas', 'Enviadas', 'En curso', 'Recibidos']) await expect(card(name)).not.toHaveClass(/attention/);
+  await expect(sent(page).getByText(/^Actualizado \d{2}:\d{2}/)).toBeVisible();
+  // At a desktop's width all nine fit in the row, each note whole.
+  expect(await cards.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  expect(await cards.locator('em').evaluateAll(notes => notes.filter(note => note.scrollWidth > note.clientWidth).map(note => note.textContent))).toEqual([]);
+  await page.screenshot({ path: '../output/ui/order-stages.png' });
+  // Each card filters the list; Todas shows them all again.
+  await card('Por confirmar').click();
+  await expect(card('Por confirmar')).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(() => statuses.at(-1)).toBe('quoted');
+  await card('En curso').click();
+  await expect.poll(() => statuses.at(-1)).toBe('active_agreements');
+  await card('Todas').click();
+  await expect.poll(() => statuses.at(-1)).toBe('');
+  // A shortfall waiting for the client turns En curso into the client's turn.
+  await page.route(sentStagesRoute, route => route.fulfill({ json: stages({ processing: 2 }, { shortfall_pending: 1 }) }));
+  await sent(page).getByRole('button', { name: 'Actualizar enviadas', exact: true }).click();
+  await expect(card('En curso')).toHaveAccessibleDescription('2 órdenes responde 1 faltante');
+  await expect(card('En curso')).toHaveClass(/attention/);
+  // A long note goes under the count rather than being cut, whatever the width.
+  await page.unroute(sentStagesRoute);
+  await page.route(sentStagesRoute, route => route.fulfill({ json: stages({ processing: 12, quoted: 3, pending: 1 }, { shortfall_pending: 2,
+    to_confirm: [{ currency: 'USD', total: '123456.78' }], oldest: { pending: days(120) } }) }));
+  await sent(page).getByRole('button', { name: 'Actualizar enviadas', exact: true }).click();
+  await expect(card('En curso')).toHaveAccessibleDescription('12 órdenes responde 2 faltantes');
+  for (const width of [1440, 1366, 1280, 1024, 390, 360]) {
+    await page.setViewportSize({ width, height: 900 });
+    expect(await cards.locator('em, strong, small:not(.sr-only)').evaluateAll(texts => texts.filter(text => text.scrollWidth > text.clientWidth + 0.5).map(text => text.textContent)), `${width}px`).toEqual([]);
+  }
+  await page.setViewportSize({ width: 1366, height: 900 });
+  expect(await cards.evaluate(element => element.scrollWidth <= element.clientWidth), 'all nine at 1366px').toBe(true);
+  // Reached with Tab where the row scrolls, each card comes whole into the row.
+  await page.setViewportSize({ width: 1024, height: 900 });
+  await card('Todas').focus();
+  for (let index = 0; index < 8; index++) {
+    await page.keyboard.press('Tab');
+    expect(await cards.evaluate(element => { const box = document.activeElement!.getBoundingClientRect(), strip = element.getBoundingClientRect();
+      return element.contains(document.activeElement) && box.left >= strip.left - 0.5 && box.right <= strip.right + 0.5; }), `Tab ${index + 1}`).toBe(true);
+  }
+  // On a phone the cards scroll sideways, the page does not.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(card('Todas')).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(await cards.evaluate(element => element.scrollWidth > element.clientWidth && getComputedStyle(element).overflowX === 'auto')).toBe(true);
+  await page.screenshot({ path: '../output/ui/order-stages-mobile.png' });
+  // Opened on a stage further along the row (the reminder's Ver todas opens Por recibir), the row shows it.
+  await page.goto('/?vista=solicitudes&estado=por-recibir');
+  await expect(card('Por recibir')).toHaveAttribute('aria-pressed', 'true');
+  await expect(card('Por recibir')).toBeInViewport({ ratio: 1 });
+  await expect.poll(() => statuses.at(-1)).toBe('delivered');
+  expect(unexpected).toEqual([]);
+});
 
 test('sent history loads without browser receipts, sorts on the server, searches and shows immutable quantities on mobile', async ({ page }) => {
   const { unexpected } = await mock(page);

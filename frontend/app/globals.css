@@ -1108,6 +1108,34 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .supplier-requests-heading h2 { font-size:20px; letter-spacing:-.6px; line-height:1.6; }
 .supplier-requests-heading p { font-size:11px; color:#88997b; line-height:1.8; margin-top:6px; }
 .supplier-requests-heading>.button { flex-shrink:0; }
+.supplier-requests-heading-actions { display:flex; align-items:center; gap:12px; flex-shrink:0; }
+.order-stages-updated { color:#98a38d; font-size:10px; white-space:nowrap; }
+/* The client's orders by stage (the stage filters): cards in one row that scrolls sideways when they do not fit, the selected one raised,
+   each count in its stage's color, and a warm tint where the next step is the client's. */
+.order-stages { display:grid; grid-auto-flow:column; grid-auto-columns:minmax(132px,1fr); gap:8px; margin:-6px -6px 16px; padding:6px 6px 10px; overflow-x:auto; scrollbar-width:thin; scroll-snap-type:x proximity; scroll-padding:0 6px; }
+.order-stage { --tone:#3d542f; scroll-snap-align:start; position:relative; display:flex; flex-direction:column; align-items:stretch; gap:2px; min-width:0; padding:11px 12px 10px; border:1px solid var(--line); border-radius:10px; background:#fff; text-align:left; transition:border-color .15s ease, box-shadow .15s ease, background-color .15s ease; }
+.order-stage-title { display:flex; align-items:center; gap:7px; min-width:0; color:#33452a; font-size:12px; }
+.order-stage-title strong { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.order-stage-title svg { flex-shrink:0; color:var(--tone); }
+.order-stage-hint { padding-left:22px; color:#9aa58f; font-size:9.5px; line-height:1.5; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.order-stage-figures { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 4px; min-width:0; margin-top:7px; }  /* a note that does not fit beside the count goes under it */
+.order-stage-figures b { color:var(--tone); font-size:21px; font-weight:700; line-height:1; font-variant-numeric:tabular-nums; }
+.order-stage-figures small { color:#9aa58f; font-size:9px; }
+.order-stage-figures em { min-width:0; margin-left:auto; padding-left:6px; color:#8a957f; font-size:9px; font-style:normal; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.order-stage.attention { border-color:#efd9ab; background:#fffaf0; }
+.order-stage.attention .order-stage-figures em { color:#8a5a12; font-weight:600; }
+.order-stage.selected { border-color:var(--green-dark); box-shadow:0 4px 12px rgba(61,84,47,.13), inset 0 -2px 0 var(--green-dark); }
+.order-stage.selected .order-stage-title strong { font-weight:700; }
+@media(hover:hover) { .order-stage:not(.selected):hover { border-color:#cfdac3; box-shadow:0 2px 8px rgba(61,84,47,.08); } }
+.order-stage.tone-pending { --tone:#a47b47; }
+.order-stage.tone-reviewed { --tone:#69884e; }
+.order-stage.tone-quoted { --tone:#245d80; }
+.order-stage.tone-adjustment { --tone:#906018; }
+.order-stage.tone-in_transit { --tone:#22597c; }
+.order-stage.tone-delivered { --tone:#8a5a12; }
+.order-stage.tone-received { --tone:#1f5f4d; }
+.order-stage.tone-cancelled { --tone:#9a4b3c; }
+@media(max-width:600px) { .order-stages { grid-auto-columns:max(140px,42%); } }  /* a third card peeks in: the row scrolls */
 .supplier-requests-controls { display:flex; align-items:center; flex-wrap:wrap; gap:14px; margin-bottom:23px; }
 .supplier-requests-search { display:flex; align-items:center; gap:10px; border:1px solid #dce4d2; border-radius:8px; background:#fcfdf9; padding:5px 12px; min-height:46px; flex:1 1 340px; max-width:680px; min-width:0; color:#8a9a79; }
 .supplier-requests-search input { width:100%; min-width:0; border:0; background:transparent; color:#3e5531; font-size:12px; padding:8px 0; }

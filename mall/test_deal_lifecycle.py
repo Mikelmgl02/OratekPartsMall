@@ -167,6 +167,59 @@ class DealLifecycleTests(APITestCase):
         state = self.client.get('/api/v1/wishlist/state/').data
         self.assertEqual(([str(pk) for pk in state['part_ids']], state['listed_ids']), ([str(other.pk)], []))  # a heart, not a Favoritos result
 
+    def test_sent_requests_summary_counts_each_stage_and_what_the_client_waits_on(self):
+        url = f'/api/v1/accounts/{self.client_account.pk}/sent-requests/summary/'
+
+        def summary():
+            self.client.force_authenticate(self.buyer)
+            response = self.client.get(url)
+            self.assertEqual(response.status_code, 200, response.data)
+            return response.data
+        empty = summary()
+        self.assertEqual((empty['total'], set(empty['statuses'].values()), empty['oldest'], empty['to_confirm'], empty['in_progress'], empty['to_receive'],
+                          empty['shortfall_pending'], empty['sent_this_month'], empty['received_this_month']), (0, {0}, {}, [], [], [], 0, 0, 0))
+        first, quotation = self.handshake()  # 3 + 2 at 12.35
+        lines = self.lines(first)
+        self.assertEqual(self.supplier(first, 'report_shortfall', quotation, shortfall=[{'order_line_id': lines[self.item_a2.pk], 'missing': 2}],
+                                       reason_code='no_stock').status_code, 200)
+        data = summary()
+        # A shortfall waiting for the client is flagged; the agreement still counts its units until the client accepts it.
+        self.assertEqual((data['statuses']['handshaked'], data['shortfall_pending'], data['in_progress']), (1, 1, [{'currency': 'USD', 'total': '61.75'}]))
+        self.assertEqual(self.buyer_does(first, 'accept_shortfall', quotation).status_code, 200)
+        self.assertEqual((summary()['shortfall_pending'], summary()['in_progress']), (0, [{'currency': 'USD', 'total': '37.05'}]))  # 3 × 12.35
+        # A second order quoted and waiting for the client (its latest revision), a third still with the supplier.
+        self.client.force_authenticate(self.buyer)
+        second = self.order()
+        self.review(second)
+        quoted = self.quote(second)
+        self.assertEqual(quoted.status_code, 200)
+        self.client.force_authenticate(self.buyer)
+        third = self.order()
+        SupplierRequest.objects.filter(pk=third.pk).update(created_at=timezone.now() - timedelta(days=3))
+        data = summary()
+        self.assertEqual({status: count for status, count in data['statuses'].items() if count}, {'pending': 1, 'quoted': 1, 'handshaked': 1})
+        self.assertEqual((data['total'], data['sent_this_month'] >= 2, data['to_confirm']), (3, True, [{'currency': 'USD', 'total': '61.75'}]))
+        third.refresh_from_db()
+        self.assertEqual(data['oldest'], {'pending': third.created_at.isoformat()})
+        # An adjustment waits on the supplier since the client asked for it, however long ago the order was sent.
+        SupplierRequest.objects.filter(pk=second.pk).update(created_at=timezone.now() - timedelta(days=9))
+        self.assertEqual(self.buyer_does(second, 'request_adjustment', quoted.data['quotation']['id'], reason='SOLO DOS').status_code, 200)
+        asked = DealEvent.objects.filter(order=second, kind='request_adjustment').latest('id').created_at
+        data = summary()
+        self.assertEqual((data['oldest']['adjustment'], data['statuses']['adjustment'], data['to_confirm']), (asked.isoformat(), 1, []))
+        # Delivered, it waits for the client's Recibido; received, it counts in this month's.
+        self.assertEqual(self.supplier(first, 'process', quotation).status_code, 200)
+        self.assertEqual(self.supplier(first, 'deliver', quotation).status_code, 200)
+        data = summary()
+        self.assertEqual((data['statuses']['delivered'], data['in_progress'], data['to_receive']), (1, [], [{'currency': 'USD', 'total': '37.05'}]))
+        self.assertEqual(self.buyer_does(first, 'receive', quotation).status_code, 200)
+        data = summary()
+        self.assertEqual((data['statuses']['received'], data['received_this_month'], data['to_receive']), (1, 1, []))
+        # A client's own figures: a supplier member is refused, and another account's figures stay out.
+        self.client.force_authenticate(self.seller_a)
+        self.assertEqual(self.client.get(f'/api/v1/accounts/{self.supplier_a.pk}/sent-requests/summary/').status_code, 403)
+        self.assertEqual(self.client.get(url).status_code, 404)
+
     def test_delivery_closes_the_deal_without_moving_stock(self):
         order, quotation = self.handshake()
         before = (self.counts(self.item_a), self.counts(self.item_a2))

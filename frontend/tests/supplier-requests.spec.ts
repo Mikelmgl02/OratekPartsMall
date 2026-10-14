@@ -1,4 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
+import { mockSentStages } from './sent-stages';
 import { expectAccount, expectSignedIn, switchAccount } from './header';
 import { signedOutInbox } from './inbox-route';
 import type { Account, BasketLine, Part } from '../lib/types';
@@ -62,6 +63,7 @@ async function mockSession(page: Page, accounts = supplierAccounts.slice(0, 1)) 
       reported_quantity: 10, reserved_quantity: 0, available_quantity: 10, updated_at: '2026-10-02T12:00:00Z' },
   ] } }));
   await page.route(/\/api\/market\/accounts\/[^/]+\/sent-requests(?:\?.*)?$/, route => route.fulfill({ json: emptyPage }));
+  await mockSentStages(page);
   // Keyboard navigation passes through the private Precios section.
   await page.route(/\/api\/market\/accounts\/[^/]+\/price-lists$/, route => route.fulfill({ json: { can_configure: true, item_count: 0, results: [] } }));
   await page.route(/\/api\/market\/accounts\/[^/]+\/prices(?:\?.*)?$/, route => route.fulfill({ json: emptyPage }));

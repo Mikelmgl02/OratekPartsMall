@@ -1,4 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
+import { mockSentStages, sentStages } from './sent-stages';
 import { signedOutInbox } from './inbox-route';
 import { fakeServerBasket } from './server-basket';
 import type { Deal, DealMessage } from '../lib/deal-types';
@@ -155,6 +156,7 @@ test('the client sees in the deal chat that the supplier uses an AI assistant, a
   await page.route(/\/api\/market\/catalog(?:\?.*)?$/, route => route.fulfill({ json: empty }));
   await page.route(/\/api\/market\/accounts\/[^/]+\/sent-requests(?:\?.*)?$/, route => route.fulfill({ json: { ...empty, count: 1, results: [order] } }));
   await page.route(`/api/market/accounts/${clientId}/sent-requests/${orderId}`, route => route.fulfill({ json: order }));
+  await mockSentStages(page, sentStages({ reviewed: 1 }, { oldest: { reviewed: stamp }, sent_this_month: 1 }));
   await page.route(/\/api\/market\/accounts\/[^/]+\/deals\/[^/]+\/messages(?:\?.*)?$/, route =>
     route.fulfill({ json: { results: [], cursor: 0, has_more: false, has_earlier: false, assistant_notice: true } }));
   await page.goto('/?vista=solicitudes');

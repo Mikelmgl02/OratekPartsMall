@@ -4,7 +4,8 @@ import json
 import uuid
 
 from django.db import IntegrityError, transaction
-from django.db.models import Case, CharField, Count, Exists, IntegerField, Prefetch, Q, Sum, OuterRef, Subquery, Value, When
+from django.db.models import (Case, CharField, Count, DecimalField, Exists, ExpressionWrapper, F, IntegerField, Min, Prefetch, Q, Sum, OuterRef,
+                              Subquery, Value, When)
 from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -263,6 +264,57 @@ class ClientSentRequests(APIView):
         paginator = PageNumberPagination()
         page = paginator.paginate_queryset(rows, request, view=self)
         return paginator.get_paginated_response([sent_request_summary(row) for row in page])
+
+
+def money_by_currency(rows):
+    """[{currency, total}] from per-currency sums, the largest first."""
+    rows = [row for row in rows if row['total'] is not None]
+    return [{'currency': row['currency'], 'total': str(row['total'])} for row in sorted(rows, key=lambda row: (-row['total'], row['currency']))]
+
+
+def agreed_totals(orders):
+    """What confirmed orders come to, per currency: each one's accepted quotation less the units of the shortfalls the client accepted, as
+    deal_lifecycle.agreement counts one order."""
+    from .request_models import DealShortfallLine
+    accepted = DealQuotation.objects.filter(order_id=OuterRef('quotation__order_id'), client_confirmed_at__isnull=False).order_by('-revision').values('pk')[:1]
+    missing = DealShortfallLine.objects.filter(quotation_line_id=OuterRef('pk'), shortfall__status='accepted').values('quotation_line_id').annotate(
+        units=Sum('missing')).values('units')[:1]
+    lines = DealQuotationLine.objects.filter(quotation__order__in=orders, quotation_id=Subquery(accepted)).annotate(
+        amount=ExpressionWrapper(F('unit_price') * (F('quantity') - Coalesce(Subquery(missing), 0)), output_field=DecimalField(max_digits=18, decimal_places=2)))
+    return money_by_currency(lines.values(currency=F('quotation__currency')).annotate(total=Sum('amount')).order_by())
+
+
+WITH_SUPPLIER = ('pending', 'reviewed', 'adjustment')
+
+
+class ClientSentRequestSummary(APIView):
+    """The client's orders by stage, for the cards over its list: how many are in each, how long the oldest waiting on the supplier has
+    waited, what the quotations waiting for the client come to, what the confirmed orders in progress and delivered come to, and this
+    month's (America/Panama) sent and received orders."""
+    @extend_schema(operation_id='v1_accounts_sent_requests_summary', responses=OpenApiTypes.OBJECT)
+    def get(self, request, account_id):
+        client = account_for(request.user, account_id, 'client')
+        orders = SupplierRequest.objects.filter(client=client)
+        counts = dict(orders.values('status').annotate(orders=Count('pk')).values_list('status', 'orders').order_by())
+        # Sent and in review wait since the order was sent; an adjustment since the client's latest request for it.
+        oldest = dict(orders.filter(status__in=('pending', 'reviewed')).values('status').annotate(at=Min('created_at')).values_list('status', 'at').order_by())
+        asked = DealEvent.objects.filter(order_id=OuterRef('pk'), kind='request_adjustment').order_by('-id').values('created_at')[:1]
+        adjusting = orders.filter(status='adjustment').annotate(asked=Coalesce(Subquery(asked), 'created_at')).aggregate(at=Min('asked'))['at']
+        if adjusting:
+            oldest['adjustment'] = adjusting
+        latest = DealQuotation.objects.filter(order_id=OuterRef('order_id')).order_by('-revision').values('pk')[:1]
+        quoted = DealQuotation.objects.filter(order__in=orders.filter(status='quoted'), pk=Subquery(latest))
+        month = timezone.localtime().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        return Response({
+            'total': sum(counts.values()), 'statuses': {status: counts.get(status, 0) for status in STATUS_ORDER},
+            'oldest': {status: oldest[status].isoformat() for status in WITH_SUPPLIER if status in oldest},
+            'to_confirm': money_by_currency(quoted.values('currency').annotate(total=Sum('total')).order_by()),
+            'in_progress': agreed_totals(orders.filter(status__in=ACTIVE_AGREEMENT)),
+            'to_receive': agreed_totals(orders.filter(status='delivered')),
+            'shortfall_pending': orders.filter(shortfalls__status='pending').distinct().count(),
+            'month_start': month.isoformat(), 'sent_this_month': orders.filter(created_at__gte=month).count(),
+            'received_this_month': orders.filter(status='received', received_at__gte=month).count(),
+            'updated_at': timezone.now().isoformat()})
 
 
 class ClientSentRequestDetail(APIView):
