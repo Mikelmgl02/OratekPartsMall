@@ -163,7 +163,7 @@ test('the supplier moves the order through Procesando and En camino and the clie
   expect(mock.actions.map(action => [action.action, action.expected_version])).toEqual([['process', 4], ['ship', 5], ['deliver', 6]]);
 
   await page.goto(`/?vista=solicitudes&cuenta=${clientId}`);
-  await expect(page.getByRole('article', { name: /ORD-ACUERDO-001/ })).toContainText('Confirma que la recibiste');
+  await expect(page.getByRole('row').filter({ hasText: 'ORD-ACUERDO-001' })).toContainText('Confirma que la recibiste');
   await page.getByRole('button', { name: 'Ver enviada ORD-ACUERDO-001', exact: true }).click();
   const client = page.locator('dialog.deal-modal');
   await client.getByRole('button', { name: 'Cotización', exact: true }).click();
@@ -338,7 +338,7 @@ test('purchase history lists every confirmed deal and flags a shortfall waiting 
   const mock = await fixture(page);
   mock.set(pendingShortfall(), { [lineA]: 2 });
   await page.goto('/?vista=compras');
-  await expect(page.getByRole('article', { name: /ORD-ACUERDO-001/ })).toContainText('Faltante por responder');
+  await expect(page.getByRole('row').filter({ hasText: 'ORD-ACUERDO-001' })).toContainText('Faltante por responder');
   expect(mock.listed.at(-1)).toBe('agreements');
   expect(mock.unexpected).toEqual([]);
 });

@@ -405,7 +405,7 @@ test('client submission survives a lost response, clears the confirmed draft and
     expect(cesta.lines[clientAccount]).toEqual([]);
     expect(await page.evaluate(accountId => localStorage.getItem(`partsmall:basket:${accountId}`), clientAccount)).toBeNull();
     await page.reload();
-    await expect(sent.getByRole('article')).toHaveCount(2);
+    await expect(sent.getByRole('region', { name: 'Órdenes enviadas', exact: true }).locator('.ag-center-cols-container .ag-row')).toHaveCount(2);
     expect(submissions).toHaveLength(2);
     await page.getByRole('button', { name: 'Abrir cesta, 0 artículos', exact: true }).click();
     await expect(basket.getByRole('region', { name: 'Cesta vacía', exact: true })).toBeVisible();

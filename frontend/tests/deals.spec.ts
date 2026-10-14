@@ -205,13 +205,13 @@ for (const mobile of [false, true]) test(`${mobile ? 'mobile' : 'desktop'}: priv
   await dialog(page).getByRole('button', {name:'Cerrar ventana', exact:true}).click();
   await page.goto('/?vista=compras');
   await expect(page.getByRole('main', {name:'Historial de compras', exact:true})).toContainText('ORD-PRUEBA-001');
-  await expect(page.getByRole('article')).toContainText('3unidades acordadas');
+  await expect(page.getByRole('row').filter({hasText:'ORD-PRUEBA-001'}).locator('[col-id="units"]')).toHaveText('3');  // Acordadas
   // Once the supplier marks Procesando the agreement is still the one both confirmed, and the client's lists find it in progress.
   state.setStatus('processing', {processing_at:stamp});
   await page.goto('/?vista=solicitudes');
   await page.getByRole('group', {name:'Estado de solicitudes enviadas', exact:true}).getByRole('button', {name:'En curso', exact:true}).click();
   await expect.poll(() => state.statuses.at(-1)).toBe('active_agreements');  // before the supplier's Entregado; Por recibir lists those
-  await expect(page.getByRole('article', {name:/ORD-PRUEBA-001/})).toContainText('Procesando');
+  await expect(page.getByRole('row').filter({hasText:'ORD-PRUEBA-001'})).toContainText('Procesando');
   await page.getByRole('button', {name:'Ver enviada ORD-PRUEBA-001', exact:true}).click();
   await quoteTab(page);
   await expect(dialog(page).locator('.deal-document .deal-quote-heading').first()).toContainText('Acordada ·');

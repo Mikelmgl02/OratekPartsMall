@@ -90,9 +90,14 @@ REQUEST_SORT = {'created_at': 'created_at', 'reference': 'reference', 'status': 
                 'line_count': 'line_count', 'unit_count': 'unit_count'}
 
 
-def request_ordering(value):
-    fields = [('-' if item.strip().startswith('-') else '') + REQUEST_SORT[item.strip().lstrip('-')]
-              for item in (value or '').split(',') if item.strip().lstrip('-') in REQUEST_SORT]
+# The client's sent list sorts the same way, by supplier instead of client and also by the latest quotation's total.
+SENT_SORT = {**{key: value for key, value in REQUEST_SORT.items() if key != 'client_name'}, 'supplier_name': 'supplier_name',
+             'quotation_total': 'quotation_total'}
+
+
+def request_ordering(value, sort=REQUEST_SORT):
+    fields = [('-' if item.strip().startswith('-') else '') + sort[item.strip().lstrip('-')]
+              for item in (value or '').split(',') if item.strip().lstrip('-') in sort]
     return [*fields, '-created_at', 'id'] if fields else ['-created_at', 'id']
 
 
@@ -112,10 +117,13 @@ def lifecycle_fields():
             'missing_units': Coalesce(Subquery(accepted), 0)}
 
 
+def status_rank():
+    return Case(*[When(status=value, then=Value(index)) for index, value in enumerate(STATUS_ORDER)], output_field=IntegerField())
+
+
 def request_queryset(supplier):
-    status_rank = Case(*[When(status=value, then=Value(index)) for index, value in enumerate(STATUS_ORDER)], output_field=IntegerField())
     return SupplierRequest.objects.filter(supplier=supplier).annotate(
-        line_count=Count('lines'), unit_count=Coalesce(Sum('lines__quantity'), 0), status_rank=status_rank, **quote_summary_fields(),
+        line_count=Count('lines'), unit_count=Coalesce(Sum('lines__quantity'), 0), status_rank=status_rank(), **quote_summary_fields(),
         **lifecycle_fields()).order_by('-created_at', 'id')
 
 
@@ -222,7 +230,8 @@ def request_detail_queryset(supplier):
 
 def sent_request_queryset(client):
     return SupplierRequest.objects.filter(client=client).annotate(
-        line_count=Count('lines'), unit_count=Coalesce(Sum('lines__quantity'), 0), **quote_summary_fields(), **lifecycle_fields()).order_by('-created_at', 'id')
+        line_count=Count('lines'), unit_count=Coalesce(Sum('lines__quantity'), 0), status_rank=status_rank(), **quote_summary_fields(),
+        **lifecycle_fields()).order_by('-created_at', 'id')
 
 
 def sent_request_summary(row):
@@ -234,6 +243,7 @@ def sent_request_summary(row):
 
 class ClientSentRequests(APIView):
     @extend_schema(operation_id='v1_accounts_sent_requests_list', parameters=[OpenApiParameter('search', OpenApiTypes.STR), OpenApiParameter('status', OpenApiTypes.STR),
+                               OpenApiParameter('ordering', OpenApiTypes.STR, description='created_at, reference, status, supplier_name, line_count, unit_count o quotation_total; - para descendente.'),
                                OpenApiParameter('page', OpenApiTypes.INT)], responses=OpenApiTypes.OBJECT)
     def get(self, request, account_id):
         client = account_for(request.user, account_id, 'client')
@@ -248,6 +258,7 @@ class ClientSentRequests(APIView):
                 | Q(brand__icontains=term) | Q(description__icontains=term))
             rows = rows.filter(Q(reference__icontains=term) | Q(supplier_name__icontains=term)
                                | Q(pk__in=matching_lines.values('request_id')))
+        rows = rows.order_by(*request_ordering(data.get('ordering', ''), SENT_SORT))
         paginator = PageNumberPagination()
         page = paginator.paginate_queryset(rows, request, view=self)
         return paginator.get_paginated_response([sent_request_summary(row) for row in page])

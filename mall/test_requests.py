@@ -160,6 +160,10 @@ class SupplierRequestWorkflowTests(APITestCase):
         self.assertEqual(listed.data['count'], 2)
         self.assertEqual({row['supplier']['id'] for row in listed.data['results']}, {str(self.supplier_a.pk), str(self.supplier_b.pk)})
         self.assertEqual({row['submission_id'] for row in listed.data['results']}, {response.data['submission_id']})
+        # The grid sorts on the server: by supplier either way; unknown names fall back to newest first.
+        for ordering, names in [('supplier_name', ['PROVEEDOR A', 'PROVEEDOR B']), ('-supplier_name', ['PROVEEDOR B', 'PROVEEDOR A'])]:
+            self.assertEqual([row['supplier']['name'] for row in self.client.get(base, {'ordering': ordering}).data['results']], names)
+        self.assertEqual(self.client.get(base, {'ordering': 'client_name'}).status_code, 200)
         row = next(row for row in listed.data['results'] if row['supplier']['id'] == str(self.supplier_a.pk))
         path = f'{base}{row["id"]}/'
         before = self.stock_snapshot()

@@ -38,16 +38,17 @@ async function mock(page: Page, known: BasketLine[] = []) {
   return { unexpected, cesta };
 }
 
-test('sent history loads without browser receipts, searches, paginates and shows immutable quantities on mobile', async ({ page }) => {
+test('sent history loads without browser receipts, sorts on the server, searches and shows immutable quantities on mobile', async ({ page }) => {
   const { unexpected } = await mock(page);
-  let listCalls = 0; let detailCalls = 0;
+  let listCalls = 0; let detailCalls = 0; const orderings: string[] = [];
   await page.route(new RegExp(`${root}(?:\\?.*)?$`), route => {
     listCalls++;
     if (listCalls === 1) return route.fulfill({ status: 503, json: { detail: 'No se pudo cargar el historial.' } });
     const query = new URL(route.request().url()).searchParams;
-    if (query.get('page') === '2') return route.fulfill({ json: { ...empty, count: 2, previous: root, results: [summary('99999999-9999-4999-8999-999999999999', 'SOL-ENVIADA-002', 'DISTRIBUIDORA MOTOR', 'reviewed')] } });
+    orderings.push(query.get('ordering') || '');
     const filtered = !!query.get('search') || !!query.get('status');
-    return route.fulfill({ json: { ...empty, count: filtered ? 1 : 2, next: filtered ? null : root, results: [summary(requestId, 'SOL-ENVIADA-001', 'REPUESTOS CENTRAL', query.get('status') === 'reviewed' ? 'reviewed' : 'pending')] } });
+    const first = summary(requestId, 'SOL-ENVIADA-001', 'REPUESTOS CENTRAL', query.get('status') === 'reviewed' ? 'reviewed' : 'pending');
+    return route.fulfill({ json: { ...empty, count: filtered ? 1 : 2, results: filtered ? [first] : [first, summary('99999999-9999-4999-8999-999999999999', 'SOL-ENVIADA-002', 'DISTRIBUIDORA MOTOR', 'reviewed')] } });
   });
   await page.route(`${root}/${requestId}`, route => {
     if (++detailCalls === 1) return route.fulfill({ status: 503, json: { detail: 'No se pudo abrir la solicitud.' } });
@@ -58,14 +59,19 @@ test('sent history loads without browser receipts, searches, paginates and shows
   await page.goto('/?vista=solicitudes');
   await expect(sent(page).getByRole('alert')).toContainText('No se pudo cargar el historial.');
   await sent(page).getByRole('button', { name: 'Intentar de nuevo', exact: true }).click();
-  await expect(sent(page).getByRole('article')).toHaveCount(1);
-  await sent(page).getByRole('button', { name: 'Siguiente', exact: true }).click();
-  await expect(sent(page).getByRole('heading', { name: 'SOL-ENVIADA-002', exact: true })).toBeVisible();
+  // One grid: each order a row, with its supplier, counts and state; a header sorts on the server.
+  const grid = sent(page).getByRole('region', { name: 'Órdenes enviadas', exact: true });
+  const rows = grid.getByRole('row').filter({ hasText: /SOL-ENVIADA/ });
+  await expect(rows).toHaveCount(2);
+  await expect(sent(page).getByText('2 solicitudes', { exact: true })).toBeVisible();
+  await expect(rows.filter({ hasText: 'SOL-ENVIADA-002' })).toContainText('DISTRIBUIDORA MOTOR');
+  await grid.getByRole('columnheader', { name: 'Proveedor' }).click();
+  await expect.poll(() => orderings.at(-1)).toBe('supplier_name');
   await sent(page).getByLabel('Buscar solicitudes enviadas', { exact: true }).fill('central');
   await expect(sent(page).getByLabel('Buscar solicitudes enviadas', { exact: true })).toHaveValue('CENTRAL');
-  await expect(sent(page).getByText('Página 1', { exact: true })).toBeVisible();
+  await expect(rows).toHaveCount(1);
   await sent(page).getByRole('group', { name: 'Estado de solicitudes enviadas', exact: true }).getByRole('button', { name: 'En revisión', exact: true }).click();
-  await expect(sent(page).getByRole('article')).toContainText('En revisión');
+  await expect(rows).toContainText('En revisión');
   await sent(page).getByRole('button', { name: 'Ver enviada SOL-ENVIADA-001', exact: true }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('alert')).toContainText('No se pudo abrir la solicitud.');
@@ -78,7 +84,7 @@ test('sent history loads without browser receipts, searches, paginates and shows
   expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
   await dialog.getByRole('button', { name: 'Cerrar ventana', exact: true }).click();
   await page.reload();
-  await expect(sent(page).getByRole('article')).toHaveCount(1);
+  await expect(sent(page).getByRole('row').filter({ hasText: /SOL-ENVIADA/ })).toHaveCount(2);
   expect(await page.evaluate(() => localStorage.getItem('motionpartes:request-submissions:11111111-1111-4111-8111-111111111111'))).toBeNull();
   expect(unexpected).toEqual([]);
 });
@@ -97,7 +103,7 @@ test('legacy confirmed basket items move to sent history once while unrelated an
   await page.goto('/?vista=cesta');
   await expect(sent(page).getByRole('status').filter({ hasText: 'Solicitud enviada' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Abrir cesta, 1 artículo', exact: true })).toBeVisible();
-  await sent(page).getByRole('navigation', { name: 'Tus solicitudes', exact: true }).getByRole('button', { name: /Borrador/ }).click();
+  await sent(page).getByRole('navigation', { name: 'Tus solicitudes', exact: true }).getByRole('button', { name: /Cesta/ }).click();
   const basket = page.getByRole('main', { name: 'Cesta de solicitudes', exact: true });
   await expect(basket.getByRole('heading', { name: 'FILTRO-NUEVO', exact: true })).toBeVisible();
   await expect(basket.getByRole('heading', { name: '58411-1R000-G', exact: true })).toHaveCount(0);
@@ -125,10 +131,10 @@ test('late sent history from another client cannot appear after account switchin
   try {
     await page.goto('/?vista=solicitudes'); await requested;
     await switchAccount(page, otherClientId);
-    await expect(sent(page).getByRole('heading', { name: 'SOL-OTRO-001', exact: true })).toBeVisible();
+    await expect(sent(page).getByRole('row').filter({ hasText: 'SOL-OTRO-001' })).toBeVisible();
     release(); await done;
-    await expect(sent(page).getByRole('heading', { name: 'SOL-ENVIADA-001', exact: true })).toHaveCount(0);
-    await expect(sent(page).getByRole('article')).toHaveCount(1);
+    await expect(sent(page).getByRole('row').filter({ hasText: 'SOL-ENVIADA-001' })).toHaveCount(0);
+    await expect(sent(page).getByRole('row').filter({ hasText: /SOL-/ })).toHaveCount(1);
     expect(unexpected).toEqual([]);
   } finally { release(); }
 });
