@@ -2,7 +2,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { request, WishlistState } from './types';
 
-type Snapshot = { owner: number; ids: Set<string> };
+// listed: the favorites the catalog lists (its Favoritos filter shows and counts those).
+type Snapshot = { owner: number; ids: Set<string>; listed: Set<string> };
 
 export function useWishlist(userId: number | undefined, enabled: boolean) {
   const [snapshot, setSnapshot] = useState<Snapshot>();
@@ -15,6 +16,7 @@ export function useWishlist(userId: number | undefined, enabled: boolean) {
   const mutations = useRef(new Set<string>());
   const ready = enabled && snapshot?.owner === userId;
   const ids = ready && snapshot ? snapshot.ids : new Set<string>();
+  const listed = ready && snapshot ? snapshot.listed : new Set<string>();
 
   const refresh = useCallback(async () => {
     if (!enabled || userId === undefined) return;
@@ -22,7 +24,7 @@ export function useWishlist(userId: number | undefined, enabled: boolean) {
     try {
       const result = await request<WishlistState>('/api/market/wishlist/state');
       if (scope !== generation.current || version !== readVersion.current) return;
-      const next = { owner: userId, ids: new Set(result.part_ids) };
+      const next = { owner: userId, ids: new Set(result.part_ids), listed: new Set(result.listed_ids ?? result.part_ids) };
       current.current = next; setSnapshot(next); setError('');
       return next;
     } catch (cause) {
@@ -61,9 +63,9 @@ export function useWishlist(userId: number | undefined, enabled: boolean) {
       const saved = before.ids.has(partId);
       const result = await request<{ part_id: string } | undefined>(`/api/market/wishlist/${partId}`, { method: saved ? 'DELETE' : 'PUT' });
       if (scope !== generation.current) return;
-      const next = { owner: userId, ids: new Set(current.current?.ids || before.ids) };
-      if (saved) next.ids.delete(partId);
-      else { next.ids.delete(partId); next.ids.add(result?.part_id || partId); }
+      const next = { owner: userId, ids: new Set(current.current?.ids || before.ids), listed: new Set(current.current?.listed || before.listed) };
+      next.ids.delete(partId); next.listed.delete(partId);
+      if (!saved) { next.ids.add(result?.part_id || partId); next.listed.add(result?.part_id || partId); }  // only a listed SKU can be saved
       current.current = next; setSnapshot(next); setError(''); setRevision(value => value + 1);
       return !saved;
     } finally {
@@ -71,5 +73,5 @@ export function useWishlist(userId: number | undefined, enabled: boolean) {
     }
   }
 
-  return { ids, count: ids.size, ready, pending, error, revision, refresh, toggle };
+  return { ids, listed, count: ids.size, ready, pending, error, revision, refresh, toggle };
 }

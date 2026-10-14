@@ -262,6 +262,24 @@ h1,h2,h3,h4 { font-family:'Manrope',Arial,sans-serif; }
 .list-view .part-card-body { flex:1; padding-top:17px; }
 .list-view .part-card-bottom { margin-top:12px; }
 .part-stock-row { margin-bottom:14px; }
+.part-card-badges { display:flex; flex-wrap:wrap; gap:5px; margin:-4px 0 10px; }
+.part-card-badge { display:inline-flex; align-items:center; gap:5px; border-radius:999px; padding:4px 9px; font-size:10px; font-weight:700; line-height:1.3; white-space:nowrap; box-shadow:0 1px 3px rgba(31,45,24,.12); }
+.part-card-badge.basket { color:#1f2d18; background:#dff19f; }
+.part-card-badge.ordered { color:#fff; background:#40603a; }
+.facet-mine-label { display:inline-flex; align-items:center; gap:6px; }
+.catalog-mine-toggles, .catalog-sticky .results-heading>.catalog-mine-toggles { display:flex; align-items:center; justify-content:flex-start; gap:6px; flex-shrink:0; }
+/* Narrow, the two filters take their own row under the count and the toolbar. */
+@media(max-width:900px) { .results-heading { flex-wrap:wrap; row-gap:8px; }.results-heading>.catalog-mine-toggles { order:3; width:100%; } }
+.catalog-mine-toggle { display:inline-flex; align-items:center; gap:6px; border:1px solid var(--line); border-radius:30px; padding:5px 6px 5px 10px; background:#fff; color:#5d6a52; font-size:10.5px; font-weight:600; white-space:nowrap; cursor:pointer; transition:background .15s,border-color .15s,color .15s; }
+.catalog-mine-toggle:hover:not(:disabled) { border-color:#b9c9a4; }
+.catalog-mine-toggle:disabled { opacity:.5; cursor:default; }
+.catalog-mine-count { min-width:20px; border-radius:20px; padding:2px 6px; text-align:center; font-size:10px; font-weight:700; background:#f0f3ea; color:#4d5849; }
+.catalog-mine-toggle.cesta .catalog-mine-count { background:#dff19f; color:#1f2d18; }
+.catalog-mine-toggle.ordenes .catalog-mine-count { background:#40603a; color:#fff; }
+.catalog-mine-toggle.favoritos .catalog-mine-count { background:#fde8e4; color:#9a463f; }
+.catalog-mine-toggle.selected { border-color:#40603a; background:#40603a; color:#fff; }
+.catalog-mine-toggle.selected .catalog-mine-count { background:#fff; color:#1f2d18; }
+.catalog-mine-toggle:focus-visible { outline:2px solid #8fb26f; outline-offset:2px; }
 .catalog-stock-status { display:inline-flex; align-items:center; gap:6px; max-width:100%; border:1px solid transparent; border-radius:5px; padding:6px 8px; font-size:9px; font-weight:700; line-height:1.4; letter-spacing:.3px; }
 .catalog-stock-status svg { flex-shrink:0; }
 .catalog-stock-status.high { color:#35613c; background:#edf5e7; border-color:#dceacb; }
@@ -864,8 +882,24 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .basket-grid-article .basket-page-source { margin:0 0 2px; font-size:10px; }
 .basket-grid-description small { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; white-space:normal; line-height:1.35; }
 .basket-grid-description .basket-page-stale { margin:2px 0 0; font-size:11px; white-space:normal; line-height:1.3; }
-.basket-grid-quantity > div { width:auto; height:34px; }
-.basket-grid-quantity input { width:52px; }
+.basket-grid .ag-cell.basket-grid-quantity-cell { justify-content:flex-end; padding:0 6px; }
+.basket-grid-number { width:100%; height:34px; border:1px solid transparent; border-radius:6px; background:transparent; padding:0 10px; color:inherit; font:inherit; font-size:14px; font-weight:600; text-align:right; font-variant-numeric:tabular-nums; -moz-appearance:textfield; appearance:textfield; }
+.basket-grid-number::-webkit-outer-spin-button, .basket-grid-number::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
+.basket-grid .ag-row:hover .basket-grid-number:not(:disabled) { border-color:#dfe5d6; background:#fff; }
+.basket-grid-number:focus { outline:none; border-color:#8fb26f; background:#fff; box-shadow:0 0 0 3px rgba(143,178,111,.18); }
+.basket-grid-number:disabled { opacity:.55; }
+.basket-grid-stock { display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:600; white-space:nowrap; color:#687066; }
+.basket-grid-stock::before { content:''; width:8px; height:8px; flex-shrink:0; border-radius:50%; background:currentColor; }
+.basket-grid-stock.high { color:#35613c; }
+.basket-grid-stock.medium { color:#7a7530; }
+.basket-grid-stock.low { color:#a86a1c; }
+.basket-grid-stock.sold_out, .basket-grid-stock.off { color:#9a463f; }
+.basket-grid.narrow .basket-grid-stock { font-size:0; gap:5px; }
+.basket-grid.narrow .basket-grid-stock::after { content:attr(data-short); font-size:12px; }
+.basket-grid.narrow .basket-page-remove { font-size:0; gap:0; padding:6px; }
+.basket-grid.narrow .ag-header-cell, .basket-grid.narrow .ag-cell { padding-left:8px; padding-right:8px; }
+.basket-grid.narrow .ag-cell.basket-grid-quantity-cell { padding:0 2px; }
+.basket-grid.narrow .basket-grid-number { padding:0 6px; }
 .basket-grid .basket-page-remove { padding:6px 8px; }
 .basket-grid .ag-row.basket-grid-stale { background:#fdf6f4; }
 /* The client's Cesta, Cotizaciones and Actividad (their grids) get 500px more than the shop's 1500px. */

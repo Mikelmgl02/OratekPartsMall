@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { django, json, sessionToken, unavailable, validOrigin } from '@/lib/server-api';
+import { forwardedQuery } from '@/lib/market-proxy';
 
 type Context = { params: Promise<{ path: string[] }> };
 async function handle(request: NextRequest, context: Context) {
@@ -8,65 +9,14 @@ async function handle(request: NextRequest, context: Context) {
   const { path } = await context.params;
   const route = path.join('/');
   const uuid = '[a-f0-9-]{36}';
-  const readable = new RegExp(`^(accounts|catalog|catalog/suggest|inbox|inbox/conversations|inbox/notifications|inbox/push|inbox/email|inbox/whatsapp|wishlist|wishlist/state|catalog/${uuid}/technical|catalog/${uuid}/suppliers|accounts/${uuid}/apiag|accounts/${uuid}/inventory|accounts/${uuid}/inventory/${uuid}/ledger|accounts/${uuid}/ledger|accounts/${uuid}/ledger/runs|accounts/${uuid}/ledger/runs/${uuid}|accounts/${uuid}/ledger/runs/${uuid}/changes|accounts/${uuid}/whatsapp|accounts/${uuid}/basket|accounts/${uuid}/basket/activity|accounts/${uuid}/purchase-activity|accounts/${uuid}/threads/${uuid}/messages|accounts/${uuid}/threads/${uuid}/orders|accounts/${uuid}/deals/${uuid}/messages|accounts/${uuid}/requests|accounts/${uuid}/requests/${uuid}|accounts/${uuid}/sent-requests|accounts/${uuid}/sent-requests/${uuid}|accounts/${uuid}/sent-requests/${uuid}/missing|accounts/${uuid}/catalog/${uuid}/request-state|accounts/${uuid}/pricing/settings|accounts/${uuid}/requests/${uuid}/draft|accounts/${uuid}/requests/${uuid}/draft/assistant|accounts/${uuid}/requests/${uuid}/quotations/${uuid}/trace|accounts/${uuid}/(pricing/history|price-lists|prices|prices/${uuid}/history|clients|clients/${uuid}/profile|pricing-rules))$`);
+  const readable = new RegExp(`^(accounts|catalog|catalog/suggest|inbox|inbox/conversations|inbox/notifications|inbox/push|inbox/email|inbox/whatsapp|wishlist|wishlist/state|catalog/${uuid}/technical|catalog/${uuid}/suppliers|accounts/${uuid}/apiag|accounts/${uuid}/inventory|accounts/${uuid}/inventory/${uuid}/ledger|accounts/${uuid}/ledger|accounts/${uuid}/ledger/runs|accounts/${uuid}/ledger/runs/${uuid}|accounts/${uuid}/ledger/runs/${uuid}/changes|accounts/${uuid}/whatsapp|accounts/${uuid}/basket|accounts/${uuid}/basket/activity|accounts/${uuid}/purchase-activity|accounts/${uuid}/open-units|accounts/${uuid}/threads/${uuid}/messages|accounts/${uuid}/threads/${uuid}/orders|accounts/${uuid}/deals/${uuid}/messages|accounts/${uuid}/requests|accounts/${uuid}/requests/${uuid}|accounts/${uuid}/sent-requests|accounts/${uuid}/sent-requests/${uuid}|accounts/${uuid}/sent-requests/${uuid}/missing|accounts/${uuid}/catalog/${uuid}/request-state|accounts/${uuid}/pricing/settings|accounts/${uuid}/requests/${uuid}/draft|accounts/${uuid}/requests/${uuid}/draft/assistant|accounts/${uuid}/requests/${uuid}/quotations/${uuid}/trace|accounts/${uuid}/(pricing/history|price-lists|prices|prices/${uuid}/history|clients|clients/${uuid}/profile|pricing-rules))$`);
   const writable = new RegExp(`^(analytics/events|inbox/conversations/${uuid}/read|inbox/conversations/${uuid}/place|inbox/groups|inbox/groups/${uuid}|inbox/notifications/seen|inbox/push|inbox/push/remove|inbox/email|inbox/whatsapp|inbox/whatsapp/verify|accounts/${uuid}/(whatsapp|whatsapp/verify|basket|sent-requests/${uuid}/missing|threads|threads/${uuid}/messages|inventory/ingest|apiag/sync|requests|requests/${uuid}/review|deals/${uuid}/actions|deals/${uuid}/messages|pricing/settings|requests/${uuid}/draft|requests/${uuid}/draft/discard|requests/${uuid}/draft/reprice|requests/${uuid}/draft/assistant|requests/${uuid}/draft/assistant/${uuid}/decisions|price-lists|price-lists/${uuid}|prices|clients/${uuid}/profile|pricing-rules|pricing-rules/${uuid}|pricing-rules/${uuid}/archive|pricing/simulate))$`);
   const wishlistWritable = new RegExp(`^wishlist/${uuid}$`), inboxGroup = new RegExp(`^inbox/groups/${uuid}$`);
   const allowed = request.method === 'GET' ? readable.test(route) : request.method === 'POST' ? writable.test(route)
     : (['PUT', 'DELETE'].includes(request.method) && wishlistWritable.test(route)) || (request.method === 'DELETE' && inboxGroup.test(route));
   if (!allowed) return json({ detail: 'La ruta solicitada no existe.' }, 404);
   if (request.method !== 'GET' && !validOrigin(request)) return json({ detail: 'El origen de la solicitud no es válido.' }, 403);
-  const query = new URLSearchParams();
-  for (const key of ['search', 'page', 'status', 'after', 'before', 'solo']) {
-    const value = request.nextUrl.searchParams.get(key);
-    if (value) query.set(key, value);
-  }
-  // The price grid filters by list; the key reaches only the supplier's private pricing routes.
-  if (new RegExp(`^accounts/${uuid}/(prices|pricing/history)$`).test(route)) {
-    const list = request.nextUrl.searchParams.get('list');
-    if (list && new RegExp(`^${uuid}$`).test(list)) query.set('list', list);
-  }
-  // The supplier's stock grid filters by matching state and sorts by column (the view accepts only its own ordering fields).
-  if (new RegExp(`^accounts/${uuid}/inventory$`).test(route)) {
-    const matching = request.nextUrl.searchParams.get('matching_status'), ordering = request.nextUrl.searchParams.get('ordering');
-    if (matching && ['matched', 'pending', 'review', 'unmatched'].includes(matching)) query.set('matching_status', matching);
-    if (ordering && /^[-a-z_,]{1,120}$/.test(ordering)) query.set('ordering', ordering);
-  }
-  // The supplier's ledger filters by origin, movement kind, article (a uuid) and, inside a load, by what changed.
-  if (new RegExp(`^accounts/${uuid}/ledger(/runs(/${uuid}/changes)?)?$`).test(route)) {
-    const values = request.nextUrl.searchParams;
-    for (const [key, pattern] of [['origin', /^[a-z]{1,12}$/], ['kind', /^[a-z]{1,12}$/], ['action', /^[a-z]{1,12}$/], ['item', new RegExp(`^${uuid}$`)]] as const) {
-      const value = values.get(key);
-      if (value && pattern.test(value)) query.set(key, value);
-    }
-  }
-  // A conversation's chat keeps one of its orders' messages (order=<id>).
-  if (new RegExp(`^accounts/${uuid}/threads/${uuid}/messages$`).test(route)) {
-    const order = request.nextUrl.searchParams.get('order');
-    if (order && new RegExp(`^${uuid}$`).test(order)) query.set('order', order);
-  }
-  if (route === 'inbox/conversations') {
-    if (request.nextUrl.searchParams.get('unread') === '1') query.set('unread', '1');
-    const side = request.nextUrl.searchParams.get('side');
-    if (side === 'client' || side === 'supplier') query.set('side', side);
-    const order = request.nextUrl.searchParams.get('order');
-    if (order && new RegExp(`^${uuid}$`).test(order)) query.set('order', order);
-  }
-  // Rules filter by one client of the pair (a uuid) or by scope.
-  if (new RegExp(`^accounts/${uuid}/pricing-rules$`).test(route)) {
-    const client = request.nextUrl.searchParams.get('client'), scope = request.nextUrl.searchParams.get('scope');
-    if (client && new RegExp(`^${uuid}$`).test(client)) query.set('client', client);
-    if (scope === 'all' || scope === 'client') query.set('scope', scope);
-  }
-  if (route === 'catalog' || route === 'catalog/suggest') {
-    for (const key of ['category', 'subcategory', 'supplier', 'availability', 'include_facets']) {
-      for (const value of request.nextUrl.searchParams.getAll(key)) query.append(key, value);
-    }
-  }
-  // The active account (a uuid): a supplier-only account sees only its own SKUs (mall/catalog_scope.py).
-  if (route === 'catalog' || route === 'catalog/suggest') {
-    const account = request.nextUrl.searchParams.get('account');
-    if (account && new RegExp(`^${uuid}$`).test(account)) query.set('account', account);
-  }
+  const query = forwardedQuery(route, request.nextUrl.searchParams);
   let body;
   if (request.method === 'POST') {
     try { body = JSON.stringify(await request.json()); } catch { return json({ detail: 'La solicitud no es válida.' }, 400); }

@@ -313,6 +313,34 @@ class ClientPartRequestState(APIView):
                                     **{key: row[key] for key in quantities}} for row in items]})
 
 
+def open_unit_rows(client, storefront=False):
+    """Per catalog SKU (a merged one under the SKU it merged into), the units of the client's open orders and how many orders hold any:
+    what it asked for until the handshake, then what the accepted quotation agreed less the shortfalls it accepted, until its Recibido.
+    storefront: only the SKUs the catalog lists."""
+    from .request_models import PRE_HANDSHAKE, DealShortfallLine
+    agreed = DealQuotationLine.objects.filter(order_line=OuterRef('pk'), quotation__client_confirmed_at__isnull=False).order_by('-quotation__revision').values('quantity')[:1]
+    short = DealShortfallLine.objects.filter(quotation_line__order_line=OuterRef('pk'), shortfall__status='accepted').values(
+        'quotation_line__order_line').annotate(units=Sum('missing')).values('units')[:1]
+    rows = (SupplierRequestLine.objects.filter(request__client=client, request__status__in=[*PRE_HANDSHAKE, *OPEN_AGREEMENT])
+            .annotate(catalog_part=Coalesce('part__merged_into_id', 'part_id'),
+                      open_units=Case(When(request__status__in=PRE_HANDSHAKE, then='quantity'),
+                                      default=Coalesce(Subquery(agreed), 0) - Coalesce(Subquery(short), 0), output_field=IntegerField())))
+    if storefront:
+        rows = rows.filter(catalog_part__in=storefront_lines().values('pk'))
+    # An order counts once it holds a unit of the SKU: a line quoted at 0, or whose units all went short, does not.
+    return rows.values('catalog_part').annotate(units=Sum('open_units'), orders=Count('request', distinct=True, filter=Q(open_units__gt=0)))
+
+
+class ClientOpenUnits(APIView):
+    """The units the active client has in its open orders, per catalog SKU (a merged SKU counts under the one it merged into): what it asked
+    for until the handshake, then what the accepted quotation agreed less the shortfalls it accepted, until its Recibido. Received and
+    cancelled orders count nothing; only SKUs the catalog lists. The catalog shows it on each card and counts them for En órdenes."""
+    @extend_schema(responses=OpenApiTypes.OBJECT)
+    def get(self, request, account_id):
+        rows = open_unit_rows(account_for(request.user, account_id, 'client'), storefront=True)
+        return Response({'parts': {str(row['catalog_part']): {'units': row['units'], 'orders': row['orders']} for row in rows if row['units'] > 0}})
+
+
 def submission_result(submission):
     if submission.result is not None:
         return submission.result

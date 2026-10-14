@@ -59,7 +59,7 @@ test('live sign-in, catalog, supplier update, and ledger', async ({ page }) => {
   await page.getByLabel('Contraseña', { exact: true }).fill(process.env.E2E_PASSWORD!);
   await page.getByRole('dialog').getByRole('button', { name: 'Iniciar sesión', exact: true }).last().click();
   await expectSignedIn(page);
-  await expect(page.getByText('Catálogo real', { exact: true })).toBeVisible();
+  await expect(page.getByText('Catálogo real', { exact: true })).toHaveCount(0);  // only the example catalog is labelled
   await page.getByLabel('Buscar repuestos, marcas o códigos', { exact: true }).fill(process.env.E2E_USERNAME!);
   await page.getByLabel('Buscar repuestos, marcas o códigos', { exact: true }).press('Enter');
   await expect(page.getByRole('heading', { name: process.env.E2E_USERNAME!, exact: true })).toBeVisible();

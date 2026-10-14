@@ -130,7 +130,7 @@ class CatalogScopeTests(APITestCase):
         WishlistItem.objects.create(user=self.supplier_user, part=self.nobody)  # saved before the scope existed
         listed = self.client.get('/api/v1/wishlist/')
         self.assertEqual([row['part']['sku'] for row in listed.data['results']], ['MINE-1'])
-        self.assertEqual(self.client.get('/api/v1/wishlist/state/').data, {'part_ids': [self.mine.pk], 'count': 1})
+        self.assertEqual(self.client.get('/api/v1/wishlist/state/').data, {'part_ids': [self.mine.pk], 'count': 1, 'listed_ids': [self.mine.pk]})
         self.assertEqual(self.client.delete(f'/api/v1/wishlist/{self.nobody.pk}/').status_code, 204)
 
     def test_its_searches_and_views_are_no_demand(self):

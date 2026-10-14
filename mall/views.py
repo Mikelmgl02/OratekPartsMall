@@ -1,3 +1,4 @@
+import uuid
 from django.db import transaction
 from django.db.models import Exists, F, OuterRef, Prefetch, Q, Value
 from django.db.models.functions import Greatest
@@ -107,6 +108,9 @@ class CatalogList(generics.ListAPIView):
         self.catalog_filters = filter_values(self.request.query_params, self.scope.own)
         search = self.request.query_params.get('search', '').strip()
         self.base_query = catalog_parts(search, self.scope)
+        mine = [value for value in dict.fromkeys(self.request.query_params.getlist('mine'))]
+        if mine:
+            self.base_query = self.base_query.filter(pk__in=self.mine_parts(mine))
         if search and self.reuse_matches:
             # The count, the page and the four facet queries read the matches by id instead of each running the search again.
             ids = list(self.base_query.order_by().values_list('pk', flat=True)[:REUSED_MATCHES + 1])
@@ -116,6 +120,33 @@ class CatalogList(generics.ListAPIView):
         # A code search lists the exact code first, then the codes containing it; everything else stays in SKU order.
         rank = search_rank(search, self.scope.own)
         return query.annotate(search_rank=rank).order_by('search_rank', 'sku', 'id') if rank is not None else query.order_by('sku', 'id')
+
+
+    def mine_parts(self, mine):
+        """mine=cesta / ordenes / favoritos (any of them, either one matches): only the SKUs in the person's cesta for the account, in the
+        account's open orders (sent until received: mall.request_views.open_unit_rows), or in the person's favoritos (any account). The cesta
+        and the orders need a client account."""
+        from .basket_models import BasketItem
+        from .lines import canonical_ids
+        from .models import WishlistItem
+        from .request_views import open_unit_rows
+        if any(value not in ('cesta', 'ordenes', 'favoritos') for value in mine):
+            raise ValidationError({'mine': ['Usa cesta, ordenes o favoritos.']})
+        ids = set()
+        if 'favoritos' in mine:
+            ids.update(WishlistItem.objects.filter(user=self.request.user).values_list('part_id', flat=True))
+        if 'cesta' in mine or 'ordenes' in mine:
+            account_id = self.request.query_params.get('account', '').strip()
+            try:
+                uuid.UUID(account_id)
+            except ValueError:
+                raise ValidationError({'account': ['Indica la cuenta de cliente.']})
+            account = account_for(self.request.user, account_id, 'client')
+            if 'cesta' in mine:  # under the SKU each line is listed under now, as the cesta says (mall.basket.basket_data catalog_part_id)
+                ids.update(canonical_ids(BasketItem.objects.filter(user=self.request.user, account=account).values_list('part_id', flat=True)).values())
+            if 'ordenes' in mine:
+                ids.update(row['catalog_part'] for row in open_unit_rows(account) if row['units'] > 0)
+        return ids
 
 
 SUGGESTIONS = 6

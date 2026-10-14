@@ -20,7 +20,7 @@ async function mockCatalog(page: Page) {
   await page.route(/\/api\/market\/catalog(?:\?.*)?$/, route => {
     const query = new URL(route.request().url()).searchParams;
     queries.push(query);
-    const filters: CatalogFilters = { category: query.getAll('category'), subcategory: query.getAll('subcategory'), supplier: query.getAll('supplier'), availability: query.get('availability') || '' };
+    const filters: CatalogFilters = { category: query.getAll('category'), subcategory: query.getAll('subcategory'), supplier: query.getAll('supplier'), availability: query.get('availability') || '', mine: [] };
     const base = parts.filter(part => `${part.sku} ${part.description}`.includes((query.get('search') || '').toUpperCase()));
     const scope = (values: CatalogFilters) => base.filter(part => matchesFilters(part, values) && (!values.supplier.length || values.supplier.includes(part.supplier)));
     const facets: CatalogFacets = { category: [], subcategory: [], availability: [], supplier: [] };

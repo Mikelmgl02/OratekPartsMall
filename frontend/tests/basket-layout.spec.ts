@@ -7,11 +7,11 @@ const accounts = [
   { id: 'basket-client-a', name: 'EMPRESA A', roles: ['client_business'], capabilities: ['client'] },
   { id: 'basket-client-b', name: 'EMPRESA B', roles: ['client_business'], capabilities: ['client'] },
 ];
-const supplierA = { supplier_id: 'basket-supplier-a', supplier_name: 'REPUESTOS CENTRAL', in_stock: true };
-const supplierB = { supplier_id: 'basket-supplier-b', supplier_name: 'DISTRIBUIDORA MOTOR', in_stock: true };
+const supplierA = { supplier_id: 'basket-supplier-a', supplier_name: 'REPUESTOS CENTRAL', in_stock: true, stock: 'high' } satisfies Offer;
+const supplierB = { supplier_id: 'basket-supplier-b', supplier_name: 'DISTRIBUIDORA MOTOR', in_stock: true, stock: 'low' } satisfies Offer;
 const sharedPart: Part = { id: 'basket-part-shared', sku: '58411-1R000', name: 'DISCO DE FRENO', description: 'DISCO DE FRENO DELANTERO', codes: [{ code: 'A-100', brand: '' }, { code: 'B-100', brand: '' }] };
 
-function line(part: Part, supplier: typeof supplierA, itemId: string, code: string, quantity = 1): BasketLine {
+function line(part: Part, supplier: Offer, itemId: string, code: string, quantity = 1): BasketLine {
   const selected_item = { id: itemId, codigo: code, brand: 'MARCA DE PRUEBA', description: part.description };
   return { key: `${part.id}:${supplier.supplier_id}:${itemId}`, part, offer: { ...supplier, selected_item }, quantity };
 }
@@ -93,10 +93,13 @@ test('full-page basket keeps equivalent supplier items separate, edits quantitie
   await expect(basket(page).getByText('Precios en cotizaciones privadas', { exact: true })).toBeVisible();
   expect(await basket(page).innerText()).not.toMatch(/[$€]|\b(?:PAB|USD)\b/);
 
+  // Disponible: each supplier's band for the article, no units.
+  await expect(item(page, 'A-100', supplierA.supplier_name).locator('.basket-grid-stock')).toHaveText('Existencia alta');
+  await expect(item(page, 'A-100', supplierB.supplier_name).locator('.basket-grid-stock')).toHaveText('Baja existencia');
   await item(page, 'A-100', supplierA.supplier_name).getByLabel('Cantidad de A-100', { exact: true }).fill('3');
   await expectSummary(page, 2, 3, 5);
   await item(page, 'B-100', supplierA.supplier_name).getByRole('button', { name: 'Eliminar B-100', exact: true }).click();
-  await item(page, 'A-100', supplierB.supplier_name).getByRole('button', { name: 'Aumentar cantidad de A-100', exact: true }).click();
+  await item(page, 'A-100', supplierB.supplier_name).getByLabel('Cantidad de A-100', { exact: true }).fill('2');
   await expectSummary(page, 2, 2, 5);
   await expect.poll(() => (cesta.lines[accounts[0].id] || []).map(line => [line.offer.selected_item!.id, line.quantity])).toEqual([['supplier-item-a', 3], ['supplier-item-c', 2]]);  // on the server
 
@@ -161,7 +164,7 @@ test('desktop basket has wide supplier groups and a sticky summary, while mobile
     expect(box.x + box.width).toBeLessThanOrEqual(390);
   }
   const firstItem = rows(firstGroup).first();
-  await firstItem.getByRole('button', { name: 'Aumentar cantidad de CODIGO-1', exact: true }).click();
+  await firstItem.getByLabel('Cantidad de CODIGO-1', { exact: true }).fill('2');
   await expect(firstItem.getByLabel('Cantidad de CODIGO-1', { exact: true })).toHaveValue('2');
   await expectSummary(page, 2, 30, 31);
   await page.getByTestId('page-viewport').evaluate(viewport => viewport.scrollTo({ top: 0, behavior: 'instant' }));
@@ -192,7 +195,6 @@ test('account drafts stay isolated through reload, quantity correction and an em
   await quantityB.fill('10000');
   await quantityB.blur();
   await expect(quantityB).toHaveValue('9999');
-  await expect(item(page, 'CUENTA-B', supplierB.supplier_name).getByRole('button', { name: 'Aumentar cantidad de CUENTA-B', exact: true })).toBeDisabled();
   await quantityB.fill('4');
   await expect.poll(() => cesta.lines[accounts[1].id]?.[0]?.quantity).toBe(4);  // saved on the server
   await page.reload();
@@ -288,4 +290,74 @@ test('signed in, the cesta lives on the server: what WhatsApp or another device 
   await expect(entries.nth(1)).toContainText('WhatsApp');
   expect(new URL(page.url()).searchParams.get('vista')).toBe('actividad');
   expect(writes).toEqual([]);
+});
+
+test('each catalog card shows its units in the cesta and in the open orders', async ({ page }) => {
+  const draft = [line(sharedPart, supplierA, 'badge-item-a', 'A-100', 2), line(sharedPart, supplierB, 'badge-item-b', 'B-100', 3)];
+  await mockClient(page, [sharedPart]);
+  await fakeServerBasket(page, { known: draft, openUnits: { [sharedPart.id]: { units: 7, orders: 2 } } });
+  await seedDrafts(page, { [accounts[0].id]: draft });
+  await page.route('**/api/market/wishlist/state', route => route.fulfill({ json: { part_ids: [sharedPart.id, 'another-saved-part'], count: 2 } }));
+  await page.goto('/');
+  const badges = page.getByRole('article', { name: `Repuesto ${sharedPart.sku}`, exact: true }).getByRole('group', { name: `Tus unidades de ${sharedPart.sku}`, exact: true });
+  await expect(badges).toContainText('5 en cesta');
+  await expect(badges).toContainText('7 en órdenes');
+  await expect(badges.locator('.part-card-badge.ordered')).toHaveAttribute('title', '7 unidades en 2 órdenes abiertas: enviadas y aún sin recibir');
+
+  // Mis repuestos: the catalog of what is in the cesta and/or the open orders, filtered by the server.
+  const mine = page.getByRole('complementary', { name: 'Filtros del catálogo', exact: true }).getByRole('group', { name: 'Mis repuestos', exact: true });
+  await expect(mine.getByText('En cesta', { exact: true }).locator('..').locator('small')).toHaveText('1');
+  await expect(mine.getByText('En órdenes', { exact: true }).locator('..').locator('small')).toHaveText('1');
+  const filtered = page.waitForRequest(request => /\/api\/market\/catalog\?/.test(request.url()) && new URL(request.url()).searchParams.getAll('mine').join() === 'cesta,ordenes');
+  await mine.getByRole('checkbox', { name: 'En cesta', exact: true }).check();
+  await mine.getByRole('checkbox', { name: 'En órdenes', exact: true }).check();
+  expect(new URL((await filtered).url()).searchParams.get('account')).toBe(accounts[0].id);
+  await expect(page.locator('.active-catalog-filters').getByRole('button', { name: 'Quitar filtro En órdenes', exact: true })).toBeVisible();
+
+  // The same two filters sit in the results toolbar as badges with their counts, in step with the panel.
+  const toolbar = page.getByRole('group', { name: 'Mis repuestos en el catálogo', exact: true });
+  const inCesta = toolbar.getByRole('button', { name: /^En cesta/ }), inOrders = toolbar.getByRole('button', { name: /^En órdenes/ });
+  await expect(inCesta).toHaveAttribute('aria-pressed', 'true');
+  await expect(inOrders).toContainText('1');
+  const unfiltered = page.waitForRequest(request => /\/api\/market\/catalog\?/.test(request.url()) && new URL(request.url()).searchParams.getAll('mine').join() === 'ordenes');
+  await inCesta.click();
+  await unfiltered;
+  await expect(inCesta).toHaveAttribute('aria-pressed', 'false');
+  await expect(mine.getByRole('checkbox', { name: 'En cesta', exact: true })).not.toBeChecked();
+  const favorites = toolbar.getByRole('button', { name: /^Favoritos/ });
+  await expect(favorites).toContainText('2');  // the person's wishlist, in any account
+  const saved = page.waitForRequest(request => /\/api\/market\/catalog\?/.test(request.url()) && new URL(request.url()).searchParams.getAll('mine').join() === 'ordenes,favoritos');
+  await favorites.click();
+  await saved;
+  await expect(mine.getByRole('checkbox', { name: 'Favoritos', exact: true })).toBeChecked();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(inOrders).toBeVisible();
+  const box = (await page.locator('.results-heading').boundingBox())!;
+  expect(box.x + box.width).toBeLessThanOrEqual(390);
+});
+
+test('a quantity typed in the cesta is saved when typing pauses, when the page is left at once, and Escape puts back what the field saved', async ({ page }) => {
+  const draft = [line(sharedPart, supplierA, 'typed-item', 'A-100', 2)];
+  await mockClient(page, [sharedPart]);
+  const cesta = await fakeServerBasket(page, { known: draft });
+  await seedDrafts(page, { [accounts[0].id]: draft });
+  await page.goto('/');
+  await page.getByRole('button', { name: /^Abrir cesta/ }).click();
+  const quantity = () => item(page, 'A-100', supplierA.supplier_name).getByLabel('Cantidad de A-100', { exact: true });
+  const saved = () => cesta.lines[accounts[0].id]?.[0]?.quantity;
+  await expect.poll(saved).toBe(2);
+  const writes = cesta.changes.length;
+  await quantity().fill('7');
+  await expect.poll(saved).toBe(7);  // once typing pauses
+  expect(cesta.changes.length - writes).toBe(1);  // one save, not one per key
+  await quantity().press('Escape');
+  await expect.poll(saved).toBe(2);  // what it had when the field was entered
+  await expect(quantity()).toHaveValue('2');
+  await quantity().fill('25');
+  await page.goBack();  // leaving at once, before the pause: what was typed is kept
+  await expect.poll(saved).toBe(25);
+  await page.goForward();
+  await quantity().fill('10000');
+  await page.goBack();
+  await expect.poll(saved).toBe(9999);  // never above 9.999
 });

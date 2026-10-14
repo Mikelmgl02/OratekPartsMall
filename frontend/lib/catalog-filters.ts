@@ -1,19 +1,24 @@
-import type { CatalogFacets, CatalogFilters, Part } from './types';
+import type { CatalogFacets, CatalogFilters, MineFilter, Part } from './types';
 import { previewOffers } from './preview';
 
-export const emptyFilters: CatalogFilters = { category: [], subcategory: [], availability: '', supplier: [] };
+export const emptyFilters: CatalogFilters = { category: [], subcategory: [], availability: '', supplier: [], mine: [] };
+export const mineFilters: MineFilter[] = ['cesta', 'ordenes', 'favoritos'];
+export const mineFilterLabels: Record<MineFilter, string> = { cesta: 'En cesta', ordenes: 'En órdenes', favoritos: 'Favoritos' };
+export const mineFilterHelp: Record<MineFilter, string> = {
+  cesta: 'Ver solo los repuestos que tienes en tu cesta', ordenes: 'Ver solo los repuestos de tus órdenes enviadas que aún no recibes', favoritos: 'Ver solo tus repuestos favoritos',
+};
 export const emptyFacets: CatalogFacets = { category: [], subcategory: [], availability: [], supplier: [] };
 export const stockFilterLabels: Record<string, string> = {
   in_stock: 'Con existencias', high: 'Altas existencias', medium: 'Existencias medias', low: 'Bajas existencias',
   sold_out: 'Agotado', unknown: 'Sin existencias reportadas',
 };
 export function filterCount(filters: CatalogFilters) {
-  return filters.category.length + filters.subcategory.length + filters.supplier.length + Number(!!filters.availability);
+  return filters.category.length + filters.subcategory.length + filters.supplier.length + Number(!!filters.availability) + filters.mine.length;
 }
 // account: the active account, so a supplier-only account gets only its own SKUs.
 export function catalogQuery(search: string, page: number, filters: CatalogFilters, account = '') {
   const query = new URLSearchParams({ search, page: String(page), include_facets: '1' });
-  for (const key of ['category', 'subcategory', 'supplier'] as const) for (const value of filters[key]) query.append(key, value);
+  for (const key of ['category', 'subcategory', 'supplier', 'mine'] as const) for (const value of filters[key]) query.append(key, value);
   if (filters.availability) query.set('availability', filters.availability);
   if (account) query.set('account', account);
   return query.toString();

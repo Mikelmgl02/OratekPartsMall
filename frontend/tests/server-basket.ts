@@ -13,8 +13,10 @@ export type FakeBasket = {
   settle: (account: string, sent: { supplier_item_id: string; quantity: number }[]) => void;
 };
 
-export async function fakeServerBasket(page: Page, { parts = [], offers = {}, known = [], server = {} }: {
+// openUnits: the account's units in open orders per SKU, as GET open-units answers (none unless the spec gives them).
+export async function fakeServerBasket(page: Page, { parts = [], offers = {}, known = [], server = {}, openUnits = {} }: {
   parts?: Part[]; offers?: Record<string, Offer[]>; known?: BasketLine[]; server?: Record<string, BasketLine[]>;
+  openUnits?: Record<string, { units: number; orders: number }>;
 } = {}): Promise<FakeBasket> {
   const templates = new Map<string, BasketLine[]>();
   const remember = (line: BasketLine) => templates.set(line.offer.selected_item!.id, [...(templates.get(line.offer.selected_item!.id) || []), line]);
@@ -46,6 +48,7 @@ export async function fakeServerBasket(page: Page, { parts = [], offers = {}, kn
     (state.events[account] ??= []).unshift({ id: nextEvent++, kind, sku: line.part.sku, codigo: item.codigo, brand: item.brand, supplier_name: line.offer.supplier_name,
       quantity_before: before, quantity_after: after, source: 'web', reference: '', created_at: new Date().toISOString() });
   }
+  await page.route(/\/api\/market\/accounts\/[^/?]+\/open-units(?:\?.*)?$/, route => route.fulfill({ json: { parts: openUnits } }));
   await page.route(/\/api\/market\/accounts\/([^/?]+)\/basket\/activity(?:\?.*)?$/, route => {
     const account = new URL(route.request().url()).pathname.split('/').at(-3)!;
     return route.fulfill({ json: { results: state.events[account] || [], has_more: false } });

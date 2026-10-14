@@ -12,7 +12,7 @@ from rest_framework.views import APIView
 
 from .catalog_availability import catalog_availability
 from .catalog_scope import catalog_scope
-from .lines import on_storefront
+from .lines import on_storefront, storefront_lines
 from .models import Membership, Part, WishlistItem
 from .oem_links import equivalents_for
 from .serializers import PartSerializer
@@ -71,8 +71,12 @@ class WishlistState(APIView):
 
     @extend_schema(responses=OpenApiTypes.OBJECT)
     def get(self, request):
-        ids = list(saved(request.user, catalog_scope(request.user)).values_list('part_id', flat=True))
-        return Response({'part_ids': ids, 'count': len(ids)})
+        """part_ids: every favorite (the hearts; the Favoritos page lists those out of the catalog too); listed_ids: those the catalog lists, which
+        its Favoritos filter shows and counts."""
+        rows = saved(request.user, catalog_scope(request.user))
+        ids = list(rows.values_list('part_id', flat=True))
+        listed = list(rows.filter(part_id__in=storefront_lines().values('pk')).values_list('part_id', flat=True))
+        return Response({'part_ids': ids, 'count': len(ids), 'listed_ids': listed})
 
 
 class CatalogChanged(APIException):

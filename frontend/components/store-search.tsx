@@ -17,11 +17,13 @@ type Props = {
   onSearch: (term: string) => void; onOpen: (part: Part) => void;
   filters: CatalogFilters; departments: { value: string; label: string }[]; onDepartment: (value: string) => void;
   preview: boolean; accountId: string; inputRef: RefObject<HTMLInputElement | null>;
+  // scope: which SKUs the chosen Mis repuestos filters select now (marketplace mineKey); cached suggestions are kept per scope.
+  scope?: string;
 };
 
 // Amazon-style search box: while typing, the first results the search would list drop down under it (with the department and the
 // filters applied); picking one opens the part, Enter lists every result.
-export default function StoreSearch({ value, onChange, onSearch, onOpen, filters, departments, onDepartment, preview, accountId, inputRef }: Props) {
+export default function StoreSearch({ value, onChange, onSearch, onOpen, filters, departments, onDepartment, preview, accountId, inputRef, scope = '' }: Props) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
   const [shown, setShown] = useState<{ key: string; parts: Part[] } | null>(null);
@@ -29,7 +31,7 @@ export default function StoreSearch({ value, onChange, onSearch, onOpen, filters
   const cache = useRef(new Map<string, Part[]>());
   const term = value.trim();
   const query = catalogQuery(term, 1, filters, preview ? '' : accountId);
-  const key = `${preview ? 'preview' : accountId}:${query}`;
+  const key = `${preview ? 'preview' : accountId}:${query}:${scope}`;
   const wanted = open && term.length >= MIN_CHARS && (preview || !!accountId);
   useEffect(() => {
     if (!wanted) return;

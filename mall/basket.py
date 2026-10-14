@@ -16,7 +16,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .basket_models import BasketEvent, BasketItem
-from .lines import on_storefront, same_line
+from .lines import canonical_ids, on_storefront, same_line, storefront_lines
 from .models import Account, SupplierItem
 from .request_views import RequestConflict
 from .views import account_for
@@ -45,9 +45,11 @@ def requestable(item):
 
 def basket_data(request, user, account):
     """The person's cesta for the account, line by line as the storefront shows it: the SKU (as the catalog lists it), the supplier and the
-    article as added, and whether it can still be sent (available) or changed since (changed: its SKU, code or brand)."""
+    article as added with the supplier's public stock band for it (stock, as the catalog's bands: no units), and whether it can still be sent
+    (available) or changed since (changed: its SKU, code or brand). catalog_part_id: the SKU the catalog lists it under now (a merged SKU's
+    line keeps its part, the SKU it was added under); listed: whether the catalog lists that SKU (its En cesta filter shows and counts it)."""
     from .oem_links import equivalents_for
-    from .catalog_availability import catalog_availability
+    from .catalog_availability import catalog_availability, stock_band
     from .serializers import PartSerializer
     rows = list(BasketItem.objects.filter(user=user, account=account)
                 .select_related('supplier_item__supplier', 'supplier_item__part', 'part')
@@ -55,12 +57,17 @@ def basket_data(request, user, account):
     parts = list({row.part_id: row.part for row in rows}.values())
     context = {'request': request, 'availability_by_part': catalog_availability(parts), 'equivalents_by_part': equivalents_for([part.pk for part in parts])}
     shown = dict(zip((part.pk for part in parts), PartSerializer(parts, many=True, context=context).data))
+    canonical = canonical_ids({row.part_id for row in rows})
+    catalog = {str(row.part_id): canonical.get(str(row.part_id), str(row.part_id)) for row in rows}
+    listed = {str(pk) for pk in storefront_lines().filter(pk__in=set(catalog.values())).values_list('pk', flat=True)}
     lines = []
     for row in rows:
         item = row.supplier_item
         lines.append({
             'key': f'{row.part_id}:{item.supplier_id}:{item.pk}', 'part': shown[row.part_id], 'quantity': row.quantity, 'source': row.source,
+            'catalog_part_id': catalog[str(row.part_id)], 'listed': catalog[str(row.part_id)] in listed,
             'offer': {'supplier_id': str(item.supplier_id), 'supplier_name': item.supplier.name, 'in_stock': item.available_quantity > 0,
+                      'stock': stock_band(item.available_quantity),
                       'selected_item': {'id': str(item.pk), 'codigo': row.codigo, 'brand': row.brand, 'description': item.description}},
             'available': requestable(item) and item.supplier_id != account.pk,
             'changed': not same_line(item.part_id, row.part_id) or item.codigo != row.codigo or item.brand != row.brand,

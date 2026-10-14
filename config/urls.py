@@ -36,7 +36,7 @@ from mall.alternate_review import AlternateReviewItem, AlternateReviewList
 from mall.catalog_media import CatalogImages, CatalogImageDetail, CatalogImageOrder
 from mall.catalog_grouping_suggestions import CatalogGroupingList, CatalogGroupingClassify
 from mall.supplier_import import SupplierInventoryImport, SupplierInventoryImportTemplate, SupplierInventoryImportJobView, SupplierInventoryImportErrors
-from mall.request_views import AccountRequests, ClientSentRequests, ClientSentRequestDetail, ClientPartRequestState, SupplierRequestDetail, SupplierRequestReview
+from mall.request_views import AccountRequests, ClientSentRequests, ClientSentRequestDetail, ClientPartRequestState, ClientOpenUnits, SupplierRequestDetail, SupplierRequestReview
 from mall.deal_views import DealActions, DealMessages, PurchaseActivity
 from mall.pricing_views import (ClientProfileView, PriceHistory, PriceListDetail, PriceListsView, PricesExport, PricesView, PricingClients, PricingHistory,
                                PricingRuleArchiveView, PricingRuleDetail, PricingRulesView, PricingSettingsView, PricingSimulate)
@@ -151,6 +151,7 @@ urlpatterns = [
     path('api/v1/accounts/<uuid:account_id>/sent-requests/<uuid:pk>/', ClientSentRequestDetail.as_view()),
     path('api/v1/accounts/<uuid:account_id>/sent-requests/<uuid:pk>/missing/', reorder.OrderMissing.as_view()),
     path('api/v1/accounts/<uuid:account_id>/catalog/<uuid:part_id>/request-state/', ClientPartRequestState.as_view()),
+    path('api/v1/accounts/<uuid:account_id>/open-units/', ClientOpenUnits.as_view()),
     path('api/v1/accounts/<uuid:account_id>/requests/<uuid:pk>/', SupplierRequestDetail.as_view()),
     path('api/v1/accounts/<uuid:account_id>/requests/<uuid:pk>/review/', SupplierRequestReview.as_view()),
     path('api/v1/accounts/<uuid:account_id>/requests/<uuid:pk>/draft/', QuoteDraftView.as_view()),

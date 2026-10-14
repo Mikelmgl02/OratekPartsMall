@@ -1,11 +1,27 @@
 'use client';
 
 import { useId, useState } from 'react';
-import { ChevronDown, Search, SlidersHorizontal, X } from 'lucide-react';
-import type { CatalogFacet, CatalogFacets, CatalogFilters } from '@/lib/types';
-import { emptyFilters, filterCount, stockFilterLabels } from '@/lib/catalog-filters';
+import { ChevronDown, Heart, PackageCheck, Search, ShoppingBag, SlidersHorizontal, X } from 'lucide-react';
+import type { CatalogFacet, CatalogFacets, CatalogFilters, MineFilter } from '@/lib/types';
+import { emptyFilters, filterCount, mineFilterHelp, mineFilterLabels, mineFilters, stockFilterLabels } from '@/lib/catalog-filters';
 
-type Props = { facets: CatalogFacets; filters: CatalogFilters; loading: boolean; onChange: (filters: CatalogFilters) => void; suppliers?: boolean };
+// mine: how many of the person's SKUs each Mis repuestos filter has (cesta and órdenes only for a client account); a filter left out is not offered.
+export type MineCounts = Partial<Record<MineFilter, number>>;
+type Props = { facets: CatalogFacets; filters: CatalogFilters; loading: boolean; onChange: (filters: CatalogFilters) => void; suppliers?: boolean; mine?: MineCounts };
+const mineIcons = { cesta: ShoppingBag, ordenes: PackageCheck, favoritos: Heart };
+const offered = (mine?: MineCounts) => mineFilters.filter(value => mine?.[value] !== undefined);
+const toggleMine = (filters: CatalogFilters, value: MineFilter) => ({ ...filters, mine: filters.mine.includes(value) ? filters.mine.filter(item => item !== value) : [...filters.mine, value] });
+
+// The same filters as toggles in the results toolbar, each with its count: a badge and a filter at once.
+export function MineToggles({ filters, mine, onChange }: { filters: CatalogFilters; mine?: MineCounts; onChange: (filters: CatalogFilters) => void }) {
+  if (!offered(mine).length) return null;
+  return <div className="catalog-mine-toggles" role="group" aria-label="Mis repuestos en el catálogo">{offered(mine).map(value => {
+    const Icon = mineIcons[value], pressed = filters.mine.includes(value), count = mine![value]!;
+    return <button key={value} type="button" className={`catalog-mine-toggle ${value} ${pressed ? 'selected' : ''}`} aria-pressed={pressed} disabled={!count && !pressed}
+      title={mineFilterHelp[value]} onClick={() => onChange(toggleMine(filters, value))}>
+      <Icon size={13} aria-hidden="true"/>{mineFilterLabels[value]}<span className="catalog-mine-count">{count.toLocaleString('es')}</span></button>;
+  })}</div>;
+}
 
 function FacetSection({ title, options, selected, loading, onToggle }: { title: string; options: CatalogFacet[]; selected: string[]; loading: boolean; onToggle: (value: string) => void }) {
   const [search, setSearch] = useState('');
@@ -26,7 +42,7 @@ function FacetSection({ title, options, selected, loading, onToggle }: { title: 
 }
 
 // suppliers: false in a supplier-only account's own catalog, which has no supplier filter.
-export default function CatalogFilterPanel({ facets, filters, loading, onChange, suppliers = true }: Props) {
+export default function CatalogFilterPanel({ facets, filters, loading, onChange, suppliers = true, mine }: Props) {
   const radioName = useId();
   function toggle(field: 'category' | 'subcategory' | 'supplier', value: string) {
     const selected = filters[field];
@@ -34,6 +50,13 @@ export default function CatalogFilterPanel({ facets, filters, loading, onChange,
   }
   return <div className="catalog-filter-panel">
     <div className="filter-panel-heading"><h3><SlidersHorizontal size={17}/>Filtros</h3>{filterCount(filters) > 0 && <button onClick={() => onChange(emptyFilters)}>Limpiar todo</button>}</div>
+    {offered(mine).length > 0 && <details className="catalog-facet catalog-facet-mine" open><summary>Mis repuestos{filters.mine.length > 0 && <span className="facet-selection-count">{filters.mine.length}</span>}<ChevronDown size={16}/></summary>
+      <div className="facet-options" role="group" aria-label="Mis repuestos">{offered(mine).map(value => {
+        const Icon = mineIcons[value], checked = filters.mine.includes(value), count = mine![value]!;
+        return <label key={value} className="facet-option" title={mineFilterHelp[value]}>
+          <input type="checkbox" aria-label={mineFilterLabels[value]} checked={checked} disabled={!count && !checked} onChange={() => onChange(toggleMine(filters, value))}/>
+          <span className="facet-mine-label"><Icon size={13} aria-hidden="true"/>{mineFilterLabels[value]}</span><small>{count.toLocaleString('es')}</small></label>;
+      })}</div></details>}
     <FacetSection title="Grupo" options={facets.category} selected={filters.category} loading={loading} onToggle={value => toggle('category', value)}/>
     <FacetSection title="Subgrupo" options={facets.subcategory} selected={filters.subcategory} loading={loading} onToggle={value => toggle('subcategory', value)}/>
     <details className="catalog-facet" open><summary>Existencias<ChevronDown size={16}/></summary><div className="facet-options" role="group" aria-label="Existencias">
@@ -52,6 +75,7 @@ export function ActiveCatalogFilters({ facets, filters, onChange }: Omit<Props, 
       const label = facets[field].find(option => option.value === value)?.label || value || (field === 'category' ? 'Sin clasificar' : 'Sin subgrupo');
       return <button key={`${field}:${value}`} onClick={() => onChange({ ...filters, [field]: filters[field].filter(item => item !== value), ...(field === 'category' ? { subcategory: [] } : {}) })} aria-label={`Quitar filtro ${label}`}><span>{label}</span><X size={12}/></button>;
     }))}
+    {filters.mine.map(value => <button key={`mine:${value}`} onClick={() => onChange({ ...filters, mine: filters.mine.filter(item => item !== value) })} aria-label={`Quitar filtro ${mineFilterLabels[value]}`}><span>{mineFilterLabels[value]}</span><X size={12}/></button>)}
     {filters.availability && <button onClick={() => onChange({ ...filters, availability: '' })} aria-label={`Quitar filtro ${stockFilterLabels[filters.availability]}`}><span>{stockFilterLabels[filters.availability]}</span><X size={12}/></button>}
     <button className="clear-catalog-filters" onClick={() => onChange(emptyFilters)}>Limpiar todo</button>
   </div>;

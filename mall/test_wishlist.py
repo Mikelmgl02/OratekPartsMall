@@ -59,7 +59,7 @@ class WishlistTests(APITestCase):
     def test_personal_ownership_even_with_shared_account(self):
         WishlistItem.objects.create(user=self.other, part=self.part)
         self.assertEqual(self.client.get(self.url).data['count'], 0)
-        self.assertEqual(self.client.get(f'{self.url}state/').data, {'part_ids': [], 'count': 0})
+        self.assertEqual(self.client.get(f'{self.url}state/').data, {'part_ids': [], 'count': 0, 'listed_ids': []})
         self.client.delete(self.detail())
         self.assertTrue(WishlistItem.objects.filter(user=self.other).exists())
         self.client.put(self.detail())

@@ -8,8 +8,9 @@ import { DraftSubmission, finishDraftSubmission, readSubmissions, requestPayload
 
 // ownItems: lines of the active account's own stock, which it can never send (the server refuses them too). staleItems: lines whose
 // article changed since it was added or can no longer be asked for (the server would refuse the solicitud).
-export default function BasketSubmission({ lines, account, preview, ownItems = 0, staleItems = 0, onPending, onSent }: {
-  lines: BasketLine[]; account?: Account; preview: boolean; ownItems?: number; staleItems?: number; onPending: (pending: boolean) => void;
+// flush: the cesta's changes still on their way to the server, which land before the solicitud is sent (a late one would bring a sent line back).
+export default function BasketSubmission({ lines, account, preview, ownItems = 0, staleItems = 0, onPending, onSent, flush }: {
+  lines: BasketLine[]; account?: Account; preview: boolean; ownItems?: number; staleItems?: number; onPending: (pending: boolean) => void; flush?: () => Promise<unknown>;
   onSent: (receipt: RequestSubmissionResult, remaining: BasketLine[]) => void;
 }) {
   const [submissions, setSubmissions] = useState<DraftSubmission[]>([]);
@@ -44,6 +45,7 @@ export default function BasketSubmission({ lines, account, preview, ownItems = 0
     if (inFlight.current || !ready || !canSend || !hasSelectedItems || !lines.length || receipt) return;
     inFlight.current = true;
     setBusy(true); onPending(true); setError(''); setStorageNote('');
+    await flush?.().catch(() => {});  // each change settles on its own (its failure shows in the cesta)
     const submission = saved || { fingerprint, submissionId: crypto.randomUUID() };
     const history = saved ? submissions : [...submissions, submission];
     try {

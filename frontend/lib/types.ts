@@ -19,13 +19,17 @@ export type Part = { images?: CatalogImage[]; id: string; sku: string; is_OEM?: 
   // Aftermarket codes the SKU reaches through its OEM numbers (catalogs file them under the number, not on the SKU).
   equivalents?: { brand: string; code: string }[]; availability?: CatalogAvailability };
 export type WishlistEntry = { part: Part; saved_at: string; available: boolean };
-export type WishlistState = { part_ids: string[]; count: number };
+// listed_ids: the favorites the catalog lists (its Favoritos filter); part_ids may also hold SKUs out of the catalog.
+export type WishlistState = { part_ids: string[]; count: number; listed_ids?: string[] };
 export type CatalogFacet = { value: string; label: string; count: number };
 export type CatalogFacets = Record<'category' | 'subcategory' | 'availability' | 'supplier', CatalogFacet[]>;
-export type CatalogFilters = { category: string[]; subcategory: string[]; availability: string; supplier: string[] };
+// mine: the person's own SKUs: in the cesta, in open orders (both of a client account) or in favoritos; any one matches.
+export type MineFilter = 'cesta' | 'ordenes' | 'favoritos';
+export type CatalogFilters = { category: string[]; subcategory: string[]; availability: string; supplier: string[]; mine: MineFilter[] };
 export type CatalogPage = Page<Part> & { facets?: CatalogFacets };
 export type OfferItem = { id: string; codigo: string; brand: string; description: string };
-export type Offer = { supplier_id: string; supplier_name: string; in_stock: boolean; items?: OfferItem[]; selected_item?: OfferItem };
+// stock (cesta lines): the supplier's band for the article, as the catalog's (no units).
+export type Offer = { supplier_id: string; supplier_name: string; in_stock: boolean; stock?: Exclude<CatalogAvailability['status'], 'unknown'>; items?: OfferItem[]; selected_item?: OfferItem };
 export type StockItem = { branch_stock?: BranchStock[]; references?: { brand: string; code: string }[]; id: string; supplier_invent_id: string; part: string | null; codigo: string; brand: string; description: string; matching_status: 'pending' | 'matched' | 'review'; source: 'upload' | 'apiag'; reported_quantity: number; reserved_quantity: number; available_quantity: number; updated_at: string };
 // apiag-cloud items: units per sucursal the supplier publishes (their sum is reported_quantity).
 export type BranchStock = { sucursal: string; nombre: string; disponible: number };
@@ -117,7 +121,9 @@ export type LedgerEntry = { id: number; kind: string; quantity: number; directio
 // A line of the cesta. Signed in with a client account it lives on the server (mall/basket.py), which also says whether it can still be
 // asked for (available), whether its article changed since it was added (changed) and where it was added (source).
 // source: where it was added (faltante: what another order did not bring, mall/reorder.py).
-export type BasketLine = { key: string; part: Part; offer: Offer; quantity: number; available?: boolean; changed?: boolean; source?: 'web' | 'whatsapp' | 'faltante' };
+// catalog_part_id (server cesta): the SKU the catalog lists the line under now, which differs from part once that SKU was merged; listed:
+// whether the catalog lists it.
+export type BasketLine = { key: string; part: Part; offer: Offer; quantity: number; available?: boolean; changed?: boolean; source?: 'web' | 'whatsapp' | 'faltante'; catalog_part_id?: string; listed?: boolean };
 export type ServerBasket = { lines: BasketLine[]; count: number };
 // The cesta's ledger (mall/basket_models.py BasketEvent): each change, with the article as it was then.
 export type BasketEvent = { id: number; kind: 'added' | 'changed' | 'removed' | 'moved_in' | 'sent'; sku: string; codigo: string; brand: string; supplier_name: string;

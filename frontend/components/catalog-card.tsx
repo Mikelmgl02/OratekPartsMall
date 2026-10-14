@@ -1,4 +1,4 @@
-import { ArrowRight, Clock3, Store } from 'lucide-react';
+import { ArrowRight, Clock3, PackageCheck, ShoppingBag, Store } from 'lucide-react';
 import type { Part } from '@/lib/types';
 import { visibleReferences } from '@/lib/reference-label';
 import { CatalogPhoto } from './part-image';
@@ -6,8 +6,9 @@ import CatalogSkeleton from './catalog-skeleton';
 import StockStatus from './stock-status';
 import FavoriteButton from './favorite-button';
 
-// own: a supplier-only account's view, where the availability is its own stock alone.
-export default function CatalogCard({ part, preview, own = false, busy, onOpen, saved = false, saving = false, onFavorite, unavailable = false }: { part: Part; preview: boolean; own?: boolean; busy: boolean; onOpen: () => void; saved?: boolean; saving?: boolean; onFavorite?: () => void; unavailable?: boolean }) {
+// own: a supplier-only account's view, where the availability is its own stock alone. inBasket: the units of this SKU in the cesta; inOrders:
+// those in the account's open orders (sent until received), each a badge above the availability.
+export default function CatalogCard({ part, preview, own = false, busy, onOpen, saved = false, saving = false, onFavorite, unavailable = false, inBasket = 0, inOrders }: { part: Part; preview: boolean; own?: boolean; busy: boolean; onOpen: () => void; saved?: boolean; saving?: boolean; onFavorite?: () => void; unavailable?: boolean; inBasket?: number; inOrders?: { units: number; orders: number } }) {
   const codes = [...new Set(visibleReferences(part).map(code => code.code))].filter(code => code !== part.sku);
   const suppliers = part.availability?.supplier_count || 0;
   const updated = part.availability?.updated_at ? new Date(part.availability.updated_at) : null;
@@ -21,6 +22,10 @@ export default function CatalogCard({ part, preview, own = false, busy, onOpen, 
       <h3><button onClick={onOpen} disabled={unavailable}>{part.name && part.name !== part.sku ? part.name : part.sku}</button></h3>
       {part.name && part.name !== part.sku && <span className="part-sku">{part.sku}</span>}
       <p className={`part-description ${part.description ? '' : 'missing'}`} title={part.description || undefined}>{part.description || 'DESCRIPCIÓN PENDIENTE'}</p>
+      {(inBasket > 0 || !!inOrders?.units) && <div className="part-card-badges" role="group" aria-label={`Tus unidades de ${part.sku}`}>
+        {inBasket > 0 && <span className="part-card-badge basket" title={`${inBasket} ${inBasket === 1 ? 'unidad' : 'unidades'} en tu cesta`}><ShoppingBag size={12} aria-hidden="true"/>{inBasket.toLocaleString('es-PA')} en cesta</span>}
+        {!!inOrders?.units && <span className="part-card-badge ordered" title={`${inOrders.units} ${inOrders.units === 1 ? 'unidad' : 'unidades'} en ${inOrders.orders} ${inOrders.orders === 1 ? 'orden abierta' : 'órdenes abiertas'}: enviadas y aún sin recibir`}><PackageCheck size={12} aria-hidden="true"/>{inOrders.units.toLocaleString('es-PA')} en órdenes</span>}
+      </div>}
       <div className="part-stock-row">{unavailable ? <span className="catalog-stock-status unknown">FUERA DEL CATÁLOGO</span> : <StockStatus availability={part.availability} preview={preview}/>}</div>
       <div className="part-card-bottom"><span><Store size={14}/>{unavailable ? 'GUARDADO EN TU LISTA' : preview ? 'PROVEEDORES DE EJEMPLO' : own ? (suppliers ? 'CON STOCK EN TU INVENTARIO' : 'SIN STOCK EN TU INVENTARIO') : suppliers ? `${suppliers} ${suppliers === 1 ? 'PROVEEDOR CON STOCK' : 'PROVEEDORES CON STOCK'}` : 'SIN PROVEEDORES CON STOCK'}</span></div>
       <dl className="part-classification"><div><dt>GRUPO</dt><dd title={part.category}>{part.category || 'SIN CLASIFICAR'}</dd></div><div><dt>SUBGRUPO</dt><dd title={part.subcategory}>{part.subcategory || 'SIN CLASIFICAR'}</dd></div></dl>

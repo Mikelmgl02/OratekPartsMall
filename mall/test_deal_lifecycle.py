@@ -15,6 +15,7 @@ from .deal_views import DECIDE_DENIED, DealActionSerializer
 from .models import Membership, Role, StockEntry, SupplierItem, User
 from .pricing_models import SupplierPricingSettings
 from .request_models import DealEvent, DealShortfall, StockReservation, SupplierRequest
+from .test_factories import make_line, make_variant
 
 
 class DealLifecycleTests(APITestCase):
@@ -66,6 +67,75 @@ class DealLifecycleTests(APITestCase):
         """The client's request-state totals of the deals' part (both items are of it)."""
         self.client.force_authenticate(self.buyer)
         return self.client.get(f'/api/v1/accounts/{self.client_account.pk}/catalog/{self.part.pk}/request-state/').data['totals']
+
+    def test_open_units_count_what_was_asked_then_what_was_agreed_until_the_client_receives_it(self):
+        def open_units():
+            self.client.force_authenticate(self.buyer)
+            return self.client.get(f'/api/v1/accounts/{self.client_account.pk}/open-units/').data['parts']
+        part = str(self.part.pk)
+        self.assertEqual(open_units(), {})
+        order = self.order()
+        self.assertEqual(open_units(), {part: {'units': 5, 'orders': 1}})  # what was asked for (both items are of the part)
+        self.review(order)
+        lines = self.lines(order)
+        quoted = self.quote(order, lines=[{'order_line_id': lines[self.item_a.pk], 'quantity': 1, 'unit_price': '12.35'},
+                                          {'order_line_id': lines[self.item_a2.pk], 'quantity': 2, 'unit_price': '12.35'}])
+        self.assertEqual(quoted.status_code, 200, quoted.data)
+        quotation = quoted.data['quotation']['id']
+        self.assertEqual(open_units(), {part: {'units': 5, 'orders': 1}})  # until the handshake, still what was asked for
+        catalog = f'/api/v1/catalog/?account={self.client_account.pk}'
+        self.assertEqual([row['id'] for row in self.client.get(f'{catalog}&mine=ordenes').data['results']], [part])
+        self.assertEqual(self.client.get(f'{catalog}&mine=cesta').data['count'], 0)
+        self.assertEqual(self.client.get(f'{catalog}&mine=cesta&mine=ordenes').data['count'], 1)  # either one
+        self.assertEqual(self.client.get(f'{catalog}&mine=otro').status_code, 400)
+        self.assertEqual(self.client.get('/api/v1/catalog/?mine=ordenes').status_code, 400)  # the orders need a client account
+        self.assertEqual(self.client.get('/api/v1/catalog/?mine=favoritos').data['count'], 0)  # favoritos need none
+        self.assertEqual(self.client.put(f'/api/v1/wishlist/{self.part.pk}/').status_code, 200)
+        self.assertEqual([row['id'] for row in self.client.get('/api/v1/catalog/?mine=favoritos').data['results']], [part])
+
+        self.assertEqual(self.buyer_does(order, 'accept', quotation).status_code, 200)
+        self.assertEqual(open_units(), {part: {'units': 3, 'orders': 1}})  # then what the quotation agreed
+        self.assertEqual(self.supplier(order, 'report_shortfall', quotation, shortfall=[{'order_line_id': lines[self.item_a2.pk], 'missing': 2}],
+                                       reason_code='no_stock').status_code, 200)
+        self.assertEqual(open_units()[part]['units'], 3)  # a shortfall counts once the client accepts it
+        self.assertEqual(self.buyer_does(order, 'accept_shortfall', quotation).status_code, 200)
+        self.assertEqual(open_units(), {part: {'units': 1, 'orders': 1}})
+        self.assertEqual(self.supplier(order, 'process', quotation).status_code, 200)
+        self.assertEqual(self.supplier(order, 'deliver', quotation).status_code, 200)
+        self.assertEqual(open_units()[part]['units'], 1)  # delivered still waits for the client's Recibido
+        self.assertEqual(self.buyer_does(order, 'receive', quotation).status_code, 200)
+        self.assertEqual(open_units(), {})
+        self.assertEqual(self.client.get(f'{catalog}&mine=ordenes').data['count'], 0)
+        self.client.force_authenticate(self.seller_a)  # a client's own figures only
+        self.assertEqual(self.client.get(f'/api/v1/accounts/{self.supplier_a.pk}/open-units/').status_code, 403)
+        self.assertEqual(self.client.get(f'/api/v1/catalog/?account={self.supplier_a.pk}&mine=ordenes').status_code, 403)
+
+    def test_open_units_count_only_orders_that_hold_units_and_only_skus_the_catalog_lists(self):
+        def open_units():
+            self.client.force_authenticate(self.buyer)
+            return self.client.get(f'/api/v1/accounts/{self.client_account.pk}/open-units/').data['parts']
+        other = make_line('OTRO-SKU', name='OTRO', description='OTRO')
+        item_o = make_variant(self.supplier_a, 'O-001', 'OTRO-1', 10, actor=self.seller_a, brand='KSM', description='OTRO', line=other)
+        first, _ = self.handshake()  # 3 + 2 of the part, agreed
+        self.client.force_authenticate(self.buyer)
+        response = self.submit(self.payload([(self.item_a, 2), (item_o, 1)]))
+        self.assertEqual(response.status_code, 200, response.data)
+        second = SupplierRequest.objects.get(pk=response.data['requests'][0]['id'])
+        self.assertNotEqual(second.pk, first.pk)
+        self.review(second)
+        lines = self.lines(second)
+        quoted = self.quote(second, lines=[{'order_line_id': lines[self.item_a.pk], 'quantity': 0, 'unit_price': '12.35'},
+                                           {'order_line_id': lines[item_o.pk], 'quantity': 1, 'unit_price': '12.35'}])
+        self.assertEqual(quoted.status_code, 200, quoted.data)
+        self.assertEqual(self.buyer_does(second, 'accept', quoted.data['quotation']['id']).status_code, 200)
+        # The second order quoted none of the part: it holds no unit of it, so it is not one of its orders.
+        self.assertEqual(open_units(), {str(self.part.pk): {'units': 5, 'orders': 1}, str(other.pk): {'units': 1, 'orders': 1}})
+        self.assertEqual(self.client.put(f'/api/v1/wishlist/{other.pk}/').status_code, 200)
+        other.estado = 'retirada'
+        other.save()
+        self.assertNotIn(str(other.pk), open_units())  # only SKUs the catalog lists
+        state = self.client.get('/api/v1/wishlist/state/').data
+        self.assertEqual(([str(pk) for pk in state['part_ids']], state['listed_ids']), ([str(other.pk)], []))  # a heart, not a Favoritos result
 
     def test_delivery_closes_the_deal_without_moving_stock(self):
         order, quotation = self.handshake()

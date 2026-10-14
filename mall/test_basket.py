@@ -3,9 +3,10 @@ import uuid
 from rest_framework.test import APITestCase
 
 from .basket_models import BasketEvent, BasketItem
+from .catalog_availability import stock_band
 from .models import Membership, Role, User
 from .request_models import SupplierRequestLine
-from .test_factories import make_line
+from .test_factories import make_client, make_line
 from . import test_requests as request_tests
 
 
@@ -39,6 +40,7 @@ class BasketTests(APITestCase):
         first = next(line for line in response.data['lines'] if line['offer']['supplier_id'] == str(self.supplier_a.pk))
         self.assertEqual(first['key'], f'{self.part.pk}:{self.supplier_a.pk}:{self.item_a.pk}')
         self.assertEqual(first['offer'], {'supplier_id': str(self.supplier_a.pk), 'supplier_name': 'PROVEEDOR A', 'in_stock': True,
+                                          'stock': stock_band(self.item_a.available_quantity),
                                           'selected_item': {'id': str(self.item_a.pk), 'codigo': '58411-1R000-G', 'brand': 'KSM', 'description': 'TAMBOR A-001'}})
         self.assertEqual((first['part']['sku'], first['quantity'], first['source'], first['available'], first['changed']),
                          ('58411-1R000', 2, 'web', True, False))
@@ -111,6 +113,30 @@ class BasketTests(APITestCase):
         self.assertEqual(self.quantities(response), {('PROVEEDOR A', '58411-1R000-G'): 3, ('PROVEEDOR B', '58411-1R000-G'): 1})
         other = make_line('OTRO-SKU')
         self.assertEqual(self.change((self.item_a2, 1, 'add', {'expected_part_id': str(other.pk)})).status_code, 409)
+
+    def test_en_cesta_lists_this_persons_cesta_for_this_account_under_the_sku_the_catalog_lists(self):
+        def listed(account=None):
+            return [part['id'] for part in self.client.get(f'/api/v1/catalog/?account={(account or self.client_account).pk}&mine=cesta').data['results']]
+        self.assertEqual(listed(), [])
+        colleague = User.objects.create_user('cesta-colleague', 'cesta-colleague@example.invalid', 'Request938!')
+        Membership.objects.create(user=colleague, account=self.client_account)
+        self.client.force_authenticate(colleague)
+        self.assertEqual(self.change((self.item_a, 2, 'add')).status_code, 200)
+        self.client.force_authenticate(self.buyer)
+        self.assertEqual(listed(), [])  # a colleague's cesta is theirs
+        other = make_client('OTRO CLIENTE', self.buyer)
+        self.assertEqual(self.change((self.item_a, 1, 'add'), account=other).status_code, 200)
+        self.assertEqual((listed(), listed(other)), ([], [str(self.part.pk)]))  # and each account's its own
+        self.change((self.item_a, 2, 'add'))
+        self.assertEqual(listed(), [str(self.part.pk)])
+        target = self.merge_part()
+        self.assertEqual(listed(), [str(target.pk)])  # after a merge, under the SKU the catalog lists
+        [line] = self.client.get(self.basket()).data['lines']
+        self.assertEqual((line['part']['id'], line['catalog_part_id'], line['listed']), (str(self.part.pk), str(target.pk), True))  # the badge's SKU
+        target.estado = 'retirada'
+        target.save()
+        [line] = self.client.get(self.basket()).data['lines']
+        self.assertEqual((line['listed'], listed()), (False, []))  # out of the catalog: En cesta neither lists nor counts it
 
     def test_sending_takes_the_sent_units_out_and_leaves_what_was_added_since(self):
         self.change((self.item_a, 3, 'add'), (self.item_a2, 2, 'add'), (self.item_b, 6, 'add'))
