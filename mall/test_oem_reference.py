@@ -93,6 +93,51 @@ class RuleTests(Fresh, SimpleTestCase):
             self.assertEqual(classify_number(manufacturer, code, forms, table), expected, (manufacturer, code))
 
 
+class FrozenSeedRuleTests(SimpleTestCase):
+    """The frozen copy in migration 0039 keeps giving the answers the live helpers gave when live applied it (2026-10-07), whatever the
+    refactor does to mall.oem_reference, mall.oem_finder and mall.catalog_suffixes afterwards."""
+    def setUp(self):
+        self.seed = migration_module('0039_oem_reference')
+
+    def test_family_from_the_manufacturer_numbering_system(self):
+        for manufacturer, code, forms, expected in (
+                ('TOYOTA', '1780130070', [], ('TOYOTA', '17801')), ('LEXUS', '1780130070', [], ('TOYOTA', '17801')),
+                ('HONDA', '12341R70A00', [], ('HONDA', '12341')), ('HYUNDAI', '28113F2000', [], ('HMG', '28113')),
+                ('KIA', '28113F2000', [], ('HMG', '28113')), ('HYUNDAI/KIA', '28113F2000', [], ('HMG', '28113')),
+                ('KIA', '0K2N133140', ['0K2N1-33-140'], ('KIA_LEGACY', '33-14')), ('NISSAN', '55046VW000', [], ('NISSAN', '55046')),
+                ('MITSUBISHI', 'MR968365', [], ('MITSU_OLD', '')), ('MITSUBISHI', '1500A098', [], ('MITSU_NEW', '1500A')),
+                ('MAZDA', 'LF0114302', ['LF01-14-302'], ('MAZDA', '14-30')),
+                ('MAZDA', 'LF01143O2', ['LF01-14-3O2'], ('MAZDA', '14-30')),  # a letter O in a digit group reads as zero
+                ('FORD', '6L8Z3078AA', ['6L8Z-30-78AA'], ('FORD', '3078')),  # a Ford number typed in Mazda form
+                ('HINO', 'S2340-1234', ['S2340-1234'], ('HINO54', '')), ('ACME', '1780130070', [], ('', '')),
+                ('TOYOTA', 'MR968365', [], ('', '')), ('TOYOTA', '17801-30070-X', ['17801-30070-X'], ('', ''))):
+            self.assertEqual(self.seed.classify_number(manufacturer, code, forms), expected, (manufacturer, code))
+
+    def test_a_colour_group_that_is_a_packaged_suffix_is_not_part_of_the_number(self):
+        for manufacturer, code, expected in (('MITSUBISHI', 'MB699175XX', ('', '')), ('MITSUBISHI', 'MB699175QQ', ('MITSU_OLD', '')),
+                                             ('MITSUBISHI', '1500A098HA', ('MITSU_NEW', '1500A')), ('HONDA', '12341R70A00ZZ', ('', '')),
+                                             ('HONDA', '12341R70A00YR', ('HONDA', '12341'))):
+            self.assertEqual(self.seed.classify_number(manufacturer, code), expected, code)
+        self.assertEqual(len(self.seed.SUFFIX_PAIRS), 105)
+
+    def test_part_type_and_description_from_the_line(self):
+        for description, part_type in (('FILTRO AIRE TOY HILUX 2.7', 'FILTRO AIRE'), ('BASE MIT MONTERO', 'BASE'), ('TOY HILUX FILTRO', ''),
+                                       ('SOPORTE MOTOR TOY', 'BASE MOTOR'), ('CORREA ALT HYU', 'CORREA ACCESORIO'),
+                                       ('BOMBA DE GASOLINA', 'BOMBA GAS'), ('SENSOR OXIGENO', 'SENSOR OXIG'), ('ÁRBOL LEVAS', 'ARBOL'),
+                                       ('X', ''), ('', '')):
+            self.assertEqual(self.seed.part_defaults(description), {'description': description, 'part_type': part_type}, description)
+        self.assertEqual(self.seed.part_defaults('  amortiguador  del. toy '), {'description': 'AMORTIGUADOR DEL. TOY', 'part_type': 'AMORT'})
+
+    def test_status_and_source_rules(self):
+        for sources, status in (([('price_list', {})], 'verified'), ([('manual', {'verified': False})], 'declared'),
+                                ([('ai_lookup', {'approved': True})], 'verified'), ([('ai_lookup', {})], 'inferred'),
+                                ([('oem_finder', {}), ('catalog_approval', {})], 'declared'), ([], 'inferred')):
+            self.assertEqual(self.seed.derived_status(sources), status, sources)
+        self.assertEqual(self.seed.source_of(ALGO), ('oem_finder', ALGO, {'run': 2, 'rule': 'current', 'rules_version': 'v2'}))
+        self.assertEqual(self.seed.source_of(' https://parts.example/MR968365 '), ('ai_lookup', 'https://parts.example/MR968365', {'approved': True}))
+        self.assertEqual(self.seed.source_of('REVISADO A MANO'), ('catalog_approval', 'REVISADO A MANO', {}))
+
+
 class SyncTests(Fresh, TestCase):
     def setUp(self):
         super().setUp()
