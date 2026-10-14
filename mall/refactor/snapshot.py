@@ -1,13 +1,14 @@
 """Read-only snapshot of what the catalog's screens return, taken before and after each stage of the inventory refactor (plan §1.5).
 
-Run: python -m mall.refactor.snapshot [--out DIR] [--name NOMBRE] [--user USUARIO] [--sample INSTANTÁNEA]
+Run: python -m mall.refactor.snapshot [--out DIR] [--name NOMBRE] [--force] [--user USUARIO] [--sample INSTANTÁNEA]
      python -m mall.refactor.snapshot --diff [BASE] [--against INSTANTÁNEA] [--allow PATRÓN ...] [--limit N]
      python -m mall.refactor.snapshot --checks
 
 It reads through its own connection with default_transaction_read_only=on (it refuses to run otherwise) and calls the views in-process
 with APIClient(HTTP_HOST='localhost') and force_authenticate, so nothing is written: no session, no last_login, no staging job. The
-supplier import preview runs stock_plan(lock=False) directly, because its endpoint stages a job. Run it with the outside services'
-keys blank (-e DO_SPACES_KEY= -e DO_SPACES_SECRET= -e DO_SPACES_BUCKET= -e RESEND_API_KEY= ...).
+supplier import preview runs stock_plan(lock=False) directly, because its endpoint stages a job. The read-only connection stops database
+writes, not outside calls, so it blanks the outside services' variables (config.network_guard.OUTSIDE_SERVICES) before the settings read
+them, and refuses to go on if they were read earlier with a value.
 
 What it captures: the storefront catalog and suggest for 30 searches, the offers of 50 lines and the availability of every live line;
 the admin grid (pages 1-3 in 4 orderings); the Biblioteca (pages 1-3 and 50 numbers); Productos nuevos (list and summary); each
@@ -18,9 +19,10 @@ of 20 lines, 20 technical sheets and a 200-row supplier import preview.
 Each snapshot keeps its sample (the users, searches, lines, numbers and import rows it read) and is saved as gzipped JSON in --out.
 --diff captures again with the base's sample, so both read the same inputs (BASE defaults to the newest snapshot in --out; --against
 compares two saved snapshots without reading the database), and prints every changed key as a path (section/key/...; rows of a list
-by id, with their order as [order]). What the matching worker changes on its own (the run's state) is ignored, and --allow takes
-fnmatch patterns of the changes the stage expects. Exit codes: a capture with a server error 2, a diff with an unexpected change 1, a
-failed check 1. --checks runs plan Appendix C and skips the queries whose columns no stage has added yet.
+by id, with their order as [order]). What the matching worker changes on its own (the run's state, at the overview level only, never a
+case's) is ignored, and --allow takes fnmatch patterns of the changes the stage expects. A snapshot never replaces an existing file
+unless --force. Exit codes: a capture with a server error 2, a diff with an unexpected change 1, a failed check 1. --checks runs plan
+Appendix C; a check waits for the column its own stage adds, so an earlier stage's columns never make a later invariant fail.
 """
 import argparse
 import fnmatch
@@ -31,7 +33,7 @@ import os
 import re
 import sys
 import time
-from collections import Counter
+from collections import Counter, namedtuple
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -43,9 +45,13 @@ PAGES = (1, 2, 3)
 SIZES = {'searches': 30, 'offers': 50, 'biblioteca': 50, 'oem_equivalents': 50, 'mark_oem': 20, 'technical': 20, 'split': 10,
          'review_rows': 20, 'import_rows': 200, 'import_new': 20}
 MATCHING_STATUSES = ('review', 'unmatched')
-# What the matching worker changes between two reads of an unchanged catalog.
-VOLATILE = [f'matching/*/{key}' for key in ('running', 'queued', 'state', 'stage', 'started_at', 'last_run', 'summary', 'summary/*', 'error')]
+# What the matching worker changes between two reads of an unchanged catalog: the run's state in the overview of each status. Anchored
+# there, so a case's own keys (results[id=…]/ai/error) still count.
+VOLATILE = [re.compile(r'^matching/[^/\[]+/(running|queued|state|stage|started_at|last_run|error|summary([/\[].*)?)$')]
 MISSING = object()
+# The settings that switch an outside service on; setup_read_only refuses to read with any of them set.
+SERVICE_SETTINGS = ('RESEND_API_KEY', 'GEMINI_API_KEY', 'WHATSAPP_ACCESS_TOKEN', 'VAPID_PRIVATE_KEY', 'DO_SPACES_KEY', 'DO_SPACES_SECRET',
+                    'DO_SPACES_BUCKET', 'REDIS_URL', 'CHANNEL_LAYERS')
 WRITES = re.compile(r'^\s*(INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE)\b', re.I)
 
 
@@ -286,7 +292,7 @@ def compare(base, current, allow=(), ignore=VOLATILE):
         old, new = before.get(path, MISSING), after.get(path, MISSING)
         if old == new:
             continue
-        kind = ('ignored' if any(fnmatch.fnmatchcase(path, pattern) for pattern in ignore) else
+        kind = ('ignored' if any(pattern.match(path) for pattern in ignore) else
                 'expected' if any(fnmatch.fnmatchcase(path, pattern) for pattern in allow) else 'unexpected')
         result[kind].append((path, old, new))
     return result
@@ -317,10 +323,14 @@ def render_diff(result, limit=200):
     return '\n'.join(lines)
 
 
-def save(snapshot, path):
+def save(snapshot, path, force=False):
+    """Writes the gzipped JSON; an existing file stays as it is (SystemExit) unless force."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(path, 'wt', encoding='utf-8') as out:
-        json.dump(snapshot, out, ensure_ascii=False, sort_keys=True, default=str)
+    try:
+        with gzip.open(path, 'wt' if force else 'xt', encoding='utf-8') as out:
+            json.dump(snapshot, out, ensure_ascii=False, sort_keys=True, default=str)
+    except FileExistsError:
+        raise SystemExit(f'Ya existe {path}: elige otro --name o pasa --force para reemplazarla.') from None
     return path
 
 
@@ -336,58 +346,61 @@ def newest(folder):
     return found[-1]
 
 
-# Plan Appendix C: (id, stage, expectation, query, columns it needs). Expectation 0: the first value must be 0; 'none': no rows;
-# None: informational.
+# The column each stage's expand migration adds (plan §3). A check runs once its own stage's column is there, so an invariant never fails
+# on the columns an earlier stage added for it (I10 reads reference_id from S3, but holds only from S6).
+STAGE_COLUMNS = {'S1': 'mall_part.estado', 'S2a': 'mall_partcode.clave', 'S2b': 'mall_part.tipo', 'S3': 'mall_supplieritem.reference_id',
+                 'S4': 'mall_oemcrossreference.ref_id', 'S6': 'mall_matchingcase.route', 'S7': 'mall_searchdocument.line_id'}
+# Plan Appendix C. expect 0: the first value must be 0; 'none': no rows; ('filas', n): exactly n rows; None: informational. needs: the
+# other columns it reads; until: the stage from which its expectation no longer holds (it then only informs).
+Check = namedtuple('Check', 'id stage expect query needs until', defaults=((), None))
 CHECKS = [
-    ('C0', 'hoy', None, 'SELECT active, merged_into_id IS NOT NULL, count(*) FROM mall_part GROUP BY 1, 2 ORDER BY 1, 2', []),
-    ('C0', 'hoy', None, 'SELECT matching_status, count(*) FROM mall_supplieritem GROUP BY 1 ORDER BY 1', []),
-    ('C0', 'hoy', None, 'SELECT ref_type, count(*) FROM mall_partcode GROUP BY 1 ORDER BY 1', []),
-    ('C1', 'S1', None, 'SELECT estado, active, merged_into_id IS NOT NULL, count(*) FROM mall_part GROUP BY 1, 2, 3 ORDER BY 1, 2, 3',
-     ['mall_part.estado']),
-    ('I1', 'S2b', 0, "SELECT count(*) FROM mall_part p WHERE p.estado <> 'unificada' AND (SELECT count(*) FROM mall_partcode r "
-                     "WHERE r.part_id = p.id AND r.is_main AND r.estado <> 'retirada') <> 1",
-     ['mall_part.estado', 'mall_partcode.is_main', 'mall_partcode.estado']),
-    ('I2', 'S2b', 0, "SELECT count(*) FROM mall_part p JOIN mall_partcode r ON r.part_id = p.id AND r.is_main AND r.estado <> 'retirada' "
-                     "WHERE p.estado <> 'unificada' AND p.sku <> r.code",
-     ['mall_part.estado', 'mall_partcode.is_main', 'mall_partcode.estado']),
-    ('I3', 'S2b', 0, "SELECT count(*) FROM mall_partcode r JOIN mall_part p ON p.id = r.part_id WHERE p.estado = 'unificada' AND r.estado <> 'retirada'",
-     ['mall_part.estado', 'mall_partcode.estado']),
-    ('I5', 'S2a', 'none', "SELECT a.clave FROM mall_partcode a JOIN mall_partcode b ON a.clave = b.clave AND a.part_id <> b.part_id "
-                          "WHERE a.brand = '' AND b.brand <> '' AND a.supplier_id IS NULL AND b.supplier_id IS NULL "
-                          "AND a.estado IN ('verificado', 'declarado', 'inferido') AND b.estado IN ('verificado', 'declarado', 'inferido') LIMIT 20",
-     ['mall_partcode.clave', 'mall_partcode.supplier_id', 'mall_partcode.estado']),
-    ('I11', 'S2b', 0, "SELECT count(*) FROM mall_part p JOIN mall_partcode r ON r.part_id = p.id AND r.is_main AND r.estado <> 'retirada' "
-                      "WHERE p.estado <> 'unificada' AND p.tipo <> CASE r.tipo WHEN 'oem' THEN 'OEM' WHEN 'aftermarket' THEN 'AFTERMARKET' ELSE 'UNKNOWN' END",
-     ['mall_part.estado', 'mall_part.tipo', 'mall_partcode.is_main', 'mall_partcode.estado', 'mall_partcode.tipo']),
-    ('I12', 'S1', 0, "SELECT count(*) FROM mall_partcode r WHERE r.brand <> '' AND NOT EXISTS (SELECT 1 FROM mall_brand b WHERE b.nombre = r.brand) "
-                     "AND NOT EXISTS (SELECT 1 FROM mall_brandalias a WHERE a.alias = r.brand)",
-     ['mall_brand.nombre', 'mall_brandalias.alias']),
-    ('C3', 'S3', None, 'SELECT matching_status, reference_id IS NULL, count(*) FROM mall_supplieritem GROUP BY 1, 2 ORDER BY 1, 2',
-     ['mall_supplieritem.reference_id']),
-    ('I4', 'S3', 0, 'SELECT count(*) FROM mall_supplieritem s JOIN mall_partcode r ON r.id = s.reference_id WHERE s.part_id <> r.part_id',
-     ['mall_supplieritem.reference_id']),
-    ('I7', 'S3', 0, "SELECT count(*) FROM mall_supplieritem s JOIN mall_partcode r ON r.id = s.reference_id "
-                    "WHERE r.tipo = 'interno' AND r.supplier_id <> s.supplier_id",
-     ['mall_supplieritem.reference_id', 'mall_partcode.tipo', 'mall_partcode.supplier_id']),
-    ('C4', 'S4', None, 'SELECT estado, origen, count(*) FROM mall_part GROUP BY 1, 2 ORDER BY 1, 2', ['mall_part.estado', 'mall_part.origen']),
-    ('C4', 'S4', 0, 'SELECT count(*) FROM mall_oemreference o LEFT JOIN mall_partcode r ON r.uid = o.id WHERE r.id IS NULL',
-     ['mall_partcode.uid', 'mall_oemreference.id']),
-    ('C4', 'S4', 0, 'SELECT count(*) FROM mall_oemcrossreference WHERE ref_id IS NULL', ['mall_oemcrossreference.ref_id']),
-    ('C4', 'S4', None, "SELECT count(*) FROM mall_partcode WHERE tipo = 'oem' AND brand <> '' AND estado <> 'retirada'",
-     ['mall_partcode.tipo', 'mall_partcode.estado']),
-    ('I9', 'S6', 0, "SELECT count(*) FROM mall_supplieritem s JOIN mall_part p ON p.id = s.part_id "
-                    "WHERE s.matching_status = 'matched' AND p.estado NOT IN ('publicada', 'retirada')", ['mall_part.estado']),
-    ('I10', 'S6', 0, "SELECT count(*) FROM mall_supplieritem s WHERE s.reference_id IS NULL AND s.updated_at < now() - interval '15 minutes' "
-                     "AND NOT EXISTS (SELECT 1 FROM mall_matchingcase c WHERE c.item_id = s.id AND c.kind = 'line' AND c.status = 'review')",
-     ['mall_supplieritem.reference_id', 'mall_matchingcase.kind']),
-    ('C6', 'S6', None, "SELECT count(*) FROM mall_part p WHERE p.estado = 'preparacion' AND EXISTS (SELECT 1 FROM mall_supplieritem s WHERE s.part_id = p.id)",
-     ['mall_part.estado']),
-    ('C6', 'S6', None, 'SELECT kind, status, count(*) FROM mall_matchingcase GROUP BY 1, 2 ORDER BY 1, 2', ['mall_matchingcase.kind']),
-    ('I8', 'S7', 0, "SELECT count(*) FROM mall_part p LEFT JOIN mall_searchdocument d ON d.line_id = p.id "
-                    "WHERE (p.estado = 'publicada' AND p.merged_into_id IS NULL) <> (d.line_id IS NOT NULL)",
-     ['mall_part.estado', 'mall_searchdocument.line_id']),
-    ('I6', 'siempre', 0, 'SELECT count(*) FROM mall_part a JOIN mall_part b ON a.merged_into_id = b.id WHERE b.merged_into_id IS NOT NULL', []),
-    ('C-', 'siempre', None, "SELECT count(*) FROM mall_part WHERE estado = 'publicada'", ['mall_part.estado']),
+    Check('C0', 'hoy', None, 'SELECT active, merged_into_id IS NOT NULL, count(*) FROM mall_part GROUP BY 1, 2 ORDER BY 1, 2'),
+    Check('C0', 'hoy', None, 'SELECT matching_status, count(*) FROM mall_supplieritem GROUP BY 1 ORDER BY 1'),
+    Check('C0', 'hoy', None, 'SELECT ref_type, count(*) FROM mall_partcode GROUP BY 1 ORDER BY 1'),
+    # exactly 3 groups (publicada, retirada, unificada) until S4's referencia lines
+    Check('C1', 'S1', ('filas', 3), 'SELECT estado, active, merged_into_id IS NOT NULL, count(*) FROM mall_part GROUP BY 1, 2, 3 ORDER BY 1, 2, 3',
+          until='S4'),
+    Check('I1', 'S2b', 0, "SELECT count(*) FROM mall_part p WHERE p.estado <> 'unificada' AND (SELECT count(*) FROM mall_partcode r "
+                          "WHERE r.part_id = p.id AND r.is_main AND r.estado <> 'retirada') <> 1",
+          ['mall_partcode.is_main', 'mall_partcode.estado']),
+    Check('I2', 'S2b', 0, "SELECT count(*) FROM mall_part p JOIN mall_partcode r ON r.part_id = p.id AND r.is_main AND r.estado <> 'retirada' "
+                          "WHERE p.estado <> 'unificada' AND p.sku <> r.code",
+          ['mall_partcode.is_main', 'mall_partcode.estado']),
+    Check('I3', 'S2b', 0, "SELECT count(*) FROM mall_partcode r JOIN mall_part p ON p.id = r.part_id WHERE p.estado = 'unificada' "
+                          "AND r.estado <> 'retirada'", ['mall_partcode.estado']),
+    Check('I5', 'S2a', 'none', "SELECT a.clave FROM mall_partcode a JOIN mall_partcode b ON a.clave = b.clave AND a.part_id <> b.part_id "
+                               "WHERE a.brand = '' AND b.brand <> '' AND a.supplier_id IS NULL AND b.supplier_id IS NULL "
+                               "AND a.estado IN ('verificado', 'declarado', 'inferido') AND b.estado IN ('verificado', 'declarado', 'inferido') LIMIT 20",
+          ['mall_partcode.supplier_id', 'mall_partcode.estado']),
+    Check('I11', 'S2b', 0, "SELECT count(*) FROM mall_part p JOIN mall_partcode r ON r.part_id = p.id AND r.is_main AND r.estado <> 'retirada' "
+                           "WHERE p.estado <> 'unificada' AND p.tipo <> CASE r.tipo WHEN 'oem' THEN 'OEM' WHEN 'aftermarket' THEN 'AFTERMARKET' ELSE 'UNKNOWN' END",
+          ['mall_partcode.is_main', 'mall_partcode.estado', 'mall_partcode.tipo']),
+    # S1 creates the brands; S2a seeds the missing spellings, so the invariant holds from S2a (plan §2 I12)
+    Check('I12', 'S2a', 0, "SELECT count(*) FROM mall_partcode r WHERE r.brand <> '' AND NOT EXISTS (SELECT 1 FROM mall_brand b WHERE b.nombre = r.brand) "
+                           "AND NOT EXISTS (SELECT 1 FROM mall_brandalias a WHERE a.alias = r.brand)",
+          ['mall_brand.nombre', 'mall_brandalias.alias']),
+    Check('C3', 'S3', None, 'SELECT matching_status, reference_id IS NULL, count(*) FROM mall_supplieritem GROUP BY 1, 2 ORDER BY 1, 2'),
+    Check('I4', 'S3', 0, 'SELECT count(*) FROM mall_supplieritem s JOIN mall_partcode r ON r.id = s.reference_id WHERE s.part_id <> r.part_id'),
+    Check('I7', 'S3', 0, "SELECT count(*) FROM mall_supplieritem s JOIN mall_partcode r ON r.id = s.reference_id "
+                         "WHERE r.tipo = 'interno' AND r.supplier_id <> s.supplier_id", ['mall_partcode.tipo', 'mall_partcode.supplier_id']),
+    Check('C4', 'S4', None, 'SELECT estado, origen, count(*) FROM mall_part GROUP BY 1, 2 ORDER BY 1, 2', ['mall_part.origen']),
+    Check('C4', 'S4', 0, 'SELECT count(*) FROM mall_oemreference o LEFT JOIN mall_partcode r ON r.uid = o.id WHERE r.id IS NULL',
+          ['mall_partcode.uid', 'mall_oemreference.id']),
+    Check('C4', 'S4', 0, 'SELECT count(*) FROM mall_oemcrossreference WHERE ref_id IS NULL'),
+    Check('C4', 'S4', None, "SELECT count(*) FROM mall_partcode WHERE tipo = 'oem' AND brand <> '' AND estado <> 'retirada'",
+          ['mall_partcode.tipo', 'mall_partcode.estado']),
+    Check('I9', 'S6', 0, "SELECT count(*) FROM mall_supplieritem s JOIN mall_part p ON p.id = s.part_id "
+                         "WHERE s.matching_status = 'matched' AND p.estado NOT IN ('publicada', 'retirada')"),
+    Check('I10', 'S6', 0, "SELECT count(*) FROM mall_supplieritem s WHERE s.reference_id IS NULL AND s.updated_at < now() - interval '15 minutes' "
+                          "AND NOT EXISTS (SELECT 1 FROM mall_matchingcase c WHERE c.item_id = s.id AND c.kind = 'line' AND c.status = 'review')",
+          ['mall_supplieritem.reference_id']),
+    Check('C6', 'S6', None, "SELECT count(*) FROM mall_part p WHERE p.estado = 'preparacion' AND EXISTS (SELECT 1 FROM mall_supplieritem s "
+                            "WHERE s.part_id = p.id)"),
+    Check('C6', 'S6', None, 'SELECT kind, status, count(*) FROM mall_matchingcase GROUP BY 1, 2 ORDER BY 1, 2'),
+    Check('I8', 'S7', 0, "SELECT count(*) FROM mall_part p LEFT JOIN mall_searchdocument d ON d.line_id = p.id "
+                         "WHERE (p.estado = 'publicada' AND p.merged_into_id IS NULL) <> (d.line_id IS NOT NULL)", ['mall_part.estado']),
+    Check('I6', 'siempre', 0, 'SELECT count(*) FROM mall_part a JOIN mall_part b ON a.merged_into_id = b.id WHERE b.merged_into_id IS NOT NULL'),
+    Check('C-', 'siempre', None, "SELECT count(*) FROM mall_part WHERE estado = 'publicada'", ['mall_part.estado']),
 ]
 
 
@@ -399,31 +412,50 @@ def columns():
         return {f'{table}.{column}' for table, column in cursor.fetchall()}
 
 
-def run_checks():
-    """[(id, stage, outcome, detail)], outcome OK, FALLA, INFO or OMITIDA."""
+def missing_columns(check, present):
+    """The columns the check reads, or waits for (its stage's), that the database does not have yet."""
+    needs = [*([STAGE_COLUMNS[check.stage]] if check.stage in STAGE_COLUMNS else []), *check.needs]
+    return [column for column in dict.fromkeys(needs) if column not in present]
+
+
+def judge(check, rows, present):
+    """(outcome, detail) of a check's rows: OK, FALLA or INFO."""
+    expect = None if check.until and STAGE_COLUMNS[check.until] in present else check.expect
+    if expect is None:
+        return 'INFO', short([list(row) for row in rows], 400)
+    if expect == 'none':
+        return ('OK' if not rows else 'FALLA'), f'{len(rows)} filas' + (f': {short(rows, 300)}' if rows else '')
+    if isinstance(expect, tuple):
+        return ('OK' if len(rows) == expect[1] else 'FALLA'), f'{len(rows)} filas (se esperan {expect[1]}): {short([list(row) for row in rows], 300)}'
+    value = rows[0][0] if rows else None
+    return ('OK' if value == expect else 'FALLA'), f'{value} (se espera {expect})'
+
+
+def run_checks(present=None, fetch=None):
+    """[(id, stage, outcome, detail)], outcome OK, FALLA, INFO or OMITIDA. present and fetch(query) -> rows default to the database's."""
     from django.db import connection
-    present, results = columns(), []
-    for check_id, stage, expected, query, needs in CHECKS:
-        missing = [column for column in needs if column not in present]
-        if missing:
-            results.append((check_id, stage, 'OMITIDA', f"falta {', '.join(missing)}"))
-            continue
+
+    def query(sql):
         with connection.cursor() as cursor:
-            cursor.execute(query)
-            rows = cursor.fetchall()
-        if expected is None:
-            results.append((check_id, stage, 'INFO', short([list(row) for row in rows], 400)))
-        elif expected == 'none':
-            results.append((check_id, stage, 'OK' if not rows else 'FALLA', f'{len(rows)} filas' + (f': {short(rows, 300)}' if rows else '')))
-        else:
-            value = rows[0][0] if rows else None
-            results.append((check_id, stage, 'OK' if value == expected else 'FALLA', f'{value} (se espera {expected})'))
+            cursor.execute(sql)
+            return cursor.fetchall()
+
+    present, fetch, results = columns() if present is None else present, fetch or query, []
+    for check in CHECKS:
+        missing = missing_columns(check, present)
+        if missing:
+            results.append((check.id, check.stage, 'OMITIDA', f"falta {', '.join(missing)}"))
+            continue
+        results.append((check.id, check.stage, *judge(check, fetch(check.query), present)))
     return results
 
 
 def setup_read_only():
-    """Django on a connection that cannot write, named refactor:snapshot; refuses to go on unless PostgreSQL confirms it."""
+    """Django with the outside services off, on a connection that cannot write, named refactor:snapshot; refuses to go on unless
+    PostgreSQL confirms it and every service setting is blank."""
+    from config.network_guard import blank_outside_services
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
+    blank_outside_services()  # before the settings first read them
     from django.conf import settings
     database = settings.DATABASES['default']
     if 'postgresql' not in database['ENGINE']:
@@ -440,10 +472,9 @@ def setup_read_only():
         cursor.execute('SHOW transaction_read_only')
         if cursor.fetchone()[0] != 'on':
             raise SystemExit('La conexión no quedó en solo lectura: no se toma la instantánea.')
-    from django.conf import settings as configured
-    keys = [name for name in ('RESEND_API_KEY', 'GEMINI_API_KEY', 'WHATSAPP_ACCESS_TOKEN', 'VAPID_PRIVATE_KEY', 'DO_SPACES_KEY') if getattr(configured, name, '')]
-    if keys:
-        print(f"Aviso: corre con las claves en blanco ({', '.join(keys)} tienen valor).", file=sys.stderr)
+    keys = [name for name in SERVICE_SETTINGS if getattr(settings, name, '')]
+    if keys:  # the settings were read before this process blanked them
+        raise SystemExit(f"Los servicios externos siguen configurados ({', '.join(keys)}): la instantánea no se toma.")
 
 
 def main(argv=None, stdout=None):
@@ -451,6 +482,7 @@ def main(argv=None, stdout=None):
                                      description='Instantánea de solo lectura de las pantallas del catálogo, para comparar antes y después de cada etapa.')
     parser.add_argument('--out', type=Path, default=DEFAULT_OUT, help=f'Carpeta de las instantáneas ({DEFAULT_OUT} por omisión).')
     parser.add_argument('--name', help='Nombre del archivo, sin extensión (por omisión, snapshot-AAAAMMDD-HHMMSS).')
+    parser.add_argument('--force', action='store_true', help='Reemplaza una instantánea que ya tenga ese nombre.')
     parser.add_argument('--user', help='Superusuario que lee las pantallas de administración (por omisión, el primero activo).')
     parser.add_argument('--sample', type=Path, help='Lee con la muestra de otra instantánea en vez de elegir una.')
     parser.add_argument('--diff', nargs='?', const='newest', metavar='BASE', help='Compara con BASE (por omisión, la más reciente de --out).')
@@ -471,6 +503,9 @@ def main(argv=None, stdout=None):
             result = compare(base, current, args.allow)
             print(render_diff(result, args.limit), file=out)
             return 1 if result['unexpected'] else 0
+    path = args.out / f"{args.name or 'snapshot-' + time.strftime('%Y%m%d-%H%M%S')}.json.gz"
+    if not args.checks and path.exists() and not args.force:  # before any read; save refuses it again
+        raise SystemExit(f'Ya existe {path}: elige otro --name o pasa --force para reemplazarla.')
     setup_read_only()
     if args.checks:
         results = run_checks()
@@ -480,8 +515,7 @@ def main(argv=None, stdout=None):
     sample = base['sample'] if base else load(args.sample)['sample'] if args.sample else None
     print('Leyendo (solo lectura)…', file=out)
     snapshot = capture(sample, username=args.user, log=lambda text: print(text, file=out))
-    name = args.name or f"snapshot-{time.strftime('%Y%m%d-%H%M%S')}"
-    path = save(snapshot, args.out / f'{name}.json.gz')
+    save(snapshot, path, force=args.force)
     print(f"Instantánea: {path} ({path.stat().st_size / 1e6:.1f} MB, {snapshot['meta']['seconds']} s, migración {snapshot['meta']['migration']})", file=out)
     for error in snapshot['errors']:
         print(f'  ERROR {error}', file=out)
