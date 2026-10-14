@@ -91,10 +91,8 @@ SIDES = {**dict.fromkeys(['IZQ', 'IZQUIERDO', 'IZQUIERDA', 'LH', 'LEFT'], ('side
          **dict.fromkeys(['DER', 'DERECHO', 'DERECHA', 'RH', 'RIGHT'], ('side', 'right')),
          **dict.fromkeys(['DEL', 'DELANTERO', 'DELANTERA', 'FRONT'], ('axle', 'front')),
          **dict.fromkeys(['TRAS', 'TRASERO', 'TRASERA', 'REAR'], ('axle', 'rear'))}
-JOINED_SIDES = {**SIDES, 'L': ('side', 'left'), 'R': ('side', 'right')}  # L/R only counts written as a pair
-JOINERS = {'/', '&', '+', '-', 'Y', 'O', 'E'}
 KIT_WORDS = {'KIT', 'JUEGO', 'SET', 'PAR'}
-SET_WORDS = {'JUEGO', 'SET'}           # pads and shoes are always sold as a set: «SET 4 PCS» or «JUEGO» is not a kit for them
+SET_WORDS = {'JUEGO', 'SET'}           # pads and shoes are always sold as a set: between two pads «SET 4 PCS» or «JUEGO» is no kit
 SOLD_AS_SET = {'PASTILLA', 'ZAPATA'}
 TYPE_NOUNS = {'TAMBOR', 'DISCO', 'PASTILLA', 'ZAPATA', 'FILTRO', 'BUJIA', 'AMORTIGUADOR', 'ROTULA'}
 PLURALS = {'TAMBORES': 'TAMBOR', 'DISCOS': 'DISCO', 'PASTILLAS': 'PASTILLA', 'ZAPATAS': 'ZAPATA', 'FILTROS': 'FILTRO',
@@ -111,36 +109,23 @@ TYPES = {type_noun(word) for word in TYPE_NOUNS}
 
 
 def sides(text):
-    """The sides and axles a description names. A pair written together («LH/RH», «L/R», «IZQ Y DER», «DEL/TRAS») is a part
-    for either one, so it names neither."""
-    tokens = re.findall(r'[A-Z0-9]+|[/&+-]', re.sub(r'\b([LR])/H\b', r'\1H', text))
-    either = set()
-    for i in range(len(tokens) - 2):
-        first, second = JOINED_SIDES.get(tokens[i]), JOINED_SIDES.get(tokens[i + 2])
-        if first and second and tokens[i + 1] in JOINERS and first[0] == second[0] and first != second:
-            either |= {i, i + 2}
-    return {SIDES[token] for i, token in enumerate(tokens) if token in SIDES and i not in either}
+    """The sides and axles a description names. One that names both of a pair, joined or not («LH/RH», «IZQ Y DER», «DEL LH RH»,
+    «LH,RH»), is a part for either one (or reads DEL as the word «del»: «DEL PASO DE RUEDA TRASERA»), so it names neither."""
+    named = {SIDES[token] for token in re.findall(r'[A-Z0-9]+', re.sub(r'\b([LR])/H\b', r'\1H', text)) if token in SIDES}
+    return {value for value in named if not any(other[0] == value[0] and other != value for other in named)}
 
 
 def part_types(words):
-    """The part types a description names. A type after DE or PARA that follows another one only qualifies it
-    (PASTILLA FRENO DE DISCO is a pad)."""
-    found, previous = set(), ''
-    for word in words:
-        noun = type_noun(word)
-        if noun in TYPES and not (found and previous in {'DE', 'P', 'PARA'}):
-            found.add(noun)
-        previous = word
-    return found
+    """The part types a description names."""
+    return {type_noun(word) for word in words} & TYPES
 
 
 def spec_conflict(a, b):
     """Detect explicit contradictions; missing specifications are not evidence."""
     a, b = description(a), description(b)
-    la, lb = re.findall(r'\w+', a), re.findall(r'\w+', b)
-    wa, wb = set(la), set(lb)
-    ta, tb = part_types(la), part_types(lb)
-    kit = KIT_WORDS - (SET_WORDS if (ta | tb) & SOLD_AS_SET else set())
+    wa, wb = set(re.findall(r'\w+', a)), set(re.findall(r'\w+', b))
+    ta, tb = part_types(wa), part_types(wb)
+    kit = KIT_WORDS - (SET_WORDS if ta & tb & SOLD_AS_SET else set())  # both are pads, or both shoes
     if bool(wa & kit) != bool(wb & kit):
         return True
     sb = sides(b)

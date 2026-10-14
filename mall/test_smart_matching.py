@@ -299,6 +299,12 @@ class SpecConflictTests(SimpleTestCase):
         self.assertFalse(spec_conflict('ESPEJO IZQ Y DER', 'ESPEJO DERECHO'))
         self.assertFalse(spec_conflict('AMORT DEL/TRAS', 'AMORT TRAS'))
         self.assertFalse(spec_conflict('FARO DEL-IZQ/DER', 'FARO DEL DER'))
+        # Live data mostly writes the pair with a space or a comma; DEL is also the word «del».
+        for text in ['AMORT HON CIVIC 96-01 DEL LH RH', 'AISLANTE ACUSTICO DEL PASO DE RUEDA TRASERA']:
+            self.assertFalse(spec_conflict(text, text))
+        self.assertFalse(spec_conflict('AMORT HON CIVIC 96-01 TRAS LH RH', 'AMORT HON CIVIC 96-01 TRAS LH'))
+        self.assertFalse(spec_conflict('FAROL LH,RH', 'FAROL LH'))
+        self.assertFalse(spec_conflict('FARO L/H R/H', 'FARO L/H'))
         self.assertTrue(spec_conflict('FAROL LH', 'FAROL RH'))
         self.assertTrue(spec_conflict('FARO L/H', 'FARO R/H'))
         self.assertTrue(spec_conflict('FAROL LH/RH DEL', 'FAROL TRAS'))
@@ -311,11 +317,14 @@ class SpecConflictTests(SimpleTestCase):
         self.assertTrue(spec_conflict('BUJIA SET 4 PCS', 'BUJIA IRIDIUM'))
         self.assertTrue(spec_conflict('KIT PASTILLAS Y DISCOS', 'PASTILLA FRENO'))
         self.assertTrue(spec_conflict('KIT PASTILLA FRENO', 'PASTILLA FRENO'))
+        self.assertTrue(spec_conflict('JUEGO EMPAQUES MOTOR', 'PASTILLA FRENO DEL'))   # only two pads excuse the set
 
     def test_type_nouns_read_plurals_and_erp_abbreviations(self):
         self.assertFalse(spec_conflict('AMORT DEL', 'AMORTIGUADOR DEL'))
         self.assertFalse(spec_conflict('AMORTIGUADORES DEL', 'AMORT DEL'))
-        self.assertFalse(spec_conflict('PASTILLA FRENO DE DISCO', 'PASTILLA FRENO DEL'))
+        # A second type noun is a second type, wherever it stands.
+        self.assertTrue(spec_conflict('ZAPATA FRENO DE TAMBOR', 'ZAPATA FRENO DE DISCO'))
+        self.assertTrue(spec_conflict('PASTILLA FRENO DE DISCO', 'PASTILLA FRENO DEL'))
         self.assertTrue(spec_conflict('AMORT DEL', 'ROTULA DEL'))
         self.assertTrue(spec_conflict('PASTILLAS FRENO', 'DISCO FRENO'))
         self.assertTrue(spec_conflict('DISCO FRENO 200 MM', 'DISCO FRENO 220 MM'))
