@@ -1,9 +1,11 @@
 import io
 import json
+import sys
 import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone as dt_timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.db import IntegrityError, connection, transaction
@@ -633,27 +635,34 @@ class SuffixRevertTests(Fresh, APITestCase):
         self.assertEqual(alias.changes.order_by('-created_at', '-id').first().note, 'Alias de L')
         self.assertFalse(classify('-', 'LFT').auto_eligible)
 
-    def test_an_apply_on_the_live_database_needs_the_freeze_and_an_author(self):
+    def test_on_the_live_database_a_write_needs_the_s0_11_guard_the_freeze_and_an_author(self):
         if connection.vendor != 'postgresql':
             self.skipTest('PostgreSQL only: the live database is the PostgreSQL one')
         relabel_night(self.admin)
-        folder = self.checkout / '.maintenance'
-        folder.mkdir()
-        with override_settings(LIVE_DATABASE_NAME=connection.settings_dict['NAME'], MAINTENANCE_DIR=str(folder)):
-            result, out = self.run_revert(apply=True, username='miguel')
-            self.assertIsNone(result)
-            self.assertIn('sin el congelamiento del catálogo', out)
-            self.assertIsNone(self.run_revert(rollback=True, username='miguel')[0])
-            self.assertEqual(self.run_revert()[0]['revert'], 45)  # a dry run never needs it
-            (folder / 'freeze').write_text('catalog\n')
-            self.assertIsNone(self.run_revert(apply=True)[0])
-            self.assertIsNone(self.run_revert(apply=True, username='nadie')[0])
-            self.assertFalse(CatalogCodeSuffixChange.objects.filter(action='set_variant').exists())
-            with override_settings(MAIN_CHECKOUT=str(self.checkout / 'missing')):
+        frozen = []
+        guard = SimpleNamespace(refusal=lambda applying=True, alias='default': None if frozen else 'Base de datos en vivo sin el congelamiento del catálogo')
+        with override_settings(LIVE_DATABASE_NAME=connection.settings_dict['NAME']):
+            # Before S0.11 lands the live database is refused outright: a freeze file would hold back neither screens nor workers.
+            with patch.dict(sys.modules, {'mall.refactor.guard': None}):
                 result, out = self.run_revert(apply=True, username='miguel')
                 self.assertIsNone(result)
-                self.assertIn('Falta la carpeta', out)
-            self.assertEqual(self.run_revert(apply=True, username='miguel')[0]['revert'], 45)
+                self.assertIn('integra S0.11 primero', out)
+                self.assertIsNone(self.run_revert(rollback=True, username='miguel')[0])
+                self.assertEqual(self.run_revert()[0]['revert'], 45)  # a dry run never needs it
+            # Then its guard decides (the freeze, and no writer still busy).
+            with patch.dict(sys.modules, {'mall.refactor.guard': guard}):
+                result, out = self.run_revert(apply=True, username='miguel')
+                self.assertIsNone(result)
+                self.assertIn('sin el congelamiento del catálogo', out)
+                frozen.append(True)
+                self.assertIsNone(self.run_revert(apply=True)[0])
+                self.assertIsNone(self.run_revert(apply=True, username='nadie')[0])
+                self.assertFalse(CatalogCodeSuffixChange.objects.filter(action='set_variant').exists())
+                with override_settings(MAIN_CHECKOUT=str(self.checkout / 'missing')):
+                    result, out = self.run_revert(apply=True, username='miguel')
+                    self.assertIsNone(result)
+                    self.assertIn('Falta la carpeta', out)
+                self.assertEqual(self.run_revert(apply=True, username='miguel')[0]['revert'], 45)
         self.assertEqual(self.row('RH').cls, 'VARIANT')
 
     def test_the_manifest_is_written_before_the_commit(self):

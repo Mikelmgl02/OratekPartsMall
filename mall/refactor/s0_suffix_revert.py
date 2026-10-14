@@ -9,12 +9,12 @@ bumps the table version and invalidates the suffix cache, so the OEM finder re-t
 A token already back is skipped; one edited after its relabel, or without a complete audit row (its `before`, and the confirmation it
 had when it was owner-confirmed), is reported and left alone: relabel it from Sufijos. Aliases follow their token, as an owner label
 does. --apply and --rollback take the suffix table lock (SUFFIX_LOCK) and write in one transaction; on the live database they refuse
-unless the catalog freeze is on. Every changed row goes with its before-values to the manifest, the main checkout's git-ignored
-output/refactor/s0/suffix-revert/manifest.jsonl (/app/output/… in the containers), written and flushed before the transaction commits,
-so a failed write changes nothing; a manifest holding another database's lines (a test run's) is refused, never appended to.
-Re-running changes nothing. --rollback puts back the rows the last apply on this database changed, stamps included, unless one was
-edited since. After either, run python -m mall.link_oem_numbers --apply and python -m mall.oem_finder --dry-run; --dry-run --finder
-previews the finder's tiers with D4 first, storing nothing.
+unless the S0.11 guard passes (the catalog freeze is on and no writer is still busy). Every changed row goes with its before-values to
+the manifest, the main checkout's git-ignored output/refactor/s0/suffix-revert/manifest.jsonl (/app/output/… in the containers),
+written and flushed before the transaction commits, so a failed write changes nothing; a manifest holding another database's lines
+(a test run's) is refused, never appended to. Re-running changes nothing. --rollback puts back the rows the last apply on this
+database changed, stamps included, unless one was edited since. After either, run python -m mall.link_oem_numbers --apply and
+python -m mall.oem_finder --dry-run; --dry-run --finder previews the finder's tiers with D4 first, storing nothing.
 """
 import argparse
 import json
@@ -58,23 +58,20 @@ def current_database():
 
 
 def refusal():
-    """Why --apply or --rollback may not write now, or None. The S0.11 guard (mall.refactor.guard) once it lands; until then the
-    same check: the live database (LIVE_DATABASE_NAME, partsmall) without the catalog freeze file, at either level."""
+    """Why --apply or --rollback may not write now, or None: the S0.11 guard (mall.refactor.guard: on the live database, the catalog
+    freeze and no writer still busy). Until S0.11 lands the live database is refused outright, since a freeze file would hold back
+    neither the screens nor the workers; a test or rehearsal database needs nothing."""
     try:
         from .guard import refusal as shared
     except ImportError:  # S0.11 has not landed yet
-        shared = None
-    if shared is not None:
-        return shared(True)
-    from django.conf import settings
-    from django.db import connection
-    live = getattr(settings, 'LIVE_DATABASE_NAME', 'partsmall')
-    folder = Path(getattr(settings, 'MAINTENANCE_DIR', None) or main_checkout() / '.maintenance')
-    if connection.vendor != 'postgresql' or connection.settings_dict['NAME'] != live or (folder / 'freeze').exists():
+        from django.conf import settings
+        from django.db import connection
+        live = getattr(settings, 'LIVE_DATABASE_NAME', 'partsmall')
+        if connection.vendor == 'postgresql' and connection.settings_dict['NAME'] == live:
+            return (f'Base de datos en vivo ({live}) sin la seguridad de operaciones de S0.11 (mall.refactor.guard): sin ella el '
+                    'congelamiento del catálogo no detiene las pantallas ni los trabajadores. No se escribe nada; integra S0.11 primero.')
         return None
-    return (f'Base de datos en vivo ({live}) sin el congelamiento del catálogo: no se escribe nada. Congela primero '
-            f'(mkdir -p {folder} && echo catalog > {folder / "freeze"}), espera a que MatchingQueue.lease y ApiagSync.lease estén '
-            'vacíos y vuelve a ejecutar; quita el archivo al terminar.')
+    return shared(True)
 
 
 def manifest_lines():
