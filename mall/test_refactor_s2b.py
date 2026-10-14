@@ -16,8 +16,8 @@ from .matching_models import MatchingCase, SupplierCodeMapping
 from .models import Part, Reference, ReferenceSource
 from .oem_reference_models import PartOEMLink
 from .refactor import s2b_main_refs
-from .test_factories import (Fresh, make_legacy_number, make_line, make_reference, make_supplier, make_user, make_variant,
-                             run_migration_function, unhook_variants)
+from .test_factories import (Fresh, before_s4_tighten, make_legacy_number, make_line, make_reference, make_supplier, make_user,
+                             make_variant, run_migration_function, unhook_variants)
 from .test_main_references import broken_invariants
 
 TIGHTEN = {'mall_part': ('line_oem_iff_tipo',), 'mall_partcode': ('reference_one_main_per_line', 'reference_main_not_retired'),
@@ -51,6 +51,7 @@ class BackfillTests(Fresh, TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         drop_tighten_constraints()
+        before_s4_tighten()  # S2b's backfill runs before S4: its links hang from the OEM table (reference_id)
         tightened = patch.object(s2b_main_refs, 'tightened', return_value=False)
         tightened.start()
         self.addCleanup(tightened.stop)

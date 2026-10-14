@@ -123,6 +123,21 @@ def legacy_mirror(ref):
     return number
 
 
+S4_TIGHTEN = {'mall_oemcrossreference': 'cross_reference_unique', 'mall_oemcrossreferenceretired': 'cross_reference_retired_unique',
+              'mall_partoemlink': 'part_link_unique'}
+
+
+def before_s4_tighten():
+    """0080's NOT NULL ref_id and keys on ref_id dropped inside the test's transaction (they come back when it rolls back): the state
+    S4's backfill, and the tools that ran before it, write the aftermarket codes, tombstones and links in (reference_id only)."""
+    with connection.cursor() as cursor:
+        cursor.execute('SET CONSTRAINTS ALL IMMEDIATE')
+        for table, constraint in S4_TIGHTEN.items():
+            cursor.execute(f'ALTER TABLE {table} ALTER COLUMN ref_id DROP NOT NULL')
+            if constraint in connection.introspection.get_constraints(cursor, table):
+                cursor.execute(f'ALTER TABLE {table} DROP CONSTRAINT {constraint}')
+
+
 class Fresh:
     """Drops the cached code suffix table around each test, so one test's suffix edits never reach the next."""
     def setUp(self):

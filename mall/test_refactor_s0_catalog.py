@@ -15,7 +15,7 @@ from django.test import TestCase, override_settings
 
 from .models import Part, PartCode
 from . import references
-from .test_factories import legacy_mirror, make_legacy_number
+from .test_factories import before_s4_tighten, legacy_mirror, make_legacy_number
 from .oem_reference_models import OEMCrossReference, OEMCrossReferenceRetired, OEMReference, OEMReferenceSource, PartOEMLink
 from .refactor import s0_normalize_numbers as s0n, s0_own_codes
 from .supplier_catalog_import import canonical_number, run as import_catalog
@@ -32,6 +32,10 @@ def write(data):
 
 class OwnCodeAuditTests(Fresh, TestCase):
     """The audit reads the OEM table as the catalog import filed it before S4."""
+
+    def setUp(self):
+        super().setUp()
+        before_s4_tighten()
 
     def legacy(self, manufacturer, code, *own):
         ref = make_legacy_number(manufacturer, code, source_kind='aftermarket_catalog', citation='ASVA CV (2016)')
@@ -92,6 +96,7 @@ class TwinNumberTests(Fresh, TestCase):
 
     def setUp(self):
         super().setUp()
+        before_s4_tighten()  # the OEM table before S4: its codes and links hang from reference_id
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.pump = Part.objects.create(sku='16100-59145-GMB', description='BOMBA AGUA DAI TERIOS')

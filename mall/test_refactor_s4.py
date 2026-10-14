@@ -18,7 +18,7 @@ from .models import Part, Reference, ReferenceSource
 from .oem_finder import OEMFinder, load_snapshot
 from .oem_reference_models import OEMCrossReference, OEMCrossReferenceRetired, OEMReference, PartOEMLink
 from .refactor import s4_library
-from .test_factories import Fresh, make_legacy_number, make_line, make_reference, make_user
+from .test_factories import Fresh, before_s4_tighten, make_legacy_number, make_line, make_reference, make_user
 
 
 class BackfillTests(Fresh, TestCase):
@@ -32,6 +32,7 @@ class BackfillTests(Fresh, TestCase):
         patcher = patch.dict(os.environ, {'REFACTOR_OUTPUT': self.output.name})
         patcher.start()
         self.addCleanup(patcher.stop)
+        before_s4_tighten()  # the backfill runs between 0079 and 0080
         toyota = Brand.objects.create(nombre='TOYOTA', tipo='vehiculo')
         Brand.objects.create(nombre='LEXUS', tipo='vehiculo', familia=toyota)
         # Carriers: an existing (clave, maker) alterno, a brandless main, a familia brand, an sku_name link, two lines.
@@ -175,3 +176,34 @@ class BackfillTests(Fresh, TestCase):
             code, out = self.run_cli('--apply', '--user', 's4-cli')
         self.assertEqual(code, 1)
         self.assertIn('Faltan S2b', out)
+
+
+class TightenTests(TestCase):
+    """0080_library_lines_checks catches up what the code before S4 wrote (reference_id only) and stops for what needs a person."""
+
+    def setUp(self):
+        before_s4_tighten()  # the state 0080 runs in
+
+    def catch_up(self):
+        from .test_factories import run_migration_function
+        return run_migration_function('0080_library_lines_checks', 'catch_up')
+
+    def test_rows_old_code_wrote_are_re_pointed_and_one_key_keeps_one_row(self):
+        number = make_legacy_number('TOYOTA', '1610079445', printed_forms=['16100-79445'], source_kind='aftermarket_catalog', citation='GMB')
+        ref = references.add_library_number('TOYOTA', '16100-79445', source_kind='aftermarket_catalog', citation='GMB')[0]
+        Reference.all_objects.filter(pk=ref.pk).update(uid=number.pk)  # as the backfill made it
+        old = OEMCrossReference.objects.create(legacy_reference=number, brand='AISIN', code='WPT-1', citations=['GMB · pág. 1'])
+        new = OEMCrossReference.objects.create(reference=ref, brand='AISIN', code='WPT 1', citations=['ATE · pág. 2'])
+        line = make_line('BOMBA-1')
+        link = PartOEMLink.objects.create(part=line, legacy_reference=number, source='catalog', citations=['GMB'])
+        self.catch_up()
+        old.refresh_from_db()
+        link.refresh_from_db()
+        self.assertEqual((old.reference_id, old.citations, link.reference_id), (ref.pk, ['GMB · pág. 1', 'ATE · pág. 2'], ref.pk))
+        self.assertFalse(OEMCrossReference.objects.filter(pk=new.pk).exists())  # the older row keeps the key, the citations add up
+        self.catch_up()  # idempotent
+
+    def test_a_number_without_its_reference_stops_the_migration(self):
+        make_legacy_number('KIA', '517502S000', source_kind='manual', citation='M')
+        with self.assertRaisesMessage(RuntimeError, '1 números de la tabla OEM sin su referencia'):
+            self.catch_up()

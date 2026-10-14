@@ -545,7 +545,8 @@ class BrandSeedTests(TestCase):
 
     def setUp(self):
         from .oem_reference_models import OEMCrossReference
-        from .test_factories import make_legacy_number as make_library_number  # S1's seed read the OEM table before S4
+        from .test_factories import before_s4_tighten, make_legacy_number as make_library_number  # S1's seed read the OEM table before S4
+        before_s4_tighten()
         for make, code in (('TOYOTA', '90915-YZZE1'), ('LEXUS', '90915-YZZE2'), ('KAIYI', 'KY-0001'), ('CHERY', 'CH-0001'), ('NISSAN', '15208-65F0E')):
             make_library_number(make, code)
         OEMCrossReference.objects.create(legacy_reference=make_library_number('TOYOTA', '04465-0K290'), brand='LEX', code='LX-1', number='LX1')

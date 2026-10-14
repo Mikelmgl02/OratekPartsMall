@@ -27,8 +27,8 @@ from .oem_reference_models import PartOEMLink
 from .refactor import s2b_main_refs
 from .supplier_import_models import SupplierInventoryImportJob
 from .technical_models import PartType, PartSpecification, TechnicalField, TechnicalTemplate
-from .test_factories import (Fresh, make_legacy_number, make_library_number, make_line, make_reference, make_supplier, make_user,
-                             make_variant, unhook_variants)
+from .test_factories import (Fresh, before_s4_tighten, make_legacy_number, make_library_number, make_line, make_reference, make_supplier,
+                             make_user, make_variant, unhook_variants)
 from .test_main_references import broken_invariants
 
 
@@ -324,6 +324,7 @@ class CompactDuplicateTests(Fresh, TestCase):
         patcher = patch.dict(os.environ, {'REFACTOR_OUTPUT': self.output.name})
         patcher.start()
         self.addCleanup(patcher.stop)
+        before_s4_tighten()  # S2b's backfill runs before S4: its links hang from the OEM table (reference_id)
         tightened = patch.object(s2b_main_refs, 'tightened', return_value=False)
         tightened.start()
         self.addCleanup(tightened.stop)
