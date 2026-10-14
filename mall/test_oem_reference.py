@@ -21,8 +21,13 @@ URL = '/api/v1/management/oem-references/'
 ALGO = 'algo:oem-finder:v2:current:2'
 
 
-def oem(part, code, brand='TOYOTA', source=ALGO, ref_type='oem'):
-    return PartCode.objects.create(part=part, code=code, brand=brand, ref_type=ref_type, reference_source=source)
+# From S2a one OEM number lives on one line (0074's reference_one_live_line): a second line's alterno of it is in dispute, which the
+# mirror still files under the number.
+SHARED = {'estado': 'disputa', 'dispute_note': 'OTRO SKU TIENE ESTE NÚMERO'}
+
+
+def oem(part, code, brand='TOYOTA', source=ALGO, ref_type='oem', **fields):
+    return PartCode.objects.create(part=part, code=code, brand=brand, ref_type=ref_type, reference_source=source, **fields)
 
 
 def state():
@@ -215,7 +220,7 @@ class SyncTests(Fresh, TestCase):
         self.assertEqual((sister.estado, sister.oem_reference), ('retirada', self.ref()))  # a retired alterno keeps its number, as history
 
     def test_a_source_backed_by_two_alternos_stays_until_the_last_one_goes(self):
-        first, second = oem(self.part, '17801-30070'), oem(self.other, '1780130070')
+        first, second = oem(self.part, '17801-30070'), oem(self.other, '1780130070', **SHARED)
         ref = self.ref()
         source = ref.sources.get()
         self.assertEqual(([e['id'] for e in source.detail['part_codes']], ref.printed_forms), ([first.pk, second.pk], ['17801-30070']))
@@ -368,7 +373,7 @@ class SeedTests(Fresh, TestCase):
             ('17801-30070', 'FILTRO AIRE TOY HILUX'), ('0110-17801-FEB', 'FILTRO AIRE TOY'), ('28113-F2000', 'FILTRO AIRE HYU ELANTRA'),
             ('MR-968365', 'BASE MIT MONTERO'))]
         oem(parts[0], '17801-30070')
-        oem(parts[1], '1780130070')
+        oem(parts[1], '1780130070', **SHARED)
         oem(parts[2], '28113-F2000', 'HYUNDAI', 'algo:oem-finder:v2:current:3')
         oem(parts[3], 'MR-968365', 'MITSUBISHI', 'https://parts.example/MR968365')
         oem(parts[3], 'MR968365', '', '')  # brandless: not a fact

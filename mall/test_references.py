@@ -8,6 +8,7 @@ import tempfile
 from unittest.mock import patch
 
 from django.db import IntegrityError, connection, transaction
+from django.db.models import F
 from django.test import TestCase
 from rest_framework.test import APITestCase
 
@@ -19,7 +20,7 @@ from .models import PartCode, Reference, ReferenceDeleteRefused, ReferenceSource
 from .oem_reference_models import OEMReference, OEMReferenceSource
 from .refactor import s2a_references
 from .services import matching_part
-from .test_factories import make_client, make_line, make_reference, make_supplier, make_user, make_variant
+from .test_factories import make_client, make_line, make_reference, make_supplier, make_user, make_variant, run_migration_function
 
 ALGO = 'algo:oem-finder:v3:current:7'
 CATALOG = 'GMB Water Pump Catalog 2016 · pág. 551'
@@ -754,3 +755,65 @@ class BackfillTests(TestCase):
         self.assertIn('Claves que tienen dos líneas (1)', out)
         self.assertNotIn('se retira 13780-61J00-NP-', out)
 
+
+class TightenTests(TestCase):
+    """0074_reference_constraints: tipo repaired from ref_type, then one live Reference per key and the CHECKs."""
+    MIGRATION = '0074_reference_constraints'
+
+    def refused(self, write):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            write()
+
+    def test_one_live_reference_per_key_and_a_retired_or_disputed_one_holds_nothing(self):
+        a, b = make_line('TIGHT-A'), make_line('TIGHT-B')
+        held = make_reference(a, '17801-30070', brand='TOYOTA', tipo='oem')
+        self.refused(lambda: make_reference(b, '1780130070', brand='TOYOTA', tipo='oem'))  # the same clave, printed another way
+        self.refused(lambda: make_reference(a, '17801 30070', brand='TOYOTA'))  # on its own line too: one Reference per key
+        make_reference(b, '1780130070', brand='TOYOTA', estado='disputa', dispute_note='OTRO MODELO')
+        references.retire(held)
+        make_reference(b, '17801-30070', brand='TOYOTA', tipo='oem')  # the retired one keeps its printed form as history
+        self.assertEqual(Reference.all_objects.filter(code='17801-30070', brand='TOYOTA').count(), 2)
+        supplier = make_supplier('TIGHT PROVEEDOR')
+        make_reference(a, 'EC-01', tipo='interno', supplier=supplier)
+        self.refused(lambda: make_reference(b, 'EC-01', tipo='interno', supplier=supplier))  # NULLS NOT DISTINCT keeps brand/supplier keys
+
+    def test_the_checks_refuse_what_the_transition_does_not_allow(self):
+        line = make_line('TIGHT-C')
+        ref = make_reference(line, 'TIGHT-1', brand='GMB', tipo='aftermarket')
+        rows = Reference.all_objects.filter(pk=ref.pk)
+        self.refused(lambda: rows.update(ref_type='oem'))  # tipo and ref_type move together until S10
+        self.refused(lambda: rows.update(tipo='interno', ref_type='unknown'))  # an interno code names its supplier
+        self.refused(lambda: rows.update(supplier=make_supplier('TIGHT OTRO')))
+        self.refused(lambda: rows.update(estado='disputa'))  # a dispute says why
+        self.refused(lambda: rows.update(estado='perdida'))
+        self.refused(lambda: rows.update(code=''))
+        self.refused(lambda: rows.update(reemplazado_por=F('id')))
+        rows.update(estado='disputa', dispute_note='OTRA MEDIDA')
+        self.assertEqual(stored(ref), ('aftermarket', 'company', 'disputa'))
+
+    def test_the_repair_puts_tipo_in_step_and_stops_on_what_needs_a_person(self):
+        run_migration_function(self.MIGRATION, 'repair_references')  # nothing to repair
+        drop_tighten_constraints()
+        line = make_line('TIGHT-R')
+        oem = make_reference(line, 'TIGHT-OEM-1234', brand='TOYOTA', tipo='oem')
+        company = make_reference(line, 'TIGHT-2', brand='GMB', tipo='aftermarket')
+        interno = make_reference(line, 'TIGHT-3', tipo='interno', supplier=make_supplier('TIGHT INTERNO'))
+        Reference.all_objects.filter(pk__in=[oem.pk, company.pk]).update(tipo='otro')  # written by the code before S2a
+        Reference.all_objects.filter(pk=company.pk).update(reemplazado_por=F('id'))
+        for _ in range(2):  # idempotent
+            run_migration_function(self.MIGRATION, 'repair_references')
+        self.assertEqual([stored(ref)[:2] for ref in (oem, company, interno)], [('oem', 'oem'), ('aftermarket', 'company'), ('interno', 'unknown')])
+        self.assertIsNone(Reference.objects.get(pk=company.pk).reemplazado_por_id)
+        make_reference(make_line('TIGHT-R2'), 'TIGHTOEM1234', brand='TOYOTA', tipo='oem')
+        Reference.all_objects.filter(pk=company.pk).update(estado='disputa')
+        with self.assertRaisesMessage(RuntimeError, '1 referencias en disputa sin motivo; 1 claves (clave, marca, proveedor) que tienen dos '
+                                                    'referencias vivas (TIGHTOEM1234 TOYOTA)'):
+            run_migration_function(self.MIGRATION, 'repair_references')
+
+    def test_the_reverse_refuses_while_one_printed_code_is_held_twice(self):
+        run_migration_function(self.MIGRATION, 'refuse_printed_duplicates')
+        first = make_reference(make_line('TIGHT-D1'), 'TIGHT-DUP', brand='GMB')
+        references.retire(first)
+        make_reference(make_line('TIGHT-D2'), 'TIGHT-DUP', brand='GMB')
+        with self.assertRaisesMessage(RuntimeError, '1 marcas y códigos están dos veces (GMB TIGHT-DUP)'):
+            run_migration_function(self.MIGRATION, 'refuse_printed_duplicates')

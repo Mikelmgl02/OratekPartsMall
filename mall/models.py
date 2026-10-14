@@ -286,7 +286,25 @@ class Reference(models.Model):
         db_table = 'mall_partcode'
         verbose_name = 'referencia'
         verbose_name_plural = 'referencias'
-        constraints = [models.UniqueConstraint(fields=["brand", "code"], name="unique_brand_code")]  # until 0074
+        # From 0074 (S2a's tighten). The brandless reservation across lines (a brandless code reserves it for every brand) is
+        # mall.references.validate's, under the clave's advisory lock.
+        constraints = [
+            # One exclusive Reference per key: a code retired or disputed holds nothing (plan §2, rule 8).
+            models.UniqueConstraint(fields=['clave', 'brand', 'supplier'], condition=Q(estado__in=['verificado', 'declarado', 'inferido']),
+                                    nulls_distinct=False, name='reference_one_live_line'),
+            models.CheckConstraint(condition=Q(tipo__in=['oem', 'aftermarket', 'interno', 'otro']), name='reference_valid_tipo'),
+            models.CheckConstraint(condition=Q(estado__in=['verificado', 'declarado', 'inferido', 'disputa', 'retirada']),
+                                   name='reference_valid_estado'),
+            # Transition until S10, when ref_type goes.
+            models.CheckConstraint(condition=Q(tipo='oem', ref_type='oem') | Q(tipo='aftermarket', ref_type='company')
+                                   | Q(tipo__in=['interno', 'otro'], ref_type='unknown'), name='reference_tipo_matches_ref_type'),
+            models.CheckConstraint(condition=Q(tipo='interno', supplier__isnull=False) | (~Q(tipo='interno') & Q(supplier__isnull=True)),
+                                   name='reference_interno_has_supplier'),
+            models.CheckConstraint(condition=~Q(code=''), name='reference_code_set'),
+            models.CheckConstraint(condition=~Q(estado='disputa') | ~Q(dispute_note=''), name='reference_dispute_note'),
+            models.CheckConstraint(condition=~Q(reemplazado_por=F('id')), name='reference_not_own_replacement'),
+        ]
+        indexes = [models.Index(fields=['clave'], name='reference_clave_idx')]
 
     def __str__(self):
         return f'{self.brand} {self.code}'.strip()
