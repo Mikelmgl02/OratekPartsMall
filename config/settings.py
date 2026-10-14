@@ -237,6 +237,7 @@ GEMINI_GROUNDING_USD_PER_CALL = env_usd('GEMINI_GROUNDING_USD_PER_CALL', '0.035'
 # Every quotation is published from the supplier-reviewed server draft (draft_version). 0 re-opens the draftless legacy API path.
 QUOTES_REQUIRE_DRAFT = os.getenv('QUOTES_REQUIRE_DRAFT', '1').lower() in ('true', '1', 'yes')
 # OEM finder dry run as a matching worker stage after catalog grouping (off by default; python -m mall.oem_finder runs it by hand).
+# Keep it off: its review queue has no screen since the owner retired OEM linking on 2026-10-14.
 OEM_FINDER_AUTO_STAGE = os.getenv('OEM_FINDER_AUTO_STAGE', '0').lower() in ('true', '1', 'yes')
 # 1 makes every matching pass mark OEM the SKUs whose code is a declared or verified number of the OEM list (mall.catalog_identity).
 # Off by default: the owner retired OEM linking on 2026-10-14 (a SKU's OEM numbers become references on its line).

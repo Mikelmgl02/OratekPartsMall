@@ -182,7 +182,7 @@ def reconcile_identities(actor=None):
 
 # --- a SKU whose code is in the OEM list is OEM -------------------------------------------------------------------------------------
 
-EXACT_MIN = 8  # a shorter number can coincide with an unrelated code: those SKUs are marked by a person (Marcar como OEM)
+EXACT_MIN = 8  # a shorter number can coincide with an unrelated code: those SKUs are marked by a person (Editar SKU's OEM box)
 EXACT_SOURCE = 'Su código está en la lista OEM'
 COUNTING = ('declared', 'verified')  # an item only the OEM finder inferred, or one in dispute, marks nothing on its own
 

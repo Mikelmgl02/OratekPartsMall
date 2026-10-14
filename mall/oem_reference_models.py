@@ -191,7 +191,8 @@ class OEMCrossReferenceRetired(models.Model):
 class PartOEMLink(models.Model):
     """A catalog SKU's OEM number besides its OEM alternos: the number its own code names (16100-79445-NPW -> TOYOTA 1610079445) or
     one a supplier catalog printed for the item matched to it. The SKU then shows the number's aftermarket codes. A link never makes
-    the number the SKU's MAIN: only the OEM finder and Revisión OEM change MAINs."""
+    the number the SKU's MAIN: only a verified OEM alterno does (prefer_oem: Editar SKU, Agrupar SKU, the matching pass, the OEM
+    finder's commands)."""
     part = models.ForeignKey('mall.Part', on_delete=models.CASCADE, related_name='oem_links', verbose_name='repuesto del catálogo')
     reference = models.ForeignKey(OEMReference, on_delete=models.CASCADE, related_name='part_links', verbose_name='referencia OEM')
     source = models.CharField(max_length=12, choices=LINK_SOURCES, verbose_name='origen')

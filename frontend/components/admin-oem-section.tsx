@@ -26,7 +26,7 @@ export default function AdminOEMSection() {
     window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
   }
   return <section className="inventory-panel admin-panel suffix-modal oem-section" aria-label="OEM">
-    <div className="admin-toolbar"><div><h2>OEM</h2><p>Biblioteca de números OEM y sufijos del buscador OEM.</p></div></div>
+    <div className="admin-toolbar"><div><h2>OEM</h2><p>Biblioteca de números OEM y sufijos de códigos.</p></div></div>
     <div className="admin-inventory-tabs oem-section-tabs" role="group" aria-label="Herramientas OEM">{tabs.map(({ key, label, Icon }) =>
       <button key={key} className={tab === key ? 'selected' : ''} aria-pressed={tab === key} onClick={() => open(key)}><Icon size={14} aria-hidden="true"/>{label}</button>)}</div>
     {tab === 'library' ? <OEMLibraryPanel/> : <CatalogSuffixesPanel/>}

@@ -116,7 +116,8 @@ class CatalogMarkOEMTests(APITestCase):
 
 
 class ExactMatchTests(APITestCase):
-    """A SKU whose code is a declared or verified number of the OEM list is OEM, on every matching pass."""
+    """A SKU whose code is a declared or verified number of the OEM list is OEM: when Biblioteca OEM adds or clears the number, and on
+    a matching pass with OEM_EXACT_MARK=1 (off by default since the owner retired OEM linking on 2026-10-14)."""
 
     def setUp(self):
         self.root = User.objects.create_superuser('exact-root', 'exact-root@example.invalid', 'Example938!')

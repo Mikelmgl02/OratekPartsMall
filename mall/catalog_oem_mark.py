@@ -1,4 +1,5 @@
-"""Marcar como OEM and Crear OEM desde SKU, from the Inventario grid.
+"""Marcar como OEM and Crear OEM desde SKU: endpoints without a screen since the owner retired OEM linking on 2026-10-14 (the
+Inventario grid's right click offered them).
 
 A SKU is OEM when its code is the OEM number: an exact match to an item of the OEM list (Biblioteca OEM), the catalog's source table
 of OEM numbers. The two actions are different things:
@@ -64,7 +65,8 @@ def listed_refusal(part):
 
 def unlisted_refusal(part):
     """Why a SKU cannot become OEM by itself: its code is not in the OEM list. '' when it is."""
-    return '' if listed(part) else f'{compact(part.sku)} no está en la lista OEM: usa «Crear OEM desde SKU» o «Marcar como OEM».'
+    return '' if listed(part) else (f'{compact(part.sku)} no está en la lista OEM: agrega el número en la Biblioteca OEM o guárdalo como '
+                                    'alterno OEM del SKU, con su marca y fuente.')
 
 
 def description_makes(part):
