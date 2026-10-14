@@ -193,7 +193,9 @@ class BrandlessReservationTests(TestCase):
 
     def test_a_disputed_code_holds_no_key(self):
         references.add(self.a, 'EC-01', '')
-        ref, added = references.add(self.b, 'EC-01', 'TOYOTA', estado='disputa')
+        with self.assertRaises(references.ReferenceConflict):
+            references.build(self.b, 'EC-01', 'TOYOTA', estado='disputa')  # a dispute says why
+        ref, added = references.add(self.b, 'EC-01', 'TOYOTA', estado='disputa', dispute_note='Puede ser de otra medida')
         self.assertEqual((added, ref.estado), (True, 'disputa'))
 
     def test_the_same_key_on_its_line_is_found_and_a_new_spelling_kept(self):
@@ -530,3 +532,4 @@ class BackfillTests(TestCase):
         code, out = self.run_cli('--dry-run')
         self.assertIn('Claves que tienen dos líneas (1)', out)
         self.assertNotIn('se retira 13780-61J00-NP-', out)
+

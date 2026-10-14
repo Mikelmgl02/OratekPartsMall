@@ -188,10 +188,10 @@ def default_estado(source):
 
 
 def build(line, code, brand='', *, tipo=None, ref_type=None, estado=None, supplier=None, source='', actor=None, detail=None, notes='',
-          printed_forms=None):
+          printed_forms=None, dispute_note=''):
     """An unsaved Reference of `line` (a Part or its id) with every column the transition needs: code and brand normalized, tipo
-    (or the one ref_type names) with ref_type in step, estado, the supplier of an interno code, created_by. Bulk paths save it
-    with bulk_create (after checking their keys); add() saves one."""
+    (or the one ref_type names) with ref_type in step, estado (disputa with its note), the supplier of an interno code, created_by.
+    Bulk paths save it with bulk_create (after checking their keys); add() saves one."""
     Reference, _ = _models()
     tipo = tipo or tipo_of(ref_type)
     if tipo not in REF_TYPE_OF:
@@ -201,10 +201,13 @@ def build(line, code, brand='', *, tipo=None, ref_type=None, estado=None, suppli
         raise ReferenceConflict(f'Una referencia nueva no puede estar {estado}.')
     if (tipo == 'interno') != (supplier is not None):
         raise ReferenceConflict('Un código interno lleva su proveedor, y solo un código interno lo lleva.')
+    if estado == 'disputa' and not (dispute_note or '').strip():
+        raise ReferenceConflict('Una referencia en disputa lleva el motivo de la disputa.')
     fields = {'part' if hasattr(line, 'pk') else 'part_id': line, 'supplier' if hasattr(supplier, 'pk') else 'supplier_id': supplier}
     return Reference(code=code_key(code), brand=brand_key(brand), tipo=tipo, ref_type=REF_TYPE_OF[tipo], estado=estado,
                      reference_source=(source or '').strip()[:500], created_by=actor if getattr(actor, 'pk', None) else None,
-                     detail=dict(detail or {}), notes=notes or '', printed_forms=list(printed_forms or []), **fields)
+                     detail=dict(detail or {}), notes=notes or '', printed_forms=list(printed_forms or []),
+                     dispute_note=(dispute_note or '').strip(), **fields)
 
 
 def bulk_create(references, *, batch_size=500, actor=None):
@@ -227,14 +230,15 @@ def add_spelling(ref, code):
         ref.save(update_fields=['printed_forms'])
 
 
-def add(line, code, brand='', *, tipo=None, ref_type=None, estado=None, supplier=None, source='', actor=None, detail=None, notes=''):
+def add(line, code, brand='', *, tipo=None, ref_type=None, estado=None, supplier=None, source='', actor=None, detail=None, notes='',
+        dispute_note=''):
     """(reference, added) for a live (code, brand) on the line. When the line already holds that key (clave, brand, supplier) the
     existing Reference is returned unchanged (a new spelling joins its printed_forms; added False); one retired from this line comes
     back with the tipo, estado and source given (added True); otherwise a new one is created after validate(). The caller locks the
     line (Account → Part) when it needs to."""
     Reference, _ = _models()
     ref = build(line, code, brand, tipo=tipo, ref_type=ref_type, estado=estado, supplier=supplier, source=source, actor=actor,
-                detail=detail, notes=notes)
+                detail=detail, notes=notes, dispute_note=dispute_note)
     if not ref.code:
         raise ReferenceConflict('Ingresa el código de la referencia.')
     if len(ref.code) > 120:
@@ -276,12 +280,13 @@ def revive(row, wanted, actor, extra=None):
         forms = [form for form in [row.code, *row.printed_forms] if form != wanted.code]
         row.code, row.printed_forms = wanted.code, forms[:MAX_PRINTED]
     row.tipo, row.ref_type, row.estado, row.reemplazado_por = wanted.tipo, wanted.ref_type, wanted.estado, None
+    row.dispute_note = wanted.dispute_note
     if wanted.reference_source:
         row.reference_source = wanted.reference_source
     returned = {'by': getattr(actor, 'username', ''), 'at': timezone.now().isoformat(), **(extra or {})}
     row.detail = {**(row.detail or {}), 'returned': returned}
-    row.save(update_fields=['part', 'code', 'printed_forms', 'tipo', 'ref_type', 'estado', 'reemplazado_por', 'reference_source',
-                            'detail'])
+    row.save(update_fields=['part', 'code', 'printed_forms', 'tipo', 'ref_type', 'estado', 'dispute_note', 'reemplazado_por',
+                            'reference_source', 'detail'])
     if row.reference_source:
         cite(row, row.reference_source, actor)
     return row
