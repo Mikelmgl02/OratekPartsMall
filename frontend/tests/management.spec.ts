@@ -472,7 +472,7 @@ test('one brand-neutral SKU shows all equivalent supplier items and keeps basket
     }
     await clientPage.reload();
     await expect(clientPage.getByRole('main', { name: 'Cesta de solicitudes', exact: true }).getByText(`${codes[1]} · ${brands[1]}`, { exact: true })).toBeVisible();
-    await clientPage.getByRole('button', { name: 'Volver al catálogo', exact: true }).click();
+    await clientPage.getByRole('button', { name: 'Seguir buscando repuestos', exact: true }).click();
     await clientPage.setViewportSize({ width: 390, height: 844 });
     await clientPage.getByLabel('Buscar repuestos, marcas o códigos', { exact: true }).fill(sku);
     await clientPage.getByLabel('Buscar repuestos, marcas o códigos', { exact: true }).press('Enter');

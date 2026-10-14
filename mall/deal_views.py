@@ -496,3 +496,30 @@ class DealMessages(APIView):
     def post(self, request, account_id, pk):
         account, row = participant(request.user, account_id, pk, lock=True)
         return chat_post(request, account, row.thread, row)
+
+
+PURCHASE_ACTIVITY_PAGE = 30
+
+
+class PurchaseActivity(APIView):
+    @extend_schema(responses=OpenApiTypes.OBJECT,
+                   description='El historial de tus compras para esta cuenta, lo más reciente primero, 30 a la vez (before: el id del último que ya '
+                   'tienes): lo que pasó en cada orden (cotizaciones, ajustes, acuerdos, avance, faltantes, cancelaciones), con quién lo hizo. '
+                   'Son los mismos eventos que muestra cada orden.')
+    def get(self, request, account_id):
+        account = account_for(request.user, account_id, 'client')
+        rows = DealEvent.objects.filter(order__client=account).select_related('order', 'account', 'actor')
+        before = request.query_params.get('before')
+        if before:
+            if not before.isdigit():
+                raise ValidationError({'before': ['Usa el id de un evento.']})
+            rows = rows.filter(id__lt=int(before))
+        page = list(rows.order_by('-id')[:PURCHASE_ACTIVITY_PAGE + 1])
+        return Response({'results': [{
+            'id': event.pk, 'kind': event.kind, 'description': event.description, 'created_at': iso(event.created_at),
+            'order': {'id': str(event.order_id), 'reference': event.order.reference, 'status': event.order.status},
+            'supplier_name': event.order.supplier_name,
+            # An administrator's decision acts for no account.
+            'account_name': event.account.name if event.account else 'MOTIONPARTES',
+            'actor_name': (event.actor.get_full_name() or event.actor.username) if event.account else 'MOTIONPARTES',
+        } for event in page[:PURCHASE_ACTIVITY_PAGE]], 'has_more': len(page) > PURCHASE_ACTIVITY_PAGE})

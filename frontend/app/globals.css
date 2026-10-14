@@ -849,6 +849,12 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .basket-page { background:#f2f4ef; min-height:calc(100dvh - 180px); padding:28px 0 62px; }
 .basket-page-container { min-width:0; }
 .basket-page:focus { outline:none; }  /* focused on open for keyboards and screen readers, without a ring around the page */
+/* Actividad (client-activity.tsx): the cesta's and the orders' ledgers. */
+.client-activity-views button { display:inline-flex; align-items:center; gap:6px; }
+.client-activity-move { font-weight:600; }
+.client-activity-move.removed { color:#a1442f; } .client-activity-move.added, .client-activity-move.moved_in { color:#44652d; } .client-activity-move.sent { color:#3557b7; }
+.client-activity-order { gap:4px; padding:0; font-weight:700; }
+.client-activity-more { margin-top:12px; }
 /* The cesta's items, one grid per supplier (basket-grid.tsx). */
 .basket-grid { margin:0 0 4px; }
 .basket-grid .ag-cell { display:flex; align-items:center; }

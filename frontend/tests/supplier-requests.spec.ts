@@ -467,7 +467,7 @@ test('reselecting a remapped supplier item recovers a stale submission with fres
   const basket = page.getByRole('main', { name: 'Cesta de solicitudes', exact: true });
   await basket.getByRole('button', { name: 'Enviar solicitud', exact: true }).click();
   await expect(basket.getByRole('alert')).toContainText('Selecciónalo otra vez en el catálogo.');
-  await basket.getByRole('button', { name: 'Volver al catálogo', exact: true }).click();
+  await basket.getByRole('button', { name: 'Seguir buscando repuestos', exact: true }).click();
   await page.getByRole('button', { name: 'Ver DISCO ACTUALIZADO', exact: true }).click();
   const dialog = page.getByRole('dialog');
   await dialog.getByRole('button', { name: `Agregar CODIGO-ACTUALIZADO de ${supplierAccounts[0].name} a la cesta`, exact: true }).click();
@@ -547,7 +547,7 @@ test('an account that both buys and sells never orders from itself: its own item
   await expect(basket.getByRole('region', { name: 'Solicitud para REPUESTOS CENTRAL', exact: true })).toHaveCount(0);
   expect(cesta.lines[supplierAccount].map(line => line.offer.selected_item!.id)).toEqual([itemC]);
   await expect(basket.getByRole('button', { name: 'Enviar solicitud', exact: true })).toBeEnabled();
-  await basket.getByRole('button', { name: 'Volver al catálogo', exact: true }).click();
+  await basket.getByRole('button', { name: 'Seguir buscando repuestos', exact: true }).click();
   await page.getByRole('button', { name: 'Ver DISCO DE FRENO', exact: true }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('heading', { name: 'REPUESTOS CENTRALTu cuenta', exact: true })).toBeVisible();

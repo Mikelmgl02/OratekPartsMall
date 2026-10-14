@@ -110,7 +110,7 @@ test('full-page basket keeps equivalent supplier items separate, edits quantitie
   await expectSummary(page, 2, 2, 5);
   await expect(item(page, 'A-100', supplierA.supplier_name).getByLabel('Cantidad de A-100', { exact: true })).toHaveValue('3');
   await expect(item(page, 'A-100', supplierB.supplier_name).getByLabel('Cantidad de A-100', { exact: true })).toHaveValue('2');
-  await basket(page).getByRole('button', { name: 'Volver al catálogo', exact: true }).click();
+  await basket(page).getByRole('button', { name: 'Seguir buscando repuestos', exact: true }).click();
   await expect(basket(page)).toHaveCount(0);
   await expect(search).toBeFocused();
   expect(new URL(page.url()).searchParams.has('vista')).toBe(false);
@@ -275,7 +275,17 @@ test('signed in, the cesta lives on the server: what WhatsApp or another device 
   await expect(basket(page).getByRole('button', { name: 'Enviar solicitud', exact: true })).toBeEnabled();
   await expect.poll(() => cesta.lines[accounts[0].id].map(line => line.offer.selected_item!.id)).toEqual(['server-item-a']);
   expect(cesta.changes.at(-1)).toEqual({ account: accounts[0].id, changes: [{ supplier_item_id: 'server-item-b', quantity: 0, mode: 'set' }] });
-  const activity = basket(page).getByRole('region', { name: 'Actividad de tu cesta', exact: true });  // the cesta's ledger, newest first
-  await expect(activity.getByRole('listitem')).toHaveText([/Quitaste 1 × CAMBIADO · DISTRIBUIDORA MOTOR/, /Agregaste 2 × POR-WHATSAPP · REPUESTOS CENTRALWhatsApp/]);
+  // The cesta's ledger lives in the Actividad tab, newest first.
+  await basket(page).getByRole('navigation', { name: 'Tus solicitudes', exact: true }).getByRole('button', { name: 'Actividad', exact: true }).click();
+  const activity = page.getByRole('main', { name: 'Actividad', exact: true }).getByRole('region', { name: 'Actividad de cesta', exact: true }).getByRole('region', { name: 'Actividad de cesta', exact: true });
+  const entries = activity.locator('.ag-center-cols-container .ag-row');
+  await expect(entries).toHaveCount(2);
+  await expect(entries.nth(0)).toContainText('Quitado');
+  await expect(entries.nth(0)).toContainText('CAMBIADO');
+  await expect(entries.nth(0)).toContainText('DISTRIBUIDORA MOTOR');
+  await expect(entries.nth(1)).toContainText('Agregado');
+  await expect(entries.nth(1)).toContainText('POR-WHATSAPP');
+  await expect(entries.nth(1)).toContainText('WhatsApp');
+  expect(new URL(page.url()).searchParams.get('vista')).toBe('actividad');
   expect(writes).toEqual([]);
 });

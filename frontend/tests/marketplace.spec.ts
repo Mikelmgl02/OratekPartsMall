@@ -87,7 +87,7 @@ test('live sign-in, catalog, supplier update, and ledger', async ({ page }) => {
   await page.getByRole('button', { name: 'Cerrar ventana' }).click();
   await page.getByRole('button', { name: 'Abrir cesta, 1 artículo' }).click();
   await expect(page.getByRole('main', { name: 'Cesta de solicitudes', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Volver al catálogo', exact: true }).click();
+  await page.getByRole('button', { name: 'Seguir buscando repuestos', exact: true }).click();
   await page.getByRole('button', { name: 'Cuenta y listas', exact: true }).click();
   await page.getByRole('button', { name: 'Cerrar sesión', exact: true }).click();
   await expect(page.getByText('Catálogo de ejemplo', { exact: true })).toBeVisible();

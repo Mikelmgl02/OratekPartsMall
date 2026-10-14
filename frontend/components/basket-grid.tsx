@@ -8,15 +8,23 @@ import { CatalogPhoto } from './part-image';
 import type { BasketLine } from '@/lib/types';
 import { visibleReferences } from '@/lib/reference-label';
 
-// One supplier's cesta items as a grid (basket.tsx): photo, the article (its code, brand and where it came from), its description with any
+// One supplier's cesta items as a grid (basket.tsx), by grupo, subgrupo and description: photo, grupo, the article (its code, brand and where it came from), its description with any
 // warning (changed since it was added, or no longer available), the internal SKU, the quantity to ask for and Eliminar.
 type Context = { sending: boolean; setQuantity: (key: string, quantity: number) => void; remove: (key: string) => void };
 type Cell = CustomCellRendererProps<BasketLine, unknown, Context>;
 export const lineName = (line: BasketLine) => line.offer.selected_item?.codigo || line.part.name || line.part.sku;
+const descriptionOf = (line: BasketLine) => line.offer.selected_item?.description || line.part.description || '';
+const groupOf = (line: BasketLine) => [line.part.category, line.part.subcategory].filter(Boolean).join(' › ');
+const collate = (a = '', b = '') => (a ? b ? a.localeCompare(b, 'es') : -1 : b ? 1 : 0);  // the ungrouped last
+// Like the order's document: by grupo, subgrupo and description (the headers can still sort it another way).
+export const sortedLines = (lines: BasketLine[]) => [...lines].sort((a, b) => collate(a.part.category, b.part.category) || collate(a.part.subcategory, b.part.subcategory)
+  || descriptionOf(a).localeCompare(descriptionOf(b), 'es') || lineName(a).localeCompare(lineName(b)));
 
 function QuantityControl({ name, quantity, onChange, disabled }: { name: string; quantity: number; onChange: (quantity: number) => void; disabled: boolean }) {
   const [value, setValue] = useState(String(quantity));
-  useEffect(() => { setValue(String(quantity)); }, [quantity]);
+  // The grid hands the saved quantity back a moment later: while someone is typing, what they typed stays.
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (document.activeElement !== input.current) setValue(String(quantity)); }, [quantity]);
   function finish() {
     const parsed = Number(value);
     const next = Number.isFinite(parsed) ? Math.max(1, Math.min(9999, Math.trunc(parsed))) : quantity;
@@ -25,7 +33,7 @@ function QuantityControl({ name, quantity, onChange, disabled }: { name: string;
   }
   return <div className="basket-page-quantity basket-grid-quantity"><div>
     <button type="button" aria-label={`Reducir cantidad de ${name}`} disabled={disabled || quantity <= 1} onClick={() => onChange(quantity - 1)}><Minus size={14}/></button>
-    <input type="number" min={1} max={9999} step={1} inputMode="numeric" autoComplete="off" disabled={disabled} aria-label={`Cantidad de ${name}`} value={value} onChange={event => {
+    <input ref={input} type="number" min={1} max={9999} step={1} inputMode="numeric" autoComplete="off" disabled={disabled} aria-label={`Cantidad de ${name}`} value={value} onChange={event => {
       const draft = event.target.value; setValue(draft);
       const next = Number(draft);
       if (draft && Number.isInteger(next) && next >= 1 && next <= 9999) onChange(next);
@@ -66,6 +74,7 @@ function RemoveCell({ data, context }: Cell) {
 
 const columns: ColDef<BasketLine>[] = [
   { colId: 'photo', headerName: '', width: 76, cellRenderer: PhotoCell, sortable: false, resizable: false, suppressHeaderMenuButton: true },
+  { colId: 'group', headerName: 'Grupo', width: 170, valueGetter: ({ data }) => data ? groupOf(data) || 'Sin grupo' : '', cellClass: 'admin-grid-text muted', tooltipValueGetter: ({ value }) => value },
   { colId: 'article', headerName: 'Artículo', flex: 1.1, minWidth: 116, cellRenderer: ArticleCell, valueGetter: ({ data }) => data ? lineName(data) : '' },
   { colId: 'description', headerName: 'Descripción', flex: 1.6, minWidth: 240, cellRenderer: DescriptionCell,
     valueGetter: ({ data }) => data ? data.offer.selected_item?.description || data.part.description || '' : '', tooltipValueGetter: ({ value }) => value },
@@ -77,14 +86,14 @@ const columns: ColDef<BasketLine>[] = [
 // On a phone (a grid under 640px) the item keeps its name, quantity and Eliminar; the photo, description and SKU make room.
 const fit = (grid: GridApi<BasketLine>, width: number) => {
   const wide = width >= 640;
-  grid.setColumnsVisible(['photo', 'description', 'sku'], wide);
+  grid.setColumnsVisible(['photo', 'group', 'description', 'sku'], wide);
   grid.setColumnWidths([{ key: 'quantity', newWidth: wide ? 160 : 118 }, { key: 'remove', newWidth: wide ? 124 : 96 }]);
 };
 export default function BasketGrid({ supplier, lines, sending, setQuantity, remove }: { supplier: string; lines: BasketLine[] } & Context) {
   // While the cesta is being sent its controls lock: the grid draws them again (its cells do not follow the context by themselves).
   const api = useRef<GridApi<BasketLine> | null>(null);
   useEffect(() => { api.current?.refreshCells({ force: true, columns: ['quantity', 'remove'] }); }, [sending]);
-  return <ClientGrid<BasketLine> label={`Artículos para ${supplier}`} rows={lines} columns={columns} rowId={line => line.key} rowHeight={72} maxRows={200}
+  return <ClientGrid<BasketLine> label={`Artículos para ${supplier}`} rows={sortedLines(lines)} columns={columns} rowId={line => line.key} rowHeight={72} maxRows={200}
     className="basket-grid" context={{ sending, setQuantity, remove }}
     gridProps={{ onGridReady: event => { api.current = event.api; }, onGridSizeChanged: event => fit(event.api, event.clientWidth), rowClassRules: { 'basket-grid-stale': ({ data }) => !!data && (data.available === false || !!data.changed) } }}/>;
 }

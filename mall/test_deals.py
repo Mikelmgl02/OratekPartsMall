@@ -1,4 +1,5 @@
 import uuid
+from unittest import mock
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from unittest import skipUnless
@@ -326,6 +327,35 @@ class DealWorkflowTests(APITestCase):
         self.assertFalse(earliest['has_earlier'])
         self.assertEqual(self.client.get(url, {'after': latest['cursor']}).data['results'], [])
         self.assertEqual(self.client.get(url, {'before': 3, 'after': 1}).status_code, 400)
+
+
+    def test_purchase_activity_lists_the_clients_order_events_newest_first_in_pages(self):
+        order = self.order()
+        self.review(order)
+        self.assertEqual(self.quote(order).status_code, 200)
+        self.client.force_authenticate(self.buyer)
+        url = f'/api/v1/accounts/{self.client_account.pk}/purchase-activity/'
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        events = list(order.events.order_by('-id'))
+        self.assertGreaterEqual(len(events), 1)
+        self.assertEqual([row['id'] for row in response.data['results']], [event.pk for event in events])
+        first = response.data['results'][0]
+        self.assertEqual(first['order'], {'id': str(order.pk), 'reference': order.reference, 'status': 'quoted'})
+        self.assertEqual((first['supplier_name'], first['kind'], first['description']), (order.supplier_name, events[0].kind, events[0].description))
+        self.assertFalse(response.data['has_more'])
+        # 30 at a time: before= the last id already shown.
+        with mock.patch('mall.deal_views.PURCHASE_ACTIVITY_PAGE', 1):
+            page = self.client.get(url).data
+            self.assertEqual(([row['id'] for row in page['results']], page['has_more']), ([events[0].pk], len(events) > 1))
+            if len(events) > 1:
+                self.assertEqual(self.client.get(url, {'before': events[0].pk}).data['results'][0]['id'], events[1].pk)
+        self.assertEqual(self.client.get(url, {'before': 'x'}).status_code, 400)
+        # Another client account sees none of it; a supplier account is not a buyer.
+        other = self.account('OTRO CLIENTE', 'client_business', self.buyer)
+        self.assertEqual(self.client.get(f'/api/v1/accounts/{other.pk}/purchase-activity/').data['results'], [])
+        self.client.force_authenticate(self.seller_a)
+        self.assertEqual(self.client.get(f'/api/v1/accounts/{self.supplier_a.pk}/purchase-activity/').status_code, 403)
 
 
 @skipUnless(connection.vendor == 'postgresql', 'Requires PostgreSQL row locks.')

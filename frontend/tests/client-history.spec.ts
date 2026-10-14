@@ -169,3 +169,35 @@ test('successful send keeps what another device or WhatsApp added to the cesta w
     expect(unexpected).toEqual([]);
   } finally { release(); }
 });
+
+test('Actividad shows the cesta and purchase ledgers: each order event with its supplier and who did it, older ones on demand, and opens the order', async ({ page }) => {
+  const { unexpected } = await mock(page);
+  const event = (id: number, description: string, reference = 'SOL-ENVIADA-001') => ({ id, kind: 'quote', description, created_at: '2026-10-02T12:00:00Z',
+    order: { id: requestId, reference, status: 'quoted' }, supplier_name: 'REPUESTOS CENTRAL', account_name: 'REPUESTOS CENTRAL', actor_name: 'VENDEDOR' });
+  const asked: string[] = [];
+  await page.route(new RegExp(`/api/market/accounts/${clientId}/purchase-activity(?:\\?.*)?$`), route => {
+    const before = new URL(route.request().url()).searchParams.get('before');
+    asked.push(before || '');
+    return route.fulfill({ json: before ? { results: [event(5, 'El cliente envió la orden.')], has_more: false }
+      : { results: [event(9, 'Cotización v2 enviada al cliente.'), event(7, 'Cotización v1 enviada al cliente.')], has_more: true } });
+  });
+  await page.route(`${root}/${requestId}`, route => route.fulfill({ json: { ...summary(), notes: '', lines: [] } }));
+  await page.goto('/?vista=actividad');
+  const activity = page.getByRole('main', { name: 'Actividad', exact: true });
+  await expect(activity.getByRole('navigation', { name: 'Tus solicitudes', exact: true }).getByRole('button', { name: 'Actividad', exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(activity.getByRole('heading', { name: 'Actividad de cesta', exact: true })).toBeVisible();
+  expect(asked).toEqual([]);  // the orders' ledger loads only when its view opens
+  await activity.getByRole('group', { name: 'Vista de actividad', exact: true }).getByRole('button', { name: 'Actividad de compras', exact: true }).click();
+  const rows = activity.getByRole('region', { name: 'Actividad de compras', exact: true }).locator('.ag-center-cols-container .ag-row');
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0)).toContainText('Cotización v2 enviada al cliente.');
+  await expect(rows.nth(0)).toContainText('REPUESTOS CENTRAL');
+  await expect(rows.nth(0)).toContainText('VENDEDOR');
+  await activity.getByRole('button', { name: 'Ver más actividad', exact: true }).click();
+  await expect(rows).toHaveCount(3);
+  expect(asked).toEqual(['', '7']);  // before= the last id shown
+  await expect(activity.getByRole('button', { name: 'Ver más actividad', exact: true })).toHaveCount(0);
+  await rows.nth(0).getByRole('button', { name: 'Abrir orden SOL-ENVIADA-001', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Orden SOL-ENVIADA-001', exact: true })).toBeVisible();
+  expect(unexpected).toEqual([]);
+});

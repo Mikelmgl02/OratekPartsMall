@@ -68,12 +68,12 @@ for (const viewport of [{label:'desktop', width:1440, height:1100}, {label:'mobi
     await row(page).getByRole('button', {name:'58411-1R000-G agregado, 6 en cesta', exact:true}).click();
     await expect(page.getByRole('main', {name:'Cesta de solicitudes', exact:true})).toBeVisible();
     await page.getByLabel('Cantidad de 58411-1R000-G', {exact:true}).fill('2');
-    await page.getByRole('button', {name:'Volver al catálogo', exact:true}).click(); await openDetail(page);
+    await page.getByRole('button', {name:'Seguir buscando repuestos', exact:true}).click(); await openDetail(page);
     await expect(row(page)).toContainText('2 EN CESTA');
     expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
     await row(page).getByRole('button', {name:'58411-1R000-G agregado, 2 en cesta', exact:true}).click();
     await page.getByRole('button', {name:'Eliminar 58411-1R000-G', exact:true}).click();
-    await page.getByRole('button', {name:'Volver al catálogo', exact:true}).click(); await openDetail(page);
+    await page.getByRole('button', {name:'Seguir buscando repuestos', exact:true}).click(); await openDetail(page);
     await expect(row(page)).not.toContainText('EN CESTA');
     await expect(row(page).getByRole('button', {name:'Agregar 58411-1R000-G de PROVEEDOR A a la cesta', exact:true})).toBeVisible();
     await expect(row(page).locator('.item-request-states>span')).toHaveText(['3 ENVIADAS · POR REVISAR', '5 EN REVISIÓN']);
