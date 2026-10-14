@@ -1,11 +1,10 @@
 import io
 import json
-import sys
+import os
 import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone as dt_timezone
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.db import IntegrityError, connection, transaction
@@ -48,8 +47,9 @@ def relabel_night(user, tokens=revert.TOKENS):
 
 @contextmanager
 def scratch_checkout():
-    """A temporary main checkout with its output/ folder: a test's revert writes its manifest there, never in the live output/."""
-    with tempfile.TemporaryDirectory() as folder, override_settings(MAIN_CHECKOUT=folder):
+    """A temporary main checkout with its output/ folder: a test's revert writes its manifest there, never in the live output/ (nor in
+    a rehearsal's REFACTOR_OUTPUT)."""
+    with tempfile.TemporaryDirectory() as folder, override_settings(MAIN_CHECKOUT=folder), patch.dict(os.environ, {'REFACTOR_OUTPUT': ''}):
         (Path(folder) / 'output').mkdir()
         yield Path(folder)
 
@@ -578,7 +578,8 @@ class SuffixRevertTests(Fresh, APITestCase):
         self.assertEqual((classify('-', 'L').cls, classify('-', 'STD').kind, strip_tags('58411-07000-L')[2]), ('VARIANT', 'size', 'variant'))
         self.assertEqual(company_suffixes(), LEGACY_COMPANY_SUFFIXES)
         # The manifest lives in the main checkout's output/ (here a temporary one), every line naming its database.
-        self.assertEqual((revert.manifest_path(), result['manifest']), (self.checkout / 'output' / revert.MANIFEST, str(revert.manifest_path())))
+        self.assertEqual((revert.manifest_path(), result['manifest']),
+                         (self.checkout / 'output' / 'refactor' / revert.STAGE / 'manifest.jsonl', str(revert.manifest_path())))
         lines = self.manifest()
         self.assertEqual((len(lines), {line['database'] for line in lines}), (45, {connection.settings_dict['NAME']}))
         self.assertEqual((lines[0]['before']['cls'], lines[0]['after']['cls'], lines[0]['actor'], lines[0]['action']), ('TAG', 'VARIANT', 'miguel', 'update'))
@@ -639,30 +640,29 @@ class SuffixRevertTests(Fresh, APITestCase):
         if connection.vendor != 'postgresql':
             self.skipTest('PostgreSQL only: the live database is the PostgreSQL one')
         relabel_night(self.admin)
-        frozen = []
-        guard = SimpleNamespace(refusal=lambda applying=True, alias='default': None if frozen else 'Base de datos en vivo sin el congelamiento del catálogo')
-        with override_settings(LIVE_DATABASE_NAME=connection.settings_dict['NAME']):
-            # Before S0.11 lands the live database is refused outright: a freeze file would hold back neither screens nor workers.
-            with patch.dict(sys.modules, {'mall.refactor.guard': None}):
+        folder = self.checkout / '.maintenance'
+        folder.mkdir()
+        # The S0.11 guard decides (mall.refactor.guard: the freeze, and no writer still busy; its own tests cover the writers).
+        with override_settings(LIVE_DATABASE_NAME=connection.settings_dict['NAME'], MAINTENANCE_DIR=str(folder)):
+            result, out = self.run_revert(apply=True, username='miguel')
+            self.assertIsNone(result)
+            self.assertIn('sin el congelamiento del catálogo', out)
+            self.assertIsNone(self.run_revert(rollback=True, username='miguel')[0])
+            self.assertEqual(self.run_revert()[0]['revert'], 45)  # a dry run never needs it
+            for argv in (['--apply', '--user', 'miguel'], ['--rollback', '--user', 'miguel']):  # the CLI exits before planning
+                with self.assertRaises(SystemExit) as refused:
+                    revert.main(argv, stdout=io.StringIO())
+                self.assertIn('sin el congelamiento del catálogo', str(refused.exception.code), argv)
+            self.assertEqual(revert.main(['--dry-run'], stdout=io.StringIO()), 0)
+            (folder / 'freeze').write_text('catalog\n')
+            self.assertIsNone(self.run_revert(apply=True)[0])
+            self.assertIsNone(self.run_revert(apply=True, username='nadie')[0])
+            self.assertFalse(CatalogCodeSuffixChange.objects.filter(action='set_variant').exists())
+            with override_settings(MAIN_CHECKOUT=str(self.checkout / 'missing')):
                 result, out = self.run_revert(apply=True, username='miguel')
                 self.assertIsNone(result)
-                self.assertIn('integra S0.11 primero', out)
-                self.assertIsNone(self.run_revert(rollback=True, username='miguel')[0])
-                self.assertEqual(self.run_revert()[0]['revert'], 45)  # a dry run never needs it
-            # Then its guard decides (the freeze, and no writer still busy).
-            with patch.dict(sys.modules, {'mall.refactor.guard': guard}):
-                result, out = self.run_revert(apply=True, username='miguel')
-                self.assertIsNone(result)
-                self.assertIn('sin el congelamiento del catálogo', out)
-                frozen.append(True)
-                self.assertIsNone(self.run_revert(apply=True)[0])
-                self.assertIsNone(self.run_revert(apply=True, username='nadie')[0])
-                self.assertFalse(CatalogCodeSuffixChange.objects.filter(action='set_variant').exists())
-                with override_settings(MAIN_CHECKOUT=str(self.checkout / 'missing')):
-                    result, out = self.run_revert(apply=True, username='miguel')
-                    self.assertIsNone(result)
-                    self.assertIn('Falta la carpeta', out)
-                self.assertEqual(self.run_revert(apply=True, username='miguel')[0]['revert'], 45)
+                self.assertIn('Falta la carpeta', out)
+            self.assertEqual(self.run_revert(apply=True, username='miguel')[0]['revert'], 45)
         self.assertEqual(self.row('RH').cls, 'VARIANT')
 
     def test_the_manifest_is_written_before_the_commit(self):

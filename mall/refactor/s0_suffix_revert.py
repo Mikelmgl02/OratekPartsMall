@@ -9,19 +9,21 @@ bumps the table version and invalidates the suffix cache, so the OEM finder re-t
 A token already back is skipped; one edited after its relabel, or without a complete audit row (its `before`, and the confirmation it
 had when it was owner-confirmed), is reported and left alone: relabel it from Sufijos. Aliases follow their token, as an owner label
 does. --apply and --rollback take the suffix table lock (SUFFIX_LOCK) and write in one transaction; on the live database they refuse
-unless the S0.11 guard passes (the catalog freeze is on and no writer is still busy). Every changed row goes with its before-values to
-the manifest, the main checkout's git-ignored output/refactor/s0/suffix-revert/manifest.jsonl (/app/output/… in the containers),
-written and flushed before the transaction commits, so a failed write changes nothing; a manifest holding another database's lines
-(a test run's) is refused, never appended to. Re-running changes nothing. --rollback puts back the rows the last apply on this
-database changed, stamps included, unless one was edited since. After either, run python -m mall.link_oem_numbers --apply and
-python -m mall.oem_finder --dry-run; --dry-run --finder previews the finder's tiers with D4 first, storing nothing.
+unless the S0.11 guard passes (mall.refactor.guard: the catalog freeze is on and no writer is still busy). Every changed row goes with
+its before-values to the manifest, mall.refactor.output.manifest_path('s0/suffix-revert'): the main checkout's git-ignored
+output/refactor/s0/suffix-revert/manifest.jsonl (/app/output/… in the containers; REFACTOR_OUTPUT in a rehearsal), written and flushed
+before the transaction commits, so a failed write changes nothing; a manifest holding another database's lines (a test run's) is
+refused, never appended to. Re-running changes nothing. --rollback puts back the rows the last apply on this database changed, stamps
+included, unless one was edited since. After either, run python -m mall.link_oem_numbers --apply and python -m mall.oem_finder
+--dry-run; --dry-run --finder previews the finder's tiers with D4 first, storing nothing.
 """
 import argparse
 import json
 import os
 import sys
-from pathlib import Path
 from types import SimpleNamespace
+
+from .output import main_checkout, manifest_path as stage_manifest_path
 
 TOKENS = ('0.25', '0.50', 'A', 'ABANICO', 'ABS', 'ALZADO', 'AS', 'ASB', 'AZUL', 'B', 'BASE', 'BOMBA', 'C', 'CONO', 'CR', 'D', 'DIESEL',
           'FL', 'FR', 'GL', 'GRAPA', 'GUIA', 'H', 'L', 'LED', 'LH', 'M', 'O', 'PUNTA', 'R', 'RH', 'RL', 'RR', 'SELLO', 'SF', 'SOCKET',
@@ -29,27 +31,19 @@ TOKENS = ('0.25', '0.50', 'A', 'ABANICO', 'ABS', 'ALZADO', 'AS', 'ASB', 'AZUL', 
 RELABELLED_ON = ('2026-10-06', '2026-10-07')  # the night of Oct 6-7 (America/Panama); 02:50 UTC on Oct 7
 NOTE = 'Revertido: palabra de posición o medida (decisión del dueño, 2026-10-13)'
 ROLLBACK_NOTE = 'Deshecho: vuelve la etiqueta que tenía antes de la reversión D4 (rollback de S0.1)'
-MANIFEST = Path('refactor/s0/suffix-revert/manifest.jsonl')
+STAGE = 's0/suffix-revert'  # the manifest's folder under output/refactor/ (mall.refactor.output)
 STATUS_LABELS = {'revert': 'por revertir', 'already': 'ya revertidos', 'changed': 'cambiados después del relabel',
                  'unaudited': 'sin la auditoría del relabel'}
 ROLLBACK_LABELS = {'rollback': 'por deshacer', 'already': 'ya deshechos', 'changed': 'cambiados después de aplicar'}
 CLASS_ACTIONS = {'TAG': 'confirm_tag', 'VARIANT': 'set_variant', 'UNKNOWN': 'set_unknown'}  # the audit action of a restored label
 
 
-def main_checkout():
-    """The main checkout (settings.MAIN_CHECKOUT once S0.11 lands, else BASE_DIR): the repository a .claude/worktrees/<name>
-    checkout belongs to, so a run from the worktree writes where a run from the main checkout does. A test copy is its own."""
-    from django.conf import settings
-    base = Path(getattr(settings, 'MAIN_CHECKOUT', None) or settings.BASE_DIR)
-    return base.parents[2] if (base.parent.name, base.parent.parent.name) == ('worktrees', '.claude') else base
-
-
 def output_dir():
-    return main_checkout() / 'output'  # git-ignored; /app/output in the containers
+    return main_checkout() / 'output'  # git-ignored; /app/output in the containers (a run from a worktree writes in the main checkout's)
 
 
 def manifest_path():
-    return output_dir() / MANIFEST
+    return stage_manifest_path(STAGE)
 
 
 def current_database():
@@ -59,18 +53,9 @@ def current_database():
 
 def refusal():
     """Why --apply or --rollback may not write now, or None: the S0.11 guard (mall.refactor.guard: on the live database, the catalog
-    freeze and no writer still busy). Until S0.11 lands the live database is refused outright, since a freeze file would hold back
-    neither the screens nor the workers; a test or rehearsal database needs nothing."""
-    try:
-        from .guard import refusal as shared
-    except ImportError:  # S0.11 has not landed yet
-        from django.conf import settings
-        from django.db import connection
-        live = getattr(settings, 'LIVE_DATABASE_NAME', 'partsmall')
-        if connection.vendor == 'postgresql' and connection.settings_dict['NAME'] == live:
-            return (f'Base de datos en vivo ({live}) sin la seguridad de operaciones de S0.11 (mall.refactor.guard): sin ella el '
-                    'congelamiento del catálogo no detiene las pantallas ni los trabajadores. No se escribe nada; integra S0.11 primero.')
-        return None
+    freeze and no writer still busy); a test or rehearsal database needs nothing. main() exits on it before planning, as the other
+    guarded CLIs do; run() checks it again for a caller that skips main()."""
+    from .guard import refusal as shared
     return shared(True)
 
 
@@ -386,6 +371,8 @@ def main(argv=None, stdout=None):
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
     import django
     django.setup()
+    from .guard import require_freeze
+    require_freeze(options.apply or options.rollback)
     stdout = stdout or sys.stdout
     result = run(apply=options.apply, rollback=options.rollback, username=options.user, finder=options.finder, stdout=stdout)
     if result is not None and options.json:

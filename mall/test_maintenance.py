@@ -38,7 +38,7 @@ from .matching_runner import STOP, WorkerStopping
 from .matching_worker import process_queue
 from .models import Account, CatalogImportJob, DealEvent, Membership, Part, Role, SupplierItem, User, WishlistItem
 from .pricing_models import SupplierPricingSettings
-from .refactor import migrate_retry
+from .refactor import migrate_retry, s0_suffix_revert
 from .refactor.guard import live_database, refusal
 from .refactor.migration_ops import LockTimeout, with_lock_timeout
 from .request_models import StockReservation
@@ -450,7 +450,8 @@ class CliGuardTests(FreezeFolderMixin, TestCase):
                                (supplier_catalog_replace.main, ['--apply', '/nonexistent.json']),
                                (supplier_catalog_import.main, ['--apply', '/nonexistent.json']),
                                (prune_catalog_alternos.main, ['--apply']), (oem_finder.main, ['--apply-auto']),
-                               (oem_finder_revert.main, ['--run', '1'])]:
+                               (oem_finder_revert.main, ['--run', '1']),
+                               (s0_suffix_revert.main, ['--apply', '--user', 'root']), (s0_suffix_revert.main, ['--rollback', '--user', 'root'])]:
                 with self.assertRaises(SystemExit) as refused:
                     main(argv, stdout=io.StringIO())
                 self.assertIn('sin el congelamiento del catálogo', str(refused.exception.code), argv)
