@@ -253,6 +253,16 @@ class PriceImportTests(APITestCase):
         self.assertEqual(repaired.data['ignored_columns'], ['MARCA'], 'ERRORES is skipped silently.')
         self.assertEqual(repaired.data['summary']['rejected_rows'], 10, 'Repeated IDs are rejected in the corrected file too.')
 
+    def test_a_code_change_waiting_for_review_is_the_items_code_too(self):
+        # S3: the supplier's files carry the new code while it waits (codigo_pendiente); the old one still names the item too.
+        SupplierItem.objects.filter(pk=self.item_a.pk).update(codigo_pendiente='NUEVO-CODIGO-1', matching_status='review')
+        for code in ('NUEVO-CODIGO-1', self.item_a.codigo):
+            result = self.upload([[self.item_a.supplier_invent_id, code, '15.00']])
+            self.assertEqual(result.status_code, 200, result.data)
+            self.assertFalse([warning for warning in result.data['warnings'] if 'no coincide' in warning['message']], result.data['warnings'])
+        result = self.upload([[self.item_a.supplier_invent_id, 'OTRO-CODIGO', '15.00']])
+        self.assertTrue([warning for warning in result.data['warnings'] if 'no coincide' in warning['message']])
+
     def test_files_without_usable_headers_are_rejected_before_any_job_exists(self):
         cases = [(['ID_INVENTARIO_PROVEEDOR', 'CODIGO', 'MARCA', 'COSTO'], 'No encontramos columnas de precio. Usa PRECIO, PRECIO_<LISTA>, LINEA o PRECIO_MINIMO.'),
                  (['CODIGO', 'PRECIO'], 'Se requiere ID_INVENTARIO_PROVEEDOR en la primera fila.'),

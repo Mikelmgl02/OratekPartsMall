@@ -120,6 +120,32 @@ class S3BackfillTests(Fresh, TestCase):
         self.assertFalse(Reference.all_objects.filter(pk__in=created).exists())
         self.assertEqual(Reference.all_objects.filter(pk=self.alias.pk).count(), 1)
 
+    def test_rollback_undoes_what_the_s3_code_wrote_since(self):
+        """After landing, Vincular makes an interno Reference and a load leaves a code waiting; the rollback takes both back, since the
+        code before S3 shows every interno code to everyone and 0077 reversed drops the waiting code."""
+        from . import variants
+        self.run_cli(apply=True, username=self.root.username)
+        loose = SupplierItem.objects.get(supplier_invent_id='J')
+        variants.vincular(loose, self.plain, actor=self.root)
+        interno = Reference.all_objects.get(pk=SupplierItem.objects.get(pk=loose.pk).reference_id)
+        self.assertEqual((interno.tipo, interno.detail['s3']['como']), ('interno', 'creada'))
+        named = make_reference(self.branded, 'VIEJO-0001')
+        references.retire(named, replaced_by=variants.vincular(SupplierItem.objects.get(supplier_invent_id='E'), self.branded,
+                                                               actor=self.root).reference)
+        SupplierItem.objects.filter(supplier_invent_id='C').update(codigo_pendiente='NUEVO-0001', matching_status='review')
+        with patch.object(s3_variants, 'tightened', return_value=False):
+            result, out = self.run_cli(rollback=True)
+        self.assertEqual((result['restored'], result['pending_applied']), (10, 1))
+        self.assertFalse(SupplierItem.objects.filter(reference__isnull=False).exists())
+        self.assertFalse(Reference.all_objects.filter(pk=interno.pk).exists())
+        replaced = Reference.all_objects.get(code='43512-60150-ZQX')
+        self.assertEqual(replaced.estado, 'retirada')  # named as a replacement: retired, not deleted
+        self.assertTrue(any('nombra como reemplazo' in line for line in result['changed']))
+        changed = SupplierItem.objects.get(supplier_invent_id='C')
+        self.assertEqual((changed.codigo, changed.codigo_pendiente, changed.matching_status), ('NUEVO-0001', None, 'review'))
+        lines = [json.loads(line) for line in open(s3_variants.manifest_path(), encoding='utf-8')]
+        self.assertTrue(any(line.get('role') == 'pendiente' and line['before']['codigo_pendiente'] == 'NUEVO-0001' for line in lines))
+
     def test_an_item_on_a_unificada_line_is_listed_and_left(self):
         Part.objects.filter(pk=self.spaced.pk).update(merged_into=self.plain, estado='unificada', active=False)
         result, out = self.run_cli()

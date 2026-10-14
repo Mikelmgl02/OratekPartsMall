@@ -27,9 +27,11 @@ The dry run also works before 0075-0077 are applied: without S2b's mains it simu
 compact-duplicate merges included: an item on a line that merge absorbs counts on its keeper) and without 0077 it reads every item as
 unattached. A rehearsal copy gives the real numbers.
 
---rollback (plan S3: stock is untouched): the items it attached lose their Reference again unless it changed since (listed), the
-References and sources it created are deleted when nothing hangs from them. Reverse 0078 first when it is applied (its CHECKs forbid an
-item on a line without a Reference).
+--rollback (plan S3: stock is untouched): back to the rows the code before S3 reads (undo()): a waiting code becomes the item's code,
+every item loses its Reference (its line stays), and the References the backfill or the S3 code made (manifest, detail['s3']) are
+deleted, or retired when something names them. Order (the CHECKs of 0078 forbid an item on a line without a Reference, and the code
+before S3 writes exactly that): under the freeze, reverse 0078 (python manage.py migrate mall 0077_variant_reference, from the
+worktree), run --rollback, revert the code, then reverse 0077 from the worktree.
 """
 import argparse
 import json
@@ -41,9 +43,12 @@ from collections import Counter, defaultdict
 from types import SimpleNamespace
 
 STAGE = 's3'
-# Plan §3 S3 (2026-10-13 simulation; the live counts move with the catalog). nuevas = public + interno.
-EXPECTED = {'variantes': 23434, 'principal': 14056, 'marca_de_la_linea': 7617, 'exacta': 1756, 'sin_marca': 2, 'interna': 0,
-            'nuevas': 3, 'nuevas_internas': 1, 'en_retiradas': 30, 'sin_linea': 4201, 'en_unificadas': 0, 'aprendidos': 0}
+# The live dry run of 2026-10-14, after S2b's backfill (plan §3 S3 simulated 23,434 · 14,056 · 7,617 · 1,756 · 2 · 3 new on the data of
+# 2026-10-13, before S2b; S2b's own rules then gave fewer branded mains). The DFSK code 1001D50F0716 that plan B19 counts as a new interno
+# Reference is S2b's (its learned codes made it), so S3 hangs its item from it ('interna') and makes the other two, both public.
+# nuevas = public + interno. The live counts move with the catalog.
+EXPECTED = {'variantes': 23441, 'principal': 16581, 'marca_de_la_linea': 5136, 'exacta': 1719, 'sin_marca': 2, 'interna': 1,
+            'nuevas': 2, 'nuevas_internas': 0, 'en_retiradas': 30, 'sin_linea': 4194, 'en_unificadas': 0, 'aprendidos': 0}
 LIVE_LINE = ('referencia', 'preparacion', 'publicada', 'rechazada', 'retirada')
 CHUNK = 2000
 MAPPING_KIND = 'proveedor'
@@ -175,6 +180,20 @@ def simulated_references(lines):
             rows[synthetic] = {'pk': synthetic, 'part_id': line_id, 'code': main['code'], 'brand': main['brand'], 'clave': main['clave'],
                                'supplier_id': None, 'is_main': True, 'estado': main['estado'], 'tipo': main['tipo'], 'printed_forms': []}
     by_text = {str(pk): pk for pk in lines}
+    # The interno References S2b's backfill makes from learned codes whose line has no Reference with that code (its write()).
+    from .. import references
+    held = {(row['clave'], row['brand'], row['supplier_id']) for row in rows.values() if row.get('supplier_id') and row['estado'] != 'retirada'}
+    for mapping in planned['mappings']:
+        if mapping['reference'] is not None or mapping['main_of'] is not None or mapping['line'] not in by_text:
+            continue
+        code, brand, supplier = references.code_key(mapping['code']), references.brand_key(mapping['brand']), uuid.UUID(mapping['supplier'])
+        key = (references.clave(code), brand, supplier)
+        if key in held:
+            continue
+        held.add(key)
+        synthetic -= 1
+        rows[synthetic] = {'pk': synthetic, 'part_id': by_text[mapping['line']], 'code': code, 'brand': brand, 'clave': key[0],
+                           'supplier_id': supplier, 'is_main': False, 'estado': 'declarado', 'tipo': 'interno', 'printed_forms': []}
     into = {by_text[pk]: by_text[keeper] for pk, keeper in (planned.get('hook_plan') or {}).get('into', {}).items()
             if pk in by_text and keeper in by_text}
     for row in rows.values():
@@ -297,13 +316,13 @@ def learned_since(lines, by_line, state):
 
 def write(result, log, run, user):
     """Write the plan in bulk. Returns the counts written."""
-    from .. import references
+    from .. import references, variants
     from ..models import Reference, ReferenceSource, SupplierItem
     counts = Counter()
     built = []
     for key, spec in result['new'].items():
         ref = references.build(spec['line'], spec['code'], spec['brand'], tipo=spec['tipo'], estado='declarado', supplier=spec['supplier'],
-                               source=spec['source'], actor=user)
+                               source=spec['source'], actor=user, detail={variants.TAG: {**variants.stamp('creada'), 'por': 's3_variants'}})
         built.append((key, ref))
     references.bulk_create([ref for _, ref in built], actor=user, serialized=True)  # under the freeze and the matching lock
     made = {}
@@ -326,7 +345,7 @@ def write(result, log, run, user):
     SupplierItem.objects.bulk_update(changed, ['reference', 'part'], batch_size=1000)  # no save(): the shim has nothing to add
     counts['variantes'] = len(changed)
     sources, internos = [], []
-    held = set(Reference.objects.filter(tipo='interno', estado__in=references.EXCLUSIVE).values_list('clave', 'brand', 'supplier_id'))
+    held = set(Reference.all_objects.filter(tipo='interno', estado__in=references.EXCLUSIVE).values_list('clave', 'brand', 'supplier_id'))
     for mapping in result['mappings']:
         citation = f"Código aprendido · {mapping['supplier_name']} · {mapping['date']}"
         detail = {'legacy': 'SupplierCodeMapping', 'mapping': mapping['id'], 'supplier': mapping['supplier'], 'code': mapping['code'],
@@ -339,7 +358,7 @@ def write(result, log, run, user):
                 continue
             held.add(key)
             ref = references.build(uuid.UUID(mapping['line']), mapping['code'], mapping['brand'], tipo='interno', supplier=mapping['supplier'],
-                                   actor=user)
+                                   actor=user, detail={variants.TAG: {**variants.stamp('creada'), 'por': 's3_variants'}})
             internos.append((ref, citation, detail))
             continue
         if not ReferenceSource.objects.filter(reference_id=mapping['reference'], kind=MAPPING_KIND, citation=citation).exists():
@@ -368,51 +387,88 @@ def applied_lines():
         key, action = (line['model'], str(line['id'])), line.get('action')
         if action in ('update', 'create'):
             rows[key].append(line)
-        elif action in ('rollback', 'delete'):
+        elif action in ('rollback', 'delete', 'retire'):
             rows.pop(key, None)
     return rows
 
 
 def undo(log, run):
-    """Put back what the applies on this database did: {'restored', 'deleted', 'changed': [...]}."""
-    from .. import references
+    """Put S3's rows back to the state the code before S3 reads: {'restored', 'deleted', 'retired', 'pending_applied', 'changed': [...]}.
+
+    - A code change still waiting for review (codigo_pendiente/brand_pendiente) becomes the item's code, as the code before S3 wrote
+      every load's code, its status kept (review: the old matching looks again); 0077 reversed would drop the waiting code otherwise.
+    - Every item, attached by the backfill or by the S3 code since, loses its Reference; its line stays (before S3 an item hangs from
+      its line). The values before go to the manifest, so the backfill re-run puts them back.
+    - The References the backfill created (its manifest) and those the S3 code created or brought back (detail['s3']: Vincular, a
+      linked or approved code, the save() shim, a load's new item or same-key brand) are deleted when nothing points at them, else
+      retired (one another Reference names as its replacement, or one brought back from retirada) and listed; a line's main or a
+      Reference that moved line is left and listed. The code before S3 would show an interno code as a plain alterno to every
+      supplier and client.
+    - The sources the backfill created are deleted."""
+    from django.db.models import Q
+    from django.utils import timezone
+    from .. import references, variants
     from ..models import Reference, ReferenceSource, SupplierItem
     by_model = defaultdict(dict)
     for (model, pk), chain in applied_lines().items():
         by_model[model][pk] = chain
-    restored, deleted, changed = 0, 0, []
-    for pk, chain in by_model.get('mall.SupplierItem', {}).items():
-        row = SupplierItem.objects.filter(pk=pk).values('reference_id', 'part_id').first()
-        if row is None:
-            continue
-        first, last = chain[0]['before'], chain[-1]['after']
-        if recorded(row) == recorded(first):
-            continue
-        if row['reference_id'] != last['reference_id']:
-            changed.append(f'artículo {pk}: su referencia cambió después de aplicar')
-            continue
-        SupplierItem.objects.filter(pk=pk).update(reference_id=first['reference_id'])  # its line is left as it is now
-        restored += 1
-        log.append({**run, 'model': 'mall.SupplierItem', 'id': pk, 'action': 'rollback', 'before': recorded(row),
-                    'after': {'reference_id': first['reference_id']}})
+    restored, deleted, retired, applied, changed = 0, 0, 0, 0, []
+    now = timezone.now()
+    waiting = SupplierItem.objects.filter(Q(codigo_pendiente__isnull=False) | Q(brand_pendiente__isnull=False)).order_by('pk')
+    for item in waiting.only('pk', 'codigo', 'brand', 'codigo_pendiente', 'brand_pendiente', 'matching_status'):
+        before = {'codigo': item.codigo, 'brand': item.brand, 'codigo_pendiente': item.codigo_pendiente,
+                  'brand_pendiente': item.brand_pendiente, 'matching_status': item.matching_status}
+        variants.apply_pending(item)
+        after = {'codigo': item.codigo, 'brand': item.brand, 'codigo_pendiente': None, 'brand_pendiente': None}
+        SupplierItem.objects.filter(pk=item.pk).update(**after, updated_at=now)
+        applied += 1
+        log.append({**run, 'model': 'mall.SupplierItem', 'id': str(item.pk), 'action': 'rollback', 'role': 'pendiente',
+                    'before': recorded(before), 'after': recorded(after)})
+    hung = list(SupplierItem.objects.filter(reference__isnull=False).order_by('pk').values_list('pk', 'reference_id', 'part_id'))
+    for start in range(0, len(hung), CHUNK):
+        SupplierItem.objects.filter(pk__in=[pk for pk, _, _ in hung[start:start + CHUNK]]).update(reference=None)  # the line stays
+    for pk, ref_id, part_id in hung:
+        log.append({**run, 'model': 'mall.SupplierItem', 'id': str(pk), 'action': 'rollback',
+                    'before': recorded({'reference_id': ref_id, 'part_id': part_id}), 'after': {'reference_id': None}})
+    restored += len(hung)
     for pk, chain in by_model.get('mall.ReferenceSource', {}).items():
         source = ReferenceSource.objects.filter(pk=pk).first()
         if source is not None:
             source.delete()
             deleted += 1
             log.append({**run, 'model': 'mall.ReferenceSource', 'id': int(pk), 'action': 'delete', 'before': chain[-1]['after']})
-    created = [int(pk) for pk, chain in by_model.get('mall.Reference', {}).items() if chain[0]['action'] == 'create']
-    if created:
-        hung = set(SupplierItem.objects.filter(reference_id__in=created).values_list('reference_id', flat=True))
-        for pk in sorted(hung):
-            changed.append(f'referencia {pk}: tiene artículos de proveedor, se deja')
-        free = sorted(set(created) - hung)
-        deleted += references.purge(free)
-        for pk in free:
-            if not Reference._base_manager.filter(pk=pk).exists():
-                log.append({**run, 'model': 'mall.Reference', 'id': pk, 'action': 'delete',
-                            'before': by_model['mall.Reference'][str(pk)][0]['after']})
-    return {'restored': restored, 'deleted': deleted, 'changed': changed}
+    made = {int(pk): chain[0]['after'] for pk, chain in by_model.get('mall.Reference', {}).items() if chain[0]['action'] == 'create'}
+    stamped = {row['pk']: row for row in Reference._base_manager.filter(detail__has_key=variants.TAG)
+               .values('pk', 'part_id', 'code', 'brand', 'tipo', 'supplier_id', 'estado', 'is_main', 'detail')}
+    created, revived = set(made), set()
+    for pk, row in stamped.items():
+        how = (row['detail'].get(variants.TAG) or {}).get('como')
+        if how == 'creada':
+            created.add(pk)
+        elif how == 'revivida':
+            revived.add(pk)
+        elif how == 'movida':
+            changed.append(f"referencia {pk} ({row['code']}): S3 la pasó de línea con su artículo, se deja en su línea")
+    rows = {row['pk']: row for row in Reference._base_manager.filter(pk__in=created | revived)
+            .values('pk', 'code', 'brand', 'tipo', 'supplier_id', 'part_id', 'estado', 'is_main')}
+    mains = {pk for pk, row in rows.items() if row['is_main']}
+    for pk in sorted(mains):
+        changed.append(f"referencia {pk} ({rows[pk]['code']}): es la principal de su SKU, se deja")
+    named = set(Reference._base_manager.filter(reemplazado_por__in=list(created - mains)).values_list('reemplazado_por', flat=True))
+    free = sorted(pk for pk in created - mains - named if pk in rows)
+    deleted += references.purge(free)
+    for pk in free:
+        if not Reference._base_manager.filter(pk=pk).exists():
+            log.append({**run, 'model': 'mall.Reference', 'id': pk, 'action': 'delete', 'before': recorded(made.get(pk) or rows[pk])})
+    doomed = sorted(pk for pk in (named | revived) - mains if pk in rows and rows[pk]['estado'] != 'retirada')
+    for pk in sorted(named - mains):
+        changed.append(f"referencia {pk} ({rows[pk]['code']}): otra la nombra como reemplazo, se retira en vez de borrarse")
+    if doomed:
+        retired = references.retire(Reference._base_manager.filter(pk__in=doomed), reason='Rollback de S3', allow_variants=True)
+        for pk in doomed:
+            log.append({**run, 'model': 'mall.Reference', 'id': pk, 'action': 'retire', 'before': recorded({'estado': rows[pk]['estado']}),
+                        'after': {'estado': 'retirada'}})
+    return {'restored': restored, 'deleted': deleted, 'retired': retired, 'pending_applied': applied, 'changed': changed}
 
 
 # --- run ------------------------------------------------------------------------------------------------------------------------------
@@ -511,8 +567,9 @@ def run(*, apply=False, rollback=False, username=None, report_path=None, stdout=
                 result['manifest'] = str(write_manifest([{**run_line, 'action': 'run', 'mode': result['mode'], 'rows': len(log)}, *log]))
         result['rows_logged'] = len(log)
         if rollback:
-            stdout.write(f"Rollback · S3: {result['restored']} artículos restaurados · {result['deleted']} filas borradas · "
-                         f"{len(result['changed'])} cambiadas después (se dejan)\n")
+            stdout.write(f"Rollback · S3: {result['restored']} artículos sin referencia · {result['pending_applied']} códigos pendientes "
+                         f"aplicados · {result['deleted']} filas borradas · {result['retired']} referencias retiradas · "
+                         f"{len(result['changed'])} se dejan\n")
             for line in result['changed'][:40]:
                 stdout.write(f'  {line}\n')
         if result.get('manifest'):

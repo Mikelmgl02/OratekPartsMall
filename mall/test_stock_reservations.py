@@ -89,6 +89,22 @@ class StockReservationTests(APITestCase):
         self.assertEqual(self.counts(self.item_a), (6, 5, 1))
         self.assertEqual(StockReservation.objects.get().status, 'open')
 
+    def test_a_code_change_waiting_for_review_keeps_the_held_units_and_the_code_the_order_was_made_with(self):
+        from .test_factories import make_line
+        make_line('OTRO-CODIGO-9', description='OTRO TAMBOR')
+        self.handshake({self.item_a2.pk: 0})
+        self.assertEqual(self.counts(self.item_a), (10, 5, 5))
+        ingest_inventory(supplier=self.supplier_a, actor=self.seller_a, data={'update_id': 'feed-code', 'supplier_invent_id': 'A-001',
+                                                                             'codigo': 'OTRO-CODIGO-9', 'brand': 'KSM', 'description': 'TAMBOR A-001',
+                                                                             'source': 'upload', 'quantity': 10})
+        item = SupplierItem.objects.get(pk=self.item_a.pk)
+        # S3 (OD7): the change waits out of the line's stock; codigo, line and Reference stay, so the order's identity checks hold.
+        self.assertEqual((item.codigo, item.codigo_pendiente, item.matching_status, item.part_id, item.reference_id),
+                         (self.item_a.codigo, 'OTRO-CODIGO-9', 'review', self.item_a.part_id, self.item_a.reference_id))
+        self.assertIsNotNone(item.reference_id)
+        self.assertEqual(self.counts(self.item_a), (10, 5, 5))
+        self.assertEqual(StockReservation.objects.get().status, 'open')
+
     def sent(self, quantities=None, order=None):
         """The supplier sends a quotation for 3 of A-001 and 2 of A-002 (or the given quantities) -> (order, quotation)."""
         self.client.force_authenticate(self.buyer)

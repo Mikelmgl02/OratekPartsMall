@@ -422,11 +422,16 @@ class ManagedInventorySerializer(SupplierItemSerializer):
         read_only_fields = fields
 
 
+UNLINKED_IS_PENDING = 'Un artículo sin SKU queda pendiente: elige un SKU o envía matching_status pending.'
+
+
 class InventoryMatchSerializer(ManagedInventorySerializer):
-    """PATCH management/inventory/<item>: the item's line and status (S3: mall.variants writes them). part set is Vincular: the line's
-    Reference for the item's code (found or created) and a waiting code applied; part null unlinks it, only as pending and with no
-    units held by a quotation or an order; a status alone keeps its Reference. A unificada line is refused. The supplier's Account is
-    locked first, like every writer of its items."""
+    """PATCH management/inventory/<item>: the item's line and status (S3: mall.variants writes them). part set to another line is
+    Vincular: the line's Reference for the item's code (found or created); part null unlinks it, only as pending and with no units held
+    by a quotation or an order; a status alone, or with the item's own line sent back (Revisar coincidencia sends both), keeps its
+    Reference. A code change waiting for review (codigo_pendiente) is applied only by matched, the approval (rule 5b, OD7); review or
+    pending leaves it waiting. An item with no line is only ever pending (0078's CHECK). A unificada line is refused. The supplier's
+    Account is locked first, like every writer of its items."""
     class Meta(ManagedInventorySerializer.Meta):
         read_only_fields = [field for field in ManagedInventorySerializer.Meta.fields if field not in ['part', 'matching_status']]
 
@@ -439,8 +444,8 @@ class InventoryMatchSerializer(ManagedInventorySerializer):
             raise serializers.ValidationError({'part': 'Selecciona el SKU principal; este SKU ya fue unificado.'})
         if status == 'matched' and not part:
             raise serializers.ValidationError({'part': 'Selecciona un repuesto para aprobar la coincidencia.'})
-        if 'part' in data and part is None and status != 'pending':
-            raise serializers.ValidationError({'matching_status': 'Un artículo sin SKU queda pendiente: envía matching_status pending.'})
+        if part is None and status != 'pending':
+            raise serializers.ValidationError({'matching_status': UNLINKED_IS_PENDING})
         return data
 
     @transaction.atomic
@@ -457,21 +462,24 @@ class InventoryMatchSerializer(ManagedInventorySerializer):
         instance = SupplierItem.objects.select_for_update().get(pk=instance.pk)
         status = validated_data.get('matching_status', instance.matching_status)
         user = self.context['request'].user
+        unlink = 'part' in validated_data and assigned is None
+        line = assigned if assigned is not None else Part._base_manager.filter(pk=instance.part_id).first() if instance.part_id else None
+        if not unlink and line is None and status != 'pending':  # rechecked under the lock: a load may have unlinked it meanwhile
+            raise serializers.ValidationError({'matching_status': UNLINKED_IS_PENDING})
         try:
-            if 'part' in validated_data and assigned is None:
+            if unlink:
                 if StockReservation.objects.filter(item=instance, status='open').exists():
                     raise serializers.ValidationError({'part': 'Este artículo tiene unidades apartadas por una cotización o un pedido: '
                                                                'libéralas antes de desvincularlo.'})
                 variants.detach(instance)
-            elif assigned is not None:
-                variants.vincular(instance, assigned, status=status, actor=user)
+            elif line is not None and (line.pk != instance.part_id or (status == 'matched' and variants.waiting(instance))):
+                # Vincular onto another line, or the approval of a waiting code (matched applies it; review or pending keeps it waiting).
+                variants.vincular(instance, line, status=status, actor=user)
             else:
-                # Only the status: the item keeps its Reference (a line outside the catalog never counts it in stock).
-                if status == 'matched' and not instance.part_id:
-                    raise serializers.ValidationError({'part': 'Selecciona un repuesto para aprobar la coincidencia.'})
-                if instance.part_id and not instance.reference_id:
+                # Only the status (the item's own line sent back is no move): it keeps its Reference, and a waiting code keeps waiting.
+                if line is not None and not instance.reference_id:
                     variants.ensure_attached(instance, actor=user)
-                instance.matching_status = variants.status_for(instance.part, status) if instance.part_id else status
+                instance.matching_status = variants.status_for(line, status) if line is not None else status
                 instance.save(update_fields=['matching_status', 'updated_at'])
         except variants.VariantConflict as error:
             raise serializers.ValidationError({'part': error.message})

@@ -174,7 +174,11 @@ def withdraw(account, actor, item, update_id, totals, samples, recorder=None, re
     before = item.reported_quantity
     rows = {row.sucursal_id: row for row in SupplierItemBranchStock.objects.filter(item=item).select_related('sucursal')}
     if item.reported_quantity:
-        data = {'update_id': update_id, 'supplier_invent_id': item.supplier_invent_id, 'codigo': item.codigo, 'brand': item.brand,
+        # The code the supplier sent last: a code change waiting for review (codigo_pendiente, S3) is what it sends now, so the
+        # withdrawal leaves it waiting instead of reading the old code as the supplier going back to it.
+        codigo = item.codigo_pendiente or item.codigo
+        brand = item.brand if item.brand_pendiente is None else item.brand_pendiente
+        data = {'update_id': update_id, 'supplier_invent_id': item.supplier_invent_id, 'codigo': codigo, 'brand': brand,
                 'description': item.description, 'references': item.references, 'source': 'apiag', 'quantity': 0}
         if write(account, actor, data, totals, samples, item.codigo, recorder) is None:
             return

@@ -175,9 +175,27 @@ class BrandAliasAdmin(admin.ModelAdmin):
     def has_delete_permission(self, request, obj=None):
         return False
 
+class SupplierItemAdminForm(forms.ModelForm):
+    class Meta:
+        model = SupplierItem
+        fields = '__all__'
+
+    def clean(self):
+        data = super().clean()
+        status = data.get('matching_status')
+        if status and status != 'pending' and not self.instance.part_id:  # 0078: an item with no line waits, pending
+            self.add_error('matching_status', 'Un artículo sin SKU queda pendiente: vincúlalo desde Inventario.')
+        elif status == 'matched' and self.instance.matching_status != 'matched' and (self.instance.codigo_pendiente is not None
+                                                                                  or self.instance.brand_pendiente is not None):
+            self.add_error('matching_status', 'Este artículo tiene un código pendiente de revisión: apruébalo desde Inventario.')
+        return data
+
+
 @admin.register(SupplierItem)
 class SupplierItemAdmin(admin.ModelAdmin):
-    # The line and its Reference are mall.variants' (S3): Vincular from Inventario moves an item; here only its status changes.
+    # The line and its Reference are mall.variants' (S3): Vincular from Inventario moves an item; here only its status changes, and
+    # only Inventario approves a waiting code (rule 5b).
+    form = SupplierItemAdminForm
     list_display = ['supplier', 'supplier_invent_id', 'codigo', 'part', 'reference', 'matching_status']
     list_filter = ['matching_status', 'supplier']
     readonly_fields = ['supplier', 'supplier_invent_id', 'part', 'reference', 'codigo', 'brand', 'codigo_pendiente', 'brand_pendiente',

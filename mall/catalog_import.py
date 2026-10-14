@@ -459,8 +459,9 @@ def save_plan(groups, user=None):
     line_ids = [part.pk for part, group in planned if group['existing'] is not None]
     printed = sorted({code for _, group in planned for _, code in group.get('codes', group.get('added', []))})
     held, retired_here, retired_printed = {}, set(), set()
-    for start in range(0, len(line_ids), 2000):  # what the lines hold, retired rows included (the batch locked the live ones)
-        for row in Reference.all_objects.filter(part_id__in=line_ids[start:start + 2000]).order_by('pk'):
+    # What the lines hold, retired rows included (the batch locked the live ones); a supplier's interno code (S3) is no public key.
+    for start in range(0, len(line_ids), 2000):
+        for row in Reference.all_objects.filter(part_id__in=line_ids[start:start + 2000], supplier__isnull=True).order_by('pk'):
             if row.estado == 'retirada':
                 retired_here.add((row.part_id, row.brand, row.clave))
             else:

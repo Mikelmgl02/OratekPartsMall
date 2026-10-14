@@ -427,12 +427,12 @@ def merge_lines(target, sources, *, actor, reason='', automatic=False, assistant
 def settle_variants(retired_ids, target, actor):
     """Variants still on a merged line once its References moved: one with no Reference yet (written before S3's backfill) hangs from
     the target's Reference for its code (mall.variants.vincular, its status kept); one whose Reference stayed behind follows the
-    target the same way. Returns how many."""
+    target the same way. A merge approves no code: a waiting code keeps waiting (rule 5b, OD7). Returns how many."""
     m = _models()
     from .variants import vincular
     left = list(m.SupplierItem.objects.select_for_update().filter(part_id__in=retired_ids).order_by('pk'))
     for item in left:
-        vincular(item, target, status=item.matching_status, actor=actor)
+        vincular(item, target, status=item.matching_status, actor=actor, approve=False)
     return len(left)
 
 

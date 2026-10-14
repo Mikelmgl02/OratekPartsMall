@@ -121,6 +121,31 @@ class ApiagSyncTests(APITestCase):
         self.assertNotIn('since', self.apiag.calls[0])
         self.assert_ledger_reconciles()
 
+    def test_a_brand_only_change_stays_matched_and_a_waiting_code_survives_a_withdrawal(self):
+        """S3: a brand where there was none keeps the item on its line and in stock (otherwise every brandless item goes offline the day
+        the ERP sends brands); another code waits for review out of stock (OD7), and taking the item off sale leaves it waiting."""
+        from .test_factories import make_line
+        line = make_line('04111-22152', description='Artículo 04111-22152')
+        make_line('OTHER-777', description='OTRA COSA')
+        self.apiag.publish(10, '04111-22152', {1: 4}, marca='')
+        self.run_pull()
+        self.assertEqual((self.item(10).part_id, self.item(10).matching_status), (line.pk, 'matched'))
+        self.apiag.publish(10, '04111-22152', {1: 4}, marca='GMB')
+        self.run_pull()
+        item = self.item(10)
+        self.assertEqual((item.brand, item.codigo_pendiente, item.matching_status, item.part_id, item.reference.brand),
+                         ('GMB', None, 'matched', line.pk, 'GMB'))
+        self.apiag.publish(10, 'OTHER-777', {1: 4}, marca='GMB')
+        self.run_pull()
+        item = self.item(10)
+        self.assertEqual((item.codigo, item.codigo_pendiente, item.matching_status, item.part_id), ('04111-22152', 'OTHER-777', 'review', line.pk))
+        self.apiag.retire(10)
+        self.run_pull()
+        item = self.item(10)
+        self.assertEqual((item.reported_quantity, item.codigo, item.codigo_pendiente, item.matching_status),
+                         (0, '04111-22152', 'OTHER-777', 'review'))
+        self.assert_ledger_reconciles()
+
     def test_later_pulls_apply_only_what_changed(self):
         self.apiag.publish(10, 'A-1', {1: 4, 2: 1})
         self.apiag.publish(11, 'B-2', {1: 2})

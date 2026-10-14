@@ -270,7 +270,7 @@ def price_plan(supplier, rows, codes, headers, *, lock=False):
     items = {}
     for offset in range(0, len(identifiers), 2000):
         items.update((item.supplier_invent_id, item) for item in SupplierItem.objects.filter(
-            supplier=supplier, supplier_invent_id__in=identifiers[offset:offset + 2000]).only('id', 'supplier_invent_id', 'codigo', 'description'))
+            supplier=supplier, supplier_invent_id__in=identifiers[offset:offset + 2000]).only('id', 'supplier_invent_id', 'codigo', 'codigo_pendiente', 'description'))
     lists = PriceList.objects.filter(supplier=supplier, code__in=list(codes)).order_by('pk')
     lists = {row.code: row for row in (lists.select_for_update() if lock else lists)}
     ids, entries, pricing = sorted(item.pk for item in items.values()), {}, {}
@@ -289,7 +289,8 @@ def price_plan(supplier, rows, codes, headers, *, lock=False):
             errors.append({'row': number, 'column': headers['id'], 'message': 'Este ID no existe en tu inventario. Carga primero sus existencias.'})
             continue
         summary['valid_rows'] += 1
-        if data.get('codigo') and data['codigo'] != item.codigo:
+        # A code change waiting for review (S3: codigo_pendiente) is the code the supplier's files carry now: either one is its item.
+        if data.get('codigo') and data['codigo'] not in (item.codigo, item.codigo_pendiente):
             warnings.append({'row': number, 'column': headers['codigo'],
                              'message': f'El CODIGO del archivo ({data["codigo"]}) no coincide con tu inventario ({item.codigo}); se usó el ID.'})
         base = {'row': number, 'supplier_invent_id': item.supplier_invent_id, 'codigo': item.codigo, 'description': item.description}

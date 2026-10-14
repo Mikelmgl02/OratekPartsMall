@@ -89,6 +89,21 @@ class CatalogImportTests(APITestCase):
         self.assertEqual(self.upload(raw, mode='import', preview_token=repeated.data['preview_token']).status_code, 200)
         self.assertEqual(PartCode.objects.filter(is_main=False).count(), 4)  # and the two lines' mains (S2b)
 
+    def test_a_public_alterno_with_a_suppliers_interno_key_becomes_a_public_reference(self):
+        """S3: a supplier's interno code is its own name for the line; a catalog file listing the same code makes a public Reference
+        beside it, never a hidden spelling of the interno."""
+        from . import references
+        line = Part.objects.create(sku='58411-1R000', name='TAMBOR', active=True)
+        supplier = Account.objects.create(name='Proveedor Interno')
+        interno, _ = references.add(line, 'LOCAL-58411', tipo='interno', supplier=supplier, estado='declarado')
+        raw = self.excel([['58411-1R000', '', '', 'LOCAL-58411']])
+        preview = self.upload(raw)
+        self.assertEqual(preview.data['summary']['added_codes'], 1)
+        self.assertEqual(self.upload(raw, mode='import', preview_token=preview.data['preview_token']).status_code, 200)
+        public = PartCode.all_objects.get(part=line, code='LOCAL-58411', supplier__isnull=True)
+        self.assertNotEqual(public.tipo, 'interno')
+        self.assertEqual(PartCode.all_objects.get(pk=interno.pk).supplier_id, supplier.pk)
+
     def test_catalog_and_in_file_code_conflicts_report_exact_rows_without_writes(self):
         first = Part.objects.create(sku='FIRST')
         PartCode.objects.create(part=first, brand='OEM', code='SHARED')

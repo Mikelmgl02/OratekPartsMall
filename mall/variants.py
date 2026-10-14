@@ -3,6 +3,7 @@ Reference's line. This module is the only writer of SupplierItem.reference and p
 
     attach(item, ref, status)           hang the item from a Reference (its part follows; I4), and say whether it counts in stock
     vincular(item, line, status)        Vincular: the line's Reference for the item's code (found or created), a waiting code applied
+                                        only by an approval (status matched)
     detach(item)                        no line, no Reference, pending (a waiting code becomes its code)
     reference_for(line, code, brand, supplier, create)   the Reference of a line a variant with this code hangs from
     choose(rows, line_sku, code, brand, supplier)        that choice, on rows already read (the S3 backfill's dry run uses it too)
@@ -12,7 +13,9 @@ Reference's line. This module is the only writer of SupplierItem.reference and p
     rehang(refs, to)                    the variants of some References onto another (a merge's absorb)
     hang(items, to)                     some variants onto a Reference (Separar: the line that holds their key)
     hanging(refs)                       the variants hanging from References (mall.references.retire refuses to retire those)
-    recompute_status(line)              matched on a line in the catalog, pending on any other line; review is left alone
+    settle_status(line_ids)             matched variants a move left on a line outside the catalog become pending (follow, rehang, hang)
+    recompute_status(line)              a line that entered the catalog: its pending variants with no open case become matched; review
+                                        is left alone
     follow_item(item, save kwargs)      SupplierItem.save's transition shim (until S10)
 
 Which Reference (rules 1 and 2 on the variant's own line). The item's key is (clave of its code, its brand; brands compared with
@@ -42,7 +45,7 @@ import copy
 from collections import namedtuple
 
 from django.db import transaction
-from django.db.models import OuterRef, Subquery
+from django.db.models import Exists, OuterRef, Subquery
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
@@ -199,24 +202,44 @@ def reference_for(line, code, brand, supplier, *, create=False, actor=None, sour
     if how == 'nueva':
         try:
             with transaction.atomic():
-                ref, _ = references.add(line, code, brand, tipo=new_reference_tipo(references.brand_key(brand)), estado='declarado',
-                                        source=source, actor=actor)
-            return ref, how
+                ref, added = references.add(line, code, brand, tipo=new_reference_tipo(references.brand_key(brand)), estado='declarado',
+                                            source=source, actor=actor, detail={TAG: stamp('creada', item)})
+            return tagged(ref, added, item, actor), how
         except references.ReferenceConflict:
             if exact:
                 return None, None
             how = 'nueva_interna'
     try:
         with transaction.atomic():
-            ref, _ = references.add(line, code, brand, tipo='interno', supplier=supplier_id, estado='declarado', source=source, actor=actor)
-        return ref, how
+            ref, added = references.add(line, code, brand, tipo='interno', supplier=supplier_id, estado='declarado', source=source,
+                                        actor=actor, detail={TAG: stamp('creada', item)})
+        return tagged(ref, added, item, actor), how
     except references.ReferenceConflict as error:
         held = error.reference
         if (held is None or held.tipo != 'interno' or held.supplier_id != supplier_id or item is None or held.part_id == line.pk
                 or hanging([held]).exclude(pk=item.pk).exists()):
             return None, how
         # The supplier's own code for its only item, on the line the item leaves: it goes along (its variants follow it).
-        return references.update(Reference.all_objects.get(pk=held.pk), part=line, actor=actor), 'interna'
+        held = Reference.all_objects.get(pk=held.pk)
+        moved = references.update(held, part=line, actor=actor,
+                                  detail={**(held.detail or {}), TAG: {**stamp('movida', item), 'desde': str(held.part_id)}})
+        return moved, 'interna'
+
+
+# What the S3 code makes or brings back (detail['s3']), so python -m mall.refactor.s3_variants --rollback finds it outside its manifest:
+# the code before S3 reads every interno code as a plain alterno, so none it made may outlive a rollback.
+TAG = 's3'
+
+
+def stamp(how, item=None):
+    return {'como': how, 'articulo': str(item.pk) if getattr(item, 'pk', None) else None, 'at': timezone.now().isoformat()}
+
+
+def tagged(ref, added, item, actor=None):
+    """ref as references.add returned it: a row it brought back from retirada (added, without this module's tag) gets the tag too."""
+    if added and TAG not in (ref.detail or {}):
+        ref = references.update(ref, detail={**(ref.detail or {}), TAG: stamp('revivida', item)}, actor=actor)
+    return ref
 
 
 
@@ -245,9 +268,14 @@ def attach(item, ref, *, status=None, save=True):
     return item
 
 
+def waiting(item):
+    """Whether a code change waits for review on the item (codigo_pendiente or brand_pendiente)."""
+    return item.codigo_pendiente is not None or item.brand_pendiente is not None
+
+
 def apply_pending(item):
     """The code waiting for review becomes the item's code (not saved). Returns whether one waited."""
-    if item.codigo_pendiente is None and item.brand_pendiente is None:
+    if not waiting(item):
         return False
     item.codigo = item.codigo_pendiente or item.codigo
     item.brand = item.brand if item.brand_pendiente is None else item.brand_pendiente
@@ -255,12 +283,19 @@ def apply_pending(item):
     return True
 
 
-def vincular(item, line, *, status='matched', actor=None, save=True):
-    """Vincular: the item hangs from `line`'s Reference for its code (a waiting code applied first), found or created (reference_for),
-    as a person or an approved case decided. Refuses (VariantConflict) a unificada line or a code no Reference can take."""
+def vincular(item, line, *, status='matched', actor=None, save=True, approve=None):
+    """Vincular: the item hangs from `line`'s Reference for its code, found or created (reference_for), as a person or an approved case
+    decided. approve (by default: status matched, an approval) applies a waiting code first (rule 5b: only review makes a supplier's
+    changed code a Reference); otherwise the item hangs by the code it has and the waiting code keeps waiting (a merge carrying it, a
+    person who leaves it in review). Refuses (VariantConflict) a unificada line or a code no Reference can take."""
     if not references.is_live(line):
         raise VariantConflict(f'El SKU {line.sku} se agrupó en otro: vincula el artículo al SKU en el que se agrupó.')
-    apply_pending(item)
+    if approve is None:
+        approve = status == 'matched'
+    if approve:
+        apply_pending(item)
+    elif waiting(item) and status == 'matched':
+        status = 'review'  # a code change still waits: out of stock (OD7)
     ref, _ = reference_for(line, item.codigo, item.brand, item.supplier_id, create=True, actor=actor, source=declared_by(item), item=item)
     if ref is None:
         raise VariantConflict(f'El código {item.codigo} es un código interno de este proveedor en otro SKU: corrígelo allí antes de vincularlo aquí.')
@@ -286,8 +321,9 @@ def ensure_attached(item, *, actor=None):
     if not item.part_id:
         return False
     if item.reference_id:
-        held = Reference.all_objects.filter(pk=item.reference_id).values('estado', 'part_id').first()
-        if held and held['estado'] != 'retirada' and held['part_id'] == item.part_id:
+        held = Reference.all_objects.select_related('part').filter(pk=item.reference_id).first()
+        if held and held.estado != 'retirada' and held.part_id == item.part_id:
+            item.reference = held  # one read: a load's outcome() and attach() use it and its line from here
             return False
     line = Part._base_manager.get(pk=item.part_id)
     if not references.is_live(line):
@@ -310,7 +346,9 @@ def follow(refs):
     if not ids:
         return 0
     line = Subquery(Reference.all_objects.filter(pk=OuterRef('reference_id')).values('part_id')[:1])
-    return SupplierItem.objects.filter(reference_id__in=ids).update(part_id=line)
+    moved = SupplierItem.objects.filter(reference_id__in=ids).update(part_id=line)
+    settle_status(Reference.all_objects.filter(pk__in=ids).values_list('part_id', flat=True))
+    return moved
 
 
 def rehang(refs, to):
@@ -327,6 +365,7 @@ def rehang(refs, to):
         raise VariantConflict(f'{to.code} es un código interno de otro proveedor.')
     if moved:
         SupplierItem.objects.filter(pk__in=[pk for pk, _ in moved]).update(reference_id=to.pk, part_id=to.part_id, updated_at=timezone.now())
+        settle_status([to.part_id])
     return [str(pk) for pk, _ in moved]
 
 
@@ -339,7 +378,9 @@ def hang(items, to):
     rows = SupplierItem.objects.filter(pk__in=_ids(items))
     if to.tipo == 'interno' and rows.exclude(supplier_id=to.supplier_id).exists():
         raise VariantConflict(f'{to.code} es un código interno de otro proveedor.')
-    return rows.update(reference_id=to.pk, part_id=to.part_id, updated_at=timezone.now())
+    count = rows.update(reference_id=to.pk, part_id=to.part_id, updated_at=timezone.now())
+    settle_status([to.part_id])
+    return count
 
 
 def hanging(refs):
@@ -348,13 +389,32 @@ def hanging(refs):
     return SupplierItem.objects.filter(reference_id__in=_ids(refs))
 
 
+def settle_status(line_ids):
+    """Matched variants that a move left on a line outside the catalog (a Reference taken to a line in referencia or preparación, S4 and
+    S6) leave its stock: pending. review stays review; nothing is promoted here (recompute_status does that when a line enters the
+    catalog). Returns how many changed."""
+    from django.db.models import Q
+    Part, _, SupplierItem = _models()
+    ids = {pk for pk in line_ids if pk is not None}
+    if not ids:
+        return 0
+    outside = Part._base_manager.filter(pk__in=ids).exclude(Q(estado__in=CATALOG) & Q(merged_into__isnull=True))
+    return (SupplierItem.objects.filter(part__in=outside, matching_status='matched')
+            .update(matching_status='pending', updated_at=timezone.now()))
+
+
 def recompute_status(line):
-    """The status of the line's attached variants: matched on a line in the catalog, pending on any other; review is left alone (a
-    code change waiting). Returns how many changed."""
+    """The status of the line's attached variants (a line that entered or left the catalog: S6's publish): matched on a line in the
+    catalog for the pending ones with no open review case, pending on any other line; review is left alone (a code change waiting).
+    Returns how many changed."""
+    from .matching_models import MatchingCase
     _, _, SupplierItem = _models()
-    wanted = 'matched' if in_catalog(line) else 'pending'
-    return (SupplierItem.objects.filter(part_id=line.pk, reference__isnull=False).exclude(matching_status__in=['review', wanted])
-            .update(matching_status=wanted, updated_at=timezone.now()))
+    if not in_catalog(line):
+        return settle_status([line.pk])
+    open_case = MatchingCase.objects.filter(item_id=OuterRef('pk'), status='review')
+    return (SupplierItem.objects.filter(part_id=line.pk, reference__isnull=False, matching_status='pending', codigo_pendiente__isnull=True,
+                                        brand_pendiente__isnull=True).exclude(Exists(open_case))
+            .update(matching_status='matched', updated_at=timezone.now()))
 
 
 # --- a load's outcome ------------------------------------------------------------------------------------------------------------------

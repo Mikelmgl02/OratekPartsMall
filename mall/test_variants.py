@@ -328,6 +328,93 @@ class RetireAndMoveTests(VariantTestCase):
         self.assertEqual((item.part_id, item.reference_id), (source.pk, waiting.pk))
 
 
+class WaitingCodeTests(VariantTestCase):
+    """A code change waiting for review (rule 5b, OD7) is applied only by an approval: Revisar coincidencia's matched, an approved
+    case, Vincular with matched. A status of review or pending, a merge or an apiag-cloud withdrawal leave it waiting."""
+
+    def setUp(self):
+        super().setUp()
+        self.client = APIClient()
+        self.client.force_authenticate(self.root)
+        self.other = make_line('OTHER-555', description='OTRA')
+        self.item = self.load('WC-1', '04111-22152')
+        self.main = self.item.reference_id
+        self.item = self.load('WC-1', 'OTHER-555')
+
+    def patch_item(self, data):
+        return self.client.patch(f'/api/v1/management/inventory/{self.item.pk}/', data, format='json')
+
+    def assert_waiting(self, status):
+        self.item.refresh_from_db()
+        self.assertEqual((self.item.codigo, self.item.codigo_pendiente, self.item.reference_id, self.item.part_id, self.item.matching_status),
+                         ('04111-22152', 'OTHER-555', self.main, self.plain.pk, status))
+        self.assertFalse(Reference.all_objects.filter(code='OTHER-555', part=self.plain).exists())
+
+    def test_revisar_coincidencia_on_its_own_line_keeps_the_code_waiting_until_matched(self):
+        # The dialog sends the item's line with the status it picked.
+        for status in ('review', 'pending'):
+            response = self.patch_item({'part': str(self.plain.pk), 'matching_status': status})
+            self.assertEqual(response.status_code, 200, response.data)
+            self.assert_waiting(status)
+        response = self.patch_item({'matching_status': 'matched'})
+        self.assertEqual(response.status_code, 200, response.data)
+        self.item.refresh_from_db()
+        self.assertEqual((self.item.codigo, self.item.codigo_pendiente, self.item.part_id, self.item.matching_status),
+                         ('OTHER-555', None, self.plain.pk, 'matched'))
+        self.assertEqual((self.item.reference.code, self.item.reference.tipo, self.item.reference.detail['s3']['como']),
+                         ('OTHER-555', 'interno', 'creada'))
+
+    def test_vincular_onto_another_line_in_review_hangs_by_the_old_code(self):
+        response = self.patch_item({'part': str(self.branded.pk), 'matching_status': 'review'})
+        self.assertEqual(response.status_code, 200, response.data)
+        self.item.refresh_from_db()
+        self.assertEqual((self.item.codigo, self.item.codigo_pendiente, self.item.part_id, self.item.matching_status),
+                         ('04111-22152', 'OTHER-555', self.branded.pk, 'review'))
+        self.assertEqual(self.item.reference.code, '04111-22152')
+
+    def test_a_merge_carries_the_waiting_code_without_applying_it(self):
+        target = make_line('TGT-55555', description='BOMBA AGUA')
+        line_merge.settle_variants({self.plain.pk}, target, self.root)
+        self.item.refresh_from_db()
+        self.assertEqual((self.item.codigo, self.item.codigo_pendiente, self.item.part_id, self.item.matching_status),
+                         ('04111-22152', 'OTHER-555', target.pk, 'review'))
+        self.assertFalse(Reference.all_objects.filter(code='OTHER-555').exclude(part=self.other).exists())
+
+    def test_an_item_with_no_line_is_only_pending(self):
+        loose = self.load('WC-2', 'NADIE-123')
+        url = f'/api/v1/management/inventory/{loose.pk}/'
+        for status in ('review', 'matched'):
+            response = self.client.patch(url, {'matching_status': status}, format='json')
+            self.assertEqual(response.status_code, 400, response.data)
+        self.assertEqual(self.client.patch(url, {'matching_status': 'pending'}, format='json').status_code, 200)
+        from django.contrib import admin
+        from django.test import RequestFactory
+        request = RequestFactory().post('/')
+        request.user = self.root
+        form_class = admin.site._registry[SupplierItem].get_form(request, loose)
+        fields = {'matching_status': 'review', 'references': '[]', 'field_sources': '{}', 'material': '', 'origen': '', 'garantia': '',
+                  'calidad': '', 'condicion': '', 'unidades_por_empaque': ''}
+        form = form_class(data=fields, instance=loose)
+        self.assertFalse(form.is_valid())
+        self.assertIn('matching_status', form.errors)
+        form = form_class(data={**fields, 'matching_status': 'matched'}, instance=SupplierItem.objects.get(pk=self.item.pk))
+        self.assertFalse(form.is_valid())
+        self.assertIn('código pendiente', str(form.errors))
+
+    def test_moving_to_a_line_outside_the_catalog_takes_items_out_of_stock_until_it_enters(self):
+        from .lines import create_line, set_estado
+        library = create_line('LIB-0001', estado='referencia', origen='biblioteca')
+        item = self.load('WC-3', '04111-22152-AS')
+        references.update(self.alias, part=library)
+        item.refresh_from_db()
+        self.assertEqual((item.part_id, item.matching_status), (library.pk, 'pending'))
+        self.assert_waiting('review')  # a review stays review wherever it goes
+        set_estado(library, 'publicada')
+        self.assertEqual(variants.recompute_status(library), 1)
+        item.refresh_from_db()
+        self.assertEqual(item.matching_status, 'matched')
+
+
 class VariantDataTests(VariantTestCase):
     """S3.2 (rule 10): the optional data a supplier sends about an article: written only when sent, stamped in field_sources."""
 
