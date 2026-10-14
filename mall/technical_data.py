@@ -69,6 +69,7 @@ def subgrupos_for(pairs, using='default'):
     if not pairs:
         return {}
     grupos = grupos_for({category for category, _ in pairs}, using)
+    grupo_by_id = {grupo.pk: grupo for grupo in grupos.values()}
     by_grupo = {(grupos[category].pk, name.lower()): (category, name) for category, name in pairs}
     by_text = {(category.lower(), name.lower()): (category, name) for category, name in pairs}
     types = PartType.objects.using(using)
@@ -78,10 +79,13 @@ def subgrupos_for(pairs, using='default'):
         for category, name in pairs:
             query |= Q(grupo=grupos[category], name_key=name.lower())
             query |= Q(grupo__isnull=True, category_key=category.lower(), name_key=name.lower())
-        rows = types.alias(name_key=Lower('name'), category_key=Lower('category')).filter(query).select_related('grupo')
+        # No join on the grupo (the models say it is required, and a join would leave out a subgrupo with none yet before 0082): the
+        # grupos are already at hand.
+        rows = list(types.alias(name_key=Lower('name'), category_key=Lower('category')).filter(query))
         found, orphans = {}, {}
         for row in sorted(rows, key=lambda row: row.grupo_id is None):  # a subgrupo in its grupo before one without a grupo
             if row.grupo_id:
+                row.grupo = grupo_by_id[row.grupo_id]
                 pair = by_grupo.get((row.grupo_id, row.name.lower()))
                 if pair:
                     found.setdefault(pair, row)

@@ -19,7 +19,8 @@ from .test_factories import make_line, make_user
 
 def allow_no_grupo():
     """Inside a test's transaction, so it comes back when the test rolls back: lets a subgrupo have no grupo, as 0081 leaves every
-    subgrupo before the backfill (0082 makes the grupo required)."""
+    subgrupo before the backfill (0082 makes the grupo required). Call it before the test writes any subgrupo: PostgreSQL refuses to
+    alter a table with pending (deferred foreign key) trigger events."""
     with connection.cursor() as cursor:
         nullable = {column.name: column.null_ok for column in connection.introspection.get_table_description(cursor, PartType._meta.db_table)}
         if nullable.get('grupo_id') is False:
@@ -146,6 +147,7 @@ class GrupoBackfillTests(TestCase):
     """python -m mall.refactor.s5_grupos on rows as 0081 leaves them: subgrupos with their text and no grupo."""
 
     def setUp(self):
+        allow_no_grupo()  # before any subgrupo is written: PostgreSQL alters no table with pending trigger events
         self.root = make_user('s5-backfill-root', superuser=True)
         self.output = tempfile.TemporaryDirectory()
         self.addCleanup(self.output.cleanup)
@@ -260,3 +262,4 @@ class GrupoBackfillTests(TestCase):
         self.assertEqual(code, 1)
         self.assertIn('otra base', out)
         self.assertFalse(Grupo.objects.exists())
+

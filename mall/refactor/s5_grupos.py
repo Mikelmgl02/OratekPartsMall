@@ -134,11 +134,14 @@ def tightened():
 # --- plan ----------------------------------------------------------------------------------------------------------------------------
 
 def subgrupo_rows(schema):
-    """Every subgrupo's pk, category, name, grupo_id and its grupo's nombre; before 0081, without a grupo."""
-    from ..models import PartType
-    if schema:
-        return list(PartType.objects.order_by('pk').values('pk', 'category', 'name', 'grupo_id', 'grupo__nombre'))
-    return [{**row, 'grupo_id': None, 'grupo__nombre': None} for row in PartType.objects.order_by('pk').values('pk', 'category', 'name')]
+    """Every subgrupo's pk, category, name, grupo_id and its grupo's nombre; before 0081, without a grupo. No join: the models of the
+    tighten commit say the grupo is required, and a join would leave out the subgrupos that have none yet."""
+    from ..models import Grupo, PartType
+    if not schema:
+        return [{**row, 'grupo_id': None, 'grupo__nombre': None} for row in PartType.objects.order_by('pk').values('pk', 'category', 'name')]
+    names = dict(Grupo.objects.values_list('pk', 'nombre'))
+    return [{**row, 'grupo__nombre': names.get(row['grupo_id'])}
+            for row in PartType.objects.order_by('pk').values('pk', 'category', 'name', 'grupo_id')]
 
 
 def plan(schema=True):
