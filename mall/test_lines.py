@@ -365,6 +365,9 @@ class LifecycleBackfillTests(TestCase):
         self.assertEqual(Part.objects.get(pk=self.from_proposal.pk).origen, 'catalogo')
         self.assertFalse(Brand.objects.exists())
         self.assertFalse(BrandAlias.objects.exists())
+        code, out = self.run_cli('--rollback', '--user', self.root.username)  # again: nothing left to put back
+        self.assertEqual(code, 0, out)
+        self.assertIn('0 filas restauradas · 0 marcas o alias borrados · 0 cambiadas', out)
 
     def test_rollback_refuses_while_the_tighten_checks_are_in_place(self):
         with patch.object(s1_lifecycle, 'checks_in_place', return_value=True):

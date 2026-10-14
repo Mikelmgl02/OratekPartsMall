@@ -400,6 +400,8 @@ def undo(log, run):
         for pk, chain in parts.items():
             row = locked.get(pk)
             now = recorded({field: row[field] for field in PART_FIELDS}) if row else None
+            if now is None or now == chain[0]['before']:  # gone, or already back (an earlier rollback)
+                continue
             if now != chain[-1]['after']:
                 changed.append(f"línea {chain[-1].get('sku') or pk}: cambió después de aplicar")
                 continue
@@ -423,7 +425,7 @@ def undo(log, run):
     for pk, chain in brands.items():  # familias first: a created brand may head one
         updates = [line for line in chain if line['action'] == 'update']
         brand = Brand.objects.select_for_update().filter(pk=pk).first()
-        if brand is None or not updates:
+        if brand is None or not updates or brand.familia_id == updates[0]['before']['familia_id']:
             continue
         if brand.familia_id != updates[-1]['after']['familia_id']:
             changed.append(f'marca {brand.nombre}: su familia cambió después de aplicar')

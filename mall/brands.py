@@ -109,11 +109,10 @@ def rekey(old, new, *, reason):
     the rest move in one UPDATE. Returns {'moved', 'kept': [{id, code, part}], 'cases': [case ids]}."""
     from .matching_queue import enqueue_matching
     from .models import PartCode
-    rows = list(PartCode.objects.select_for_update().filter(brand=old).select_related('part').order_by('pk'))
+    rows = list(PartCode.objects.select_for_update(of=('self',)).filter(brand=old).order_by('pk'))  # the codes only: lines stay unlocked
     if not rows:
         return {'moved': 0, 'kept': [], 'cases': []}
-    taken = {row.code: row for row in PartCode.objects.select_for_update().filter(brand=new, code__in=[r.code for r in rows])
-             .select_related('part')}
+    taken = {row.code: row for row in PartCode.objects.select_for_update(of=('self',)).filter(brand=new, code__in=[r.code for r in rows])}
     moving, kept, cases = [], [], []
     for row in rows:
         other = taken.get(row.code)
