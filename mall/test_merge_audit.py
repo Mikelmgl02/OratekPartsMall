@@ -73,8 +73,9 @@ class MergeAuditTests(TestCase):
                          {'merges': 10, 'sources': 13, 'failing_merges': 8, 'failing_sources': 9, 'different_parts': 2})
         self.assertEqual(summary['reasons'], {'lifecycle': 1, 'unknown': 1, 'reverted': 2, 'variant': 1, 'tag': 1, 'base': 1, 'head': 1, 'spec': 1})
         self.assertEqual(summary['merges_by_reason']['reverted'], 1)
-        # Today's spec_conflict on one identical LH/RH text is set aside (S0.2 fixes it), and counted apart.
-        self.assertEqual(summary['same_text_spec_conflicts'], 2)
+        # Before S0.2 spec_conflict flagged the identical RH/LH text of 12361-0L020's two sources, which the audit set aside and counted
+        # apart; since S0.2 (Matching) a description that names both sides names neither, so nothing is set aside.
+        self.assertEqual(summary['same_text_spec_conflicts'], 0)
         self.assertEqual(summary['state_today'], {'unificado': 8})
 
     def test_once_d4_is_applied_the_audit_reads_the_table_as_it_is(self):
