@@ -160,7 +160,6 @@ test('a supplier sets prices in the panel: viewing never opens the order, Fijar 
   expect(reviews).toEqual([]);  // looking at it in the panel does not lock the client's items
   await document.getByRole('button', { name: 'Fijar precios', exact: true }).click();
   await expect.poll(() => reviews).toEqual(['POST']);
-  await expect(document.getByRole('navigation', { name: 'Secciones del acuerdo', exact: true }).getByRole('button', { name: 'Cotización', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(document.locator('.quotation-grid[aria-label="Artículos de la cotización"]')).toBeVisible();
   await expect(document.getByRole('button', { name: /Confirmar y enviar cotización/ })).toBeVisible();
 });

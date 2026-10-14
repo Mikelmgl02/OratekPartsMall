@@ -142,7 +142,7 @@ test('the supplier moves the order through Procesando and En camino and the clie
   await expect(deal.getByRole('status').filter({ hasText: 'Orden marcada como Procesando. Avisamos al cliente.' })).toBeVisible();
   await expect(deal.locator('.supplier-request-status').first()).toHaveText('Procesando');
   await expect(steps(deal).locator('[aria-current="step"]')).toContainText('Procesando');
-  await expect(deal.getByText('HANDSHAKED · Acuerdo confirmado', { exact: true })).toBeVisible();
+  await expect(deal.locator('.deal-quote-heading')).toContainText('Acordada ·');  // the document says when it was agreed
   await expect(button('Marcar como procesando')).toHaveCount(0);
   for (const name of ['Marcar en camino', 'Marcar como entregado', 'Reportar faltante', 'Cancelar acuerdo']) await expect(button(name)).toHaveCount(1);
 
@@ -274,7 +274,7 @@ test('the supplier reports a shortfall and delivery waits for the client', async
   for (const name of ['Marcar en camino', 'Marcar como entregado', 'Reportar faltante']) await expect(deal.getByRole('button', { name, exact: true })).toHaveCount(0);
   await expect(deal.getByRole('button', { name: 'Cancelar acuerdo', exact: true })).toBeVisible();
   await expect(deal.locator('.supplier-request-status').first()).toHaveText('Procesando');
-  await expect(deal.getByRole('region', { name: 'Acuerdo vigente' })).toContainText('2 por responder');
+  await expect(deal.locator('.deal-items')).toContainText('Faltante reportado: 2 por responder');  // in the grid, under its item
   await page.screenshot({ path: '/tmp/motionpartes-deal-shortfall-supplier.png' });
   expect(mock.unexpected).toEqual([]);
 });
@@ -295,9 +295,11 @@ test('the client accepts the reduced agreement', async ({ page }) => {
   await deal.getByRole('button', { name: 'Sí, aceptar', exact: true }).click();
   await expect(deal.getByRole('status').filter({ hasText: 'Aceptaste el acuerdo reducido.' })).toBeVisible();
   expect(mock.actions).toEqual([{ action: 'accept_shortfall', expected_version: 5, quotation_id: quoteId, operation_id: expect.any(String) }]);
-  const agreement = deal.getByRole('region', { name: 'Acuerdo vigente' });
-  await expect(agreement.getByRole('row').filter({ hasText: 'A-001' })).toContainText('2 aceptadas');
-  await expect(agreement).toContainText(total);
+  // The grid shows what remains: the accepted shortfall under its item, and the reduced total (also the document's).
+  const agreement = deal.locator('.deal-items');
+  await expect(agreement.locator('.deal-items-inline')).toContainText('2 faltantes aceptados · quedan 1');
+  await expect(agreement.locator('tfoot')).toContainText(total);
+  await expect(deal.locator('.deal-quote-heading')).toContainText(total);
   await expect(deal.getByRole('region', { name: 'Faltante reportado' })).toHaveCount(0);
   expect(mock.unexpected).toEqual([]);
 });

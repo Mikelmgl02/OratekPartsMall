@@ -1,12 +1,10 @@
 'use client';
 import { useEffect, useState } from 'react';
-import dynamic from 'next/dynamic';
 import { BadgeCheck, CircleX, LoaderCircle, PackageCheck, PackageOpen, TriangleAlert, Truck } from 'lucide-react';
 import { UppercaseTextarea } from './uppercase-field';
 import { ApiError } from '@/lib/types';
-import { ACTIVE_AGREEMENT, GOODS_HELD, cancelReasons, cancelSides, shortfallReasons, type Deal, type DealAgreement } from '@/lib/deal-types';
+import { ACTIVE_AGREEMENT, GOODS_HELD, cancelReasons, cancelSides, shortfallReasons, type Deal } from '@/lib/deal-types';
 
-const AgreementGrid = dynamic(() => import('./agreement-grid'), { ssr: false, loading: () => <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando acuerdo…</div> });
 const date = (value: string) => new Date(value).toLocaleString('es-PA', { timeZone: 'America/Panama', dateStyle: 'medium', timeStyle: 'short' });
 // A date that ends a sentence: its own "a. m." closes it.
 const dateEnd = (value: string) => date(value).replace(/\.?$/, '.');
@@ -53,7 +51,6 @@ export default function DealAfterHandshake({ deal, supplier, busy, act, canDecid
   const stillHeld = stockUnits ? stockUnits.held > 0 : reserved;
   const heldSentence = stockUnits && stockUnits.held > 0 ? `Sus ${stockUnits.held} ${stockUnits.held === 1 ? 'unidad sigue reservada' : 'unidades siguen reservadas'} hasta que tu próxima carga de existencias las descuente.`
     : 'Sus unidades siguen reservadas hasta que tu próxima carga de existencias las descuente.';
-  const changed = agreement?.lines.some(line => line.missing || line.pending_missing);
   const reported = Object.entries(missing).map(([order_line_id, value]) => ({ order_line_id, missing: Number(value) })).filter(line => line.missing > 0);
   const projected = agreement ? agreement.lines.reduce((sum, line) => sum + (line.final - line.pending_missing), 0) : 0;
   const projectedTotal = agreement ? agreement.lines.reduce((sum, line) => sum + Number(line.unit_price) * (line.final - line.pending_missing), 0) : 0;
@@ -104,7 +101,6 @@ export default function DealAfterHandshake({ deal, supplier, busy, act, canDecid
       {supplier && reserved && (!shipped ? <p>Las unidades que el acuerdo aún reservaba volvieron a estar disponibles.</p>
         : !stockUnits || stockUnits.released_after_dispatch > 0 ? <p>Las unidades que el acuerdo aún reservaba volvieron a estar disponibles; si no regresaron a tu bodega, corrige su saldo en {inventoryHref ? <a href={inventoryHref}>Inventario</a> : 'Inventario'}.</p>
         : stockUnits.settled > 0 ? <p>Sus unidades ya se habían descontado de tus existencias; si la mercancía regresa, súmalas a tu inventario.</p> : null)}</div></div>}
-    {agreement && changed && <AgreementTable agreement={agreement} currency={currency}/>}
     {pending && <div className="deal-shortfall-pending" role="region" aria-label="Faltante reportado"><TriangleAlert size={20}/><div>
       <strong>{supplier ? 'Faltante reportado · esperando la respuesta del cliente' : 'El proveedor no tiene todas las unidades'}</strong>
       <ul>{pending.lines.map(line => <li key={line.order_line_id}><strong>{line.codigo}</strong>: faltan {line.missing} de {line.agreed}</li>)}</ul>
@@ -165,10 +161,4 @@ export default function DealAfterHandshake({ deal, supplier, busy, act, canDecid
       <div><button type="submit" className="button primary danger" disabled={busy || !reason}>{busy ? <LoaderCircle size={15} className="spin"/> : <CircleX size={15}/>}Cancelar el acuerdo</button>{back}</div>
     </form>}
   </section>;
-}
-
-function AgreementTable({ agreement, currency }: { agreement: DealAgreement; currency: string }) {
-  return <section className="deal-agreement" aria-label="Acuerdo vigente"><div className="deal-quote-heading"><div><h3>Acuerdo vigente</h3><small>Las unidades acordadas menos los faltantes aceptados</small></div>
-    <strong>{money(agreement.total, currency)}</strong></div>
-    <AgreementGrid agreement={agreement} currency={currency}/></section>;
 }

@@ -190,7 +190,7 @@ for (const mobile of [false, true]) test(`${mobile ? 'mobile' : 'desktop'}: priv
   await dialog(page).getByRole('button', {name:'Confirmar cotización', exact:true}).click();
   expect(state.getOrder().status).toBe('quoted');
   await dialog(page).getByRole('button', {name:'Sí, confirmar acuerdo', exact:true}).click();
-  await expect(dialog(page)).toContainText('HANDSHAKED · Acuerdo confirmado');
+  await expect(dialog(page).locator('.deal-document .deal-quote-heading').first()).toContainText('Acordada ·');
   await expect(dialog(page).getByRole('button', {name:'Solicitar ajuste', exact:true})).toHaveCount(0);
   // What v2 changed against v1, with v1's whole document folded under the earlier versions.
   const changes = dialog(page).getByRole('region', {name:'Cambios entre versiones', exact:true});
@@ -214,7 +214,7 @@ for (const mobile of [false, true]) test(`${mobile ? 'mobile' : 'desktop'}: priv
   await expect(page.getByRole('article', {name:/ORD-PRUEBA-001/})).toContainText('Procesando');
   await page.getByRole('button', {name:'Ver enviada ORD-PRUEBA-001', exact:true}).click();
   await quoteTab(page);
-  await expect(dialog(page).getByText('HANDSHAKED · Acuerdo confirmado', {exact:true})).toBeVisible();
+  await expect(dialog(page).locator('.deal-document .deal-quote-heading').first()).toContainText('Acordada ·');
   await expect(dialog(page).getByRole('note', { name: 'Siguiente paso' })).toContainText('El proveedor está preparando tu orden.');
   await dialog(page).getByRole('button', {name:'Cerrar ventana', exact:true}).click();
   expect(state.messages).toHaveLength(2);
@@ -319,7 +319,7 @@ test('a client accept refused for availability keeps the deal open, explains it 
   await expect(adjust).toHaveClass(/primary/);
   await expect(adjust).toHaveAccessibleDescription('Pide al proveedor una nueva versión con las unidades que puede confirmar.');
   await expect(dialog(page).getByRole('button', {name:'Confirmar cotización', exact:true})).toHaveClass(/soft/);
-  await expect(dialog(page).getByText('HANDSHAKED · Acuerdo confirmado', {exact:true})).toHaveCount(0);
+  await expect(dialog(page).locator('.deal-document .deal-quote-heading').first()).not.toContainText('Acordada ·');
   expect(state.getOrder().status).toBe('quoted');
   await adjust.click();
   await dialog(page).getByLabel('¿Qué necesitas ajustar?', {exact:true}).fill('confirmar disponibles');

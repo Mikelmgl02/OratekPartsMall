@@ -288,10 +288,12 @@ test('like a desktop chat app: the Cotizaciones table on the right opens each do
   await large.getByRole('button', { name: 'Cerrar ventana', exact: true }).click();
   await expect(large).toHaveCount(0);
   await expect(panel).toBeVisible();
-  const tabs = panel.getByRole('navigation', { name: 'Secciones del acuerdo', exact: true });
-  await expect(tabs.getByRole('button')).toHaveText(['Cotización', 'Actividad']);
-  await tabs.getByRole('button', { name: 'Actividad', exact: true }).click();
-  await expect(panel.getByRole('region', { name: 'Cotización vigente v2', exact: true })).toBeHidden();
+  // One sheet, no tabs: the activity folds at its end.
+  await expect(panel.getByRole('navigation', { name: 'Secciones del acuerdo', exact: true })).toHaveCount(0);
+  const activity = panel.locator('.deal-activity');
+  await activity.locator('summary').click();
+  await expect(activity.locator('.deal-events')).toBeVisible();
+  await expect(panel.getByRole('region', { name: 'Cotización vigente v2', exact: true })).toBeVisible();
   await panel.getByRole('button', { name: 'Volver a las cotizaciones', exact: true }).click();
   await expect(table).toBeVisible();
   await docsToggle.click();  // pressed again: the column hides, the chat stays

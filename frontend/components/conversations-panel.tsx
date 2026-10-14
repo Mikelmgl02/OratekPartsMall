@@ -6,7 +6,6 @@ import Modal from './modal';
 import ConversationList, { mostRecent } from './conversation-list';
 import ConversationDocuments, { type ConversationDocument } from './conversation-documents';
 import DealDetail, { DealChat } from './deal-detail';
-import DealStatusBadge from './deal-status';
 import { type Account, type Page, request } from '@/lib/types';
 import { InboxConversation, InboxTarget, targetOf } from '@/lib/inbox';
 import { onDealNudge } from '@/lib/realtime';
@@ -57,8 +56,6 @@ export default function ConversationsPanel({ initial, onClose, onShowing }: { in
   // The conversation's orders for the table, read again when one of them changes (the websocket's nudge) and every half minute.
   const [docs, setDocs] = useState<ConversationDocument[] | null>(null);
   const [docsFailed, setDocsFailed] = useState(false);
-  // Bumped by the open document's status badge: the document goes back to the order's current stage.
-  const [currentStage, setCurrentStage] = useState(0);
   const docsPath = selected?.threadId ? `/api/market/accounts/${selected.account.id}/threads/${selected.threadId}/orders` : null;
   const docsRequest = useRef(0);
   const loadDocs = useCallback(async () => {
@@ -199,7 +196,6 @@ export default function ConversationsPanel({ initial, onClose, onShowing }: { in
   const hasOrders = !!selected?.orderId;
   const sideShown = hasOrders && layout.sideOpen;
   const count = docs?.length ?? thread?.order_count ?? 0;
-  const opened = docs?.find(item => item.id === selected?.orderId);
   const toggleSide = () => setLayout(current => ({ ...current, sideOpen: !current.sideOpen }));
 
   return <Modal title="Conversaciones" className={`inbox-modal${selected ? ' has-selection' : ''}`} onClose={onClose}>
@@ -233,8 +229,7 @@ export default function ConversationsPanel({ initial, onClose, onShowing }: { in
                   ? <Link className="button soft small inbox-open-order" href={`/proveedor/${selected.account.id}/ordenes/${selected.orderId}`} onClick={onClose} title="Abrir orden"><ArrowUpRight size={15}/><span>Abrir orden</span></Link>
                   : <button type="button" className="button soft small inbox-open-order" onClick={() => setDealOpen(true)} title="Abrir orden"><ArrowUpRight size={15}/><span>Abrir orden</span></button>}
               </div>
-              <div className="inbox-doc-title"><h3>{selected.reference}</h3>{opened && <DealStatusBadge status={opened.status} onClick={() => setCurrentStage(value => value + 1)}/>}</div>
-              <DealDetail key={selected.orderId} embedded currentStage={currentStage} account={accountOf(selected)} orderId={selected.orderId} reference={selected.reference} side={selected.side}
+              <DealDetail key={selected.orderId} embedded account={accountOf(selected)} orderId={selected.orderId} reference={selected.reference} side={selected.side}
                 onChanged={() => void loadDocs()} onPricing={setPricing}
                 onCopyToChat={text => { setChatInsert({ text, id: Date.now() }); if (!wide()) setLayout(current => ({ ...current, sideOpen: false })); }}/>
             </div>}

@@ -1256,6 +1256,10 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .deal-items tr.deal-items-off td { color:#9aa29b; }
 .deal-items strong.deal-item-amount { display:inline; color:var(--ink); font-size:12.5px; font-weight:700; }
 .deal-items tr.deal-items-off strong.deal-item-amount { color:#9aa29b; }
+.deal-items .deal-items-inline td { padding:0 10px 8px; }
+.deal-items .deal-items-inline div { display:flex; flex-wrap:wrap; gap:4px 14px; padding:5px 9px; border-radius:7px; font-size:12px; }
+.deal-items .deal-items-inline .accepted { background:#f7f1ee; color:#8a3f2c; }
+.deal-items .deal-items-inline .pending { background:#fff4dc; color:#7d5a1c; }
 .deal-items .deal-items-group th { padding:6px 10px; background:#f7f8f4; color:#3b4540; letter-spacing:.5px; }
 .deal-items .deal-items-group span { margin-left:4px; color:var(--muted); font-weight:500; }
 /* The suggested price and its origin (deal-detail.tsx SuggestedPrice) wrap in their own column, over the app's generic cell styles. */
@@ -1318,6 +1322,33 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .deal-next-step.done { background:#e6f2df; color:#2f5a2a; }
 .deal-next-step.cancelled { background:#f8e9e5; color:#8a3f2c; }
 .deal-looking-back { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:6px 12px; padding:9px 12px; border-radius:10px; background:#f3f1fb; color:#4e4382; font-size:12.5px; }
+/* The order's document as one sheet (deal-detail.tsx, the template's layout): header (reference, current-stage badge, decisions), stages,
+   next step, then the document; in the conversations panel it is a single card with full-width bands. */
+.deal-sheet-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px 16px; }
+.deal-sheet-head .inbox-doc-title { padding-bottom:0; border-bottom:0; }
+.deal-sheet-head h2 { margin:0; font-size:17px; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.deal-sheet-head small { display:block; margin-top:3px; color:var(--muted); font-size:12px; }
+.deal-sheet-actions { display:grid; grid-template-columns:minmax(0, 1fr); gap:14px; }
+.deal-sheet-actions:empty { display:none; }
+.deal-handshake-parties { display:flex; flex-wrap:wrap; gap:6px; margin-top:7px; }
+.deal-handshake-parties span { padding:2px 9px; border-radius:999px; background:#f1efe6; color:#7a6a3a; font-size:11px; font-weight:700; }
+.deal-handshake-parties span.ok { background:#e6f2d6; color:#44652d; }
+.deal-detail.deal-sheet, .deal-embedded .deal-detail.deal-sheet { gap:0; border:1px solid var(--line); border-radius:15px; background:#fff; overflow:hidden; }
+.deal-sheet > .deal-sheet-head { padding:16px 18px; border-bottom:1px solid var(--line); }
+.deal-sheet > .deal-stages { padding:8px 18px; border-bottom:1px solid var(--line); }
+.deal-sheet > .deal-next-step, .deal-sheet > .deal-looking-back { border-radius:0; padding:9px 18px; border-bottom:1px solid var(--line); }
+.deal-sheet > .deal-pair-profile, .deal-sheet > .deal-reject, .deal-sheet > .deal-shortfall-alert, .deal-sheet > .notice { margin:12px 18px 0; }
+.deal-sheet .deal-quote-tab { gap:0; }
+.deal-sheet .deal-document { border:0; border-radius:0; }
+.deal-sheet .deal-document > .notice { margin:12px 18px 0; }
+.deal-sheet .deal-quote-heading { background:#f7f9f4; border-bottom:1px solid var(--line); }
+.deal-client-decisions:empty { display:none; }
+.deal-sheet .deal-sheet-actions:has(> :not(:empty)) { padding:14px 18px; border-top:1px solid var(--line); }
+.deal-sheet .deal-sheet-actions:not(:has(> :not(:empty))) { display:none; }
+.deal-sheet .deal-after { margin-top:0; }
+.deal-activity { padding:12px 18px; border-top:1px solid var(--line); color:var(--muted); font-size:12.5px; }
+.deal-activity > summary { display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-weight:600; }
+.deal-activity .deal-events { margin-top:10px; }
 /* What each quotation version changed (quote-changes.tsx). */
 .deal-quote-changes { margin:12px 18px; padding:10px 12px; border:1px solid #dfe6d6; border-radius:10px; background:#fafcf6; font-size:12.5px; }
 .deal-quote-changes h4 { margin:0 0 4px; font-size:12.5px; }
