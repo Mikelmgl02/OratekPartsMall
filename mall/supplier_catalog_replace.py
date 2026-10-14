@@ -3,15 +3,20 @@
     python -m mall.supplier_catalog_replace --dry-run|--apply FILE [FILE ...] [--report DIR] [--user USERNAME]
 
 FILE is a normalized extract (mall.supplier_catalog_import) of a catalog imported before, under the same title and year, so the
-citations match. A catalog imported from several extracts under one citation (ASVA CV and its OEM-only extract) is replaced with all
-of them at once, read as one: replacing one alone would take the numbers only the other prints for misreadings. Only rows that cite
-that catalog change, and each ends as an import of FILE alone would leave it:
+citations match, and with the catalog key of the extract it corrects. A catalog imported from several extracts under one citation
+(ASVA CV and its OEM-only extract) is replaced with all of them at once, read as one and given in their original import order (a
+number none of them printed before takes the first one's key; one already filed keeps its own). Replacing only some of them would
+take the numbers only the others print for misreadings, so a run that leaves out an extract key the catalog's sources name is
+refused, and so are extracts of different catalogs. Only rows that cite that catalog change, and each ends as an import of FILE
+alone would leave it:
 - Aftermarket codes under an OEM number (OEMCrossReference): a code FILE does not file under the number loses the catalog's citations;
   with none left it is retired the way Biblioteca OEM's Retirar does (OEMCrossReferenceRetired, by --user), so no import files it
   again. A code FILE files too keeps its other citations and takes FILE's pages.
 - OEM numbers: a number FILE does not print loses the catalog's source. With no source left it is deleted, its codes included, when
   nothing else holds it: no alterno points at it, no tie of another source or of a retired SKU, and nobody disputed, annotated,
   chained or edited it. A number FILE prints takes FILE's source detail (its items and pages; the import keeps the first sighting's).
+  When FILE turns it into a drive-shaft number listed for a CV component, or back, its description and part type follow (SEMIEJE
+  (EJE COMPLETO) / SEMIEJES, or the component's), each only while it still holds what the catalog gave it.
 - Catalog ties of active SKUs (PartOEMLink, source catalog): a tie FILE does not make loses the catalog's citations, and goes with none
   left; a kept one takes FILE's citations.
 - Then the import files FILE's numbers, codes and ties. It writes no company alternos, OEM alternos, measurements or subgrupos and
@@ -74,6 +79,33 @@ def held(ref, prefix):
     return False
 
 
+def extract_keys(data):
+    """The catalog keys of the extracts given (merged marks each item with its own)."""
+    return {data['catalog']['key']} | {item['_extract'] for item in data['items'] if item.get('_extract')}
+
+
+def missing_extracts(data):
+    """The extract keys the catalog's sources name that none of the extracts given has: replacing without them would take every
+    number only they print."""
+    from .oem_reference_models import OEMReferenceSource
+    from .supplier_catalog_import import citation
+    named = {(detail or {}).get('catalog') for detail in OEMReferenceSource.objects.filter(kind='aftermarket_catalog', citation=citation(data['catalog']))
+             .values_list('detail', flat=True)}
+    return sorted(key for key in named - extract_keys(data) if key)
+
+
+def retype(ref, source, row):
+    """{field: value} the number takes when FILE turns its drive-shaft flag (assembly_number_listed_for_component) on or off: the
+    description and part type an import of FILE gives it, each only while it still holds what the catalog gave it before."""
+    from .supplier_catalog_import import ASSEMBLY_TEXT
+    was = bool((source.detail or {}).get('assembly_number_listed_for_component'))
+    if was == bool(row['assembly']):
+        return {}
+    before = ASSEMBLY_TEXT if was else (row['component'][0][:300], row['component'][1])
+    after = (row['description'][:300], row['part_type'])
+    return {field: new for field, old, new in zip(('description', 'part_type'), before, after) if getattr(ref, field) == old and old != new}
+
+
 def plan(data):
     """Everything an apply would change, decided read-only: the import job for FILE and the changes per table."""
     from .catalog_suffixes import suffix_table
@@ -90,6 +122,7 @@ def plan(data):
     filed = filed_codes(job)
     ties = {(str(pid), (manufacturer_name(manufacturer), number)): sorted(cited) for (pid, (manufacturer, number)), cited in job.catalog_links.items()}
     changes = {'numbers': [], 'codes': [], 'ties': [], 'alternos': []}
+    extracts = extract_keys(data)
 
     gone = set()
     for source in OEMReferenceSource.objects.filter(kind='aftermarket_catalog', citation=prefix).select_related('reference').order_by('reference__manufacturer', 'reference__code'):
@@ -97,8 +130,14 @@ def plan(data):
         row = numbers.get((ref.manufacturer, ref.code))
         if row is not None:
             detail = {**{k: v for k, v in (source.detail or {}).items() if k not in IMPORTER_DETAIL}, **source_detail(job, row)}
+            if (source.detail or {}).get('catalog') in extracts:  # the extract that filed it first, whatever order they come in
+                detail['catalog'] = source.detail['catalog']
             if detail != source.detail:
                 changes['numbers'].append({'action': 'detail', 'ref': ref, 'source': source, 'detail': detail})
+            fields = retype(ref, source, row)
+            if fields:
+                changes['numbers'].append({'action': 'retype', 'ref': ref, 'source': source, 'fields': fields,
+                                           'before': {field: getattr(ref, field) for field in fields}})
         elif ref.sources.exclude(pk=source.pk).exists() or held(ref, prefix):
             changes['numbers'].append({'action': 'drop_source', 'ref': ref, 'source': source})
         else:
@@ -166,6 +205,10 @@ def apply_changes(job, changes, actor):
         if change['action'] == 'detail':
             change['source'].detail = change['detail']
             change['source'].save(update_fields=['detail'])
+        elif change['action'] == 'retype':
+            for field, value in change['fields'].items():
+                setattr(change['ref'], field, value)
+            refresh_status(change['ref'], change['ref'].updated_by, changed=True)  # what the import writes: no one's edit
         elif change['action'] == 'drop_source':
             change['source'].delete()
             refresh_status(change['ref'], actor, changed=True)
@@ -199,8 +242,8 @@ def write_report(directory, changes):
             writer.writerows(rows)
 
     table('numbers.csv', ['accion', 'fabricante', 'numero', 'id_numero', 'detalle_antes', 'detalle_despues'],
-          [[c['action'], c['ref'].manufacturer, c['ref'].code, c['ref'].pk, json.dumps(c['source'].detail, ensure_ascii=False),
-            json.dumps(c.get('detail', {}), ensure_ascii=False)] for c in changes['numbers']])
+          [[c['action'], c['ref'].manufacturer, c['ref'].code, c['ref'].pk, json.dumps(c.get('before', c['source'].detail), ensure_ascii=False),
+            json.dumps(c.get('detail', c.get('fields', {})), ensure_ascii=False)] for c in changes['numbers']])
     table('codes.csv', ['accion', 'fabricante', 'numero', 'marca', 'codigo', 'id_equivalencia', 'citas_antes', 'citas_despues'],
           [[c['action'], c['row'].reference.manufacturer, c['row'].reference.code, c['row'].brand, c['row'].code, c['row'].pk,
             ' | '.join(c['row'].citations), ' | '.join(c['citations'])] for c in changes['codes']])
@@ -225,13 +268,22 @@ def merged(datasets):
 
 
 def run(path, *, apply=False, report_dir=None, username=None, stdout=None):
-    """path: one extract, or a list of the extracts of one catalog."""
+    """path: one extract, or a list of the extracts of one catalog. None when the extracts are refused or the lock is busy."""
     from django.contrib.auth import get_user_model
     from django.db import transaction
     from .oem_finder import matching_lock
     stdout = stdout or sys.stdout
     paths = [path] if isinstance(path, (str, os.PathLike)) else list(path)
-    data = merged([json.load(open(p, encoding='utf-8')) for p in paths])
+    try:
+        data = merged([json.load(open(p, encoding='utf-8')) for p in paths])
+    except ValueError as error:
+        stdout.write(f'{error} No se cambia nada.\n')
+        return None
+    missing = missing_extracts(data)
+    if missing:
+        stdout.write(f"El catálogo también se importó de {', '.join(missing)}: pasa todos sus extractos juntos, en el orden en que se "
+                     'importaron. Sin ellos se borrarían los números que solo esos imprimen. No se cambia nada.\n')
+        return None
     actor = get_user_model().objects.get(username=username) if username else None
 
     def execute():
@@ -251,7 +303,8 @@ def run(path, *, apply=False, report_dir=None, username=None, stdout=None):
                   'alternos_to_review': len(changes['alternos']), 'alternos_skus': len({c['code'].part_id for c in changes['alternos']})}
         n, c, t = counts['numbers'], counts['codes'], counts['ties']
         stdout.write(f"{'Aplicado' if apply else 'Simulación'} · {job.report['title']} · números: {n.get('delete', 0)} borrados, "
-                     f"{n.get('drop_source', 0)} sin la fuente del catálogo, {n.get('detail', 0)} con detalle corregido, {imported['oem_new']} nuevos · "
+                     f"{n.get('drop_source', 0)} sin la fuente del catálogo, {n.get('detail', 0)} con detalle corregido, "
+                     f"{n.get('retype', 0)} con tipo corregido, {imported['oem_new']} nuevos · "
                      f"equivalencias: {c.get('retire', 0)} retiradas, {c.get('with_number', 0)} con su número, {c.get('drop_citation', 0)} sin la cita, "
                      f"{c.get('recite', 0)} con citas corregidas, {imported['cross_reference_new']} nuevas · vínculos: {t.get('remove', 0)} retirados, "
                      f"{t.get('drop_citation', 0)} sin la cita, {t.get('recite', 0)} con citas corregidas, {imported['catalog_link_new']} nuevos · "
@@ -272,7 +325,8 @@ def main(argv=None, stdout=None):
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--dry-run', action='store_true', help='Calcula todo sin escribir nada.')
     mode.add_argument('--apply', action='store_true', help='Retira lo que el extracto corregido no registra e importa el extracto.')
-    parser.add_argument('files', nargs='+', help='Extracto JSON normalizado y corregido (varios si el catálogo se importó de varios extractos).')
+    parser.add_argument('file', nargs='+', help='Extracto JSON normalizado y corregido; si el catálogo se importó de varios extractos, '
+                                                'todos, en el orden en que se importaron.')
     parser.add_argument('--report', help='Carpeta donde escribir los CSV del plan.')
     parser.add_argument('--user', help='Usuario que figura como autor de las equivalencias retiradas.')
     options = parser.parse_args(argv)
@@ -281,7 +335,7 @@ def main(argv=None, stdout=None):
     django.setup()
     from .refactor.guard import require_freeze
     require_freeze(options.apply)
-    result = run(options.files, apply=options.apply, report_dir=options.report, username=options.user, stdout=stdout)
+    result = run(options.file, apply=options.apply, report_dir=options.report, username=options.user, stdout=stdout)
     if result is not None:
         (stdout or sys.stdout).write(json.dumps(result, ensure_ascii=False) + '\n')
     sys.exit(0 if result is not None else 1)

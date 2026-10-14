@@ -137,29 +137,80 @@ class SeveralExtractsReplaceTests(Fresh, TestCase):
         self.paths = []
         for data in (extract([joint], key='cv', title='ASVA CV', brand='ASVA', product_line='cv_joint'),
                      extract([lone], key='cv_oem_only', title='ASVA CV', brand='ASVA', product_line='cv_joint')):
-            handle = tempfile.NamedTemporaryFile('w', suffix='.json', delete=False, encoding='utf-8')
-            json.dump(data, handle, ensure_ascii=False)
-            handle.close()
-            self.addCleanup(os.unlink, handle.name)
-            self.paths.append(handle.name)
+            self.paths.append(self.write(data))
         for path in self.paths:
             sci.run([path], apply=True, stdout=io.StringIO())
 
-    def test_one_extract_alone_would_take_the_numbers_only_the_other_prints(self):
-        result = scr.run(self.paths[0], stdout=io.StringIO())
-        self.assertEqual(result['changes']['numbers'], {'delete': 1})  # TOYOTA 4346060010
+    def write(self, data):
+        handle = tempfile.NamedTemporaryFile('w', suffix='.json', delete=False, encoding='utf-8')
+        json.dump(data, handle, ensure_ascii=False)
+        handle.close()
+        self.addCleanup(os.unlink, handle.name)
+        return handle.name
 
-    def test_all_the_extracts_together_change_nothing(self):
+    def test_one_extract_alone_is_refused(self):
+        for apply in (False, True):
+            out = io.StringIO()
+            self.assertIsNone(scr.run(self.paths[0], apply=apply, stdout=out))  # it would delete TOYOTA 4346060010
+            self.assertIn('también se importó de cv_oem_only', out.getvalue())
+        self.assertEqual(OEMReference.objects.count(), 2)
+
+    def test_all_the_extracts_together_change_nothing_in_any_order(self):
+        self.assertEqual(scr.run(list(reversed(self.paths)), stdout=io.StringIO())['changes'], {'numbers': {}, 'codes': {}, 'ties': {}})
         result = scr.run(self.paths, apply=True, stdout=io.StringIO())
         self.assertEqual(result['changes'], {'numbers': {}, 'codes': {}, 'ties': {}})
         self.assertEqual(sorted(OEMReferenceSource.objects.values_list('reference__code', 'detail__catalog')),
                          [('4346060010', 'cv_oem_only'), ('4346069115', 'cv')])  # each number keeps the extract that printed it first
 
     def test_extracts_of_different_catalogs_are_refused(self):
-        other = extract([], key='gmb', title='GMB', brand='GMB')
+        other = self.write(extract([], key='gmb', title='GMB', brand='GMB'))
+        out = io.StringIO()
+        self.assertIsNone(scr.run([self.paths[0], other], stdout=out))
+        self.assertIn('mismo catálogo', out.getvalue())
+        out = io.StringIO()
+        with self.assertRaises(SystemExit) as stop:
+            scr.main(['--dry-run', self.paths[0], other], stdout=out)
+        self.assertEqual(stop.exception.code, 1)
+        self.assertIn('No se cambia nada', out.getvalue())
+
+
+class ShaftRetypeReplaceTests(Fresh, TestCase):
+    """A number a corrected rule makes a drive-shaft number listed for a joint is typed as the shaft, as a fresh import types it."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = get_user_model().objects.create_superuser('root', 'root@example.invalid', 'x')
+        data = extract([item('MT-99A50', 'cv_joint_outer', oem=[('MR453384', 'MITSUBISHI'), ('MB526438', 'MITSUBISHI')], name_es='JUNTA HOMOCINÉTICA EXTERIOR'),
+                        item('MT-41', 'cv_joint_outer', oem=[('MR980744', 'MITSUBISHI')], name_es='JUNTA HOMOCINÉTICA EXTERIOR')],
+                       key='asva_cv', title='ASVA CV', brand='ASVA', product_line='cv_joint')
         handle = tempfile.NamedTemporaryFile('w', suffix='.json', delete=False, encoding='utf-8')
-        json.dump(other, handle, ensure_ascii=False)
+        json.dump(data, handle, ensure_ascii=False)
         handle.close()
         self.addCleanup(os.unlink, handle.name)
-        with self.assertRaises(ValueError):
-            scr.run([self.paths[0], handle.name], stdout=io.StringIO())
+        self.path = handle.name
+        sci.run([self.path], apply=True, stdout=io.StringIO())
+
+    def ref(self, code):
+        return OEMReference.objects.get(code=code)
+
+    def test_a_number_that_becomes_a_shaft_is_retyped_unless_its_text_came_from_elsewhere(self):
+        self.assertEqual((self.ref('MR453384').description, self.ref('MR453384').part_type), ('JUNTA HOMOCINÉTICA EXTERIOR', 'JUNTAS HOMOCINÉTICAS'))
+        shaft = Part.objects.create(sku='SEM-MIT-01', description='EJE COMPLETO MIT LANCER 05')
+        PartCode.objects.create(part=shaft, brand='MITSUBISHI', code='MR453384', ref_type='oem')
+        PartCode.objects.create(part=shaft, brand='MITSUBISHI', code='MR980744', ref_type='oem')
+        OEMReference.objects.filter(code='MR980744').update(description='JUNTA EXT MIT MONTERO')  # someone wrote its description
+        with tempfile.TemporaryDirectory() as directory:
+            result = scr.run(self.path, report_dir=directory, stdout=io.StringIO())
+            with open(os.path.join(directory, 'numbers.csv'), encoding='utf-8') as handle:
+                rows = [row for row in csv.DictReader(handle) if row['accion'] == 'retype']
+        self.assertEqual(result['changes']['numbers'], {'detail': 2, 'retype': 2})
+        self.assertEqual(sorted((row['numero'], row['detalle_despues']) for row in rows),
+                         [('MR453384', '{"description": "SEMIEJE (EJE COMPLETO)", "part_type": "SEMIEJES"}'), ('MR980744', '{"part_type": "SEMIEJES"}')])
+        scr.run(self.path, apply=True, username='root', stdout=io.StringIO())
+        shaft_ref, kept = self.ref('MR453384'), self.ref('MR980744')
+        self.assertEqual((shaft_ref.description, shaft_ref.part_type), ('SEMIEJE (EJE COMPLETO)', 'SEMIEJES'))
+        self.assertTrue(shaft_ref.sources.get(kind='aftermarket_catalog').detail['assembly_number_listed_for_component'])
+        self.assertIsNone(shaft_ref.updated_by_id)  # what the import writes: no one's edit
+        self.assertEqual((kept.description, kept.part_type), ('JUNTA EXT MIT MONTERO', 'SEMIEJES'))
+        self.assertFalse(OEMCrossReference.objects.filter(reference__code__in=['MR453384', 'MR980744']).exists())
+        self.assertEqual(scr.run(self.path, stdout=io.StringIO())['changes'], {'numbers': {}, 'codes': {}, 'ties': {}})
