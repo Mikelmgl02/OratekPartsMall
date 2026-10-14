@@ -103,7 +103,8 @@ class BackfillTests(Fresh, TestCase):
         code, out = self.run_cli('--dry-run')
         self.assertEqual(code, 0)
         self.assertIn('Simulación · S2b', out)
-        self.assertIn('sin el hook de la parte B', out)
+        self.assertIn('parte B decide', out)  # mall.line_merge.s2b_compact_duplicates: these lines have no description, so cases
+        self.assertIn('Casos compact_duplicate (en disputa hasta que se decidan): 3', out)
         self.assertFalse(os.path.exists(os.path.join(self.output.name, 'manifest.jsonl')))
 
     def test_apply_gives_every_live_line_its_main_and_the_invariants_hold(self):

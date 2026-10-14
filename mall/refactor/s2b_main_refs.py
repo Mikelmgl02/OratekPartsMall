@@ -26,7 +26,8 @@ Mains (plan §3 S2b, step 1), for every live line (any estado but unificada) tha
   before retirada, then more stock, more order lines, more References, then the spelling without a trailing - or _. The other mains
   and the other lines' codes in the group become disputa ("Código duplicado de <keeper>: caso de unificación"). The groups go to the
   merge hook (part B: mall.line_merge.s2b_compact_duplicates, OD4: those that pass the noun and spec checks merge on their own, with a
-  digest and Separar; the rest become compact_duplicate cases). Without the hook they are listed and wait in disputa.
+  digest and Separar; the rest become compact_duplicate cases); it plans in the dry run too, and the report lists both (the digest the
+  owner sees before the window). Without the hook they are listed and wait in disputa.
 Shared OEM numbers (step 3, OD16): a library number that two or more catalog lines (publicada or retirada, not merged) carry, through
 their codigo, a code (an OEM one only under its maker) or a catalog or sku_name link, groups those lines (numbers sharing a line join
 one group). Each group gets one legacy catalog case (method shared_oem_number) proposing the line whose own codigo is a number of the
@@ -323,9 +324,10 @@ def plan(state=None, *, hook=None, actor=''):
             listed['oem_sin_fabricante'].append(line['sku'])
         mains[pk] = main
     groups, disputed = merge_groups(lines, mains, live_refs, by_line)
-    absorbed = set()
-    if hook is not None:
-        absorbed = {str(pk) for pk in hook(groups, apply=False, actor=None, run=None, log=None).get('absorbed') or []}
+    planned = hook(groups, apply=False, actor=None, run=None, log=None) if hook is not None and groups else {}
+    into = {str(pk): str(keeper) for pk, keeper in (planned.get('into') or {}).items()}
+    into.update({str(pk): None for pk in planned.get('absorbed') or [] if str(pk) not in into})
+    absorbed = set(into)
     tipos = {}
     for pk, main in mains.items():
         line, tipo = lines[pk], LINE_TIPO.get(main['tipo'], 'UNKNOWN')
@@ -338,13 +340,13 @@ def plan(state=None, *, hook=None, actor=''):
     final['lineas'] = sum(1 for line in lines.values() if live(line))
     final['is_oem_cambia'] = sum(1 for change in tipos.values() if change['before']['is_OEM'] != change['after']['is_OEM'])
     final['grupos_duplicados'], final['lineas_duplicadas'] = len(groups), len({pk for group in groups for pk in group['lines']})
-    shared = shared_numbers(lines, mains, live_refs, groups, absorbed)
+    shared = shared_numbers(lines, mains, live_refs, groups, into)
     final['grupos_compartidos'], final['numeros_compartidos'] = len(shared), len({n for group in shared for n in group['numbers']})
     mappings = learned_codes(lines, mains, by_line)
     final['aprendidos'] = sum(1 for m in mappings if m['reference'] is not None or m['main_of'] is not None)
     final['internos'] = sum(1 for m in mappings if m['reference'] is None and m['main_of'] is None)
     return {'lines': lines, 'mains': mains, 'groups': groups, 'disputed': disputed, 'tipos': tipos, 'shared': shared, 'mappings': mappings,
-            'final': final, 'listed': dict(listed), 'absorbed': sorted(map(str, absorbed)), 'schema': state}
+            'final': final, 'listed': dict(listed), 'absorbed': sorted(map(str, absorbed)), 'schema': state, 'hook_plan': planned}
 
 
 def merge_groups(lines, mains, live_refs, by_line):
@@ -413,9 +415,18 @@ def merge_groups(lines, mains, live_refs, by_line):
 
 
 def shared_numbers(lines, mains, live_refs, groups, absorbed):
-    """[{'lines', 'numbers', 'keeper'}]: the library numbers two or more catalog lines carry, grouped by the lines they share."""
+    """[{'lines', 'numbers', 'keeper'}]: the library numbers two or more catalog lines carry, grouped by the lines they share. absorbed:
+    {line id: its keeper, or None} for the lines the merge hook merges: a number such a line carries is its keeper's after the merge
+    (a line with no keeper given drops out)."""
     from ..oem_reference_models import OEMReference, PartOEMLink
-    catalog = {pk for pk, line in lines.items() if live(line) and line['estado'] in ('publicada', 'retirada') and str(pk) not in absorbed}
+    absorbed = absorbed if isinstance(absorbed, dict) else dict.fromkeys(map(str, absorbed or ()))
+    by_text = {str(pk): pk for pk in lines}
+    keeper_of = {by_text[pk]: by_text.get(keeper) for pk, keeper in absorbed.items() if pk in by_text}
+    catalog = {pk for pk, line in lines.items() if live(line) and line['estado'] in ('publicada', 'retirada')
+               and (pk not in keeper_of or keeper_of[pk] is not None)}
+
+    def carrier(pk):  # the line that carries a number once the hook's merges are made
+        return keeper_of.get(pk) or pk
     numbers = defaultdict(list)
     for pk, code, manufacturer in OEMReference.objects.values_list('pk', 'code', 'manufacturer').iterator(chunk_size=CHUNK):
         numbers[code].append((pk, manufacturer))
@@ -425,16 +436,16 @@ def shared_numbers(lines, mains, live_refs, groups, absorbed):
         by_sku[compact(lines[pk]['sku'])].add(pk)
     for code, refs in numbers.items():
         for ref_id, _ in refs:
-            carriers[ref_id] |= by_sku.get(code, set())
+            carriers[ref_id] |= {carrier(pk) for pk in by_sku.get(code, set())}
     for row in live_refs:
         if row['part_id'] not in catalog:
             continue
         for ref_id, manufacturer in numbers.get(compact(row['code']), ()):
             if row['tipo'] != 'oem' or row['brand'] == manufacturer:
-                carriers[ref_id].add(row['part_id'])
+                carriers[ref_id].add(carrier(row['part_id']))
     for ref_id, part_id in PartOEMLink.objects.filter(source__in=['catalog', 'sku_name']).values_list('reference_id', 'part_id').iterator(chunk_size=CHUNK):
         if part_id in catalog:
-            carriers[ref_id].add(part_id)
+            carriers[ref_id].add(carrier(part_id))
     code_of = {ref_id: code for code, refs in numbers.items() for ref_id, _ in refs}
     parent = {}
 
@@ -755,6 +766,17 @@ def print_summary(stdout, mode, result, writes=None):
         for group in result['groups'][:15]:
             stdout.write(f"    {group['clave']}: queda {group['keeper_sku']} · " + ', '.join(f"{row['code']} en {row['sku']}" for row in group['rows']
                                                                                       if row['line'] != group['keeper']) + '\n')
+    decided = result.get('hook') or result.get('hook_plan') or {}
+    if decided.get('merged') or decided.get('refused'):
+        merged, refused = decided.get('merged') or [], decided.get('refused') or []
+        verb = 'Unificados solos' if mode == 'apply' else 'Se unificarían solos'
+        stdout.write(f"  {verb} (OD4, compact_duplicate, Separar los deshace): {len(merged)} grupos · "
+                     f"{sum(len(group['absorbed']) for group in merged)} líneas\n")
+        for group in merged[:15]:
+            stdout.write(f"    {group['keeper_sku']} ← {', '.join(group['skus'])}\n")
+        stdout.write(f"  Casos compact_duplicate (en disputa hasta que se decidan): {len(refused)}\n")
+        for group in refused[:15]:
+            stdout.write(f"    {group['keeper_sku']} ← {', '.join(group['skus'])} · {group['guard']}: {group['reason']}\n")
     if result['shared']:
         stdout.write(f"  Números OEM en varias líneas ({len(result['shared'])} casos shared_oem_number):\n")
         for group in result['shared'][:10]:
@@ -766,7 +788,7 @@ def print_summary(stdout, mode, result, writes=None):
 def report(result):
     return {'expected': EXPECTED, 'result': dict(result['final']), 'groups': result['groups'], 'disputed': len(result['disputed']),
             'shared': result['shared'], 'mappings': result['mappings'], 'listed': result['listed'], 'absorbed': result['absorbed'],
-            'tipos': len(result['tipos'])}
+            'tipos': len(result['tipos']), 'compact': result.get('hook_plan') or {}}
 
 
 def run(*, apply=False, rollback=False, username=None, report_path=None, stdout=None, hook=None):
@@ -806,12 +828,12 @@ def run(*, apply=False, rollback=False, username=None, report_path=None, stdout=
             else:
                 if apply:  # every line locked, so the plan and its writes see the same rows
                     list(Part._base_manager.select_for_update().order_by('pk').values_list('pk', flat=True))
-                planned = plan(hook=None if apply else hook, actor=user.username if user else '')
+                planned = plan(hook=hook, actor=user.username if user else '')  # the hook plans the merges in both modes
                 result = {'mode': 'apply' if apply else 'dry_run', **report(planned)}
                 writes = None
                 if apply:
                     writes = result['written'] = write(planned, log, run_line, user, hook=hook)
-                    result['hook'] = planned.get('hook')
+                    result['hook'] = result['compact'] = planned.get('hook')
                 print_summary(stdout, result['mode'], planned, writes)
                 if report_path:
                     with open(report_path, 'w', encoding='utf-8') as handle:

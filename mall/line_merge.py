@@ -42,6 +42,7 @@ sources leave the target, and a collapsed spelling (two codigos with one compact
 lines brought back are kept apart from the target and from each other (CatalogSeparation).
 """
 import json
+import uuid
 
 from django.db import transaction
 from django.db.models import Max, Q
@@ -969,3 +970,192 @@ def return_links(part, target, entry, PartOEMLink):
         if not PartOEMLink.objects.filter(part=part, reference_id=link.reference_id, source=link.source).exists():
             link.part = part
             link.save(update_fields=['part'])
+
+
+# --- the S2b backfill's compact duplicates (OD4) -------------------------------------------------------------------------------------
+
+def compact_check(group, rows, held, pairs):
+    """('', '') when every line of a merge group passes the checks of an automatic merge (plan §3 S2b step 2), else (guard, why):
+    every line publicada or retirada and not merged (estado), no two kept apart (separated), the same head noun of the description
+    (noun: description_head + head_compat; a line without one fails), no spec_conflict between two different descriptions
+    (spec_conflict), and no technical sheet or applications on a line that would be merged (ficha: merge_lines refuses them)."""
+    from .catalog_suffixes import description_head
+    from .lines import phrase
+    from .matching_engine import description as clean, spec_conflict
+    from .oem_finder import head_compat
+    ids = list(group['lines'])
+    missing = [pk for pk in ids if pk not in rows]
+    if missing:
+        return 'estado', 'Una de las líneas ya no está en el catálogo.'
+    for pk in ids:
+        row = rows[pk]
+        if row['merged_into_id'] or row['estado'] not in CATALOG:
+            return 'estado', f"{row['sku']} está {phrase('unificada' if row['merged_into_id'] else row['estado'])}: solo se unifican solas las líneas publicadas o retiradas."
+    kept = kept_apart_among(ids, pairs)
+    if kept:
+        a, b = kept[0]
+        return 'separated', f"{rows[a]['sku']} y {rows[b]['sku']} se mantienen separados (Separar SKU o un caso descartado)."
+    heads = {pk: description_head(rows[pk]['description'] or '') for pk in ids}
+    for index, a in enumerate(ids):
+        for b in ids[index + 1:]:
+            if not head_compat(heads[a], heads[b]):
+                name = lambda pk: '|'.join(part for part in heads[pk] if part) or 'sin descripción'
+                return 'noun', f"{rows[a]['sku']} ({name(a)}) y {rows[b]['sku']} ({name(b)}) no nombran el mismo repuesto."
+            first, second = rows[a]['description'] or '', rows[b]['description'] or ''
+            if clean(first) != clean(second) and spec_conflict(first, second):
+                return 'spec_conflict', f"Las descripciones de {rows[a]['sku']} y {rows[b]['sku']} se contradicen (lado, medida, años o tipo)."
+    sheets = [rows[pk]['sku'] for pk in ids if pk != group['keeper'] and pk in held]
+    if sheets:
+        return 'ficha', f"{', '.join(sheets)} tiene ficha técnica o aplicaciones: revísalas antes de unificar."
+    return '', ''
+
+
+def compact_case_key(clave):
+    return f'catalog:compact:{clave}'[:240]
+
+
+def open_compact_case(group, why):
+    """One legacy catalog case per key (method compact_duplicate) that today's Agrupación inteligente approves as a merge into the
+    keeper; dismissing it keeps the lines apart (matching_views writes the CatalogSeparation pairs)."""
+    m = _models()
+    from .matching_engine import part_row, save_case
+    parts = {str(part.pk): part for part in m.Part.objects.filter(pk__in=group['lines']).prefetch_related('codes')}
+    others = [pk for pk in group['lines'] if pk != group['keeper']]
+    skus = ', '.join(parts[pk].sku for pk in others)
+    return save_case(key=compact_case_key(group['clave']), kind='catalog', sources=[part_row(parts[pk]) for pk in others],
+                     candidates=[part_row(parts[group['keeper']])], target=group['keeper_sku'], method=COMPACT_DUPLICATE,
+                     reason=(f"{skus} y {group['keeper_sku']} llevan el mismo código ({group['clave']}). {why} Si son el mismo repuesto, "
+                             f"agrúpalos en {group['keeper_sku']}; si no, mantenlos separados."))
+
+
+def detail_text(error):
+    detail = getattr(error, 'detail', None)
+    if isinstance(detail, dict):
+        detail = detail.get('detail', detail)
+    if isinstance(detail, (list, tuple)):
+        detail = ' '.join(str(item) for item in detail)
+    return str(detail if detail is not None else error)
+
+
+def s2b_compact_duplicates(groups, *, apply, actor, run, log):
+    """mall.refactor.s2b_main_refs's merge hook (OD4): a group (a key a new main shares with another line) whose lines all pass
+    compact_check merges on its own into its keeper (merge_lines, automatic, reason compact_duplicate: the digest is the CatalogMerge
+    list, Unificados with origen automático, and Separar undoes each); any other group gets one compact_duplicate case, its non-keeper
+    mains waiting in disputa as the backfill left them. apply=False plans only and reads nothing 0073/0075 add, so it runs on a
+    database before them; apply=True runs inside the backfill's transaction and logs a manifest line per merge and case (hook: true).
+    Returns {'merged': [...], 'cases': [case ids, or keys when planning], 'absorbed': [line ids], 'into': {line: keeper}, 'refused':
+    [{'clave', 'keeper_sku', 'skus', 'guard', 'reason'}]}."""
+    from django.db import IntegrityError
+    from rest_framework.exceptions import APIException
+    m = _models()
+    ids = sorted({pk for group in groups for pk in group['lines']})
+    rows = {str(row['pk']): row for row in m.Part._base_manager.filter(pk__in=ids).values('pk', 'sku', 'description', 'estado', 'merged_into_id')}
+    held = ({str(pk) for pk in m.PartSpecification.objects.filter(part_id__in=ids).values_list('part_id', flat=True)}
+            | {str(pk) for pk in m.ItemApplication.objects.filter(part_id__in=ids).values_list('part_id', flat=True)})
+    pairs = separated_pairs()
+    out = {'merged': [], 'cases': [], 'absorbed': [], 'into': {}, 'refused': []}
+    for group in groups:
+        keeper, others = group['keeper'], [pk for pk in group['lines'] if pk != group['keeper']]
+        skus = [rows[pk]['sku'] for pk in others if pk in rows]
+        guard, why = compact_check(group, rows, held, pairs)
+        merge = None
+        if not guard and apply:
+            try:
+                with transaction.atomic():
+                    merge = merge_lines(uuid.UUID(keeper), [uuid.UUID(pk) for pk in others], actor=actor, reason=COMPACT_DUPLICATE,
+                                        automatic=True)
+            except (APIException, IntegrityError) as error:
+                guard, why = 'merge', detail_text(error)
+        if not guard:
+            out['merged'].append({'clave': group['clave'], 'keeper': keeper, 'keeper_sku': group['keeper_sku'], 'absorbed': others,
+                                  'skus': skus, 'merge': str(merge.pk) if merge else None})
+            out['absorbed'] += others
+            out['into'].update({pk: keeper for pk in others})
+            if merge is not None:
+                log.append({**run, 'hook': True, 'model': 'mall.CatalogMerge', 'id': str(merge.pk), 'action': 'create',
+                            'after': {'clave': group['clave'], 'target': keeper, 'sources': others, 'reason': COMPACT_DUPLICATE}})
+            continue
+        out['refused'].append({'clave': group['clave'], 'keeper_sku': group['keeper_sku'], 'skus': skus, 'guard': guard, 'reason': why})
+        if not apply:
+            out['cases'].append(compact_case_key(group['clave']))
+            continue
+        case = open_compact_case(group, why)
+        out['cases'].append(str(case.pk))
+        log.append({**run, 'hook': True, 'model': 'matching.MatchingCase', 'id': str(case.pk), 'action': 'create',
+                    'after': {'key': case.key, 'method': COMPACT_DUPLICATE, 'guard': guard}})
+    return out
+
+
+def s2b_rollback(*, log, run, lines):
+    """The backfill's --rollback hands this the hook's manifest lines first: each merge it made is split again (Separar, newest
+    first: every line comes back with what it brought and its main), and the split, its separations and the merge are deleted, the
+    keeper's estado and the blanks the merge filled are put back where nothing changed them since; each case it opened is deleted
+    while still in review. Returns {'split', 'cases', 'changed': [...]}."""
+    m = _models()
+    from .catalog_split_models import CatalogSplit
+    from .matching_models import MatchingCase
+    chains = {}
+    for line in lines:
+        if not line.get('hook') or not line.get('model'):
+            continue
+        key = (line['model'], str(line['id']))
+        if line.get('action') == 'create':
+            chains[key] = line
+        elif line.get('action') in ('delete', 'rollback'):
+            chains.pop(key, None)
+    result = {'split': 0, 'cases': 0, 'changed': []}
+    merges = [line for (model, _), line in chains.items() if model == 'mall.CatalogMerge']
+    for line in sorted(merges, key=lambda line: (line.get('at', ''), lines.index(line)), reverse=True):
+        merge = m.CatalogMerge.objects.select_related('target', 'actor').filter(pk=line['id']).first()
+        if merge is None:
+            result['changed'].append(f"unificación {line['id']}: ya no existe")
+            continue
+        target = merge.target
+        try:
+            with transaction.atomic():
+                restore = []
+                codes = set(m.Reference.objects.filter(part=target, is_main=False).values_list('pk', flat=True))
+                items = {str(pk) for pk in m.SupplierItem.objects.filter(part=target).values_list('pk', flat=True)}
+                images = {str(pk) for pk in m.PartImage.objects.filter(part=target).values_list('pk', flat=True)}
+                for entry in merge.sources:
+                    if not m.Part.objects.filter(pk=entry['id'], merged_into=target).exists():
+                        continue
+                    restore.append({'id': entry['id'], 'codes': [pk for pk in entry.get('references', []) if pk in codes],
+                                    'items': [pk for pk in entry.get('items', []) if pk in items],
+                                    'images': [pk for pk in entry.get('images', []) if pk in images]})
+                done = split_line(target.pk, restore, actor=merge.actor, reason='Rollback S2b') if restore else None
+                summary = merge.summary or {}
+                target.refresh_from_db()
+                fields = []
+                estado = summary.get('estado') or {}
+                if estado and estado.get('after') == target.estado != estado.get('before'):
+                    target.estado, target.active = estado['before'], estado['before'] == 'publicada'
+                    fields += ['estado', 'active']
+                merge_id = str(merge.pk)
+                for field, before in (summary.get('filled') or {}).items():
+                    if (target.field_sources or {}).get(field, {}).get('merge') == merge_id:
+                        setattr(target, field, before)
+                        target.field_sources = {name: value for name, value in target.field_sources.items() if name != field}
+                        fields += [field, 'field_sources']
+                if fields:
+                    target._main_followed = True
+                    target.save(update_fields=list(dict.fromkeys(fields)))
+                if done is not None:
+                    CatalogSplit.objects.filter(pk=done['split'].pk).delete()  # its CatalogSeparation pairs go with it (CASCADE)
+                merge.delete()
+        except Exception as error:  # noqa: BLE001  (one merge that cannot be split stays, listed; the rest roll back)
+            result['changed'].append(f"unificación {line['id']} en {target.sku}: no se pudo separar ({detail_text(error)})")
+            continue
+        result['split'] += 1
+        log.append({**run, 'hook': True, 'model': 'mall.CatalogMerge', 'id': line['id'], 'action': 'delete', 'before': line.get('after', {})})
+    for (model, pk), line in chains.items():
+        if model != 'matching.MatchingCase':
+            continue
+        case = MatchingCase.objects.filter(pk=pk, status='review').first()
+        if case is None:
+            result['changed'].append(f'caso {pk}: ya se decidió, se deja')
+            continue
+        case.delete()
+        result['cases'] += 1
+        log.append({**run, 'hook': True, 'model': 'matching.MatchingCase', 'id': pk, 'action': 'delete', 'before': line.get('after', {})})
+    return result

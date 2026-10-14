@@ -1,8 +1,13 @@
 """mall.line_merge (inventory refactor S2b): merge_lines moves every Reference (the source's main among them, absorbed when the
 target holds its key), variant, image, favourite, link and dependent in the lock order; split_line gives each back, its former main as
-its main; lines kept apart stay apart on canonical lines; dismissing a compact_duplicate or shared_oem_number case keeps its lines apart."""
+its main; lines kept apart stay apart on canonical lines; the S2b backfill's compact duplicates merge on their own when they pass the
+noun and spec checks (OD4) and open compact_duplicate cases otherwise; dismissing such a case keeps the lines apart."""
+import io
+import os
+import tempfile
 import uuid
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.db import connection
 from django.test import TestCase
@@ -14,14 +19,15 @@ from rest_framework.test import APITestCase
 from . import line_merge, references
 from .catalog_assistant_models import CatalogAssistantJob, CatalogAssistantSuggestion
 from .catalog_split import split_catalog_part, split_plan
-from .catalog_split_models import CatalogSeparation
-from .matching_models import MatchingDecision
+from .catalog_split_models import CatalogSeparation, CatalogSplit
+from .matching_models import MatchingCase, MatchingDecision
 from .models import CatalogMerge, Part, PartImage, Reference, ReferenceSource, SupplierItem, WishlistItem
 from .oem_finder_models import OEMAutoCandidate, OEMReviewCase
 from .oem_reference_models import PartOEMLink
+from .refactor import s2b_main_refs
 from .supplier_import_models import SupplierInventoryImportJob
 from .technical_models import PartType, PartSpecification, TechnicalField, TechnicalTemplate
-from .test_factories import make_library_number, make_line, make_reference, make_supplier, make_user, make_variant
+from .test_factories import Fresh, make_library_number, make_line, make_reference, make_supplier, make_user, make_variant
 from .test_main_references import broken_invariants
 
 
@@ -300,3 +306,137 @@ class SeparationTests(APITestCase):
         self.assertEqual(set(CatalogSeparation.objects.values_list('reason', flat=True)), {'shared_oem_number'})  # a family dismissal writes none
         self.assertTrue(line_merge.apart(lines[1].pk, lines[2].pk))
         self.assertEqual(MatchingDecision.objects.get(case=shared).evidence['separated'], 3)
+
+
+class CompactDuplicateTests(Fresh, TestCase):
+    """The S2b backfill's merge groups, decided by mall.line_merge.s2b_compact_duplicates (OD4)."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = make_user('lm-s2b', superuser=True)
+        self.supplier = make_supplier('LM S2B')
+        self.output = tempfile.TemporaryDirectory()
+        self.addCleanup(self.output.cleanup)
+        patcher = patch.dict(os.environ, {'REFACTOR_OUTPUT': self.output.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        tightened = patch.object(s2b_main_refs, 'tightened', return_value=False)
+        tightened.start()
+        self.addCleanup(tightened.stop)
+        # A passing key: one part under two spellings (the stocked one keeps it), and a code that is another line's codigo.
+        self.keeper = make_line('16100-39315', description='BOMBA AGUA TOY HILUX 05-15')
+        self.duplicate = make_line('16100-39315_', description='BOMBA AGUA TOY HILUX 05-15')
+        make_variant(self.supplier, 'CD-1', '16100-39315', 5, actor=self.root, line=self.keeper)
+        make_variant(self.supplier, 'CD-2', '16100-39315_', 2, actor=self.root, line=self.duplicate)
+        self.holder = make_line('BOMBA-GMB', description='BOMBA AGUA GMB')
+        self.alias = make_reference(self.holder, 'GWT-78A', brand='', tipo='otro')
+        self.named = make_line('GWT-78A', description='BOMBA DE AGUA')
+        # Failing keys: two descriptions that name different parts, and a pair a person kept apart.
+        self.disc = make_line('43512-60150', description='DISCO FRENO DEL TOY')
+        self.drum = make_line('43512-60150-', description='TAMBOR FRENO TRAS TOY')
+        self.left = make_line('81150-0K010', description='FARO DEL LH TOY HILUX')
+        self.right = make_line('811500K010', description='FARO DEL LH TOY HILUX')
+        split = CatalogSplit.objects.create(target=self.left, actor=self.root)
+        CatalogSeparation.objects.create(first_id=line_merge.pair(self.left.pk, self.right.pk)[0],
+                                         second_id=line_merge.pair(self.left.pk, self.right.pk)[1], split=split)
+        references.purge(Reference.all_objects.filter(is_main=True).values_list('pk', flat=True))  # before the backfill: no mains
+        self.before = sorted(Reference.all_objects.values_list('pk', 'part_id', 'code', 'brand', 'estado', 'is_main', 'printed_forms'))
+
+    def groups(self):
+        return {group['clave']: group for group in s2b_main_refs.plan(hook=None)['groups']}
+
+    def test_the_checks_pass_one_part_under_two_spellings_and_stop_the_rest(self):
+        groups = self.groups()
+        self.assertEqual(set(groups), {'1610039315', 'GWT-78A', '4351260150', '811500K010'})
+        out = line_merge.s2b_compact_duplicates(list(groups.values()), apply=False, actor=None, run=None, log=None)
+        self.assertEqual(sorted(group['keeper_sku'] for group in out['merged']), ['16100-39315', 'GWT-78A'])
+        self.assertEqual(sorted(out['absorbed']), sorted([str(self.duplicate.pk), str(self.holder.pk)]))
+        refused = {group['keeper_sku']: group['guard'] for group in out['refused']}
+        self.assertEqual(refused, {'43512-60150': 'noun', '81150-0K010': 'separated'})
+        self.assertEqual(sorted(out['cases']), ['catalog:compact:4351260150', 'catalog:compact:811500K010'])
+        self.assertFalse(MatchingCase.objects.exists())
+        self.assertFalse(CatalogMerge.objects.exists())
+        rows = {pk: {'pk': pk, 'sku': 'A', 'description': 'FARO DEL LH', 'estado': 'publicada', 'merged_into_id': None} for pk in ('1', '2')}
+        group = {'lines': ['1', '2'], 'keeper': '1'}
+        self.assertEqual(line_merge.compact_check(group, rows, set(), {})[0], '')
+        rows['2']['description'] = 'FARO DEL RH'
+        self.assertEqual(line_merge.compact_check(group, rows, set(), {})[0], 'spec_conflict')
+        rows['2'].update(description='FARO DEL LH', estado='preparacion')
+        self.assertEqual(line_merge.compact_check(group, rows, set(), {})[0], 'estado')
+        rows['2']['estado'] = 'publicada'
+        self.assertEqual(line_merge.compact_check(group, rows, {'2'}, {})[0], 'ficha')
+
+    def test_a_number_an_absorbed_line_carries_is_its_keepers_in_the_shared_number_cases(self):
+        number = make_library_number('TOYOTA', '16100-39315', citation='LISTA')
+        other = make_line('BOMBA-X', description='BOMBA AGUA')
+        PartOEMLink.objects.create(part=other, reference=number, source='catalog')
+        result = s2b_main_refs.plan(hook=line_merge.s2b_compact_duplicates)
+        shared = [group for group in result['shared'] if '1610039315' in group['numbers']]
+        self.assertEqual([sorted(group['lines']) for group in shared], [sorted([str(self.keeper.pk), str(other.pk)])])
+        self.assertEqual(result['hook_plan']['into'][str(self.duplicate.pk)], str(self.keeper.pk))
+
+    def run_cli(self, *args):
+        out = io.StringIO()
+        return s2b_main_refs.main(list(args), stdout=out), out.getvalue()
+
+    def test_the_backfill_merges_what_passes_opens_cases_for_the_rest_and_its_rollback_undoes_it(self):
+        code, out = self.run_cli('--dry-run')
+        self.assertEqual(code, 0, out)
+        self.assertIn('Se unificarían solos (OD4, compact_duplicate, Separar los deshace): 2 grupos · 2 líneas', out)
+        self.assertFalse(CatalogMerge.objects.exists())
+        code, out = self.run_cli('--apply', '--user', self.root.username)
+        self.assertEqual(code, 0, out)
+        self.assertIn('Unificados solos', out)
+        self.assertEqual(broken_invariants(), {})
+        self.duplicate.refresh_from_db()
+        self.holder.refresh_from_db()
+        self.assertEqual((self.duplicate.merged_into_id, self.holder.merged_into_id), (self.keeper.pk, self.named.pk))
+        merges = CatalogMerge.objects.order_by('created_at')
+        self.assertEqual([(merge.actor.username, merge.summary['reason'], merge.summary['requested_by']) for merge in merges],
+                         [(line_merge.SERVICE_ACCOUNT, 'compact_duplicate', self.root.username)] * 2)
+        kept = main(self.keeper)
+        self.assertEqual((kept.code, kept.printed_forms, Part.objects.get(pk=self.keeper.pk).sku), ('16100-39315', ['16100-39315_'], '16100-39315'))
+        absorbed = Reference.all_objects.get(part=self.duplicate, code='16100-39315_')
+        self.assertEqual((absorbed.estado, absorbed.reemplazado_por_id), ('retirada', kept.pk))
+        self.assertEqual(SupplierItem.objects.get(supplier_invent_id='CD-2').part_id, self.keeper.pk)  # its variants move
+        cases = MatchingCase.objects.filter(method='compact_duplicate').order_by('target_sku')
+        self.assertEqual([(case.kind, case.target_sku) for case in cases], [('catalog', '43512-60150'), ('catalog', cases[1].target_sku)])
+        self.assertEqual(main(self.drum).estado, 'disputa')  # a failing key's non-keeper main waits in disputa
+        self.assertTrue(any(line.get('hook') and line['model'] == 'mall.CatalogMerge' for line in self.manifest()))
+        plan = split_plan(Part.objects.get(pk=self.keeper.pk))
+        self.assertEqual([child.method for child in plan['children']], ['El mismo código compacto (S2b)'])
+
+        code, out = self.run_cli('--rollback', '--user', self.root.username)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(sorted(Reference.all_objects.values_list('pk', 'part_id', 'code', 'brand', 'estado', 'is_main', 'printed_forms')), self.before)
+        self.assertFalse(CatalogMerge.objects.exists())
+        self.assertFalse(MatchingCase.objects.exists())
+        self.assertEqual(CatalogSeparation.objects.count(), 1)  # only the pair kept apart before
+        self.assertEqual(Part.objects.filter(merged_into__isnull=False).count(), 0)  # estado: every merge undone
+        self.assertEqual(SupplierItem.objects.get(supplier_invent_id='CD-2').part_id, self.duplicate.pk)
+
+    def manifest(self):
+        import json
+        with open(os.path.join(self.output.name, 'manifest.jsonl'), encoding='utf-8') as handle:
+            return [json.loads(line) for line in handle]
+
+    def test_a_compact_duplicate_case_approved_in_agrupacion_inteligente_merges_and_dismissed_keeps_apart(self):
+        from .matching_engine import apply_family
+        self.assertEqual(self.run_cli('--apply', '--user', self.root.username)[0], 0)
+        case = MatchingCase.objects.get(key='catalog:compact:4351260150')
+        apply_family(case, actor=self.root)
+        self.drum.refresh_from_db()
+        self.assertEqual(self.drum.merged_into_id, self.disc.pk)
+        self.assertEqual(broken_invariants(), {})
+        other = MatchingCase.objects.get(key='catalog:compact:811500K010')
+        self.assertEqual(MatchingCase.objects.get(pk=case.pk).status, 'applied')
+        with patch('mall.matching_views.enqueue_matching'):
+            self.client_dismiss(other)
+        self.assertTrue(line_merge.apart(self.left.pk, self.right.pk))
+
+    def client_dismiss(self, case):
+        from rest_framework.test import APIClient
+        client = APIClient()
+        client.force_authenticate(self.root)
+        response = client.post(f'/api/v1/management/matching/{case.pk}/', {'action': 'dismiss', 'fingerprint': case.fingerprint}, format='json')
+        self.assertEqual(response.status_code, 200, response.content)
