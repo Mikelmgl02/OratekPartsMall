@@ -93,7 +93,7 @@ export default function BasketGrid({ supplier, lines, sending, setQuantity, remo
   // While the cesta is being sent its controls lock: the grid draws them again (its cells do not follow the context by themselves).
   const api = useRef<GridApi<BasketLine> | null>(null);
   useEffect(() => { api.current?.refreshCells({ force: true, columns: ['quantity', 'remove'] }); }, [sending]);
-  return <ClientGrid<BasketLine> label={`Artículos para ${supplier}`} rows={sortedLines(lines)} columns={columns} rowId={line => line.key} rowHeight={72} maxRows={200}
+  return <ClientGrid<BasketLine> label={`Artículos para ${supplier}`} rows={sortedLines(lines)} columns={columns} rowId={line => line.key} rowHeight={72} autoHeight
     className="basket-grid" context={{ sending, setQuantity, remove }}
     gridProps={{ onGridReady: event => { api.current = event.api; }, onGridSizeChanged: event => fit(event.api, event.clientWidth), rowClassRules: { 'basket-grid-stale': ({ data }) => !!data && (data.available === false || !!data.changed) } }}/>;
 }

@@ -49,6 +49,8 @@ type Props<T> = {
   pageSize?: number;
   /** Extra AG Grid options (editing, clipboard, tooltips...). */
   gridProps?: Partial<AgGridReactProps<T>>;
+  /** The grid grows with its rows instead of filling the window (short lists, like a client's orders): every block loads as it is drawn. */
+  autoHeight?: boolean;
   /** The grid API once ready, for callers that edit rows in place. */
   onReady?: (api: GridApi<T>) => void;
 };
@@ -56,7 +58,7 @@ type Props<T> = {
 // Rows load in blocks while scrolling, sorting runs on the server, and the whole list stays one grid however long it is.
 // AG Grid Enterprise server-side row model over a paginated list (admin and supplier panels).
 export default function ServerGrid<T>({ storageKey, label, path, params, columns, rowId, ordering, revision, rowHeight, context, empty, onCount, onPage, className = '',
-  pageSize = GRID_BLOCK, gridProps, onReady }: Props<T>) {
+  pageSize = GRID_BLOCK, gridProps, onReady, autoHeight = false }: Props<T>) {
   const grid = useRef<AgGridReact<T>>(null);
   const frame = useRef<HTMLDivElement>(null);
   const viewport = usePageViewport();
@@ -142,9 +144,9 @@ export default function ServerGrid<T>({ storageKey, label, path, params, columns
   const columnDefs = useMemo(() => columns.map(column => ({ ...column, sortable: !!column.colId && column.colId in ordering })), [columns, ordering]);
   return <div className="admin-grid-shell">
     {error && <div className="notice error" role="alert">{error}<button type="button" onClick={() => { setError(''); grid.current?.api?.refreshServerSide({ purge: true }); }}><RefreshCw size={14}/>Intentar de nuevo</button></div>}
-    <div ref={frame} className={`quotation-grid admin-grid ${className}`} role="region" aria-label={label} style={{ height, ['--admin-row-height' as string]: `${rowHeight - 2}px` }}>
+    <div ref={frame} className={`quotation-grid admin-grid ${className}`} role="region" aria-label={label} style={{ height: autoHeight ? undefined : height, minHeight: autoHeight && count === 0 ? 4 * rowHeight + HEADER : undefined, ['--admin-row-height' as string]: `${rowHeight - 2}px` }}>
       <AgGridReact<T> ref={grid} theme={motionGridTheme} localeText={gridLocale} rowModelType="serverSide" serverSideDatasource={datasource}
-        cacheBlockSize={pageSize} maxBlocksInCache={40} blockLoadDebounceMillis={80} getRowId={({ data }: GetRowIdParams<T>) => rowId(data)}
+        cacheBlockSize={pageSize} maxBlocksInCache={40} domLayout={autoHeight ? 'autoHeight' : 'normal'} blockLoadDebounceMillis={80} getRowId={({ data }: GetRowIdParams<T>) => rowId(data)}
         columnDefs={columnDefs} defaultColDef={defaultColumn} rowHeight={rowHeight} context={context} initialState={initialState} onStateUpdated={remember}
         cellSelection enableBrowserTooltips ensureDomOrder suppressColumnVirtualisation loadThemeGoogleFonts={false} popupParent={popupParent} suppressDragLeaveHidesColumns
         onGridReady={event => onReady?.(event.api)} {...gridProps}/>

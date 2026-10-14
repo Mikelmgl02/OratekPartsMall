@@ -74,7 +74,7 @@ function LedgerGrid<T extends { id: number }>({ label, ledger, columns, context,
   if (!ledger.rows) return <div className="loading" role="status"><LoaderCircle className="spin"/>Cargando actividad…</div>;
   return <>
     {ledger.error && <div className="notice error" role="alert">{ledger.error}</div>}
-    <ClientGrid<T> label={label} rows={ledger.rows} columns={columns} rowId={row => String(row.id)} rowHeight={56} maxRows={20} context={context} className="client-activity-grid"
+    <ClientGrid<T> label={label} rows={ledger.rows} columns={columns} rowId={row => String(row.id)} rowHeight={56} autoHeight context={context} className="client-activity-grid"
       empty={<div className="supplier-request-empty"><History size={32}/><h3>{empty}</h3></div>}/>
     {ledger.hasMore && <button type="button" className="button soft small client-activity-more" disabled={ledger.busy} onClick={() => void ledger.more()}>{ledger.busy && <LoaderCircle size={14} className="spin"/>}Ver más actividad</button>}
   </>;

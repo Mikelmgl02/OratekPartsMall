@@ -25,7 +25,7 @@ export default function Basket({ lines, onChange, onClose, preview, account, syn
   const staleLines = lines.filter(line => line.offer.supplier_id !== ownSupplier && (line.available === false || line.changed));
   function setQuantity(key: string, quantity: number) { onChange(lines.map(line => line.key === key ? { ...line, quantity } : line)); }
 
-  return <main ref={page} tabIndex={-1} className="basket-page" aria-label="Cesta de solicitudes"><div className="section-container basket-page-container">
+  return <main ref={page} tabIndex={-1} className="basket-page cesta-page" aria-label="Cesta de solicitudes"><div className="section-container basket-page-container">
     <ClientRequestNavigation selected="draft" count={articleCount} canViewSent={!preview && !!account?.capabilities.includes('client')} onDraft={() => {}} onSent={onSentView} onActivity={onActivityView}/>
     {preview && <div className="basket-page-preview"><Sparkles size={17}/><span>Esta cesta usa repuestos y proveedores de ejemplo para que pruebes cómo preparar una solicitud.</span></div>}
     <div className="basket-page-layout">
