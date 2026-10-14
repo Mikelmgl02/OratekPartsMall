@@ -679,10 +679,11 @@ class SuffixRevertTests(Fresh, APITestCase):
         relabel_night(self.admin)
         path = revert.manifest_path()
         path.parent.mkdir(parents=True)
-        path.write_text(json.dumps({'stage': 's0.1', 'database': 'test_partsmall_s0sfx1', 'id': 1, 'token': 'RH', 'action': 'update'}) + '\n')
+        other = f"{connection.settings_dict['NAME']}_other"  # another run's database, whatever this run's is called
+        path.write_text(json.dumps({'stage': 's0.1', 'database': other, 'id': 1, 'token': 'RH', 'action': 'update'}) + '\n')
         result, out = self.run_revert(apply=True, username='miguel')
         self.assertIsNone(result)
-        self.assertIn('tiene líneas de otra base (test_partsmall_s0sfx1)', out)
+        self.assertIn(f'tiene líneas de otra base ({other})', out)
         self.assertIsNone(self.run_revert(rollback=True, username='miguel')[0])
         self.assertIn('Aviso: El manifiesto', self.run_revert()[1])
         self.assertEqual((self.row('RH').cls, len(path.read_text().splitlines())), ('TAG', 1))
