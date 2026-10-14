@@ -14,6 +14,7 @@ from unittest.mock import Mock, patch
 
 import psycopg
 from cryptography.fernet import Fernet
+from django.conf import settings
 from django.db import OperationalError, connection, migrations, transaction
 from django.db.migrations.state import ProjectState
 from django.db.migrations.writer import OperationWriter
@@ -605,3 +606,17 @@ class MigrateRetryTests(TestCase):
             migrate_retry.migrate('mall', sleep=Mock(side_effect=AssertionError('no retry')), stderr=err)
         migrate.assert_called_once()
         self.assertIn('No atómicas: mall.0071_index', err.getvalue())
+
+
+class MaintenanceDirTests(SimpleTestCase):
+    def test_a_test_run_never_sees_the_live_freeze(self):
+        from config.settings import maintenance_dir
+        app = Path('/app')
+        self.assertEqual(maintenance_dir(['manage.py', 'runserver'], {}, app), Path('/app/.maintenance'))
+        self.assertEqual(maintenance_dir(['/usr/local/bin/gunicorn'], {}, app), Path('/app/.maintenance'))
+        self.assertEqual(maintenance_dir(['manage.py', 'test', 'mall'], {}, app), Path(os.devnull) / 'maintenance')
+        self.assertEqual(maintenance_dir(['manage.py', 'test'], {'MAINTENANCE_DIR': '/srv/freeze'}, app), Path('/srv/freeze'))
+        if not os.getenv('MAINTENANCE_DIR') and sys.argv[1:2] == ['test']:
+            self.assertEqual(settings.MAINTENANCE_DIR, Path(os.devnull) / 'maintenance')
+            self.assertIsNone(freeze_level())
+            self.assertFalse(biblioteca_frozen())

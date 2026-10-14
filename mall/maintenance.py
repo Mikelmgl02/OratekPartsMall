@@ -8,8 +8,9 @@ containers, the main checkout's .maintenance/ on the host, git-ignored) turn it 
 
 While it is on, MaintenanceFreezeMiddleware answers the writes of the frozen routes with a 503; reads, sign-in, messages, the inbox,
 push, WhatsApp and favourites always go through. The matching and apiag-sync runners idle at either level and quote-holds at level all
-(mall.matching_runner), and the stage and catalog CLIs refuse --apply on the live database unless it is on (mall.refactor.guard).
-An empty or unknown level counts as catalog."""
+(mall.matching_runner), and the stage and catalog CLIs refuse --apply on the live database unless it is on and the writers already
+running when it began are done (mall.refactor.guard). An empty or unknown level counts as catalog. A test run never sees it
+(config.settings.maintenance_dir)."""
 import re
 from pathlib import Path
 

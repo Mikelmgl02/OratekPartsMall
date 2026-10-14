@@ -37,9 +37,22 @@ if os.getenv("POSTGRES_DB"):
 # The live database (the stage and catalog CLIs refuse --apply on it without the freeze; a rehearsal or test database is another name).
 LIVE_DATABASE_NAME = os.getenv("LIVE_DATABASE_NAME", "partsmall")
 # The main checkout: BASE_DIR, or the repository a .claude/worktrees/<name> checkout belongs to, so code run from a worktree sees the
-# same freeze. MAINTENANCE_DIR holds the freeze files (mall.maintenance): /app/.maintenance in the containers.
+# same freeze.
 MAIN_CHECKOUT = BASE_DIR.parents[2] if (BASE_DIR.parent.name, BASE_DIR.parent.parent.name) == ("worktrees", ".claude") else BASE_DIR
-MAINTENANCE_DIR = Path(os.getenv("MAINTENANCE_DIR") or MAIN_CHECKOUT / ".maintenance")
+
+
+def maintenance_dir(argv, environ, main_checkout):
+    """The folder of the freeze files (mall.maintenance): MAINTENANCE_DIR, else the main checkout's .maintenance (/app/.maintenance in the
+    containers). A test run (manage.py test) never sees a live freeze, whichever checkout it runs from: its tests set their own folder,
+    and nothing can exist under /dev/null."""
+    if environ.get("MAINTENANCE_DIR"):
+        return Path(environ["MAINTENANCE_DIR"])
+    if len(argv) > 1 and argv[1] == "test":
+        return Path(os.devnull) / "maintenance"
+    return main_checkout / ".maintenance"
+
+
+MAINTENANCE_DIR = maintenance_dir(sys.argv, os.environ, MAIN_CHECKOUT)
 AUTH_USER_MODEL = "mall.User"
 AUTH_PASSWORD_VALIDATORS = [{"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"}, {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"}, {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"}, {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"}]
 LANGUAGE_CODE = "es"
