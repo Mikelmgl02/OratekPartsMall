@@ -305,7 +305,7 @@ test('the private trace of the current quotation loads only when the supplier op
           exceptions: [{ code: 'identity_changed', severity: 'confirm', context: 'a1b2c3d4e5f6', acknowledged_by: null, acknowledged_at: null }] }] } });
   });
   await openQuote(page);
-  await content(page).getByRole('button', { name: 'Actividad', exact: true }).click();  // the price trace is part of the order's activity
+  await content(page).getByRole('button', { name: 'Versiones', exact: true }).click();  // the price trace goes with the versions
   const trace = content(page).locator('details.deal-quote-trace');
   await expect(trace.locator('summary')).toHaveText('Ver origen de precios');
   expect(traces).toEqual([]);

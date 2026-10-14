@@ -3,7 +3,6 @@ import { useMemo, type ReactNode } from 'react';
 import type { ColDef, RowClassParams } from 'ag-grid-community';
 import type { CustomCellRendererProps } from 'ag-grid-react';
 import ClientGrid from './client-grid';
-import { sortedLines } from './deal-items-table';
 import type { Deal, DealAgreement, Quotation } from '@/lib/deal-types';
 import type { SupplierRequestLine } from '@/lib/request-types';
 
@@ -18,6 +17,11 @@ type Cell = CustomCellRendererProps<Row>;
 const money = (value: string | number, currency = 'USD') => new Intl.NumberFormat('es-PA', { style: 'currency', currency }).format(Number(value));
 const units = (value: number) => value.toLocaleString('es-PA');
 const stockOf = (line: Line) => 'stock' in line ? (line as SupplierRequestLine).stock : undefined;
+const collate = (a = '', b = '') => (a ? b ? a.localeCompare(b, 'es') : -1 : b ? 1 : 0);  // the ungrouped last
+// The order's own order: grupo, subgrupo, description, then code.
+export function sortedLines(lines: Deal['lines']) {
+  return [...lines].sort((a, b) => collate(a.grupo, b.grupo) || collate(a.subgrupo, b.subgrupo) || a.description.localeCompare(b.description, 'es') || a.codigo.localeCompare(b.codigo));
+}
 // The cells that show more than their value (the stock's notes, a shortfall under Cant., the suggestion's origin) draw again on every read of
 // the order: a row's new data alone redraws only the cells whose value changed.
 const always = () => false;

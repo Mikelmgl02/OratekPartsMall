@@ -295,11 +295,9 @@ test('the client accepts the reduced agreement', async ({ page }) => {
   await deal.getByRole('button', { name: 'Sí, aceptar', exact: true }).click();
   await expect(deal.getByRole('status').filter({ hasText: 'Aceptaste el acuerdo reducido.' })).toBeVisible();
   expect(mock.actions).toEqual([{ action: 'accept_shortfall', expected_version: 5, quotation_id: quoteId, operation_id: expect.any(String) }]);
-  // The grid shows what remains: the accepted shortfall under its item, and the reduced total (also the document's).
-  const agreement = deal.locator('.deal-items');
-  await expect(agreement.locator('.deal-items-inline')).toContainText('2 faltantes aceptados · quedan 1');
-  await expect(agreement.locator('tfoot')).toContainText(total);
-  await expect(deal.locator('.deal-quote-heading')).toContainText(total);
+  // The grid shows what remains: the accepted shortfall under its item's Cant., and the reduced total in the summary.
+  await expect(deal.locator(`.order-lines-grid .ag-row[row-id="${lineA}"] .ag-cell[col-id="quantity"]`)).toContainText('2 faltantes aceptados · quedan 1');
+  await expect(deal.locator('.order-ws-figures .total')).toContainText(total);
   await expect(deal.getByRole('region', { name: 'Faltante reportado' })).toHaveCount(0);
   expect(mock.unexpected).toEqual([]);
 });

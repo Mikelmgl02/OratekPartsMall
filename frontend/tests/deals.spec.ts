@@ -14,7 +14,8 @@ const accounts = [{ id: clientId, name: 'TALLER CENTRAL', roles: ['client_busine
   { id: supplierId, name: 'REPUESTOS CENTRAL', roles: ['supplier_retail'], capabilities: ['supplier'] }];
 const empty = { count: 0, results: [], next: null, previous: null };
 const stamp = '2026-10-03T12:00:00Z';
-const dialog = (page: Page) => page.locator('.deal-order-content, dialog.deal-modal');
+// The supplier's order page, or the client's order dialog (whose workspace is inside it).
+const dialog = (page: Page) => page.locator('main.supplier-order-page > .deal-order-content, dialog.deal-modal');
 async function backToRequests(page: Page) {
   if (new URL(page.url()).pathname.startsWith('/proveedor/')) await page.getByRole('link', {name:'Volver a solicitudes', exact:true}).click();
   else if (await page.getByRole('dialog').count()) await dialog(page).getByRole('button', {name:'Cerrar ventana', exact:true}).click();
@@ -145,6 +146,7 @@ for (const mobile of [false, true]) test(`${mobile ? 'mobile' : 'desktop'}: priv
   await expect(dialog(page).getByRole('button', {name:'Confirmar cotización', exact:true})).toHaveCount(0);
   await expect(dialog(page).getByRole('button', {name:'Confirmar y enviar cotización', exact:true})).toHaveCount(0);
   await dialog(page).getByRole('button', {name:'Conversación', exact:true}).click();
+  await expect(dialog(page).getByLabel('Mensaje del acuerdo', {exact:true})).toBeInViewport();  // the chat fits the dialog, also stacked on a phone
   await dialog(page).getByLabel('Mensaje del acuerdo', {exact:true}).fill('retiro mañana');
   await dialog(page).getByRole('button', {name:'Enviar mensaje', exact:true}).click();
   await expect(dialog(page).getByRole('log')).toContainText('retiro mañana');
@@ -167,6 +169,9 @@ for (const mobile of [false, true]) test(`${mobile ? 'mobile' : 'desktop'}: priv
   await expect(dialog(page).getByLabel('Precio de 58411-1R000-G', {exact:true})).toHaveCount(0);
   await asClient(page); await quoteTab(page);
   await dialog(page).getByRole('button', {name:'Solicitar ajuste', exact:true}).click();
+  // The form opens at the foot of the side column, in view and ready to type.
+  await expect(dialog(page).getByLabel('¿Qué necesitas ajustar?', {exact:true})).toBeFocused();
+  await expect(dialog(page).getByRole('button', {name:'Enviar ajuste', exact:true})).toBeInViewport();
   await dialog(page).getByLabel('¿Qué necesitas ajustar?', {exact:true}).fill('solo necesito tres');
   await dialog(page).getByRole('button', {name:'Enviar ajuste', exact:true}).click();
   await expect(dialog(page).getByText('Ajuste solicitado', {exact:true})).toBeVisible();
@@ -190,16 +195,24 @@ for (const mobile of [false, true]) test(`${mobile ? 'mobile' : 'desktop'}: priv
   await asClient(page); await quoteTab(page);
   await dialog(page).getByRole('button', {name:'Confirmar cotización', exact:true}).click();
   expect(state.getOrder().status).toBe('quoted');
+  // The confirmation stacks in the side column, in view and no wider than it.
+  const confirmation = dialog(page).locator('.order-ws-actions .deal-confirmation');
+  await expect(confirmation.getByRole('button', {name:'Sí, confirmar acuerdo', exact:true})).toBeInViewport();
+  expect(await confirmation.evaluate(element => element.scrollWidth <= element.clientWidth && element.getBoundingClientRect().right <= element.closest('.order-ws-actions')!.getBoundingClientRect().right + 1)).toBe(true);
   await dialog(page).getByRole('button', {name:'Sí, confirmar acuerdo', exact:true}).click();
-  await expect(dialog(page).locator('.deal-document .deal-quote-heading').first()).toContainText('Acordada ·');
+  await expect(dialog(page).locator('.order-ws-summary .deal-quote-heading').first()).toContainText('Acordada ·');
   await expect(dialog(page).getByRole('button', {name:'Solicitar ajuste', exact:true})).toHaveCount(0);
-  // What v2 changed against v1, with v1's whole document folded under the earlier versions.
+  // Versiones: what v2 changed against v1, with v1's whole document folded under the earlier versions.
+  await dialog(page).getByRole('button', {name:'Versiones', exact:true}).click();
   const changes = dialog(page).getByRole('region', {name:'Cambios entre versiones', exact:true});
   await expect(changes).toContainText('Cambios en v2');
   await expect(changes).toContainText('58411-1R000-G: ofrecidas 5 → 3.');
   await changes.getByText('Versiones anteriores (1)', {exact:true}).click();
   await changes.getByText('Ver documento v1', {exact:true}).click();
   await expect(dialog(page).getByRole('region', {name:'Cotización anterior v1', exact:true})).toContainText('62.50');
+  // Versiones scrolls within the dialog rather than running past it.
+  expect(await dialog(page).locator('.order-ws-panel.versions').evaluate(element => getComputedStyle(element).overflowY === 'auto' || getComputedStyle(element.closest('.order-ws-body')!).overflowY === 'auto')).toBe(true);
+  expect(await dialog(page).locator('.order-ws-panel.versions').evaluate(element => element.getBoundingClientRect().bottom <= element.closest('.order-ws-main')!.getBoundingClientRect().bottom + 1)).toBe(true);
   expect(await dialog(page).evaluate(element => element.scrollWidth > element.clientWidth)).toBe(false);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
   await page.screenshot({path:`../output/ui/deal-handshake-${mobile ? 'mobile' : 'desktop'}.png`});
@@ -215,7 +228,7 @@ for (const mobile of [false, true]) test(`${mobile ? 'mobile' : 'desktop'}: priv
   await expect(page.getByRole('row').filter({hasText:'ORD-PRUEBA-001'})).toContainText('Procesando');
   await page.getByRole('button', {name:'Ver enviada ORD-PRUEBA-001', exact:true}).click();
   await quoteTab(page);
-  await expect(dialog(page).locator('.deal-document .deal-quote-heading').first()).toContainText('Acordada ·');
+  await expect(dialog(page).locator('.order-ws-summary .deal-quote-heading').first()).toContainText('Acordada ·');
   await expect(dialog(page).getByRole('note', { name: 'Siguiente paso' })).toContainText('El proveedor está preparando tu orden.');
   await dialog(page).getByRole('button', {name:'Cerrar ventana', exact:true}).click();
   expect(state.messages).toHaveLength(2);
@@ -321,7 +334,7 @@ test('a client accept refused for availability keeps the deal open, explains it 
   await expect(adjust).toHaveClass(/primary/);
   await expect(adjust).toHaveAccessibleDescription('Pide al proveedor una nueva versión con las unidades que puede confirmar.');
   await expect(dialog(page).getByRole('button', {name:'Confirmar cotización', exact:true})).toHaveClass(/soft/);
-  await expect(dialog(page).locator('.deal-document .deal-quote-heading').first()).not.toContainText('Acordada ·');
+  await expect(dialog(page).locator('.order-ws-summary .deal-quote-heading').first()).not.toContainText('Acordada ·');
   expect(state.getOrder().status).toBe('quoted');
   await adjust.click();
   await dialog(page).getByLabel('¿Qué necesitas ajustar?', {exact:true}).fill('confirmar disponibles');

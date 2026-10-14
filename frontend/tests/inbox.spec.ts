@@ -277,22 +277,22 @@ test('like a desktop chat app: the Cotizaciones table on the right opens each do
   await expect(table).toBeHidden();
   // One document: each item asked for with what the quotation offers of it. The column widens for it, so its prices fit without scrolling.
   await expect.poll(async () => Math.round((await side.boundingBox())!.width)).toBeGreaterThan(540);
-  const lines = panel.getByRole('table', { name: 'Líneas de la cotización v2', exact: true });
+  const lines = panel.getByRole('region', { name: 'Artículos de la orden', exact: true });
   await expect(lines.getByRole('columnheader')).toHaveText(['Código', 'Descripción', 'Pedido', 'Cant.', 'Precio', 'Subtotal']);
-  await expect(lines.getByRole('row').filter({ hasText: '58411-1R000-G' })).toContainText('USD 86.50');
-  await expect(lines.getByRole('row').last()).toContainText('TotalUSD 612.40');
-  expect(await panel.locator('.deal-items-frame').evaluate(element => element.scrollWidth > element.clientWidth)).toBe(false);
+  await expect(lines.locator('.ag-row').filter({ hasText: '58411-1R000-G' })).toContainText('USD 86.50');
+  await expect(panel.getByRole('region', { name: 'Cotización vigente v2', exact: true })).toContainText('USD 612.40');
   await panel.getByRole('button', { name: 'Ampliar la tabla', exact: true }).click();  // every column, as large as the screen
   const large = page.getByRole('dialog', { name: 'ORD-0123 · Cotización v2', exact: true });
   await expect(large.getByRole('columnheader')).toHaveText(['Código / descripción', 'Solicitadas', 'Ofrecidas', 'Precio unitario', 'Importe', 'SKU interno']);
   await large.getByRole('button', { name: 'Cerrar ventana', exact: true }).click();
   await expect(large).toHaveCount(0);
   await expect(panel).toBeVisible();
-  // One sheet, no tabs: the activity folds at its end.
-  await expect(panel.getByRole('navigation', { name: 'Secciones del acuerdo', exact: true })).toHaveCount(0);
-  const activity = panel.locator('.deal-activity');
-  await activity.locator('summary').click();
-  await expect(activity.locator('.deal-events')).toBeVisible();
+  // Its sections as tabs (no Conversación: the chat is beside it; Versiones once there are two to compare).
+  const sections = panel.getByRole('navigation', { name: 'Secciones del acuerdo', exact: true });
+  await expect(sections.locator('button[aria-pressed]')).toHaveText(['Cotización', 'Actividad']);
+  await sections.getByRole('button', { name: 'Actividad', exact: true }).click();
+  await expect(panel.locator('.deal-events')).toBeVisible();
+  await sections.getByRole('button', { name: 'Cotización', exact: true }).click();
   await expect(panel.getByRole('region', { name: 'Cotización vigente v2', exact: true })).toBeVisible();
   await panel.getByRole('button', { name: 'Volver a las cotizaciones', exact: true }).click();
   await expect(table).toBeVisible();
@@ -693,7 +693,7 @@ test('one conversation per supplier: its orders’ messages in one chat with the
   await expect(log.getByRole('article')).toHaveCount(3);
 
   await table.getByRole('button', { name: 'Abrir ORD-0119', exact: true }).click();  // the other order: its document beside the chat, and what is written goes about it
-  await expect(conversation.locator('.inbox-doc-title')).toContainText('ORD-0119');
+  await expect(conversation.locator('.order-ws-title')).toContainText('ORD-0119');
   await expect(conversation.getByRole('button', { name: 'Escribes sobre ORD-0119. Cambiar a general', exact: true })).toBeVisible();
   await expect(log.getByRole('article')).toHaveCount(3);  // the same conversation
   const composer = conversation.getByLabel('Mensaje del acuerdo', { exact: true });
@@ -706,7 +706,7 @@ test('one conversation per supplier: its orders’ messages in one chat with the
   await expect.poll(() => posted.at(-1)).toMatchObject({ body: 'Saludos a todos', general: true });
   await expect(log.getByRole('article').last()).toContainText('General');
   await log.getByRole('button', { name: 'Abrir la orden ORD-0123', exact: true }).click();  // an order's chip in the chat opens its document
-  await expect(conversation.locator('.inbox-doc-title')).toContainText('ORD-0123');
+  await expect(conversation.locator('.order-ws-title')).toContainText('ORD-0123');
   await expect(conversation.getByRole('region', { name: 'Cotización vigente v2', exact: true })).toBeVisible();
 });
 

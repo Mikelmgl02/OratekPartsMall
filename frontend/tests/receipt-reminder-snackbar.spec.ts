@@ -67,13 +67,24 @@ test('one order waiting: the reminder names it, and Confirmar recibido opens it 
   await snackbar(page).getByRole('button', { name: 'Confirmar recibido', exact: true }).click();
   const panel = page.getByRole('dialog', { name: 'Conversaciones', exact: true });
   const document = panel.getByRole('region', { name: 'Documento de la orden', exact: true });
-  await expect(document.getByRole('group', { name: 'Decisiones', exact: true }).getByRole('button', { name: 'Confirmar recibido', exact: true })).toBeVisible();
-  await expect(panel.locator('.inbox-doc-title')).toContainText('ORD-20261010-55791743');
+  await expect(document.getByRole('button', { name: 'Confirmar recibido', exact: true })).toBeInViewport();  // opened at its actions
+  await expect(panel.locator('.order-ws-title')).toContainText('ORD-20261010-55791743');
   await expect(snackbar(page)).toHaveCount(0);  // hidden while the panel is open
   await panel.getByRole('button', { name: 'Cerrar ventana', exact: true }).first().click();
   await expect(panel).toHaveCount(0);
   await expect(snackbar(page)).toBeVisible();
   expect(actions).toEqual([]);  // the reminder never confirms by itself
+});
+
+test('a long order opens scrolled to Recibido, below its lines', async ({ page }) => {
+  const { detail } = await open(page);
+  const lines = Array.from({ length: 18 }, (_, index) => ({ ...detail.lines[0], id: `l${index + 1}`, codigo: `58411-1R0${String(index).padStart(2, '0')}-G` }));
+  Object.assign(detail, { lines, line_count: lines.length });
+  await snackbar(page).getByRole('button', { name: 'Confirmar recibido', exact: true }).click();
+  const document = page.getByRole('dialog', { name: 'Conversaciones', exact: true }).getByRole('region', { name: 'Documento de la orden', exact: true });
+  await expect(document.locator('.order-lines-grid .ag-row')).not.toHaveCount(0);
+  await expect(document.getByRole('button', { name: 'Confirmar recibido', exact: true })).toBeInViewport();
+  expect(await document.locator('.order-ws-body').evaluate(element => element.scrollTop)).toBeGreaterThan(0);  // stacked: the lines first, then the side column
 });
 
 test('confirmed in the panel, the reminder goes at once, without waiting for the websocket', async ({ page }) => {
@@ -87,7 +98,7 @@ test('confirmed in the panel, the reminder goes at once, without waiting for the
   await snackbar(page).getByRole('button', { name: 'Confirmar recibido', exact: true }).click();
   const panel = page.getByRole('dialog', { name: 'Conversaciones', exact: true });
   const document = panel.getByRole('region', { name: 'Documento de la orden', exact: true });
-  await document.getByRole('group', { name: 'Decisiones', exact: true }).getByRole('button', { name: 'Confirmar recibido', exact: true }).click();
+  await document.getByRole('button', { name: 'Confirmar recibido', exact: true }).click();
   await document.getByRole('button', { name: 'Sí, la recibí', exact: true }).click();
   await expect.poll(() => confirmed.length).toBe(1);
   expect(confirmed[0]).toMatchObject({ action: 'receive' });

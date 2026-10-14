@@ -1645,10 +1645,14 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .inbox-side:not([hidden]):has(> .inbox-doc:not([hidden]) .order-ws) { display:flex; flex-direction:column; overflow:hidden; padding:10px 12px; }
 .inbox-doc:not([hidden]):has(.order-ws) { flex:1; min-height:0; display:flex; flex-direction:column; gap:8px; }
 /* The panel's order scrolls inside its body, a container whose height the stacked grids are capped by. */
-.order-ws.embedded .order-ws-body { container:orderbody / size; }
-.deal-embedded.supplier { flex:1; min-height:0; display:flex; flex-direction:column; }
-.order-ws.embedded .order-ws-head { padding:6px 12px; }
-.order-ws.embedded .order-ws-title h2 { margin:0; font-size:15px; overflow-wrap:anywhere; }
+.order-ws.contained .order-ws-body { container:orderbody / size; }
+.deal-embedded:has(> .order-ws) { flex:1; min-height:0; display:flex; flex-direction:column; }
+/* The client's order dialog: as tall as the screen allows, the workspace filling it. */
+.modal.order-modal { width:min(1400px,calc(100% - 30px)); height:min(92dvh,1100px); overflow:hidden; }
+.modal.order-modal[open] { display:flex; flex-direction:column; }
+.modal.order-modal>.order-ws { flex:1; min-height:0; }
+.order-ws.mode-embedded .order-ws-head { padding:6px 12px; }
+.order-ws.mode-embedded .order-ws-title h2 { margin:0; font-size:15px; overflow-wrap:anywhere; }
 .order-ws [hidden] { display:none !important; }
 .order-ws-head { display:flex; align-items:center; flex-wrap:wrap; gap:8px 18px; padding:8px 14px; border:1px solid var(--line); border-radius:12px; background:#fff; }
 .order-ws-back { display:inline-flex; align-items:center; gap:6px; color:#496b3c; font-size:12px; font-weight:600; text-decoration:none; white-space:nowrap; }
@@ -1666,7 +1670,7 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .order-ws-panel>.quotation-grid.fill-parent, .order-ws-editor, .order-ws-grid { flex:1; min-height:0; }
 .order-ws-editor { display:flex; flex-direction:column; }
 .deal-quote-editor.workspace { flex:1; min-height:0; display:flex; flex-direction:column; gap:8px; padding:0; border:0; border-radius:0; background:none; }
-.order-ws-panel.history { overflow:auto; gap:14px; }
+.order-ws-panel.history, .order-ws-panel.versions { overflow:auto; gap:14px; }
 .order-ws-panel.chat>.deal-chat { flex:1; min-height:0; display:flex; flex-direction:column; }
 .order-ws-panel.chat .deal-chat-messages { flex:1; max-height:none; }
 .order-ws-side { min-height:0; overflow:auto; display:flex; flex-direction:column; gap:12px; padding:14px; border:1px solid var(--line); border-radius:12px; background:#fff; scroll-padding-bottom:150px; }
@@ -1684,9 +1688,13 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .order-ws-actions>*, .deal-quote-editor-actions>* { width:100%; box-sizing:border-box; }
 .order-ws-actions:not(:has(> :not(.order-ws-slot:empty))) { display:none; }
 /* What follows the handshake (outcomes, Reportar faltante, Cancelar) can be tall: it scrolls with the sidebar instead of pinning over it. */
-.order-ws-actions:has(.deal-after) { position:static; margin-top:auto; }
+.order-ws-actions:has(.deal-after, .deal-reject, .deal-adjustment, .deal-confirmation) { position:static; margin-top:auto; }
+.order-ws-actions .deal-client-decisions { display:flex; flex-direction:column; align-items:stretch; gap:8px; }
 .order-ws-actions .button, .deal-quote-editor-actions .button { width:100%; justify-content:center; }
 .order-ws-actions .deal-after-actions { flex-direction:column; align-items:stretch; }
+.order-ws-actions .deal-confirmation { flex-direction:column; align-items:stretch; gap:8px; }
+.order-ws-actions .deal-confirmation>div { flex-direction:column; }
+.order-ws-actions .deal-confirmation p { margin:0; }
 .order-ws-slot:empty { display:none; }
 .deal-quote-editor-side, .deal-quote-editor-actions { display:flex; flex-direction:column; gap:10px; }
 .deal-quote-editor-side .deal-editor-total { display:flex; align-items:center; justify-content:space-between; gap:10px; }
@@ -1725,7 +1733,8 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
   .order-ws-side { flex:none; overflow:visible; }
   .order-ws-actions { position:static; margin:0; padding:12px 0 0; }
   .order-ws-panel.chat { flex:none; height:min(75dvh,640px); }
-  .order-ws.embedded .order-ws-panel>.quotation-grid.fill-parent, .order-ws.embedded .order-ws-grid { height:min(var(--rows-height,520px), max(180px, calc(100cqb - 70px))); }
+  .order-ws.contained .order-ws-panel>.quotation-grid.fill-parent, .order-ws.contained .order-ws-grid { height:min(var(--rows-height,520px), max(180px, calc(100cqb - 70px))); }
+  .order-ws.contained .order-ws-panel.chat { height:max(260px, calc(100cqb - 70px)); }
 }
 @media (max-width:600px) {
   .supplier-order-toolbar .brand-logo { width:140px; }
