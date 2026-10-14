@@ -142,7 +142,7 @@ class CatalogPartialImportTests(APITestCase):
         self.assertEqual(set(CatalogImportIssue.objects.filter(job_id=preview['job_id']).values_list('row', flat=True)), {2, 3})
         self.complete(preview['job_id'])
         self.assertEqual(list(Part.objects.values_list('sku', flat=True)), ['UNRELATED'])
-        self.assertEqual(PartCode.objects.count(), 0)
+        self.assertEqual(PartCode.objects.filter(is_main=False).count(), 0)
 
     def test_invalid_row_with_readable_sku_defers_its_other_group_rows(self):
         preview = self.preview([
@@ -168,7 +168,7 @@ class CatalogPartialImportTests(APITestCase):
         self.assertEqual(preview['rejected_row_count'], 2)
         self.complete(preview['job_id'])
         self.assertEqual(list(Part.objects.values_list('sku', flat=True)), ['UNRELATED'])
-        self.assertEqual(list(PartCode.objects.values_list('code', flat=True)), ['UNIQUE'])
+        self.assertEqual(list(PartCode.objects.filter(is_main=False).values_list('code', flat=True)), ['UNIQUE'])
 
     def test_repair_revalidates_current_catalog_and_can_be_retried_after_conflict(self):
         preview = self.preview([[datetime(2026, 6, 12), '', 'ABRAZADERA']])

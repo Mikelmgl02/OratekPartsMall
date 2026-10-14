@@ -35,7 +35,8 @@ def plan():
     from .oem_reference_models import compact, manufacturer_name
     citations = catalog_citations()
     by_part = defaultdict(list)
-    for code in (Reference.objects.filter(catalog_q(prefix='part__'), ref_type='company').select_related('part')
+    for code in (Reference.objects.filter(catalog_q(prefix='part__'), ref_type='company', is_main=False)  # a main is its line's SKU (S2b)
+                 .select_related('part')
                  .order_by('part__sku', 'brand', 'code', 'pk')):
         if written_by_catalog(code.reference_source, citations):
             by_part[code.part_id].append(code)

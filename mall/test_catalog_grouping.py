@@ -93,7 +93,7 @@ class CatalogGroupingMergeTests(APITestCase):
             with self.subTest(sources=sources):
                 self.assertEqual(self.merge(sources=sources).status_code, 400)
                 self.assertEqual(Part.objects.filter(active=True).count(), 3)
-                self.assertFalse(PartCode.objects.exists())
+                self.assertFalse(PartCode.objects.filter(is_main=False).exists())
         self.assertEqual(self.merge(category='A' * 121).status_code, 400)
         self.assertFalse(CatalogMerge.objects.exists())
 
@@ -133,8 +133,8 @@ class CatalogGroupingMergeTests(APITestCase):
         unrelated = Part.objects.create(sku='OTHER-CANONICAL')
         PartCode.objects.create(part=self.first, code=unrelated.sku)
         self.assertEqual(self.merge().status_code, 400)
-        self.assertEqual(self.first.codes.count(), 1)
-        self.assertEqual(self.target.codes.count(), 0)
+        self.assertEqual(self.first.codes.filter(is_main=False).count(), 1)
+        self.assertEqual(self.target.codes.filter(is_main=False).count(), 0)
         self.assertFalse(CatalogMerge.objects.exists())
 
     def test_reviewed_category_changes_are_normalized_and_blank_values_preserve(self):

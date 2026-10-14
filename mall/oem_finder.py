@@ -530,7 +530,8 @@ def load_snapshot():
         parts = sorted((dict(p, id=str(p['id']), merged_into_id=str(p['merged_into_id']) if p['merged_into_id'] else None)
                         for p in all_lines().values('id', 'sku', 'name', 'description', 'category', 'subcategory', 'active',  # estado: OEMFinder sorts them
                                                     'merged_into_id', 'is_OEM', 'estado').iterator(chunk_size=5000)), key=lambda p: p['sku'])
-        codes = [dict(c, part_id=str(c['part_id'])) for c in PartCode.objects.order_by('pk').values(
+        # A line's main (S2b) is its SKU, already in parts: left out, so the snapshots and the cases' fingerprints stay as they were.
+        codes = [dict(c, part_id=str(c['part_id'])) for c in PartCode.objects.filter(is_main=False).order_by('pk').values(
             'part_id', 'code', 'brand', 'ref_type', 'reference_source').iterator(chunk_size=5000)]
         items = [dict(s, part_id=str(s['part_id']), supplier_id=str(s['supplier_id'])) for s in SupplierItem.objects.filter(
             part__isnull=False).order_by('pk').values('supplier_id', 'part_id', 'codigo', 'brand', 'references', 'reported_quantity',

@@ -299,35 +299,54 @@ def validate_codes(estado, origen):
         raise LineStateError(f'Origen de línea desconocido: {origen}.')
 
 
-def create_line(sku, *, estado='publicada', origen='catalogo', decided_by=None, decided_at=None, **fields):
-    """A new line (Part.objects.create) in this estado and from this origen; other Part fields pass through. A unificada line is
-    only ever made by merging an existing one."""
+def create_line(sku, *, estado='publicada', origen='catalogo', decided_by=None, decided_at=None, main_brand='', main_tipo=None,
+                main_source='', actor=None, strict=False, **fields):
+    """A new line (Part.objects.create) in this estado and from this origen, with its main Reference (S2b): the codigo as code,
+    main_brand ('' any brand), main_tipo (the line's when None: oem for is_OEM=True, otro otherwise) and main_source
+    (mall.references.ensure_main). A key another line holds refuses the line with strict (ReferenceConflict, so its transaction
+    rolls back), else the main waits in disputa for a merge case. Other Part fields pass through. A unificada line is only ever made
+    by merging an existing one. Every writer that creates lines goes through here or bulk_create_lines."""
+    from django.db import transaction
+    from . import references
     from .models import Part
     validate_codes(estado, origen)
     if estado == 'unificada' or fields.get('merged_into') or fields.get('merged_into_id'):
         raise LineStateError('Una línea nueva no nace unificada: agrupa una existente.')
-    return Part.objects.create(sku=sku, estado=estado, origen=origen, decided_by=decided_by, decided_at=decided_at, **fields)
+    line = Part(sku=sku, estado=estado, origen=origen, decided_by=decided_by, decided_at=decided_at, **fields)
+    line._main_followed = True  # the main is made below, with what the caller asked for
+    with transaction.atomic():
+        line.save(force_insert=True)
+        references.ensure_main(line, brand=main_brand, tipo=main_tipo, source=main_source, actor=actor, strict=strict)
+    return line
 
 
-def bulk_create_lines(lines, *, batch_size=500):
+def bulk_create_lines(lines, *, batch_size=500, actor=None):
     """Insert unsaved Parts in bulk (no signals, as Part.objects.bulk_create): each codigo trimmed and upper case like Part.save,
-    estado and active in step, origen and estado checked, created_at stamped. Returns the lines."""
+    estado and active in step, tipo and is_OEM in step, origen and estado checked, created_at stamped; then each live line's main
+    Reference in bulk (mall.references.bulk_mains: brandless, its tipo from the line, disputa when another line holds the key).
+    Returns the lines."""
+    from . import references
     from .models import Part
     lines, now = list(lines), timezone.now()
     for line in lines:
         validate_codes(line.estado, line.origen)
         line.sku = codigo_key(line.sku)
         pair_lifecycle(line)
+        references.pair_line_tipo(line)
         line.created_at = line.created_at or now
     Part.objects.bulk_create(lines, batch_size=batch_size)
+    references.bulk_create(references.bulk_mains(lines, actor=actor), batch_size=batch_size, actor=actor)
     for line in lines:
         line._lifecycle = loaded_pair(line)
+        line._identity = {name: line.__dict__.get(name) for name in Part.IDENTITY}
     return lines
 
 
 def bulk_update_lines(lines, fields, *, batch_size=500):
     """Part.objects.bulk_update for loaded lines: when the fields include active, estado or merged_into, each line's pair is put in
-    step first and both columns are written; updated_at is stamped. Returns the number of rows matched."""
+    step first and both columns are written; likewise tipo and is_OEM. updated_at is stamped. A codigo or tipo written here moves the
+    line's main after it (mall.references.ensure_main), as Part.save does. Returns the number of rows matched."""
+    from . import references
     from .models import Part
     lines, fields, now = list(lines), list(dict.fromkeys(fields)), timezone.now()
     if PAIRED & set(fields):
@@ -335,11 +354,19 @@ def bulk_update_lines(lines, fields, *, batch_size=500):
             pair_lifecycle(line)
             validate_codes(line.estado, line.origen)
         fields = list(dict.fromkeys([*fields, 'active', 'estado']))
+    if {'tipo', 'is_OEM'} & set(fields):
+        for line in lines:
+            references.pair_line_tipo(line, getattr(line, '_identity', None))
+        fields = list(dict.fromkeys([*fields, 'tipo', 'is_OEM']))
     for line in lines:
         line.updated_at = now
     count = Part.objects.bulk_update(lines, [*fields, 'updated_at'], batch_size=batch_size) if lines else 0
+    identity = {'sku', 'tipo', 'is_OEM', 'merged_into'} & set(fields)
     for line in lines:
         line._lifecycle = loaded_pair(line)
+        if identity:
+            references.ensure_main(line, line_wins='sku' not in fields and bool({'tipo', 'is_OEM'} & set(fields)))
+        line._identity = {name: line.__dict__.get(name) for name in Part.IDENTITY}
     return count
 
 

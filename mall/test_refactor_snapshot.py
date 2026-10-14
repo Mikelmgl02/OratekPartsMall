@@ -31,7 +31,8 @@ class CaptureTests(Fresh, TestCase):
         Brand.objects.create(nombre='TOYOTA')  # every brand a code carries is a brand (I12: the S1 seed, then S2a's backfill)
         make_variant(self.supplier, 'S-1', '17801-30070', 4, actor=seller, brand='KSM', line=self.line)
         duplicate = make_line('17801-30070-G', description='FILTRO AIRE TOY')
-        Part.objects.filter(pk=duplicate.pk).update(active=False, merged_into=self.line, estado='unificada')
+        duplicate.merged_into = self.line
+        duplicate.save(update_fields=['merged_into'])  # unificada, and its main retired (I3) as a merge leaves it
         make_library_number('TOYOTA', '48654-0K050', citation='LISTA 2026')
 
     def test_a_capture_reads_every_screen_and_writes_nothing(self):
@@ -75,7 +76,7 @@ class CaptureTests(Fresh, TestCase):
         self.assertIn(('C1', 'OK'), results)
         self.assertIn(('I6', 'OK'), results)
         self.assertIn(('C0', 'INFO'), results)
-        self.assertIn(('I1', 'OMITIDA'), results)
+        self.assertIn(('I1', 'OK'), results)  # every line has its main since S2b (the Part.save shim makes it)
         self.assertNotIn('FALLA', {outcome for _, outcome in results})
 
 

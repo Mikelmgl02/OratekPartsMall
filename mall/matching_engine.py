@@ -71,8 +71,9 @@ def part_row(part):
             'category': part.category, 'subcategory': part.subcategory,
             'technical_revision': part.technical_revision,
             'active': part.active, 'merged_into': str(part.merged_into_id or ''),
+            # The main (S2b) is the codigo above: left out, so a case's fingerprint does not move when the line gets its main.
             'codes': sorted([{'code': c.code, 'brand': c.brand, 'kind': c.kind, 'ref_type': c.ref_type,
-                              'reference_source': c.reference_source} for c in part.codes.all()],
+                              'reference_source': c.reference_source} for c in part.codes.all() if not c.is_main],
                             key=lambda c: (c['brand'], c['code']))}
 
 

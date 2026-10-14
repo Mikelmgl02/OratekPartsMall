@@ -64,7 +64,7 @@ class CatalogImportTests(APITestCase):
         self.assertTrue(preview.data['valid'])
         self.assertEqual(preview.data['summary'], {'rows': 4, 'created_skus': 1, 'updated_skus': 1, 'unchanged_skus': 0, 'added_codes': 3})
         self.assertEqual(Part.objects.count(), 1)
-        self.assertEqual(PartCode.objects.count(), 1)
+        self.assertEqual(PartCode.objects.filter(is_main=False).count(), 1)
         imported = self.upload(raw, mode='import', preview_token=preview.data['preview_token'])
         self.assertEqual(imported.status_code, 200)
         self.assertTrue(imported.data['imported'])
@@ -73,11 +73,11 @@ class CatalogImportTests(APITestCase):
         self.assertEqual(existing.description, 'DESCRIPCIÓN EXISTENTE')
         self.assertTrue(existing.active)
         self.assertTrue(PartCode.objects.filter(pk=old_code.pk).exists())
-        self.assertEqual(existing.codes.count(), 3)
+        self.assertEqual(existing.codes.filter(is_main=False).count(), 3)
         new = Part.objects.get(sku='000123')
         self.assertEqual(new.name, 'REPUESTO NUEVO')
         self.assertFalse(new.active)
-        self.assertEqual(new.codes.get().code, '000045')
+        self.assertEqual(new.codes.get(is_main=False).code, '000045')
         stock.refresh_from_db()
         self.assertEqual(stock.part_id, existing.pk)
         self.assertEqual(stock.reported_quantity, 7)
@@ -87,7 +87,7 @@ class CatalogImportTests(APITestCase):
         self.assertEqual(repeated.data['summary']['unchanged_skus'], 2)
         self.assertEqual(repeated.data['summary']['added_codes'], 0)
         self.assertEqual(self.upload(raw, mode='import', preview_token=repeated.data['preview_token']).status_code, 200)
-        self.assertEqual(PartCode.objects.count(), 4)
+        self.assertEqual(PartCode.objects.filter(is_main=False).count(), 4)  # and the two lines' mains (S2b)
 
     def test_catalog_and_in_file_code_conflicts_report_exact_rows_without_writes(self):
         first = Part.objects.create(sku='FIRST')
@@ -99,7 +99,7 @@ class CatalogImportTests(APITestCase):
         self.assertEqual({error['row'] for error in result.data['errors']}, {2, 3, 4, 5})
         self.assertNotIn('preview_token', result.data)
         self.assertEqual(Part.objects.count(), 1)
-        self.assertEqual(PartCode.objects.count(), 1)
+        self.assertEqual(PartCode.objects.filter(is_main=False).count(), 1)
 
     def test_repeated_sku_metadata_and_invalid_identifiers_are_rejected(self):
         raw = self.excel([['SKU-A', 'FIRST'], ['SKU-A', 'SECOND'], [datetime(2026, 6, 12)], ['VALID', '', '', '=A2'], ['BRAND-ONLY', '', '', '', 'OEM'], ['BAD-ACTIVE', '', '', '', '', 'MAYBE']])
@@ -137,7 +137,7 @@ class CatalogImportTests(APITestCase):
         saved = self.client.post(job_url, {'batch_index': 0})
         self.assertTrue(saved.data['imported'])
         self.assertEqual(saved.data['warning_count'], 7)
-        self.assertEqual(Part.objects.get(sku='146690').codes.get().code, '000045')
+        self.assertEqual(Part.objects.get(sku='146690').codes.get(is_main=False).code, '000045')
         self.assertTrue(Part.objects.filter(sku='000123').exists())
         repeated = self.upload(raw).data
         self.assertEqual(repeated['summary']['unchanged_skus'], 7)
@@ -220,7 +220,7 @@ class CatalogImportTests(APITestCase):
             self.assertEqual(imported.status_code, 200)
         self.assertTrue(imported.data['imported'])
         self.assertEqual(Part.objects.count(), 6001)
-        self.assertEqual(PartCode.objects.count(), 6001)
+        self.assertEqual(PartCode.objects.filter(is_main=False).count(), 6001)
         existing.refresh_from_db()
         self.assertEqual(existing.name, 'NEW NAME')
         self.assertEqual(existing.description, 'KEEP ME')
@@ -242,7 +242,7 @@ class CatalogImportTests(APITestCase):
         with patch('mall.catalog_import.references.bulk_create', side_effect=IntegrityError('Concurrent duplicate')):
             self.assertEqual(self.client.post(url, {'batch_index': 1}).status_code, 409)
         self.assertEqual(Part.objects.count(), 500)
-        self.assertEqual(PartCode.objects.count(), 500)
+        self.assertEqual(PartCode.objects.filter(is_main=False).count(), 500)
         self.assertEqual(self.client.get(url).data['progress']['completed_batches'], 1)
         other = User.objects.create_superuser('other-job-root', 'other-job-root@example.invalid', 'AnotherRoot938!')
         self.client.force_authenticate(other)

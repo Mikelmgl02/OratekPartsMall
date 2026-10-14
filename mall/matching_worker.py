@@ -16,11 +16,17 @@ from .lines import storefront_lines
 from .models import User, SupplierItem
 
 logger = logging.getLogger(__name__)
+# OD12: AI ranking of supplier cases is off from S2b until S6, which turns it back on for line and merge cases only. A pass asks for
+# this many cases (0: none, ai_status 'paused').
+AI_LIMIT = 0
 
 
 def analyze_ambiguous(limit=20, *, stats=None):
     """Rank suggestions only; AI confidence never grants permission to merge."""
     stats = stats if stats is not None else {}
+    if limit <= 0:
+        stats['ai_status'] = 'paused'
+        return 0
     cases = list(MatchingCase.objects.filter(kind='supplier', status='review', ai={}).order_by('updated_at')[:limit])
     # The provider protocol identifies sources by SKU, so duplicate supplier codes
     # are processed on a later pass, not silently overwritten in its JSON map.
@@ -122,6 +128,9 @@ def _process_queue(*, force=False, use_ai=True):
                        'supplier_total': SupplierItem.objects.count(),
                        'supplier_already_matched': SupplierItem.objects.filter(matching_status='matched').count(),
                        'supplier_examined': 0, 'ai_eligible': 0, 'ai_status': 'disabled'}
+            # Until S10 every live line keeps a main Reference on its codigo, whatever path made or renamed it (plan §1.6.7).
+            from .references import ensure_mains
+            summary['mains_ensured'] = ensure_mains(actor=actor)['lines']
             summary['grouped_skus'] = reconcile_catalog(actor, stats=summary)
             if settings.OEM_FINDER_AUTO_STAGE:
                 from .oem_finder import worker_stage
@@ -138,7 +147,7 @@ def _process_queue(*, force=False, use_ai=True):
                 summary['proposals'] = proposals_stage()
             stage('ai')
             with no_cut():  # one request, already paid for once it answers: its suggestions are saved whole
-                summary['ai_analyzed'] = analyze_ambiguous(stats=summary) if use_ai else 0
+                summary['ai_analyzed'] = analyze_ambiguous(AI_LIMIT, stats=summary) if use_ai else 0
             summary['review'] = MatchingCase.objects.filter(status='review').count()
             summary['unmatched'] = MatchingCase.objects.filter(status='unmatched').count()
             summary['oem_skus'] = storefront_lines().filter(is_OEM=True).count()

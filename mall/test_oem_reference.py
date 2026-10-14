@@ -347,7 +347,7 @@ class MissingTablesTests(Fresh, TestCase):
                 code.save()
                 references.retire(code)
             self.assertEqual(Part.objects.count(), 1)  # the failed sync ran in a savepoint: the transaction is still usable
-            self.assertEqual((Reference.objects.count(), Reference.all_objects.get().estado), (0, 'retirada'))
+            self.assertEqual((Reference.objects.filter(is_main=False).count(), Reference.all_objects.get(is_main=False).estado), (0, 'retirada'))
             for response in (self.client.get(URL), self.client.post(URL, {'manufacturer': 'TOYOTA', 'code': '1'}, content_type='application/json'),
                              self.client.get(f'{URL}00000000-0000-4000-8000-000000000001/')):
                 self.assertEqual(response.status_code, 503)
@@ -409,11 +409,13 @@ class SeedTests(Fresh, TestCase):
     def test_the_link_backfill_is_idempotent_and_skips_other_alternos(self):
         PartCode.objects.update(oem_reference=None)
         self.assertEqual(self.link(), 4)  # two TOYOTA spellings, HYUNDAI, MITSUBISHI
-        linked = dict(PartCode.objects.values_list('code', 'oem_reference__code'))
-        self.assertEqual((linked['17801-30070'], linked['1780130070'], linked['MR968365'], linked['ALT-1']), ('1780130070', '1780130070', None, None))
+        linked = {(code, brand): number for code, brand, number in PartCode.objects.values_list('code', 'brand', 'oem_reference__code')}
+        # MR-968365's main (S2b) took the brandless MR968365 as a spelling of its codigo: brandless, it is not a fact either.
+        self.assertEqual((linked[('17801-30070', 'TOYOTA')], linked[('1780130070', 'TOYOTA')], linked[('MR-968365', '')], linked[('ALT-1', 'ACME')]),
+                         ('1780130070', '1780130070', None, None))
         self.assertEqual(self.link(), 0)
         run_migration_function(self.LINK, 'backfill')
-        self.assertEqual(dict(PartCode.objects.values_list('code', 'oem_reference__code')), linked)
+        self.assertEqual({(code, brand): number for code, brand, number in PartCode.objects.values_list('code', 'brand', 'oem_reference__code')}, linked)
 
     def test_the_migration_seed(self):
         OEMReference.objects.all().delete()

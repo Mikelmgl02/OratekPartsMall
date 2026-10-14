@@ -197,7 +197,8 @@ def new_claimant(known, pid, keys):
         for id_, sku, active, merged in all_lines().filter(sku__iregex=rx).exclude(pk=pid).values_list('id', 'sku', 'active', 'merged_into_id'):
             if key in normalized_reference(sku) and known.parts.get(str(id_)) != (sku, active, str(merged) if merged else None):
                 return sku
-        for part_id, code, brand in Reference.objects.filter(code__iregex=rx).exclude(part_id=pid).values_list('part_id', 'code', 'brand'):
+        # A line's main (S2b) is its SKU, checked above; the snapshot lists the other References.
+        for part_id, code, brand in Reference.objects.filter(code__iregex=rx, is_main=False).exclude(part_id=pid).values_list('part_id', 'code', 'brand'):
             if key in normalized_reference(code) and (str(part_id), code, brand) not in known.codes:
                 return code
         for part_id, codigo in SupplierItem.objects.filter(codigo__iregex=rx, part__isnull=False).exclude(part_id=pid).values_list('part_id', 'codigo'):
@@ -207,7 +208,36 @@ def new_claimant(known, pid, keys):
 
 
 def code_rows(pid):
+    """The line's References as the finder's snapshot lists them: without its main, which is its SKU (S2b)."""
+    return {c['id']: c for c in Reference.objects.filter(part_id=pid, is_main=False).values('id', 'code', 'brand', 'ref_type', 'reference_source')}
+
+
+def undo_rows(pid):
+    """Every live Reference of the line, its main included: what an apply's undo compares (a rename moves the main, S2b)."""
     return {c['id']: c for c in Reference.objects.filter(part_id=pid).values('id', 'code', 'brand', 'ref_type', 'reference_source')}
+
+
+def main_snapshot(part):
+    """The line's main before an apply ({id, code, brand, tipo}, or None before S2b's backfill), for its undo."""
+    main = references.main_of(part)
+    return {'id': main.pk, 'code': main.code, 'brand': main.brand, 'tipo': main.tipo} if main else None
+
+
+def restore_main(part, undo, previous_sku, actor, reason):
+    """Give the line back the main (and so the codigo) it had before an apply: the main the undo recorded (brought back if it was
+    retired since), else the line's Reference with the old SKU as code (an apply before S2b), added when it is gone."""
+    wanted, ref = undo.get('main'), None
+    if wanted:
+        ref = Reference.all_objects.filter(pk=wanted['id'], part=part).first()
+        if ref is not None and ref.estado == 'retirada':
+            ref, _ = references.add(part, ref.code, ref.brand, tipo=ref.tipo, actor=actor)
+    if ref is None:
+        ref = (part.codes.filter(code=previous_sku, supplier__isnull=True).order_by('pk').first()
+               or references.add(part, previous_sku, '', tipo='otro', actor=actor)[0])
+    current = references.main_of(part)
+    if current is None or current.pk != ref.pk:
+        references.set_main(part, ref, actor=actor, reason=reason)
+    return ref
 
 
 def current_snapshot(part, codes):
@@ -271,11 +301,12 @@ def apply_row(run, finder, known, pid, r, tier, batch, actor):
         from .catalog_identity import disputed_codes
         if disputed_codes([code]):  # disputed since the analysis
             raise Skip('disputed', code)
+        rows = undo_rows(pid)
+        before = {'sku': part.sku, 'name': part.name, 'is_OEM': part.is_OEM, 'main': main_snapshot(part)}
         ensure_code(part, code, brand, 'oem', source, actor)
         written = r.get('written_form') or ''
         if written and written != code:  # the catalog's spelling stays searchable; unverified, so it is never promoted on its own
             ensure_code(part, written, brand, 'oem', '', actor)
-        before = {'sku': part.sku, 'name': part.name, 'is_OEM': part.is_OEM}
         part = prefer_oem(part, actor=actor, selected={'code': code, 'brand': brand}, confirm_current=tier == FLAG)
         if part.sku != code or not part.is_OEM:
             raise RuntimeError(f'prefer_oem dejó {part.sku} sin aplicar {code}.')
@@ -284,13 +315,13 @@ def apply_row(run, finder, known, pid, r, tier, batch, actor):
                 'code': code, 'brand': brand, 'ref_type': 'oem', 'reference_source': source, 'action': 'confirm_current'})
         else:
             change = CatalogIdentityChange.objects.filter(part=part, previous_sku=before['sku'], sku=code).order_by('-pk').first()
-        after = code_rows(pid)
-        undo = {**before, 'created_codes': [after[k] for k in sorted(after.keys() - codes.keys())],
-                'updated_codes': [{'before': codes[k], 'after': after[k]} for k in sorted(after.keys() & codes.keys()) if after[k] != codes[k]]}
+        after = undo_rows(pid)
+        undo = {**before, 'created_codes': [after[k] for k in sorted(after.keys() - rows.keys())],
+                'updated_codes': [{'before': rows[k], 'after': after[k]} for k in sorted(after.keys() & rows.keys()) if after[k] != rows[k]]}
         link = OEMFinderChange.objects.create(change=change, run=run, part=part, tier=tier, method=METHODS[tier], batch=batch, code=code,
                                               brand=brand, evidence={**of.evidence(finder, pid, r), 'snapshot': of.part_snapshot(finder, pid)},
                                               undo=undo)
-    known.absorb(pid, part.sku, after)
+    known.absorb(pid, part.sku, code_rows(pid))
     return link
 
 
@@ -559,21 +590,18 @@ def revert_link(link_id, actor):
                     edited.append(row)
         if edited:  # all or nothing: a kept algo OEM would let reference reconciliation rename the SKU again
             raise Skip('codes_changed', ', '.join(sorted({f'{r["brand"]} {r["code"]}'.strip() for r in edited})))
-        references.retire([r['id'] for r in delete], actor=actor, reason=f'Deshecho el buscador OEM (corrida {link.run_id})')
-        for pk, before in restore:  # one save each, not a queryset update: the OEM reference library follows the Reference signals
-            references.update(Reference.objects.get(pk=pk), actor=actor, **{k: before[k] for k in CODE_KEYS[1:]})
-        fields = ['is_OEM']
         # A code that is a declared or verified number of the OEM list stays OEM: that is what OEM means, whoever flagged it first.
         from .catalog_identity import exact_listed
         kept = [] if rename else exact_listed(part.sku)
-        part.is_OEM = bool(undo.get('is_OEM')) or bool(kept)
-        if rename:
-            part.sku = change.previous_sku
-            fields.append('sku')
-            if part.name == change.sku and undo.get('name') == change.previous_sku:
-                part.name = change.previous_sku
-                fields.append('name')
-        part.save(update_fields=fields)
+        why = f'Deshecho el buscador OEM (corrida {link.run_id})'
+        # The main as it was first (S2b: the codigo follows it back), so the References the run created are no longer the main.
+        restore_main(part, undo, change.previous_sku, actor, why)
+        references.retire([r['id'] for r in delete], actor=actor, reason=why)
+        for pk, before in restore:  # one save each, not a queryset update: the OEM reference library follows the Reference signals
+            references.update(Reference.objects.get(pk=pk), actor=actor, **{k: before[k] for k in CODE_KEYS[1:]})
+        oem = bool(undo.get('is_OEM')) or bool(kept)
+        if part.is_OEM != oem:
+            references.retype_main(part, 'oem' if oem else 'otro', actor=actor, reason=why)
         reverse = CatalogIdentityChange.objects.create(part=part, previous_sku=change.sku, sku=part.sku, actor=actor, reference={
             'action': 'revert', 'reverts': change.pk, 'run': link.run_id, 'code': link.code, 'brand': link.brand, 'method': link.method,
             **({'kept_oem': [f'{ref.manufacturer} {ref.code}' for ref in kept]} if kept else {})})

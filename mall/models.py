@@ -63,11 +63,15 @@ class Part(models.Model):
     ORIGENES = [('catalogo', 'Catálogo'), ('biblioteca', 'Biblioteca OEM'), ('proveedor', 'Proveedor')]
     REASONS = [('duplicate', 'Ya existe en el catálogo'), ('not_a_part', 'No es un repuesto'), ('bad_data', 'Datos del proveedor incorrectos'),
                ('other', 'Otro motivo')]  # SkuProposal.REJECT_REASONS
+    # The line's tipo mirrors its main Reference (inventory refactor S2b: oem → OEM, aftermarket → AFTERMARKET, interno and otro →
+    # UNKNOWN; mall.references.set_main writes both). Until S10 is_OEM is kept equal to tipo == 'OEM' (save() below; a CHECK from 0076).
+    TIPOS = [('OEM', 'OEM'), ('AFTERMARKET', 'Posventa'), ('UNKNOWN', 'Sin clasificar')]
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False, verbose_name='ID')
     sku = models.CharField(max_length=200, unique=True, verbose_name='SKU interno')
     is_OEM = models.BooleanField(default=False, db_index=True, verbose_name='El SKU principal es OEM')
     name = models.CharField(max_length=200, blank=True, default='', verbose_name='nombre')
     description = models.TextField(blank=True, verbose_name='descripción')
+    tipo = models.CharField(max_length=12, choices=TIPOS, default='UNKNOWN', db_default='UNKNOWN', db_index=True, verbose_name='tipo')
     category = models.CharField(max_length=120, blank=True, default='', verbose_name='categoría')
     subcategory = models.CharField(max_length=120, blank=True, default='', verbose_name='subcategoría')
     part_type = models.ForeignKey('PartType', on_delete=models.PROTECT, null=True, blank=True, related_name='parts')
@@ -94,27 +98,42 @@ class Part(models.Model):
                                       help_text='Solo cambios que una persona ve (mall.lines.touch_visible), no los rellenos de la IA.')
     def __str__(self):
         return f"{self.sku} · {self.name}" if self.name and self.name != self.sku else self.sku
+    IDENTITY = ('sku', 'is_OEM', 'tipo', 'estado', 'merged_into_id')  # what the S2b shim compares against (mall.references.follow_line)
     @classmethod
     def from_db(cls, db, field_names, values):
         instance = super().from_db(db, field_names, values)
         instance._lifecycle = (instance.__dict__.get('active'), instance.__dict__.get('estado'))  # what save() compares against
+        instance._identity = {name: instance.__dict__.get(name) for name in cls.IDENTITY}
         return instance
     def refresh_from_db(self, using=None, fields=None, from_queryset=None):
         loaded = dict(zip(('active', 'estado'), getattr(self, '_lifecycle', (None, None))))
+        identity = dict(getattr(self, '_identity', {}))
         super().refresh_from_db(using=using, fields=fields, from_queryset=from_queryset)
         for name in loaded:
             if fields is None or name in fields:
                 loaded[name] = self.__dict__.get(name)
+        for name in self.IDENTITY:
+            if fields is None or name in fields or name.removesuffix('_id') in fields:
+                identity[name] = self.__dict__.get(name)
         self._lifecycle = (loaded['active'], loaded['estado'])
+        self._identity = identity
     def save(self, *args, **kwargs):
         self.sku = self.sku.strip().upper()
         fields = kwargs.get('update_fields')
+        adding = self._state.adding
+        before = dict(getattr(self, '_identity', {})) if not adding else {}
         # estado and active stay in step (whichever changed since load wins; merged_into forces unificada) and are written together.
         if fields is None or {'active', 'estado', 'merged_into'} & set(fields):
             from .lines import pair_lifecycle
             pair_lifecycle(self)
             if fields is not None:
                 fields = kwargs['update_fields'] = set(fields) | {'active', 'estado'}
+        # tipo and is_OEM likewise (whichever changed since load wins), so the code that only knows is_OEM keeps working until S10.
+        if fields is None or {'tipo', 'is_OEM'} & set(fields):
+            from .references import pair_line_tipo
+            pair_line_tipo(self, before)
+            if fields is not None:
+                fields = kwargs['update_fields'] = set(fields) | {'tipo', 'is_OEM'}
         if fields:  # a partial save stamps updated_at too (auto_now only writes it when listed); update_fields=[] still saves nothing
             fields = kwargs['update_fields'] = set(fields) | {'updated_at'}
         if fields is None or {'category', 'subcategory', 'part_type'} & set(fields):
@@ -127,6 +146,12 @@ class Part(models.Model):
                 kwargs['update_fields'] = set(fields) | {'category', 'subcategory', 'part_type'}
         super().save(*args, **kwargs)
         self._lifecycle = (self.__dict__.get('active'), self.__dict__.get('estado'))  # a deferred one stays unloaded
+        # Transition shim until S10 (plan §1.4): a live line keeps one main Reference holding its codigo, whose tipo it mirrors. A line
+        # inserted without one gets it here (unless mall.lines.create_line makes it), and so does a line renamed, given its tipo or
+        # brought back from a merge by the code that writes sku, is_OEM or merged_into directly.
+        from .references import follow_line
+        follow_line(self, before, adding=adding, fields=fields, using=kwargs.get('using'))
+        self._identity = {name: self.__dict__.get(name) for name in self.IDENTITY}
     class Meta:
         verbose_name = 'repuesto'
         verbose_name_plural = 'repuestos'
@@ -327,12 +352,22 @@ class Reference(models.Model):
             pair_tipo(self)
             if fields is not None:
                 fields = kwargs['update_fields'] = set(fields) | {'tipo', 'ref_type'}
+        if self._state.adding and not self.__dict__.pop('_checked', False):
+            # Transition shim until S10 (S2b): an insert by code outside mall.references whose key the line's main already holds
+            # updates the main instead, and one whose key another line's main holds waits in disputa (mall.references.adopt_insert).
+            from .references import adopt_insert
+            if adopt_insert(self):
+                kwargs.pop('force_insert', None)
+                fields = None
         if not self._state.adding:
             self.version = (self.version or 0) + 1
             if fields:  # a partial save stamps updated_at and the version too (update_fields=[] still saves nothing)
                 fields = kwargs['update_fields'] = set(fields) | {'version', 'updated_at'}
         super().save(*args, **kwargs)
         self._tipo_pair = (self.__dict__.get('tipo'), self.__dict__.get('ref_type'))
+        if self.__dict__.pop('_adopted_main', False):
+            from .references import sync_line_tipo
+            sync_line_tipo(self.part, self)  # the line's tipo mirrors its main (I11)
 
     def delete(self, *args, **kwargs):
         raise ReferenceDeleteRefused(REFERENCE_DELETE_REFUSED)

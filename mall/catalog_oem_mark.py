@@ -308,10 +308,12 @@ def unmark_oem(*, rows, actor=None):
     for row in rows:
         part = parts[row['id']]
         if row['retire_number']:  # the OEM alterno its marking filed is retired (mall.references), and its number stays in the list
-            references.retire(Reference.objects.filter(part=part, ref_type='oem', code=part.sku), actor=actor, reason='Quitar marca OEM')
-        if part.is_OEM:
-            part.is_OEM = False
-            part.save(update_fields=['is_OEM'])
+            references.retire(Reference.objects.filter(part=part, ref_type='oem', code=part.sku, is_main=False), actor=actor,
+                              reason='Quitar marca OEM')
+        # The mark is the main's tipo (S2b): it goes back to otro, and with retire_number the make leaves the main too.
+        main = references.main_of(part)
+        if part.is_OEM or (main is not None and main.tipo == 'oem'):
+            references.retype_main(part, 'otro', brand='' if row['retire_number'] else None, actor=actor, reason='Quitar marca OEM')
     return updated_rows(parts)
 
 

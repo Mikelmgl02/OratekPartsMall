@@ -10,6 +10,7 @@ from rest_framework.test import APIClient
 from storages.backends.s3 import S3Storage
 
 from .catalog_grouping import merge_catalog_parts
+from . import references
 from .models import Part, PartImage, User
 
 
@@ -147,6 +148,7 @@ class CatalogMediaTests(TestCase):
         with self.captureOnCommitCallbacks(execute=True):
             try:
                 with transaction.atomic():
+                    references.purge(list(self.part.codes.values_list('pk', flat=True)))  # its main (S2b), so the line can go
                     self.part.delete()
                     raise ValueError('rollback')
             except ValueError:

@@ -162,7 +162,7 @@ def candidate_context(groups, source_skus):
                                'is_OEM': part.is_OEM,
                                'description': part.description[:2000], 'category': part.category,
                                'subcategory': part.subcategory,
-                               'codes': [{'brand': code.brand, 'code': code.code, 'ref_type': code.ref_type, 'reference_source': code.reference_source} for code in sorted(part.codes.all(), key=lambda code: code.pk)[:40]]}
+                               'codes': [{'brand': code.brand, 'code': code.code, 'ref_type': code.ref_type, 'reference_source': code.reference_source} for code in sorted(part.codes.all(), key=lambda code: code.pk) if not code.is_main][:40]}
                       for part in catalogue[:AI_BATCH_SIZE * MAX_CANDIDATES]}
     # Exact part-number references in descriptions also identify existing SKUs.
     literal_refs = set()
@@ -174,7 +174,7 @@ def candidate_context(groups, source_skus):
                                       'is_OEM': part.is_OEM,
                                       'description': part.description[:2000], 'category': part.category,
                                       'subcategory': part.subcategory,
-                                      'codes': [{'brand': code.brand, 'code': code.code, 'ref_type': code.ref_type, 'reference_source': code.reference_source} for code in sorted(part.codes.all(), key=lambda code: code.pk)[:40]]}
+                                      'codes': [{'brand': code.brand, 'code': code.code, 'ref_type': code.ref_type, 'reference_source': code.reference_source} for code in sorted(part.codes.all(), key=lambda code: code.pk) if not code.is_main][:40]}
     rows = {**catalogue_rows, **staged}
     blocked = set(all_lines().filter(sku__in=bases).values_list('sku', flat=True)) | set(Reference.objects.filter(code__in=bases).values_list('code', flat=True))
     families = family_candidates(rows, blocked)

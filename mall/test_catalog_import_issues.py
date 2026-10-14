@@ -124,7 +124,7 @@ class CatalogImportIssueApiTests(APITestCase):
         self.assertEqual(rejected.data['errors'][0]['column'], 'CODIGO_ALTERNO')
         corrected = self.client.post(self.detail(), {'values': {'code': '-ABC'}}, format='json')
         self.assertTrue(corrected.data['valid'])
-        self.assertEqual(PartCode.objects.get().code, '-ABC')
+        self.assertEqual(PartCode.objects.get(is_main=False).code, '-ABC')
 
     def test_blank_fields_preserve_existing_metadata_and_correct_copied_date_name(self):
         existing = Part.objects.create(sku='6-12', name='NOMBRE EXISTENTE', active=False)

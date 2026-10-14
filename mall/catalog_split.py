@@ -164,7 +164,7 @@ def split_plan(target):
         entry = history.get(str(child.pk), {})
         child.merged_at, child.merged_by = entry.get('merged_at'), entry.get('merged_by', '')
         child.automatic, child.method, child.snapshot = entry.get('automatic', False), entry.get('method', ''), entry.get('codes')
-    codes = list(target.codes.order_by('code', 'brand', 'pk'))
+    codes = list(target.codes.filter(is_main=False).order_by('code', 'brand', 'pk'))  # the target's main is its SKU (S2b): it stays
     by_id = {str(child.pk): child for child in children}
     for code in codes:
         code.suggested, code.alias_of = owners.code(code)
@@ -243,9 +243,10 @@ def split_catalog_part(*, actor, target_id, restore, reason=''):
             raise ValidationError({'detail': 'No repitas un SKU por separar.'})
         wanted[pk] = entry
     # The claves of the target's codes before their rows: a code moving to a restored line is checked against every other line under
-    # its clave's advisory lock (mall.references), the lock a writer adding the same key takes first.
-    references.lock(*Reference.objects.filter(part=target).values_list('clave', flat=True))
-    codes = {code.pk: code for code in Reference.objects.select_for_update().filter(part=target).order_by('pk')}
+    # its clave's advisory lock (mall.references), the lock a writer adding the same key takes first. The target's main is its SKU
+    # (S2b): it stays.
+    references.lock(*Reference.objects.filter(part=target, is_main=False).values_list('clave', flat=True))
+    codes = {code.pk: code for code in Reference.objects.select_for_update().filter(part=target, is_main=False).order_by('pk')}
     items = {str(item.pk): item for item in SupplierItem.objects.select_for_update().filter(part=target).order_by('pk')}
     images = {str(image.pk): image for image in PartImage.objects.select_for_update().filter(part=target).order_by('pk')}
     plan = {pk: {'codes': [], 'items': [], 'images': []} for pk in wanted}
@@ -320,7 +321,7 @@ def split_catalog_part(*, actor, target_id, restore, reason=''):
     # A parent SKU the grouping created and the split leaves empty has nothing to identify: it retires, which also keeps the worker
     # from proposing the same parent again (mall.matching_engine.catalog_families blocks inactive bases).
     created = any(merge.target_id == target.pk and merge.summary.get('target_created') for merge in merges)
-    retired = bool(created and target.active and not Part.objects.filter(merged_into=target).exists() and not Reference.objects.filter(part=target).exists()
+    retired = bool(created and target.active and not Part.objects.filter(merged_into=target).exists() and not Reference.objects.filter(part=target, is_main=False).exists()
                    and not SupplierItem.objects.filter(part=target).exists() and not PartImage.objects.filter(part=target).exists())
     if retired:
         target.active, target.estado = False, 'retirada'

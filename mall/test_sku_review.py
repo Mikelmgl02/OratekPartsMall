@@ -398,7 +398,7 @@ class SkuReviewTests(APITestCase):
         self.assertEqual((approved['done'], approved['approved']), (2, 2))
         keyring = Part.objects.get(sku='GOOD-2')
         self.assertFalse(keyring.is_OEM)                                    # an internal code is no OEM number
-        self.assertEqual(list(PartCode.objects.filter(part=keyring).values_list('code', 'brand', 'ref_type')), [('GOOD-2', 'KAIYI', 'company')])
+        self.assertEqual(list(PartCode.objects.filter(is_main=False, part=keyring).values_list('code', 'brand', 'ref_type')), [('GOOD-2', 'KAIYI', 'company')])
         self.assertFalse(OEMReference.objects.filter(code='GOOD2').exists())
         rejected = self.client.post(bulk, {'action': 'reject', 'proposals': [{'id': row['id'], 'version': row['version'], 'reason': row['reason'], 'note': row['note']} for row in bad]
                                            + [{'id': str(uuid.uuid4()), 'version': 1, 'reason': 'other'}, {'id': 'nope', 'version': 1}, 'x']}, format='json').json()
@@ -467,7 +467,7 @@ class SkuReviewTests(APITestCase):
         edit(pump.pk, self.root, pump.version, {'internal_code': False})
         pump = self.proposal('GWT-41A')
         self.assertEqual((pump.oem_code, pump.oem_brand, pump.field_sources['oem']['source']), ('16100-39315', 'TOYOTA', 'oem_library'))
-        self.assertEqual((part.is_OEM, list(part.codes.values_list('ref_type', flat=True))), (False, ['company']))
+        self.assertEqual((part.is_OEM, list(part.codes.filter(is_main=False).values_list('ref_type', flat=True))), (False, ['company']))
         regular = self.item(self.dealer, '2', 'F02-1234567-01AA', 'KAIYI', 'PARASOL KAIYI')
         propose()
         normal = self.proposal('F02-1234567-01AA')

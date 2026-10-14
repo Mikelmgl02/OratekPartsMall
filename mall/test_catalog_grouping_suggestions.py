@@ -73,7 +73,7 @@ class CatalogGroupingSuggestionTests(APITestCase):
         self.assertEqual(response.data['source_skus'], [self.ksm.sku])
         self.assertEqual(response.data['category'], 'FRENOS')
         self.assertEqual(Part.objects.filter(active=True).count(), 3)
-        self.assertEqual(PartCode.objects.count(), 0)
+        self.assertEqual(PartCode.objects.filter(is_main=False).count(), 0)
 
     def test_grouping_views_require_superuser_and_reject_stale_or_duplicate_selection(self):
         self.client.force_authenticate(None)

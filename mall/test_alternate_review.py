@@ -64,7 +64,7 @@ class AlternateReviewTests(Fresh, APITestCase):
         self.assertEqual(prune.run(stdout=io.StringIO())['remove'], 1)  # the copy is now an ordinary cleanup candidate
         done = self.client.post(self.url, {'action': 'remove_copies'}, format='json').json()
         self.assertEqual((done['undecided'], done['copies']), ([], []))
-        self.assertEqual(set(self.part.codes.values_list('code', flat=True)), {'A1773', 'TM-9'})  # confirmed and typed codes stay
+        self.assertEqual(set(self.part.codes.filter(is_main=False).values_list('code', flat=True)), {'A1773', 'TM-9'})  # confirmed and typed codes stay
 
     def test_a_stale_or_foreign_decision_is_refused_with_the_current_state(self):
         for payload in ({'action': 'keep', 'alternate': self.copy.pk}, {'action': 'remove', 'alternate': self.typed.pk},
@@ -73,7 +73,7 @@ class AlternateReviewTests(Fresh, APITestCase):
             self.assertEqual(response.status_code, 409, payload)
             self.assertEqual(len(response.json()['review']['undecided']), 2)
         self.assertEqual(self.client.post(self.url, {'action': 'keep'}, format='json').status_code, 400)
-        self.assertEqual(PartCode.objects.filter(part=self.part).count(), 4)
+        self.assertEqual(PartCode.objects.filter(is_main=False, part=self.part).count(), 4)
 
     def test_only_superusers_and_only_canonical_skus(self):
         staff = User.objects.create_user('alt-review-staff', 'alt-review-staff@example.invalid', 'Example938!')

@@ -46,7 +46,7 @@ class PartReferenceTests(APITestCase):
         self.assertEqual(item.codigo, 'D-HYU-1R')
         self.assertEqual(SupplierItem.objects.count(), 1)
         self.assertEqual(list(StockEntry.objects.values()), before)
-        self.assertEqual(self.master.codes.count(), 2)
+        self.assertEqual(self.master.codes.filter(is_main=False).count(), 2)
         self.assertEqual(MatchingCase.objects.get(item=item).method, 'approved_reference')
 
     def test_oem_own_code_and_suffix_match_master_with_unrelated_name_and_brand(self):

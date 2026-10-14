@@ -4,6 +4,11 @@ An OEM reference and its provenance must already be in the reviewed library.
 Manufacturer suffix rules identify a company, not interchangeability or an OEM.
 mark_exact_matches marks OEM (never renames) the SKUs whose compact code is a declared or verified number of the OEM list, 8 or more
 characters with a digit: a SKU is OEM when its code is the OEM number.
+
+Since S2b a line's identity is its main Reference (mall.references): prefer_oem makes the chosen OEM Reference the main
+(references.set_main, the codigo following it while the line is live) instead of renaming the line and keeping its old SKU as an
+alterno, which the old main now is anyway; marking OEM retypes the main (references.retype_main) until S4 makes the library numbers
+References.
 """
 from django.conf import settings
 from django.db import transaction
@@ -36,7 +41,7 @@ def reference_owners(code, part, *, merged_here=True):
     if not merged_here:
         parts = parts.exclude(merged_into=part.pk)
     return ([s for s in parts.values_list('sku', flat=True) if normalized_reference(s) == key]
-            + [c for c in Reference.objects.filter(code__iregex=rx).exclude(part=part.pk).values_list('code', flat=True)
+            + [c for c in Reference.objects.filter(code__iregex=rx, is_main=False).exclude(part=part.pk).values_list('code', flat=True)  # a main is its SKU
                if normalized_reference(c) == key])
 
 
@@ -69,51 +74,36 @@ def reference_type(code):
 
 
 def identity_status(part):
+    """What Inventario's MAIN badge says (ManagedPart.identity), from the line's main Reference: its tipo as the legacy ref_type and
+    its brand. A line without a main yet (before mall.refactor.s2b_main_refs) falls back to its codigo, as before S2b."""
     codes = list(part.codes.all())
+    main = references.main_in(codes)
     oems = [c for c in codes if c.ref_type == 'oem']
-    current = [c for c in codes if normalized_reference(c.code) == normalized_reference(part.sku)]
     verified = [c for c in oems if c.brand and c.reference_source.strip()]
-    main = next((c for c in verified if c in current), None)
+    status = ('oem' if part.is_OEM else 'choose_oem' if len({normalized_reference(c.code) for c in verified}) > 1
+              else 'oem_available' if verified else 'needs_oem')
+    if main is not None:
+        brand = main.brand or ((company_reference(part.sku) or {}).get('brand', '') if main.ref_type == 'company' else '')
+        return {'ref_type': 'oem' if part.is_OEM else main.ref_type if main.ref_type != 'unknown' else
+                ('company' if company_reference(part.sku) else 'unknown'), 'status': status, 'brand': brand}
+    current = [c for c in codes if normalized_reference(c.code) == normalized_reference(part.sku)]
+    first = next((c for c in verified if c in current), None)
     return {
         'ref_type': 'oem' if part.is_OEM else next((c.ref_type for c in current if c.ref_type == 'company'),
                                           'company' if company_reference(part.sku) else 'unknown'),
-        'status': 'oem' if part.is_OEM else 'choose_oem' if len({normalized_reference(c.code) for c in verified}) > 1
-                  else 'oem_available' if verified else 'needs_oem',
-        'brand': main.brand if main else next((c.brand for c in current if c.ref_type == 'company'),
-                                             (company_reference(part.sku) or {}).get('brand', '')),
+        'status': status,
+        'brand': first.brand if first else next((c.brand for c in current if c.ref_type == 'company'),
+                                               (company_reference(part.sku) or {}).get('brand', '')),
     }
-
-
-def preserve_sku_reference(part, sku, *, is_oem=False, actor=None):
-    """Keep the old searchable code; only classify known suffixes as company."""
-    info = None if is_oem else company_reference(sku)
-    # A full supplier code remains a neutral alias for feeds with no brand.
-    defaults = {'ref_type': 'company', 'brand': info['brand']} if info else {'ref_type': 'oem' if is_oem else 'unknown', 'brand': ''}
-    existing = part.codes.filter(code=sku).first()
-    if not existing and Reference.objects.filter(code__iexact=sku).exclude(part=part).exists():
-        return  # Conflicting library ownership must go through grouping review.
-    try:
-        if not existing:
-            references.add(part, sku, defaults['brand'], ref_type=defaults['ref_type'], actor=actor)
-        elif is_oem and existing.ref_type == 'unknown':
-            references.update(existing, actor=actor, ref_type='oem')
-        elif info and existing.ref_type == 'unknown':
-            if not Reference.objects.filter(brand=info['brand'], code=sku).exclude(pk=existing.pk).exists():
-                references.update(existing, actor=actor, brand=info['brand'], ref_type='company')
-        if info and not all_lines().filter(sku__iexact=info['code']).exclude(pk=part.pk).exists():
-            if not Reference.objects.filter(code__iexact=info['code']).exclude(part=part).exists():
-                references.add(part, info['code'], info['brand'], ref_type='company', actor=actor)
-    except references.ReferenceConflict:
-        return  # another line holds the key (mall.references.validate): grouping review decides, as above
 
 
 @transaction.atomic
 def prefer_oem(part, *, actor=None, selected=None, confirm_current=False):
-    """Rename the SAME master UUID, retaining supplier stock and every old code.
+    """Make the line's verified OEM Reference its main (references.set_main), keeping the SAME line, its stock and every code: while
+    the line is live its codigo follows the main, and the former main stays one of its References.
 
-    An explicit reviewed choice can select among several approved OEMs. Otherwise
-    keep an existing OEM or select the sole verified OEM. Collisions require the
-    existing merge review instead of silently combining unrelated catalog items.
+    An explicit reviewed choice can select among several approved OEMs. Otherwise keep an existing OEM main or select the sole
+    verified OEM. Collisions require the existing merge review instead of silently combining unrelated catalog items.
     """
     part = Part.objects.select_for_update().get(pk=part.pk)
     if part.merged_into_id or not part.active:
@@ -138,27 +128,46 @@ def prefer_oem(part, *, actor=None, selected=None, confirm_current=False):
         return part
     if target.code == part.sku:
         if (selected or confirm_current) and not part.is_OEM:
-            part.is_OEM = True
-            part.save(update_fields=['is_OEM'])
+            references.set_main(part, target, actor=actor, reason='OEM confirmado')
         return part
     if rename_conflicts(part, target.code):
         if selected:
             raise ValidationError('El OEM ya identifica otro SKU. Usa Agrupar SKU para revisar y conservar todos sus vínculos.')
         return part
-    old = part.sku
-    if len(old) > 120:
+    try:
+        references.set_main(part, target, actor=actor, reason='OEM preferido')
+    except references.MainConflict:
         if selected:
-            raise ValidationError('El código anterior supera 120 caracteres y no puede conservarse como alterno.')
-        return part
-    preserve_sku_reference(part, old, is_oem=part.is_OEM, actor=actor)
-    part.sku = target.code
-    part.is_OEM = True
-    if part.name == old:
-        part.name = target.code
-    part.save(update_fields=['sku', 'name', 'is_OEM'])
-    CatalogIdentityChange.objects.create(part=part, previous_sku=old, sku=part.sku, actor=actor,
-        reference={'code': target.code, 'brand': target.brand, 'ref_type': 'oem', 'reference_source': target.reference_source})
+            raise ValidationError('El OEM ya identifica otro SKU. Usa Agrupar SKU para revisar y conservar todos sus vínculos.')
     return part
+
+
+def classify_company_main(part, actor=None):
+    """A line whose codigo ends in a company suffix (-FEB: FEBEST): a brandless otro main becomes that company's aftermarket code, and
+    the company's own code (the codigo without the suffix) is one of its References when no other line holds it (preserve_sku_reference
+    filed both as alternos before S2b). Returns whether the main changed."""
+    info = company_reference(part.sku)
+    if not info:
+        return False
+    main = references.main_of(part)
+    changed = False
+    if main is not None and not main.brand and main.tipo == 'otro':
+        after = references.retype_main(part, 'aftermarket', brand=info['brand'], actor=actor, reason='Sufijo de empresa')
+        changed = bool(after and after.tipo == 'aftermarket')
+    company_base_code(part, part.sku, actor)
+    return changed
+
+
+def company_base_code(part, sku, actor=None):
+    """File the company's own code of `sku` (its codigo without a company suffix: 0110-GSU45A48 of 0110-GSU45A48-FEB, brand FEBEST) as
+    an aftermarket Reference of `part`, unless another line holds it. Returns the Reference, or None."""
+    info = company_reference(sku)
+    if not info or all_lines().filter(sku__iexact=info['code']).exclude(pk=part.pk).exists():
+        return None
+    try:
+        return references.add(part, info['code'], info['brand'], tipo='aftermarket', actor=actor)[0]
+    except references.ReferenceConflict:
+        return None  # another line holds the key (mall.references.validate): grouping review decides
 
 
 def reconcile_identities(actor=None):
@@ -173,7 +182,7 @@ def reconcile_identities(actor=None):
         with transaction.atomic():
             part = Part.objects.select_for_update().get(pk=pk)
             if not part.is_OEM and company_reference(part.sku):
-                preserve_sku_reference(part, part.sku, actor=actor)
+                classify_company_main(part, actor)
             before = part.sku
             updated = prefer_oem(part, actor=actor)
             promoted += int(before != updated.sku)
@@ -255,8 +264,8 @@ def mark_exact_matches(actor=None, *, part_ids=None, codes=None, apply=True):
             marked.append((part.pk, part.sku, [(item.manufacturer, item.code) for item in refs]))
             if not apply:
                 continue
-            part.is_OEM = True
-            part.save(update_fields=['is_OEM'])
+            # Until S4 a mark is the main's tipo (its brand the maker when its key is free); the line's tipo and is_OEM follow it.
+            references.retype_main(part, 'oem', brand=ref.manufacturer, actor=actor, reason=EXACT_SOURCE)
             CatalogIdentityChange.objects.create(part=part, previous_sku=part.sku, sku=part.sku, actor=actor, reference={
                 'code': ref.code, 'brand': ref.manufacturer, 'ref_type': 'oem', 'reference_source': EXACT_SOURCE, 'action': 'exact_match'})
     return marked
@@ -273,8 +282,7 @@ def unmark_disputed(ref, actor=None):
     # Every live line (any estado but unificada): a line in preparación flagged OEM for a disputed number must not be published as OEM.
     for part in (catalog_lines(LIVE, queryset=Part.objects.select_for_update()).filter(is_OEM=True).annotate(compact=compact_sql('sku'))
                  .filter(compact=ref.code)):
-        part.is_OEM = False
-        part.save(update_fields=['is_OEM'])
+        references.retype_main(part, 'otro', actor=actor, reason=f'{ref.manufacturer} {ref.code} en disputa')
         CatalogIdentityChange.objects.create(part=part, previous_sku=part.sku, sku=part.sku, actor=actor, reference={
             'code': ref.code, 'brand': ref.manufacturer, 'ref_type': 'oem', 'reference_source': f'{ref.manufacturer} {ref.code} en disputa',
             'action': 'disputed'})

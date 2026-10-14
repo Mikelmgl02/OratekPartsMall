@@ -9,7 +9,7 @@ from rest_framework.test import APITestCase
 from .catalog_families import family_candidates
 from .catalog_import import load_job_groups, replace_job_groups
 from . import references
-from .models import Account, CatalogImportJob, CatalogMerge, Membership, Part, PartCode, PartImage, Role, StockEntry, SupplierItem, User
+from .models import Account, CatalogImportJob, CatalogMerge, Membership, Part, PartCode, PartImage, Reference, Role, StockEntry, SupplierItem, User
 from .services import ingest_inventory
 
 
@@ -93,7 +93,7 @@ class MissingCatalogParentTests(APITestCase):
         self.assertEqual(target.description, 'TAMBOR KIA PICANTO 04-11')
         self.assertEqual((target.category, target.subcategory), ('FRENOS', 'TAMBORES DE FRENO'))
         self.assertEqual(target.merged_parts.count(), 4)
-        self.assertEqual(set(target.codes.values_list('code', flat=True)), {part.sku for part in self.parts})
+        self.assertEqual(set(target.codes.filter(is_main=False).values_list('code', flat=True)), {part.sku for part in self.parts})
         self.assertEqual(list(SupplierItem.objects.order_by('pk').values()), [{**item, 'part_id': target.pk} for item in stock])
         self.assertEqual(list(StockEntry.objects.order_by('pk').values()), ledger)
         photo.refresh_from_db()
@@ -120,7 +120,7 @@ class MissingCatalogParentTests(APITestCase):
         self.assertEqual(self.client.get(self.grouping).data['count'], 0)
         self.assertEqual(self.client.post(self.grouping + 'merge/', {**payload, 'create_target': True}, format='json').status_code, 400)
         self.assertFalse(Part.objects.filter(sku=self.base).exists())
-        references.retire(unrelated.codes.all())  # a retired code holds nothing
+        references.retire(unrelated.codes.filter(is_main=False))  # a retired code holds nothing
         response = self.client.post(self.grouping + 'merge/', {**payload, 'create_target': True}, format='json')
         self.assertEqual(response.status_code, 200, response.data)
         self.assertTrue(response.data['summary']['target_created'])
@@ -138,6 +138,7 @@ class MissingCatalogParentTests(APITestCase):
     def test_import_review_can_stage_a_new_parent_without_creating_catalog_rows(self):
         groups = {part.sku: {'sku': part.sku, 'row': i + 2, 'fields': {'name': part.name, 'description': part.description}, 'codes': {}}
                   for i, part in enumerate(self.parts)}
+        references.purge(Reference.all_objects.values_list('pk', flat=True))  # their mains (S2b), so the lines can go
         Part.objects.all().delete()
         job = CatalogImportJob.objects.create(owner=self.root, filename='family.xlsx', expires_at=timezone.now() + timedelta(days=7))
         replace_job_groups(job, groups)

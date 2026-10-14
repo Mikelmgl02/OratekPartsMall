@@ -95,11 +95,11 @@ class SupplierCatalogImportTests(Fresh, TestCase):
         self.assertEqual(source.citation, 'CATÁLOGO DE PRUEBA (2016)')
         self.assertEqual(source.detail['brand_codes'], ['GWT-142A'])
         self.assertTrue(OEMReference.objects.filter(manufacturer='TOYOTA', code='1610039465').exists())  # printed, carried by no SKU
-        self.assertFalse(self.pump.codes.exists())  # alternos step 2c: the codes reach the pump through its numbers, never as copies
+        self.assertFalse(self.pump.codes.filter(is_main=False).exists())  # alternos step 2c: the codes reach the pump through its numbers, never as copies
         self.assertEqual(reached(self.pump), {('GMB', 'GWT-142A'), ('AISIN', 'WPT-142'), ('AIRTEX', 'AW9999')})
         self.assertEqual(PartCode.objects.get(code='AW9999').part, self.owner)  # another SKU's alterno is never moved
-        self.assertFalse(self.filter.codes.exists())  # the description is an oil filter, not the catalog's water pump
-        self.assertEqual(set(self.joint.codes.values_list('brand', 'code', 'ref_type')), {('TOYOTA', '43460-69116', 'oem')})  # sister OEM only on a SKU already marked OEM
+        self.assertFalse(self.filter.codes.filter(is_main=False).exists())  # the description is an oil filter, not the catalog's water pump
+        self.assertEqual(set(self.joint.codes.filter(is_main=False).values_list('brand', 'code', 'ref_type')), {('TOYOTA', '43460-69116', 'oem')})  # sister OEM only on a SKU already marked OEM
         self.assertIn(('ASVA', 'TY-LC200'), reached(self.joint))
         self.joint.refresh_from_db()
         self.assertEqual((self.joint.category, self.joint.subcategory), ('TRANSMISIÓN', 'JUNTAS HOMOCINÉTICAS'))
@@ -168,7 +168,7 @@ class SupplierCatalogImportTests(Fresh, TestCase):
         retired = Part.objects.create(sku='16100-39466-G-ANULADO', description='BOMBA AGUA TOY HIACE 2KD')
         result = self.run_import(apply=True)
         self.assertEqual(result['catalogs'][0]['counts']['retired_skus_skipped'], 1)
-        self.assertFalse(retired.codes.exists() or PartOEMLink.objects.filter(part=retired, source='catalog').exists())
+        self.assertFalse(retired.codes.filter(is_main=False).exists() or PartOEMLink.objects.filter(part=retired, source='catalog').exists())
         self.assertIn(('GMB', 'GWT-142A'), reached(self.pump))
 
     def test_a_sku_matching_two_items_of_one_catalog_is_left_alone(self):
@@ -207,7 +207,7 @@ class SharedNumberTests(Fresh, TestCase):
         self.assertEqual(codes('1610069185'), ['GWT-71A', 'WPT-071'])
         self.assertEqual(codes('1610009010'), ['GWT-116A', 'GWT-116AH', 'WPT-116'])  # variants of one pump count as one part
         self.assertFalse(PartOEMLink.objects.filter(part=pump, source='catalog').exists())  # matched only through the shared number
-        self.assertFalse(pump.codes.exists())  # nor copies of either pump's codes
+        self.assertFalse(pump.codes.filter(is_main=False).exists())  # nor copies of either pump's codes
         self.assertEqual(list(PartOEMLink.objects.filter(part=pump).values_list('reference__code', 'source')), [('1610079445', 'sku_name')])
         counts = result['catalogs'][0]['counts']
         self.assertEqual((counts['shared_numbers'], counts['matches_through_shared_numbers']), (1, 2))
@@ -275,7 +275,7 @@ class OEMOnlyItemTests(Fresh, TestCase):
         self.assertEqual((counts['oem_only_items'], counts.get('linked_parts', 0)), (1, 0))
         ref = OEMReference.objects.get(manufacturer='TOYOTA', code='4346060010')
         self.assertEqual(ref.sources.get(kind='aftermarket_catalog').detail['brand_codes'], [])
-        self.assertFalse(part.codes.exists())
+        self.assertFalse(part.codes.filter(is_main=False).exists())
 
 
 class BrakeDiscSheetTests(Fresh, TestCase):
@@ -317,7 +317,7 @@ class HubAndTensionerTests(Fresh, TestCase):
         self.assertEqual((hub.category, hub.subcategory), ('RODAMIENTOS', 'CUBOS DE RUEDA'))  # its description, not the item's bearing subgrupo
         self.assertEqual(hub.specifications.get(field__key='abs_teeth').number_value, 48)
         self.assertIn(('ASVA', 'TYBP-001'), reached(bearing))
-        self.assertFalse(locking.codes.exists())  # a free-wheel locking hub is not a wheel hub
+        self.assertFalse(locking.codes.filter(is_main=False).exists())  # a free-wheel locking hub is not a wheel hub
 
 
 class MakeGroupTests(Fresh, TestCase):
@@ -362,7 +362,7 @@ class ChainedMatchTests(Fresh, TestCase):
             os.unlink(handle.name)
         self.assertEqual(again['catalogs'][0]['counts']['linked_parts'], 1)  # R177.27 is no matching key: DAC35620040 stays unlinked
         self.assertNotIn(('ASVA', 'DAC35620040'), reached(bearing))
-        self.assertFalse(bearing.codes.exists() or bearing.specifications.exists())
+        self.assertFalse(bearing.codes.filter(is_main=False).exists() or bearing.specifications.exists())
 
 
 def run_extract(data, apply=True):

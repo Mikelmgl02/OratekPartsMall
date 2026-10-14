@@ -145,7 +145,7 @@ class DecisionTests(Review, APITestCase):
         undo = self.client.post(f'{RUNS}{run.pk}/revert/', {}, format='json')
         self.assertEqual((undo.status_code, undo.data['reverted']), (200, 1))
         part = self.part('48654-0K040-MANDO')
-        self.assertEqual((part.sku, part.is_OEM, part.codes.count()), ('48654-0K040-MANDO', False, 0))
+        self.assertEqual((part.sku, part.is_OEM, part.codes.filter(is_main=False).count()), ('48654-0K040-MANDO', False, 0))
         case = self.case('48654-0K040-MANDO')
         self.assertEqual((case.status, case.decision['action']), ('review', 'reverted'))
         self.assertEqual(list(case.decisions.values_list('action', flat=True)), ['reverted', 'approve'])
@@ -178,7 +178,7 @@ class DecisionTests(Review, APITestCase):
         self.assertTrue(part.codes.filter(code='CEKH-52R', brand='CTR', ref_type='company').exists())
         self.assertTrue(part.codes.filter(code='CEKH-52R-CTR 54840-2T000').exists())
         oa.revert_run(response.data['run'], actor=self.root)
-        self.assertEqual((self.part('CEKH-52R-CTR 54840-2T000').sku, self.part('CEKH-52R-CTR 54840-2T000').codes.count()), ('CEKH-52R-CTR 54840-2T000', 0))
+        self.assertEqual((self.part('CEKH-52R-CTR 54840-2T000').sku, self.part('CEKH-52R-CTR 54840-2T000').codes.filter(is_main=False).count()), ('CEKH-52R-CTR 54840-2T000', 0))
 
     def test_a_case_whose_part_changed_cannot_be_approved(self):
         Part.objects.filter(pk=self.parts['48654-0K040-MANDO'].pk).update(description='BASE AMORT TOY HILUX REFORZADA')
@@ -188,7 +188,7 @@ class DecisionTests(Review, APITestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIn('cambió desde el análisis', response.data['detail'])
         self.assertEqual(response.data['reason'], 'snapshot_changed')
-        self.assertEqual((self.part('48654-0K040-MANDO').sku, PartCode.objects.count()), ('48654-0K040-MANDO', 0))
+        self.assertEqual((self.part('48654-0K040-MANDO').sku, PartCode.objects.filter(is_main=False).count()), ('48654-0K040-MANDO', 0))
         self.assertFalse(OEMFinderRun.objects.filter(mode='apply_auto').exists() or OEMFinderChange.objects.exists())
         self.assertEqual(self.case('48654-0K040-MANDO').status, 'review')
         self.assertEqual(self.decide('48654-12030', 'approve', fingerprint='0' * 64).status_code, 409)  # stale fingerprint
@@ -204,7 +204,7 @@ class DecisionTests(Review, APITestCase):
         response = self.decide('48654-0K040-MANDO', 'approve')
         self.assertEqual((response.status_code, response.data['reason']), (409, 'conflict'))
         self.assertIn('486540K040', response.data['detail'])
-        self.assertEqual((self.part('48654-0K040-MANDO').sku, PartCode.objects.count()), ('48654-0K040-MANDO', 0))
+        self.assertEqual((self.part('48654-0K040-MANDO').sku, PartCode.objects.filter(is_main=False).count()), ('48654-0K040-MANDO', 0))
         case = self.case('48654-0K040-MANDO')
         self.assertEqual((case.tier, case.underlying_tier, case.evidence['apply_conflict']['owners']), ('CONFLICT', 'PROBABLE_BASE', [str(claimant.pk)]))
         self.assertEqual(self.decide('48654-0K040-MANDO', 'send_to_merge').data['family']['target_sku'], '486540K040')  # the owner is the target
@@ -245,7 +245,7 @@ class DecisionTests(Review, APITestCase):
         response = self.decide('48654-0K040-MANDO', 'approve')
         self.assertEqual((response.status_code, response.data['reason']), (409, 'suffix_changed'))
         self.assertIn('MANDO', response.data['detail'])
-        self.assertEqual((self.part('48654-0K040-MANDO').sku, PartCode.objects.count()), ('48654-0K040-MANDO', 0))
+        self.assertEqual((self.part('48654-0K040-MANDO').sku, PartCode.objects.filter(is_main=False).count()), ('48654-0K040-MANDO', 0))
         preview = self.client.get(URL + 'bulk/', {'tier': 'PROBABLE_BASE'}).data
         self.assertEqual((preview['selected'], preview['excluded']), (1, {'stale': 1}))
         self.assertEqual([r['sku'] for r in preview['sample']], ['31110-07600-MOBIS'])
@@ -259,7 +259,7 @@ class DecisionTests(Review, APITestCase):
         self.assertEqual((response.status_code, response.data['reason']), (409, 'conflict'))
         case = self.case(sku)
         self.assertEqual((case.tier, case.evidence['apply_conflict']['code'], case.evidence['apply_conflict']['owners']), ('CONFLICT', '11210-0L020', [str(owner.pk)]))
-        self.assertEqual((self.part(sku).sku, PartCode.objects.count()), (sku, 0))
+        self.assertEqual((self.part(sku).sku, PartCode.objects.filter(is_main=False).count()), (sku, 0))
         family = self.decide(sku, 'send_to_merge').data['family']
         self.assertEqual((family['target_sku'], family['source_skus'], family['oem']), ('11210-0L020', [sku], {'code': '11210-0L020', 'brand': 'TOYOTA'}))
 
@@ -294,7 +294,7 @@ class DecisionTests(Review, APITestCase):
         self.assertEqual(OEMReviewDecision.objects.get(case=self.case(sku)).action, 'choose_oem')
         self.assertEqual(self.decide(sku, 'choose_oem', code='11210-30110').status_code, 409)  # already decided with another number
         oa.revert_run(response.data['run'], actor=self.root)
-        self.assertEqual((self.part(sku).sku, self.part(sku).codes.count()), (sku, 0))
+        self.assertEqual((self.part(sku).sku, self.part(sku).codes.filter(is_main=False).count()), (sku, 0))
 
     def test_a_catalog_refusal_turns_the_case_into_a_conflict(self):
         other = Part.objects.create(sku='OTRO-1', description='BASE AMORT TOY HILUX')
@@ -478,7 +478,7 @@ class BulkTests(Review, APITestCase):
         self.assertEqual(done['errors'][0]['error'], 'RuntimeError')
         self.assertTrue(OEMApplyHalt.objects.filter(cleared_at__isnull=True, run_id=run['id']).exists())
         part = self.part('54840-2H000')
-        self.assertEqual((part.is_OEM, part.codes.count(), self.case('54840-2H000').status), (False, 0, 'review'))
+        self.assertEqual((part.is_OEM, part.codes.filter(is_main=False).count(), self.case('54840-2H000').status), (False, 0, 'review'))
 
     def test_bulk_conflicts_and_claimed_oems_become_conflict_cases(self):
         other = Part.objects.create(sku='OTRO-2', description='BASE AMORT TOY HILUX')
@@ -560,7 +560,7 @@ class ConcurrencyTests(Review, TransactionTestCase):
         self.assertTrue(waiting, 'the approval should wait for the catalog edit lock')
         self.assertEqual(results, ['snapshot_changed'])
         part = self.part('48654-12030')
-        self.assertEqual((part.is_OEM, part.codes.count(), self.case('48654-12030').status), (False, 0, 'review'))
+        self.assertEqual((part.is_OEM, part.codes.filter(is_main=False).count(), self.case('48654-12030').status), (False, 0, 'review'))
         self.assertFalse(OEMFinderRun.objects.filter(mode='apply_auto').exists())
 
     def test_approvals_wait_for_a_matching_pass(self):

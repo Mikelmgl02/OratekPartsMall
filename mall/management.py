@@ -201,7 +201,7 @@ class UppercaseCharField(serializers.CharField):
         return super().to_internal_value(data).upper()
 
 
-from .reference_serializers import LegacyReferenceKind, validate_reference_type
+from .reference_serializers import LegacyReferenceKind, MainReferenceSerializer, NonMainReferences, validate_reference_type
 
 
 class ManagedCodeSerializer(serializers.Serializer):
@@ -222,6 +222,9 @@ class ManagedCodeSerializer(serializers.Serializer):
             raise serializers.ValidationError({'code': 'Ingresa un código equivalente.'})
         return data
 
+    class Meta:
+        list_serializer_class = NonMainReferences  # the line's main is its codigo (S2b): the codes list leaves it out
+
 
 def validate_code_mapping(*, part, brand, code):
     """Refuse a code another line holds: one of its live References under the same key (mall.references.validate: the clave, and a
@@ -240,11 +243,17 @@ def validate_code_mapping(*, part, brand, code):
 class ManagedPartSerializer(serializers.ModelSerializer):
     images = PartImageSerializer(many=True, read_only=True)
     identity = serializers.SerializerMethodField()
+    main = serializers.SerializerMethodField(help_text='La referencia principal de la línea: su código es el SKU (null mientras no tiene una).')
     main_reference = ManagedCodeSerializer(required=False, write_only=True)
 
     def get_identity(self, obj) -> dict:
         from .catalog_identity import identity_status
         return identity_status(obj)
+
+    @extend_schema_field(MainReferenceSerializer(allow_null=True))
+    def get_main(self, obj):
+        main = references.main_in(obj.codes.all())  # prefetched by the lists: no query per row
+        return {'id': main.pk, 'code': main.code, 'brand': main.brand, 'tipo': main.tipo, 'estado': main.estado} if main else None
 
     sku = UppercaseCharField(max_length=200)
     name = UppercaseCharField(max_length=200, required=False, allow_blank=True)
@@ -258,17 +267,22 @@ class ManagedPartSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Part
-        fields = ['id', 'sku', 'is_OEM', 'name', 'description', 'category', 'subcategory', 'part_type', 'active', 'estado', 'origen', 'codes', 'stock_record_count', 'merged_count', 'images', 'identity', 'main_reference']
-        # estado and origen are the line's lifecycle (mall.lines): `active` still turns a line publicada or retirada here.
-        read_only_fields = ['id', 'estado', 'origen', 'stock_record_count', 'merged_count']
+        fields = ['id', 'sku', 'is_OEM', 'tipo', 'name', 'description', 'category', 'subcategory', 'part_type', 'active', 'estado', 'origen', 'codes', 'stock_record_count', 'merged_count', 'images', 'identity', 'main', 'main_reference']
+        # estado and origen are the line's lifecycle (mall.lines): `active` still turns a line publicada or retirada here. tipo mirrors
+        # the main Reference (mall.references.set_main); is_OEM still marks or unmarks the main as OEM until S10.
+        read_only_fields = ['id', 'tipo', 'estado', 'origen', 'stock_record_count', 'merged_count']
 
     def validate_sku(self, sku):
+        if len(sku) > 120:
+            raise serializers.ValidationError('El SKU es el código principal de la línea: no puede superar 120 caracteres.')
         parts = all_lines().filter(sku__iexact=sku)  # every estado: UNIQUE(sku) holds every line, merged ones too, until S4
         codes = Reference.objects.filter(code=sku)  # live References: a retired code no longer names its line
+        held = references.conflicts(sku, '', line=self.instance)  # its key, brandless: the main reserves it for every brand (S2b)
         if self.instance:
             parts = parts.exclude(pk=self.instance.pk)
             codes = codes.exclude(part=self.instance)
-        if parts.exists() or codes.exists():
+            held = held.exclude(part=self.instance)
+        if parts.exists() or codes.exists() or held.exists():
             raise serializers.ValidationError('Este SKU o código ya identifica otro repuesto del catálogo.')
         return sku
 
@@ -299,31 +313,37 @@ class ManagedPartSerializer(serializers.ModelSerializer):
         return user if getattr(user, 'is_authenticated', False) else None
 
     def save_codes(self, part, codes):
-        """The line's References become exactly these (mall.references): each one found by its key (a new spelling replaces the
-        printed one) or added, its type and source as sent; the ones not sent are retired, never deleted."""
+        """The line's References other than its main become exactly these (mall.references): each one found by its key (a new
+        spelling replaces the printed one) or added, its type and source as sent; the ones not sent are retired, never deleted. The
+        main is never touched here (S2b): it changes with the SKU or main_reference (references.set_main), so a code sent with the
+        main's key is the main already and is left as it is."""
         actor = self.actor()
         keep = []
         for code in codes:
             extra = {key: value for key, value in code.items() if key not in ('brand', 'code')}
             entry, _ = references.add(part, code['code'], code['brand'], ref_type=extra.get('ref_type'), source=extra.get('reference_source', ''),
                                       actor=actor)
+            keep.append(entry.pk)
+            if entry.is_main:
+                continue
             changes = {key: value for key, value in {**extra, 'code': code['code']}.items() if getattr(entry, key) != value}
             if changes:
                 references.update(entry, actor=actor, **changes)
-            keep.append(entry.pk)
-        references.retire(part.codes.exclude(pk__in=keep), actor=actor, reason='Quitada al editar los códigos del SKU')
+        references.retire(part.codes.exclude(pk__in=keep).exclude(is_main=True), actor=actor, reason='Quitada al editar los códigos del SKU')
 
     def create(self, validated_data):
         codes = validated_data.pop('codes', [])
         main = validated_data.pop('main_reference', None)
         validated_data.setdefault('estado', 'publicada' if validated_data.get('active', True) else 'retirada')  # unless a caller chose one
+        from .lines import create_line
         try:
             with transaction.atomic():
-                part = Part.objects.create(**validated_data)
+                # Its codigo is its main Reference (S2b): brandless, OEM when is_OEM; a key another line holds refuses the SKU.
+                part = create_line(validated_data.pop('sku'), actor=self.actor(), strict=True, **validated_data)
                 self.save_codes(part, codes)
-                from .catalog_identity import company_reference, preserve_sku_reference, prefer_oem
+                from .catalog_identity import classify_company_main, company_reference, prefer_oem
                 if not part.is_OEM and company_reference(part.sku):
-                    preserve_sku_reference(part, part.sku, actor=self.actor())
+                    classify_company_main(part, self.actor())
                 return prefer_oem(part, actor=getattr(self.context.get('request'), 'user', None), selected=main,
                                   confirm_current='is_OEM' not in validated_data)
         except IntegrityError:
@@ -347,24 +367,38 @@ class ManagedPartSerializer(serializers.ModelSerializer):
                                  user=user if getattr(user, 'is_authenticated', False) else None)
                 old_sku = instance.sku
                 old_is_oem = instance.is_OEM
+                new_sku = validated_data.pop('sku', old_sku)
+                explicit_oem = 'is_OEM' in validated_data
                 # The flag describes this exact main code, not every alternate.
-                if validated_data.get('sku', old_sku) != old_sku:
+                if new_sku != old_sku:
                     validated_data.setdefault('is_OEM', False)
                 elif old_is_oem and validated_data.get('is_OEM') is False:
                     from .catalog_oem_mark import listed_refusal
                     problem = listed_refusal(instance)  # its code is in the OEM list: dispute the number instead
                     if problem:
                         raise serializers.ValidationError({'is_OEM': problem})
+                if new_sku != old_sku:
+                    # A rename is a new main (S2b): the Reference of the new code (found on the line, or added) becomes the main and
+                    # the codigo follows it; the old main stays one of the line's codes.
+                    renamed = (instance.codes.filter(code=new_sku, supplier__isnull=True).order_by('pk').first()
+                               or references.add(instance, new_sku, '', tipo='otro', actor=self.actor())[0])
+                    try:
+                        references.set_main(instance, renamed, actor=self.actor(), reason='Editar SKU')
+                    except references.MainConflict as error:
+                        raise serializers.ValidationError({'sku': error.message})
+                flag_edit = 'is_OEM' in validated_data
+                if new_sku != old_sku and (not explicit_oem or validated_data['is_OEM'] == instance.is_OEM):
+                    validated_data.pop('is_OEM')  # unless sent, the new main decides it: an OEM alterno made main stays OEM
                 instance = super().update(instance, validated_data)
                 if codes is not None:
                     self.save_codes(instance, codes)
-                from .catalog_identity import company_reference, preserve_sku_reference, prefer_oem
-                if old_sku != instance.sku or (not old_is_oem and company_reference(old_sku)):
-                    preserve_sku_reference(instance, old_sku, is_oem=old_is_oem, actor=self.actor())
+                from .catalog_identity import classify_company_main, company_reference, prefer_oem
+                if not instance.is_OEM and company_reference(instance.sku):
+                    classify_company_main(instance, self.actor())
                 # Explicit flag-only edits should not rename the SKU as a side effect.
-                if main or 'is_OEM' not in validated_data or codes is not None:
+                if main or not flag_edit or codes is not None:
                     instance = prefer_oem(instance, actor=getattr(self.context.get('request'), 'user', None), selected=main,
-                                          confirm_current=codes is not None and 'is_OEM' not in validated_data)
+                                          confirm_current=codes is not None and not flag_edit)
                 if instance.is_OEM and not old_is_oem:  # a SKU is OEM when its code is in the OEM list (an OEM alterno saved here files it)
                     from .catalog_oem_mark import unlisted_refusal
                     problem = unlisted_refusal(instance)
@@ -709,7 +743,8 @@ class AlternateList(SuperuserMixin, generics.ListCreateAPIView):
     filter_backends = [filters.SearchFilter, StableOrdering]
     search_fields = ['part__sku', 'part__name', 'code', 'brand']
     ordering_fields = ['part__sku', 'code', 'brand', 'ref_type']
-    queryset = Reference.objects.select_related('part').order_by('part__sku', 'code', 'brand', 'id')
+    # A line's main Reference is its SKU (S2b): it changes in Editar SKU, so the Alternos grid neither lists nor edits it.
+    queryset = Reference.objects.filter(is_main=False).select_related('part').order_by('part__sku', 'code', 'brand', 'id')
 
 
 class AlternateDetail(SuperuserMixin, generics.RetrieveUpdateDestroyAPIView):

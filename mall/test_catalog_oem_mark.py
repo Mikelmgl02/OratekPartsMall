@@ -93,7 +93,7 @@ class CatalogMarkOEMTests(APITestCase):
         self.assertIn('DISCO-TOY-1', refused.json()['detail'])
         self.pump.refresh_from_db()
         self.assertFalse(self.pump.is_OEM)  # all or none
-        self.assertFalse(PartCode.objects.filter(part=self.pump).exists())
+        self.assertFalse(PartCode.objects.filter(is_main=False, part=self.pump).exists())
         self.assertEqual(self.mark([{'id': str(self.pump.pk), 'manufacturer': ' '}]).status_code, 400)
 
     def test_unmarking_applies_only_to_a_sku_whose_code_is_not_in_the_list(self):
@@ -108,7 +108,7 @@ class CatalogMarkOEMTests(APITestCase):
         self.assertEqual(response.status_code, 200, response.content)
         stray.refresh_from_db()
         self.assertFalse(stray.is_OEM)
-        self.assertFalse(PartCode.objects.filter(part=stray).exists())
+        self.assertFalse(PartCode.objects.filter(is_main=False, part=stray).exists())
 
     def test_superusers_only(self):
         self.client.force_authenticate(User.objects.create_user('mark-staff', 'mark-staff@example.invalid', 'Example938!'))

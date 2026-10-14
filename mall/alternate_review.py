@@ -93,7 +93,8 @@ class AlternateReviewConflict(serializers.Serializer):
 def catalog_alternos(part, equivalents=None):
     """The SKU's company alternos a supplier catalog wrote, split into (undecided, copies) by whether its numbers reach them."""
     citations = prune.catalog_citations()
-    codes = [code for code in part.codes.filter(ref_type='company').order_by('brand', 'code', 'pk') if prune.written_by_catalog(code.reference_source, citations)]
+    codes = [code for code in part.codes.filter(ref_type='company', is_main=False).order_by('brand', 'code', 'pk')  # the main is the SKU (S2b)
+             if prune.written_by_catalog(code.reference_source, citations)]
     if not codes:
         return [], []
     equivalents = equivalents or part_equivalents(part)

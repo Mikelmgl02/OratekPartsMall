@@ -4,6 +4,7 @@ from rest_framework import serializers
 from drf_spectacular.utils import extend_schema_field
 from .models import Account, Membership, Part, PartCode, StockEntry, SupplierItem
 from .media_serializers import PartImageSerializer
+from .reference_serializers import NonMainReferences
 
 class SignupSerializer(serializers.Serializer):
     token = serializers.UUIDField()
@@ -50,6 +51,7 @@ class PartCodeSerializer(serializers.ModelSerializer):
     class Meta:
         model = PartCode
         fields = ['brand', 'code', 'kind', 'ref_type']
+        list_serializer_class = NonMainReferences  # the line's main is its codigo (S2b): code lists leave it out
 
 class PartEquivalentSerializer(serializers.Serializer):
     brand = serializers.CharField()

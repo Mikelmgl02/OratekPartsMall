@@ -134,7 +134,7 @@ class CatalogDateRecoveryTests(APITestCase):
         self.assertEqual(result['preview'][0]['codes'], [{'brand': 'OEM', 'code': '000ALT-001'}])
         self.assertEqual(result['recovery_rows'][0]['column'], 'CODIGO_ALTERNO')
         self.client.post(self.job_url(result), {'batch_index': 0})
-        self.assertEqual(PartCode.objects.get().code, '000ALT-001')
+        self.assertEqual(PartCode.objects.get(is_main=False).code, '000ALT-001')
 
     def test_explicit_skip_only_excludes_that_row_and_persists_the_audit(self):
         raw = self.excel([
@@ -192,7 +192,7 @@ class CatalogDateRecoveryTests(APITestCase):
         self.assertEqual(result['status'], 'review')
         self.assertEqual(result['pending_error_count'], 1)
         self.assertEqual(Part.objects.count(), 1)
-        self.assertEqual(PartCode.objects.count(), 1)
+        self.assertEqual(PartCode.objects.filter(is_main=False).count(), 1)
 
     def test_unsupported_date_format_can_be_reviewed_but_is_never_automatically_recovered(self):
         raw = self.excel([[datetime(2026, 6, 12)]], {'A2': 'yyyy/mm/dd'})

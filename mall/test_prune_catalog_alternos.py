@@ -37,7 +37,7 @@ class PruneTests(Fresh, TestCase):
             path = handle.name
         try:
             self.assertEqual(prune.run(report_path=path, stdout=io.StringIO()), {'remove': 2, 'removed': 0, 'review_skus': 2, 'review_alternos': 3})
-            self.assertEqual(PartCode.objects.count(), 7)  # a dry run removes nothing
+            self.assertEqual(PartCode.objects.filter(is_main=False).count(), 7)  # a dry run removes nothing
             with open(path, encoding='utf-8') as report:
                 rows = list(csv.DictReader(report))
         finally:
@@ -46,7 +46,7 @@ class PruneTests(Fresh, TestCase):
             ('retirado', '16100-39315-RAZ', 'GWT-41A'), ('retirado', '16100-39315-RAZ', 'WPT 111'),
             ('revisar', '16100-39315-GMB', 'AW-1'), ('revisar', '16100-39315-GMB', 'GWT 41A'), ('revisar', 'BOMBA-B', 'GWT-71A')])
         self.assertEqual(prune.run(apply=True, stdout=io.StringIO())['removed'], 2)
-        self.assertEqual(set(PartCode.objects.values_list('pk', flat=True)),
+        self.assertEqual(set(PartCode.objects.filter(is_main=False).values_list('pk', flat=True)),
                          {self.typed.pk, self.oem.pk, self.unreached.pk, *[code.pk for code in self.mixed_codes]})
         self.assertEqual(prune.run(apply=True, stdout=io.StringIO())['removed'], 0)  # nothing more on a second run
 

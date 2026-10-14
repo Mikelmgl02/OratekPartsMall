@@ -69,7 +69,7 @@ class CatalogSplitTests(APITestCase):
         self.assertEqual(body['target']['merged_count'], 2)
         part = Part.objects.get(sku='58411-08000-K')
         self.assertEqual((part.active, part.merged_into_id), (True, None))
-        self.assertEqual(list(part.codes.values_list('code', flat=True)), ['KX-100'])
+        self.assertEqual(list(part.codes.filter(is_main=False).values_list('code', flat=True)), ['KX-100'])
         self.assertEqual(list(part.supplier_items.values_list('codigo', flat=True)), ['58411-08000-K'])
         self.assertFalse(parent.codes.filter(code='58411-08000-K').exists())  # the alias the merge filed leaves with its SKU
         self.assertTrue(CatalogSeparation.objects.filter(first_id=pair(part.pk, parent.pk)[0], second_id=pair(part.pk, parent.pk)[1]).exists())

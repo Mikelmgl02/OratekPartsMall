@@ -339,7 +339,9 @@ def build_plan(groups, errors, row_count, *, lock=False, warnings=None, error_si
     summary = {'rows': row_count, 'created_skus': 0, 'updated_skus': 0, 'unchanged_skus': 0, 'added_codes': 0}
     preview = []
     for sku, group in groups.items():
-        if any(owner != sku for _, owner in owners.get(sku, [])):
+        # A new SKU's codigo becomes its main Reference (S2b), brandless: no other line may hold its key under any brand.
+        held = owners.get(sku, []) + ([] if sku in parts else key_owners.get(references.clave(sku), []))
+        if any(owner != sku for _, owner in held):
             errors.append({'row': group['row'], 'column': 'SKU', 'message': f'El SKU {sku} ya se usa como alterno de otro SKU.'})
         for (brand, code), number in group['codes'].items():
             conflicts = code in groups and code != sku
@@ -352,7 +354,7 @@ def build_plan(groups, errors, row_count, *, lock=False, warnings=None, error_si
             errors.append({'row': group['row'], 'column': 'SKU', 'message': f'El SKU {sku} ya se agrupó bajo {existing.merged_into.sku}. Usa el SKU interno de destino y conserva este código como alterno.'})
         elif existing and existing.estado not in CATALOG:  # referencia, preparación, rechazada: only a person moves it (mall.lines.set_estado)
             errors.append({'row': group['row'], 'column': 'SKU', 'message': f'El SKU {sku} está {phrase(existing.estado)} y no forma parte del catálogo: la importación no lo cambia.'})
-        keys, added = set(existing_keys), []
+        keys, added = set(existing_keys) | {(sku, '', references.clave(sku))}, []  # the codigo is the line's main: a spelling of it adds nothing
         for brand, code in group['codes']:  # one Reference per key: a spelling of a code the line holds adds nothing
             if (sku, brand, references.clave(code)) not in keys:
                 keys.add((sku, brand, references.clave(code)))

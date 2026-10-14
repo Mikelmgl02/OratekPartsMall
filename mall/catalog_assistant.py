@@ -75,7 +75,8 @@ def current_row(part):
             'is_OEM': part.is_OEM,
             'category': part.category, 'subcategory': part.subcategory, 'active': part.active,
             'merged_into': str(part.merged_into_id) if part.merged_into_id else None,
-            'codes': [{'brand': code.brand, 'code': code.code, 'ref_type': code.ref_type, 'reference_source': code.reference_source} for code in part.codes.all()]}
+            'codes': [{'brand': code.brand, 'code': code.code, 'ref_type': code.ref_type, 'reference_source': code.reference_source}
+                      for code in part.codes.all() if not code.is_main]}  # the main is the codigo (S2b): suggestions keep their fingerprint
 
 
 def claim_active(job):

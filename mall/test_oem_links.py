@@ -44,7 +44,7 @@ class NameLinkTests(Fresh, TestCase):
         self.assertEqual(links(part), ['TOYOTA 1610079445'])
         part.refresh_from_db()
         self.assertEqual((part.sku, part.is_OEM), ('16100-79445-NPW', False))
-        self.assertFalse(part.codes.exists())  # no OEM alterno: reconcile_identities has nothing to promote
+        self.assertFalse(part.codes.filter(is_main=False).exists())  # no OEM alterno: reconcile_identities has nothing to promote
 
     def test_renaming_or_grouping_a_sku_refreshes_its_link(self):
         part = Part.objects.create(sku='16100-79445-NPW', description='BOMBA AGUA TOY HILUX')

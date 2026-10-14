@@ -214,10 +214,11 @@ class ApplyRevertTests(Catalog, TestCase):
         self.canary(RENAME)
         part = self.part('54830-2H000-MOBIS')
         self.assertEqual((part.sku, part.name), ('54830-2H000', '54830-2H000'))
-        self.assertTrue(part.codes.filter(code='54830-2H000-MOBIS').exists())
+        self.assertTrue(part.codes.filter(code='54830-2H000-MOBIS', is_main=False).exists())  # the former main (S2b)
         undo = self.link('54830-2H000-MOBIS').undo
-        self.assertEqual({c['code'] for c in undo['created_codes']}, {'54830-2H000', '54830-2H000-MOBIS'})
+        self.assertEqual({c['code'] for c in undo['created_codes']}, {'54830-2H000'})  # the old SKU was already a Reference: its main
         self.assertEqual((undo['sku'], undo['name'], undo['is_OEM']), ('54830-2H000-MOBIS', '54830-2H000-MOBIS', False))
+        self.assertEqual((undo['main']['code'], references.main_of(part).code), ('54830-2H000-MOBIS', '54830-2H000'))
 
     def test_revert_one_part_of_a_run(self):
         run = self.canary(FLAG, 3)['run']
@@ -246,12 +247,13 @@ class ApplyRevertTests(Catalog, TestCase):
         part = self.part('54830-2H000-MOBIS')
         self.assertEqual((part.sku, part.is_OEM, set(part.codes.values_list('code', 'brand', 'ref_type', 'reference_source'))), ('54830-2H000', True, codes))
         self.assertIsNone(self.link('54830-2H000-MOBIS').reverted_at)
-        references.retire(PartCode.objects.filter(part=part, code='54830-2H000'))  # added again with the values the run wrote: still the run's
+        # added again with the values the run wrote: still the run's (it is the main since the rename, S2b: retired as a person would not)
+        references.retire(PartCode.objects.filter(part=part, code='54830-2H000'), allow_main=True)
         references.add(part, '54830-2H000', 'HYUNDAI', ref_type='oem', source=f'algo:oem-finder:v3:strong-MOBIS:{run.pk}')
         self.assertEqual(oa.revert_run(run.pk)['reverted'], 1)
         reconcile_identities()  # no verified OEM is left behind to rename the SKU again
         part = self.part('54830-2H000-MOBIS')
-        self.assertEqual((part.sku, part.is_OEM, part.codes.count()), ('54830-2H000-MOBIS', False, 0))
+        self.assertEqual((part.sku, part.is_OEM, part.codes.filter(is_main=False).count()), ('54830-2H000-MOBIS', False, 0))
 
     def test_revert_leaves_a_part_grouped_since_alone(self):
         run = self.canary(FLAG, 2)['run']
@@ -379,7 +381,7 @@ class RunTests(Catalog, TestCase):
         outcome = self.canary(RENAME)
         self.assertEqual((outcome['summary']['applied'], outcome['summary']['conflicts']), (0, 1))
         part = self.part('54830-2H000-MOBIS')
-        self.assertEqual((part.sku, part.is_OEM, part.codes.count()), ('54830-2H000-MOBIS', False, 0))
+        self.assertEqual((part.sku, part.is_OEM, part.codes.filter(is_main=False).count()), ('54830-2H000-MOBIS', False, 0))
         self.assertFalse(CatalogIdentityChange.objects.exists() or OEMFinderChange.objects.exists())
         case = OEMReviewCase.objects.get(part=part)
         self.assertEqual((case.tier, case.underlying_tier, case.status, case.candidate), ('CONFLICT', RENAME, 'review', '54830-2H000'))
@@ -459,7 +461,7 @@ class RunTests(Catalog, TestCase):
     def test_read_only_preview_writes_nothing(self):
         outcome = oa.apply_auto(read_only=True)
         self.assertEqual({t: (p['selected'], p['applied']) for t, p in outcome['plan'].items()}, {FLAG: (11, 11), RENAME: (1, 1), CONFIRMED: (1, 1)})
-        self.assertFalse(OEMFinderRun.objects.exists() or PartCode.objects.exists() or Part.objects.filter(is_OEM=True).exists())
+        self.assertFalse(OEMFinderRun.objects.exists() or PartCode.objects.filter(is_main=False).exists() or Part.objects.filter(is_OEM=True).exists())
 
 
 class CommandTests(Catalog, TestCase):

@@ -142,8 +142,9 @@ def overview(f):
 
 # ------------------------------------------------------------------ rows
 def code_dicts(part_ids):
+    """{part id: {reference id: row}} of the lines' References as the finder's snapshot lists them: without their main (S2b)."""
     out = {}
-    for c in Reference.objects.filter(part_id__in=part_ids).order_by('pk').values('id', 'part_id', 'code', 'brand', 'ref_type', 'reference_source'):
+    for c in Reference.objects.filter(part_id__in=part_ids, is_main=False).order_by('pk').values('id', 'part_id', 'code', 'brand', 'ref_type', 'reference_source'):
         out.setdefault(str(c.pop('part_id')), {})[c['id']] = c
     return out
 
@@ -328,7 +329,8 @@ def uuids(values):
 def grouping_row(part):
     return {'id': str(part.pk), 'sku': part.sku, 'name': part.name, 'is_OEM': part.is_OEM, 'description': part.description,
             'category': part.category, 'subcategory': part.subcategory,
-            'codes': [{'brand': c.brand, 'code': c.code, 'ref_type': c.ref_type, 'reference_source': c.reference_source} for c in part.codes.all()]}
+            'codes': [{'brand': c.brand, 'code': c.code, 'ref_type': c.ref_type, 'reference_source': c.reference_source}
+                      for c in part.codes.all() if not c.is_main]}  # the main is the SKU (S2b)
 
 
 def merge_family(case):
@@ -393,7 +395,8 @@ def key_owners(part, code):
     rx = reference_pattern(key)
     owners = [(str(p), s) for p, s in all_lines().filter(sku__iregex=rx).exclude(pk=part.pk).exclude(merged_into=part.pk).values_list('pk', 'sku')
               if normalized_reference(s) == key]
-    return owners + [(str(p), c) for p, c in Reference.objects.filter(code__iregex=rx).exclude(part=part.pk).values_list('part_id', 'code')
+    # A line's main (S2b) is its SKU, found above.
+    return owners + [(str(p), c) for p, c in Reference.objects.filter(code__iregex=rx, is_main=False).exclude(part=part.pk).values_list('part_id', 'code')
                      if normalized_reference(c) == key]
 
 
@@ -497,11 +500,12 @@ def apply_case(run, case_id, fingerprint, actor, *, code=None, batch=1, bulk=Fal
         flag = chosen['code'] == part.sku
         tier = 'AUTO_FLAG_CURRENT' if flag else 'STRONG_PENDING_OWNER_TAGS' if case.tier == 'STRONG_PENDING_OWNER_TAGS' else 'AUTO_RENAME_BASE'
         source = f'algo:oem-finder:{oa.SOURCE_VERSION}:review-{case.tier.lower().replace("_", "-")}:{run.pk}'
+        rows = oa.undo_rows(part.pk)
+        before = {'sku': part.sku, 'name': part.name, 'is_OEM': part.is_OEM, 'main': oa.main_snapshot(part)}
         oa.ensure_code(part, chosen['code'], chosen['brand'], 'oem', source, actor)
         if chosen['written'] and chosen['written'] != chosen['code']:  # the catalog spelling stays searchable, unverified
             oa.ensure_code(part, chosen['written'], chosen['brand'], 'oem', '', actor)
         kept, held = keep_alternos(part, case, others, actor)
-        before = {'sku': part.sku, 'name': part.name, 'is_OEM': part.is_OEM}
         part = prefer_oem(part, actor=actor, selected={'code': chosen['code'], 'brand': chosen['brand']}, confirm_current=flag)
         if part.sku != chosen['code'] or not part.is_OEM:
             raise RuntimeError(f'prefer_oem dejó {part.sku} sin aplicar {chosen["code"]}.')
@@ -510,9 +514,9 @@ def apply_case(run, case_id, fingerprint, actor, *, code=None, batch=1, bulk=Fal
                 'code': chosen['code'], 'brand': chosen['brand'], 'ref_type': 'oem', 'reference_source': source, 'action': 'confirm_current'})
         else:
             change = CatalogIdentityChange.objects.filter(part=part, previous_sku=before['sku'], sku=chosen['code']).order_by('-pk').first()
-        after = oa.code_rows(part.pk)
-        undo = {**before, 'created_codes': [after[k] for k in sorted(after.keys() - codes.keys())],
-                'updated_codes': [{'before': codes[k], 'after': after[k]} for k in sorted(after.keys() & codes.keys()) if after[k] != codes[k]]}
+        after = oa.undo_rows(part.pk)
+        undo = {**before, 'created_codes': [after[k] for k in sorted(after.keys() - rows.keys())],
+                'updated_codes': [{'before': rows[k], 'after': after[k]} for k in sorted(after.keys() & rows.keys()) if after[k] != rows[k]]}
         action = 'choose_oem' if case.tier in CHOOSE_TIERS else 'approve'
         review = {'case': case.pk, 'tier': case.tier, 'action': action, 'fingerprint': fingerprint, 'chosen': chosen, 'kept': kept, 'held': held,
                   'bulk': bulk}

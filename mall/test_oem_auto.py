@@ -291,7 +291,7 @@ class APITests(Pending, APITestCase):
         self.assertEqual(data['rows'][0], {**data['rows'][0], 'sku': '54830-1R000', 'oem': '54830-1R000', 'method': 'flag', 'outcome': 'applied', 'in_stock': True})
         batch = self.post('preview/', {'tier': CONFIRMED, 'mode': 'batch'}).data
         self.assertEqual((batch['size'], batch['selected'], batch['rows'][0]['oem'], batch['rows'][0]['method']), (100, 1, '48654-0K030', 'rename'))
-        self.assertEqual((OEMFinderRun.objects.count(), Part.objects.filter(is_OEM=True).count(), PartCode.objects.count()), (runs, 0, 0))
+        self.assertEqual((OEMFinderRun.objects.count(), Part.objects.filter(is_OEM=True).count(), PartCode.objects.filter(is_main=False).count()), (runs, 0, 0))
         for bad in ({'tier': 'CONFLICT', 'mode': 'canary'}, {'tier': FLAG, 'mode': 'todo'}, {}):
             self.assertEqual(self.post('preview/', bad).status_code, 400, bad)
 

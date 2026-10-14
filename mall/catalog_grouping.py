@@ -9,7 +9,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .management import IsSuperuser, ManagedPartSerializer, UppercaseCharField
-from .lines import all_lines, on_storefront, storefront_lines
+from .lines import all_lines, create_line, on_storefront, storefront_lines
 from . import references
 from .models import Alternate, CatalogMerge, Part, PartImage, Reference, SupplierItem
 from .wishlist import merge_wishlists
@@ -86,7 +86,7 @@ def merge_catalog_parts(*, actor, target_sku, source_skus, category='', subcateg
         family = family_candidates(family_rows).get(target_sku)
         if not family or not set(source_skus).issubset({row['sku'] for row in family['sources']}):
             raise ValidationError('El código base requiere al menos dos variantes con descripciones compatibles para crear el SKU padre.')
-        target = Part.objects.create(sku=target_sku, name=target_sku, description=family['target']['description'])
+        target = create_line(target_sku, name=target_sku, description=family['target']['description'], actor=actor, strict=True)  # its main (S2b)
         parts[target_sku] = target
     else:
         target = parts[target_sku]
@@ -121,6 +121,9 @@ def merge_catalog_parts(*, actor, target_sku, source_skus, category='', subcateg
         retired_ids = source_ids | {part.pk for part in children}
         participant_ids = retired_ids | {target.pk}
         source_codes = list(Reference.objects.select_for_update().filter(part_id__in=retired_ids).order_by('pk'))  # live: retired ones stay as history
+        # A source's main (S2b) is its codigo: absorbed below as the target's alias of it, so it is not one of the codes it brings.
+        source_mains = {row.part_id: row for row in source_codes if row.is_main}
+        source_codes = [row for row in source_codes if not row.is_main]
         incoming = {(row.brand, row.code) for row in source_codes} | {('', part.sku) for part in sources}
         identifiers = {code for _, code in incoming}
         # A neutral alias reserves the code across brands, matching the same
@@ -137,9 +140,15 @@ def merge_catalog_parts(*, actor, target_sku, source_skus, category='', subcateg
         brought = {str(part.pk): {'codes': [], 'items': [], 'images': []} for part in sources}
         for row in source_codes:
             brought[owner[row.part_id]]['codes'].append({'brand': row.brand, 'code': row.code})
-        summary['codes_transferred'] = Reference.objects.filter(pk__in=[row.pk for row in source_codes]).update(part=target)
+        # A source's main (S2b) comes along as one of the target's References, never as a second main.
+        summary['codes_transferred'] = references.move(source_codes, target, actor=actor)
         for source in sources:  # each source's codigo stays a neutral alias of the target (mall.references: ReferenceConflict is a 400)
-            alias, created = references.add(target, source.sku, '', tipo='oem' if source.is_OEM else 'otro', actor=actor)
+            main = source_mains.get(source.pk)
+            if main is not None:  # it stays on the source as retirada, replaced by the alias (Separar brings it back)
+                alias, created = references.absorb_into(main, target, actor=actor, reason=f'Agrupado en {target.sku}',
+                                                        tipo='oem' if source.is_OEM else None)
+            else:
+                alias, created = references.add(target, source.sku, '', tipo='oem' if source.is_OEM else 'otro', actor=actor)
             if source.is_OEM and alias.ref_type == 'unknown':
                 references.update(alias, ref_type='oem', actor=actor)
             summary['sku_aliases_created'] += int(created)
@@ -172,10 +181,10 @@ def merge_catalog_parts(*, actor, target_sku, source_skus, category='', subcateg
             metadata_fields.append(field)
     if metadata_fields:
         target.save(update_fields=metadata_fields)
-    from .catalog_identity import prefer_oem, company_reference, preserve_sku_reference
-    for source in sources:
-        if not source.is_OEM and company_reference(source.sku):
-            preserve_sku_reference(target, source.sku, actor=actor)
+    from .catalog_identity import company_base_code, prefer_oem
+    for source in sources:  # a company-suffix source's company code stays with the target (its codigo came as an alias above)
+        if not source.is_OEM:
+            company_base_code(target, source.sku, actor)
     target = prefer_oem(target, actor=actor, confirm_current=True)
     target.stock_record_count = target.supplier_items.count()
     return {'target': ManagedPartSerializer(target).data, 'merged_skus': [part.sku for part in sources],

@@ -33,6 +33,7 @@ TIGHTEN = ('reference_one_live_line', 'reference_valid_tipo', 'reference_valid_e
 def drop_tighten_constraints():
     """Inside a test's transaction, so they come back when it rolls back (a no-op before 0074)."""
     with connection.cursor() as cursor:
+        cursor.execute('SET CONSTRAINTS ALL IMMEDIATE')  # a line's main (S2b) leaves a deferred FK check pending, which ALTER TABLE refuses
         present = connection.introspection.get_constraints(cursor, Reference._meta.db_table)
         for name in TIGHTEN:
             if name in present:
@@ -97,9 +98,9 @@ class RenameTests(TestCase):
         self.assertEqual(Reference._meta.db_table, 'mall_partcode')
         line = make_line('REL-1')
         ref = make_reference(line, 'REL-ALT', brand='GMB', tipo='aftermarket')
-        self.assertEqual(list(line.codes.all()), [ref])
+        self.assertEqual(list(line.codes.filter(is_main=False)), [ref])
         self.assertEqual(type(ref.pk), int)
-        self.assertIsNotNone(Reference.objects.values_list('uid', flat=True).get(pk=ref.pk))  # the database fills it
+        self.assertIsNotNone(Reference.objects.filter(is_main=False).values_list('uid', flat=True).get(pk=ref.pk))  # the database fills it
 
     def test_new_columns_take_their_defaults_and_old_style_writes_keep_working(self):
         ref = PartCode.objects.create(part=make_line('OLD-1'), code='old-code', ref_type='company', brand=' gmb ')
@@ -241,7 +242,7 @@ class RetireTests(APITestCase):
         self.assertEqual(references.retire(ref), 0)  # already retired
         ref.refresh_from_db()
         self.assertEqual((ref.estado, ref.detail['retired']['by'], ref.detail['retired']['reason']), ('retirada', 'ref-root', 'prueba'))
-        self.assertFalse(self.line.codes.exists())
+        self.assertFalse(self.line.codes.filter(is_main=False).exists())
         self.assertFalse(Reference.objects.filter(pk=ref.pk).exists())
         self.assertTrue(Reference.all_objects.filter(pk=ref.pk).exists())
         self.assertIsNone(matching_part('RET-2', 'GMB'))
@@ -259,7 +260,7 @@ class RetireTests(APITestCase):
         references.retire(ref)
         moved, added = references.add(self.other, 'RET-3', 'GMB')
         self.assertTrue(added)
-        self.assertEqual(list(self.other.codes.values_list('code', flat=True)), ['RET-3'])
+        self.assertEqual(list(self.other.codes.filter(is_main=False).values_list('code', flat=True)), ['RET-3'])
         # From 0074 a new row is added and the retired one stays on its line; before it (unique_brand_code) the retired row moves.
         self.assertEqual(Reference.all_objects.filter(code='RET-3', estado='retirada').count(), 1 if moved.pk != ref.pk else 0)
 
@@ -392,9 +393,9 @@ class WriterTests(TestCase):
         self.assertTrue(result['valid'], result)
         save_plan(groups)
         codes = Reference.objects.filter(part__sku='IMP-NEW').order_by('code')
-        self.assertEqual([(c.code, c.brand, c.tipo, c.ref_type, c.estado) for c in codes],
-                         [('16100-39315', 'GMB', 'otro', 'unknown', 'declarado'), ('GWT-71A', 'GMB', 'otro', 'unknown', 'declarado'),
-                          ('IMP-ALT-1', '', 'otro', 'unknown', 'declarado')])
+        self.assertEqual([(c.code, c.brand, c.tipo, c.ref_type, c.estado, c.is_main) for c in codes],
+                         [('16100-39315', 'GMB', 'otro', 'unknown', 'declarado', False), ('GWT-71A', 'GMB', 'otro', 'unknown', 'declarado', False),
+                          ('IMP-ALT-1', '', 'otro', 'unknown', 'declarado', False), ('IMP-NEW', '', 'otro', 'unknown', 'declarado', True)])
         again = {'IMP-NEW': {'sku': 'IMP-NEW', 'row': 2, 'fields': {}, 'codes': {('GMB', '1610039315'): 2, ('GMB', 'GWT 71A'): 2}}}
         build_plan(again, [], 1)
         self.assertEqual(again['IMP-NEW']['added'], [('GMB', 'GWT 71A')])  # 1610039315 is a code the line holds; GWT 71A (short) is not
@@ -480,7 +481,7 @@ class WriterRuleTests(APITestCase):
             references.bulk_create([references.build(self.b, '1780130070', 'TOYOTA')])  # the brandless reservation
         with self.assertRaisesMessage(references.ReferenceConflict, 'se repite con otra grafía'):
             references.bulk_create([references.build(self.b, 'BULK-12345', ''), references.build(self.b, 'BULK12345', '')])
-        self.assertFalse(Reference.objects.filter(part=self.b).exists())
+        self.assertFalse(Reference.objects.filter(part=self.b, is_main=False).exists())  # only its main (S2b)
 
     def test_the_catalog_import_keeps_one_reference_per_key_and_brings_retired_ones_back(self):
         gone = make_reference(self.a, 'IMP-R-1', brand='GMB')
@@ -622,7 +623,7 @@ class BackfillTests(TestCase):
         spare, keeper = Reference.all_objects.get(pk=self.spare.pk), Reference.objects.get(pk=self.keeper.pk)
         self.assertEqual((spare.estado, spare.reemplazado_por_id, spare.detail['retired']['by']), ('retirada', keeper.pk, 's2a-root'))
         self.assertEqual((keeper.estado, keeper.printed_forms), ('declarado', ['13780-61J00-NP-']))
-        self.assertEqual(list(self.pump.codes.values_list('code', flat=True)), ['13780-61J00-NP'])
+        self.assertEqual(list(self.pump.codes.filter(is_main=False).values_list('code', flat=True)), ['13780-61J00-NP'])
         kinds = dict(ReferenceSource.objects.values_list('reference_id', 'kind'))
         self.assertEqual(kinds, {self.finder.pk: 'buscador', self.declared.pk: 'proveedor', self.disputed.pk: 'ia',
                                  self.company.pk: 'catalogo', self.confirmed.pk: 'admin'})

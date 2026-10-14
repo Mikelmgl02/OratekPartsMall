@@ -25,3 +25,19 @@ def validate_reference_type(initial, data, instance=None):
     if 'ref_type' in initial and ref_type == 'company' and not brand:
         raise serializers.ValidationError({'brand': 'Indica la empresa o fabricante, por ejemplo FEBEST.'})
     return data
+
+
+class NonMainReferences(serializers.ListSerializer):
+    """A line's code list without its main Reference (inventory refactor S2b): the codigo already shows it. Writes are unchanged."""
+    def to_representation(self, data):
+        rows = data.all() if hasattr(data, 'all') else data
+        return super().to_representation([row for row in rows if not getattr(row, 'is_main', False)])
+
+
+class MainReferenceSerializer(serializers.Serializer):
+    """The line's main Reference, as the admin reads it (read-only): its id, code, brand ('' any brand), tipo and estado."""
+    id = serializers.IntegerField()
+    code = serializers.CharField()
+    brand = serializers.CharField(allow_blank=True)
+    tipo = serializers.CharField()
+    estado = serializers.CharField()

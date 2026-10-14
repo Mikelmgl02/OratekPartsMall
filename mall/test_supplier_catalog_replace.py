@@ -101,7 +101,7 @@ class SupplierCatalogReplaceTests(Fresh, TestCase):
         self.assertFalse(PartOEMLink.objects.filter(part=self.misled).exists())
         self.assertEqual(list(PartOEMLink.objects.filter(source='catalog').values_list('part__sku', 'reference__code')), [('16100-11111-G', '1610011111')])
         self.assertEqual(OEMReferenceSource.objects.get(reference__code='1610011111').detail['pages'], [6])
-        self.assertEqual(set(PartCode.objects.values_list('pk', flat=True)), {self.copied.pk, self.kept.pk})  # alternos are only reported
+        self.assertEqual(set(PartCode.objects.filter(is_main=False).values_list('pk', flat=True)), {self.copied.pk, self.kept.pk})  # alternos are only reported
 
         before = self.state()
         again = scr.run(self.new, apply=True, stdout=io.StringIO())

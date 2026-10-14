@@ -38,8 +38,8 @@ class SmartMatchingTests(APITestCase):
         a.refresh_from_db(); b.refresh_from_db()
         self.assertEqual((a.part_id, b.part_id), (target.pk, target.pk))
         self.assertEqual((a.supplier_invent_id, b.supplier_invent_id), ('STABLE-A','STABLE-B'))
-        # Supplier-local codes remain on the children, not in the universal library.
-        self.assertFalse(target.codes.exists())
+        # Supplier-local codes remain on the children, not in the universal library (the parent holds only its main, S2b).
+        self.assertFalse(target.codes.filter(is_main=False).exists())
         self.assertEqual(list(StockEntry.objects.order_by('pk').values()),stock)
         self.assertEqual(list(InventoryUpdate.objects.order_by('pk').values()),updates)
         process_queue(force=True,use_ai=False)
@@ -175,8 +175,8 @@ class SmartMatchingTests(APITestCase):
     def test_ai_failure_retains_stock_and_review(self):
         from .catalog_classification import ClassificationProviderError
         _,item=self.code_with_contradiction()
-        with patch('mall.matching_worker.call_provider',side_effect=ClassificationProviderError()):
-            result=process_queue(force=True)
+        with patch('mall.matching_worker.call_provider',side_effect=ClassificationProviderError()), patch('mall.matching_worker.AI_LIMIT', 20):
+            result=process_queue(force=True)  # AI ranking is off from S2b to S6 (OD12): the limit turns it back on for this test
         self.assertEqual(result['ai_analyzed'],0)
         self.assertEqual(StockEntry.objects.count(),1)
         self.assertIn('error',MatchingCase.objects.get(item=item).ai)
@@ -223,7 +223,7 @@ class SmartMatchingTests(APITestCase):
         self.assertEqual(result['supplier_total'], 1)
         self.assertEqual(result['supplier_already_matched'], 1)
         self.assertEqual(result['supplier_examined'], 0)
-        self.assertEqual(result['ai_status'], 'no_pending_cases')
+        self.assertEqual(result['ai_status'], 'paused')  # AI ranking is off from S2b to S6 (OD12)
         self.assertEqual(result['non_oem_skus'], 1)
         self.assertEqual(result['promoted_oems'], 0)
         response = self.client.get('/api/v1/management/matching/')
@@ -250,7 +250,7 @@ class SmartMatchingTests(APITestCase):
     def test_analysis_explains_provider_failure_without_claiming_no_work(self):
         from .catalog_classification import ClassificationProviderError
         self.code_with_contradiction()
-        with patch('mall.matching_worker.call_provider', side_effect=ClassificationProviderError()):
+        with patch('mall.matching_worker.call_provider', side_effect=ClassificationProviderError()), patch('mall.matching_worker.AI_LIMIT', 20):
             result = process_queue(force=True)
         self.assertEqual(result['supplier_examined'], 1)
         self.assertEqual(result['ai_eligible'], 1)

@@ -159,7 +159,7 @@ class CatalogClassificationTests(APITestCase):
         self.assertEqual(existing.category, 'FRENOS')
         self.assertEqual(existing.subcategory, 'DISCOS')
         self.assertTrue(PartCode.objects.filter(pk=old_code.pk).exists())
-        self.assertEqual(set(existing.codes.values_list('code', flat=True)), {'OLD-CODE', '58411-1R000-G', 'SUPPLIER-ALT'})
+        self.assertEqual(set(existing.codes.filter(is_main=False).values_list('code', flat=True)), {'OLD-CODE', '58411-1R000-G', 'SUPPLIER-ALT'})
         stock.refresh_from_db()
         self.assertEqual(stock.part_id, existing.pk)
         self.assertEqual(stock.reported_quantity, 9)

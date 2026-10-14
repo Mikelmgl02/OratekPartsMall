@@ -88,7 +88,7 @@ class ManagementTests(APITestCase):
         self.client.patch(f'/api/v1/management/catalog/{part_id}/', {'description': 'Solo descripción'}, format='json')
         part.refresh_from_db()
         self.assertEqual(part.description, 'SOLO DESCRIPCIÓN')
-        self.assertEqual(part.codes.count(), 2)
+        self.assertEqual(part.codes.filter(is_main=False).count(), 2)
 
     def test_duplicate_catalog_codes_are_rejected_without_partial_writes(self):
         part = Part.objects.create(sku='ORIGINAL', name='Original')
@@ -103,7 +103,7 @@ class ManagementTests(APITestCase):
         self.assertEqual(response.status_code, 400)
         other.refresh_from_db()
         self.assertEqual(other.name, 'Otro')
-        self.assertFalse(other.codes.exists())
+        self.assertFalse(other.codes.filter(is_main=False).exists())
 
     def test_brand_neutral_sku_is_unique_and_owns_its_equivalent_codes(self):
         payload = {'sku': '58411-1r000', 'codes': [{'code': '58411-1r000-g'}, {'code': '58-1r0'}, {'code': 'd-hyu-1r'}]}
@@ -185,7 +185,7 @@ class ManagementTests(APITestCase):
         self.assertEqual(self.client.patch(f'/api/v1/management/catalog/{part.pk}/', {'codes': [{'code': 'D-HYU-1R', 'brand': 'OEM'}]}, format='json').status_code, 200)
         self.assertEqual(self.client.get(url).data['code'], 'D-HYU-1R')
         self.assertEqual(self.client.delete(url).status_code, 204)
-        self.assertFalse(part.codes.exists())
+        self.assertFalse(part.codes.filter(is_main=False).exists())
         self.assertEqual(Part.objects.count(), 1)
         stock.refresh_from_db()
         self.assertEqual(stock.part, part)
@@ -208,7 +208,7 @@ class ManagementTests(APITestCase):
         distinct = self.client.post(url, {'part': str(second.pk), 'code': 'SHARED', 'brand': 'OTHER'}, format='json')
         self.assertEqual(distinct.status_code, 201)
         self.assertEqual(self.client.patch(f"{url}{distinct.data['id']}/", {'brand': ''}, format='json').status_code, 400)
-        self.assertEqual(PartCode.objects.count(), 2)
+        self.assertEqual(PartCode.objects.filter(is_main=False).count(), 2)
 
     def test_legacy_compatibility_relations_are_preserved_without_becoming_alternos(self):
         part = Part.objects.create(sku='FIRST')

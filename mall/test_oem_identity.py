@@ -128,7 +128,7 @@ class OEMIdentityTests(APITestCase):
         self.assertEqual(provider.call_count, 2)
         # Both provider calls (the grounded search and the extraction) count as OEM lookup spend in the platform AI budget.
         self.assertEqual({call.kwargs['feature'] for call in provider.call_args_list}, {'oem_lookup'})
-        self.assertEqual(self.part.codes.count(), 0)
+        self.assertEqual(self.part.codes.filter(is_main=False).count(), 0)
         self.assertEqual(a['references'][0]['ref_type'], 'oem')
         self.assertTrue(a['needs_review'])
         self.part.description = 'DIFFERENT'; self.part.save()
@@ -138,7 +138,7 @@ class OEMIdentityTests(APITestCase):
     def test_component_is_never_silently_reclassified_as_equivalent(self, provider):
         provider.side_effect = self.research_responses('component')
         self.assertEqual(lookup_oem(self.part)['references'][0]['relationship'], 'component')
-        self.assertEqual(self.part.codes.count(), 0)
+        self.assertEqual(self.part.codes.filter(is_main=False).count(), 0)
 
     @patch('mall.oem_lookup.generate_json')
     def test_no_grounded_sources_means_no_oem_suggestions(self, provider):

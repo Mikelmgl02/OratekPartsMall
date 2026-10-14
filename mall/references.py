@@ -14,6 +14,26 @@ history (Reference.objects and every line's `codes` leave retired rows out, so r
     clave(code)                  the database's generated mall_partcode.clave, in Python
     cite(ref, text)              upsert the ReferenceSource a reference_source text names (A3)
 
+The main Reference (S2b). Every live line (any estado but unificada) has exactly one main Reference, not retired, whose code is the
+line's codigo (Part.sku) and whose tipo the line's tipo mirrors (oem → OEM, aftermarket → AFTERMARKET, interno and otro → UNKNOWN;
+is_OEM = tipo == 'OEM' until S10). This module is the only writer of is_main and of a live line's codigo:
+
+    set_main(line, ref, actor, reason)  make a Reference of the line its main: the codigo follows it while the line is live (OD3,
+                                 CatalogIdentityChange when it changes), the line's tipo too; refused (MainConflict) when another line
+                                 has that codigo, optionally opening a merge case
+    ensure_main(line, ...)       the main of a line that has none, or whose codigo moved: a live Reference of the line with the codigo's
+                                 key (respelled to the codigo) or a new one (disputa when another line holds the key)
+    ensure_mains()               ensure_main on the live lines without a main on their codigo (the matching worker, every pass, to S10)
+    retype_main(line, tipo)      the main's tipo (and brand, when its key is free), the line's tipo following it
+    move(refs, line)             References to another line, never as its main (merges)
+    main_of(line), mains_of(ids) the live main of a line, of several
+    bulk_mains(lines)            built mains for lines inserted in bulk (mall.lines.bulk_create_lines saves them)
+
+Until S10 Part.save() keeps the main in step for the code that writes sku, is_OEM or merged_into directly (follow_line): a line
+inserted without a main gets one, a renamed line's main moves to its new codigo (the old main stays as one of its References), a line
+brought back from a merge takes its main back, and a tipo written on the line retypes its main. Readers leave the main out of a line's
+code lists (the codigo already shows it) and fall back to the codigo while a line has no main yet (before mall.refactor.s2b_main_refs).
+
 clave. The compact code ([A-Z0-9] only) when the code is OEM-like (8+ such characters and 3+ digits: 17801-30070 = 1780130070),
 otherwise the code as printed, upper case, trimmed, with its spaces collapsed (EC-01 is not EC01). PostgreSQL computes it (a stored
 generated column, mall.models.CLAVE), so no writer can get it wrong; clave() mirrors it to check a key before writing.
@@ -321,6 +341,7 @@ def add(line, code, brand='', *, tipo=None, ref_type=None, estado=None, supplier
             return revive(retired, ref, actor), True
         try:
             with transaction.atomic():
+                ref._checked = True  # validated above: Reference.save's shim (adopt_insert) has nothing to do
                 ref.save()
         except IntegrityError as error:
             # Until 0074 drops unique_brand_code, one printed (brand, code) is a single row wherever it sits: a code retired on another
@@ -342,6 +363,42 @@ def add(line, code, brand='', *, tipo=None, ref_type=None, estado=None, supplier
 def constraint_of(error):
     """The name of the constraint an IntegrityError reports (PostgreSQL's diagnostics), or ''."""
     return getattr(getattr(error.__cause__, 'diag', None), 'constraint_name', '') or ''
+
+
+def adopt_insert(ref):
+    """Reference.save's S2b shim for an insert by code outside this module (old code, tests: add() checks its keys first). Its
+    key (clave, brand, supplier) held by its line's main makes it an update of the main: the main's id, uid, code (the codigo; another
+    spelling joins printed_forms) and is_main stay, the insert's tipo wins unless it is otro (an alias never downgrades the main), and
+    its source, estado and notes win when given; the line's tipo follows the main after the save. Its key held by another line's main
+    makes it disputa with a note, as the S2b backfill leaves a code two lines hold (a key another line holds as any other Reference
+    is refused by the database, as before S2b). Returns whether it became an update of the main."""
+    Reference, _ = _models()
+    if not ref.part_id or ref.is_main or ref.estado not in EXCLUSIVE:
+        return False
+    key = clave(ref.code)
+    holders = list(Reference.objects.filter(clave=key, brand=ref.brand, supplier_id=ref.supplier_id, estado__in=EXCLUSIVE)
+                   .select_related('part').order_by('pk')[:2])
+    main = next((row for row in holders if row.part_id == ref.part_id and row.is_main), None)
+    if main is None:
+        # Only another line's main: a key another line holds as any other Reference was refused before S2b too (0074).
+        other = next((row for row in holders if row.part_id != ref.part_id), None)
+        if other is not None and other.is_main:
+            ref.estado, ref.dispute_note = 'disputa', ref.dispute_note or dispute_note_for(ref.code, other)
+        return False
+    spelling = ref.code
+    for name in ('id', 'uid', 'code', 'is_main', 'created_at', 'created_by_id', 'version'):
+        setattr(ref, name, getattr(main, name))
+    ref.printed_forms = list(dict.fromkeys([*main.printed_forms, *([spelling] if spelling != main.code else []), *ref.printed_forms]))[:MAX_PRINTED]
+    if ref.tipo == 'otro' and main.tipo != 'otro':
+        ref.tipo, ref.ref_type = main.tipo, main.ref_type
+    ref.reference_source = ref.reference_source or main.reference_source
+    ref.notes = ref.notes or main.notes
+    ref.detail = {**(main.detail or {}), **(ref.detail or {})}
+    ref.oem_reference_id = ref.oem_reference_id or main.oem_reference_id
+    ref._state.adding = False
+    ref._tipo_pair = (main.tipo, main.ref_type)
+    ref._adopted_main = True
+    return True
 
 
 def revive(row, wanted, actor, extra=None):
@@ -393,6 +450,9 @@ def update(ref, *, actor=None, **fields):
     # Checked on the values the row ends up with: a retired Reference brought back (estado declarado...) is validated like a new one.
     estado = changed.get('estado', ref.estado)
     check(changed.get('tipo', ref.tipo), estado, changed.get('supplier_id', ref.supplier_id), changed.get('dispute_note', ref.dispute_note))
+    if ref.is_main and ref.estado != 'retirada' and ({'part_id', 'supplier_id'} & set(changed) or
+                                                     ('code' in changed and changed['code'] != code_key(ref.part.sku))):
+        raise ReferenceConflict(f'{ref.code} es el código principal del SKU {ref.part.sku}: cambia el SKU para cambiarlo.', ref)
     with transaction.atomic():
         if {'code', 'brand', 'estado', 'part_id', 'supplier_id'} & set(changed) and estado != 'retirada':
             validate(changed.get('code', ref.code), changed.get('brand', ref.brand), line=changed.get('part_id', ref.part_id),
@@ -413,14 +473,17 @@ def update(ref, *, actor=None, **fields):
         ref.save(update_fields=names)
         if 'reference_source' in changed and ref.reference_source:
             cite(ref, ref.reference_source, actor)
+        if ref.is_main and {'tipo', 'ref_type'} & set(changed):  # the line's tipo mirrors its main (I11)
+            sync_line_tipo(ref.part, ref)
     return ref
 
 
-def retire(refs, *, actor=None, replaced_by=None, reason=''):
+def retire(refs, *, actor=None, replaced_by=None, reason='', allow_main=False):
     """Take References off their line: estado retirada (readers skip them), reemplazado_por when another Reference replaces it, who
     and why in detail['retired']. One save() each, so the matching queue and the OEM library mirror follow (the mirror drops the
     source an OEM alterno backed, and keeps the number). Accepts a Reference, its id, a list or a queryset (of any manager). Returns
-    how many were retired; retired ones are left as they are."""
+    how many were retired; retired ones are left as they are. The main of a live line is refused (ReferenceConflict: give the line
+    another main first, set_main), unless allow_main, for a caller that gives it one in the same transaction."""
     Reference, _ = _models()
     if refs is None:
         return 0
@@ -432,7 +495,12 @@ def retire(refs, *, actor=None, replaced_by=None, reason=''):
     count = 0
     stamp = {'by': getattr(actor, 'username', '') or '', 'at': timezone.now().isoformat(), **({'reason': reason} if reason else {})}
     with transaction.atomic():
-        for row in Reference.all_objects.select_for_update().filter(pk__in=ids).exclude(estado='retirada').order_by('pk'):
+        rows = list(Reference.all_objects.select_for_update().filter(pk__in=ids).exclude(estado='retirada').select_related('part').order_by('pk'))
+        held = next((row for row in rows if row.is_main and is_live(row.part)), None) if not allow_main else None
+        if held is not None:
+            raise ReferenceConflict(f'{held.code} es el código principal del SKU {held.part.sku}: dale otro código principal antes de '
+                                    'retirarlo.', held)
+        for row in rows:
             row.estado, row.is_main = 'retirada', False
             if replaced_id is not None and replaced_id != row.pk:
                 row.reemplazado_por_id = replaced_id
@@ -504,3 +572,399 @@ def cite(ref, text, actor=None, *, kind=None, detail=None, catalogs=None):
         source.detail = {**source.detail, **missing}
         source.save(update_fields=['detail'])
     return source, created
+
+
+# --- the main Reference (S2b) --------------------------------------------------------------------------------------------------------
+
+LINE_TIPO = {'oem': 'OEM', 'aftermarket': 'AFTERMARKET', 'interno': 'UNKNOWN', 'otro': 'UNKNOWN'}  # main Reference tipo -> line tipo
+MAIN_TIPO = {'OEM': 'oem', 'AFTERMARKET': 'aftermarket', 'UNKNOWN': 'otro'}                          # line tipo -> main Reference tipo
+LINE_TIPOS = tuple(MAIN_TIPO)
+ESTADO_RANK = {'verificado': 0, 'declarado': 1, 'inferido': 2, 'disputa': 3}
+
+
+class MainConflict(ReferenceConflict):
+    """set_main refused: another line already has that codigo (UNIQUE(sku) until S4). `line` is that line and `case` the merge case
+    opened for it (open_case=True), or None."""
+    def __init__(self, detail, reference=None, line=None, case=None):
+        super().__init__(detail, reference)
+        self.line, self.case = line, case
+
+
+def line_tipo(tipo):
+    """The line tipo a main Reference of this tipo gives its line."""
+    return LINE_TIPO.get(tipo, 'UNKNOWN')
+
+
+def main_tipo(line_tipo_value, current=None):
+    """The Reference tipo a line of this tipo asks of its main: an interno main stays interno on an UNKNOWN line."""
+    if current == 'interno' and line_tipo_value == 'UNKNOWN':
+        return 'interno'
+    return MAIN_TIPO.get(line_tipo_value, 'otro')
+
+
+def is_live(line):
+    """Whether a line holds a main: any estado but unificada, and not merged."""
+    return not line.merged_into_id and line.estado != 'unificada'
+
+
+def main_of(line, *, lock=False):
+    """The live main Reference of a line (a Part or its id), or None (a unificada line, or one the S2b backfill has not reached)."""
+    Reference, _ = _models()
+    rows = Reference.objects.filter(part_id=getattr(line, 'pk', line), is_main=True)
+    return (rows.select_for_update() if lock else rows).order_by('pk').first()
+
+
+def mains_of(lines):
+    """{line id: its live main Reference} for lines (Parts or ids); a line without one is left out."""
+    Reference, _ = _models()
+    ids = {getattr(line, 'pk', line) for line in lines}
+    found = {}
+    for ref in Reference.objects.filter(part_id__in=ids, is_main=True).order_by('pk'):
+        found.setdefault(ref.part_id, ref)
+    return found
+
+
+def main_in(codes):
+    """The main among a line's References already loaded (a prefetched line.codes.all()), or None."""
+    return next((ref for ref in codes if ref.is_main), None)
+
+
+def not_main(codes):
+    """A line's References already loaded, without its main: what a code list shows (the codigo shows the main)."""
+    return [ref for ref in codes if not ref.is_main]
+
+
+def pair_line_tipo(line, before=None):
+    """Put an unsaved change of the line's tipo or is_OEM in step before it is written (Part.save): a tipo changed since the line was
+    loaded (or since its defaults, for a new line) wins, otherwise is_OEM decides (True is OEM; False leaves AFTERMARKET and UNKNOWN
+    as they are and turns OEM into UNKNOWN). Legacy writers only know is_OEM."""
+    values = line.__dict__
+    if 'tipo' not in values and 'is_OEM' not in values:
+        return line
+    if line._state.adding:
+        loaded_tipo, loaded_oem = 'UNKNOWN', False
+    else:
+        loaded_tipo, loaded_oem = (before or {}).get('tipo'), (before or {}).get('is_OEM')
+    tipo, oem = line.tipo, bool(line.is_OEM)
+    if tipo not in LINE_TIPOS:
+        raise ReferenceConflict(f'Tipo de línea desconocido: {tipo}.')
+    tipo_changed = loaded_tipo is not None and tipo != loaded_tipo
+    if tipo_changed or (loaded_tipo is None and loaded_oem is not None and oem == loaded_oem):
+        line.is_OEM = tipo == 'OEM'
+    elif oem != (tipo == 'OEM'):
+        line.tipo = 'OEM' if oem else ('UNKNOWN' if tipo == 'OEM' else tipo)
+    return line
+
+
+def follow_line(line, before, *, adding=False, fields=None, using=None):
+    """Part.save's S2b shim (after the write): a live line inserted without a main, renamed, brought back from a merge or given
+    another tipo by code that writes those columns directly gets its main in step (ensure_main). Writers of this module and
+    mall.lines.create_line set line._main_followed, so their own saves are left alone."""
+    values = line.__dict__  # read without loading a deferred field: most saves trigger nothing
+    if values.pop('_main_followed', False) or using not in (None, 'default'):
+        return None
+    before = before or {}
+    if (fields is None or {'merged_into', 'estado'} & set(fields)) and before and not before.get('merged_into_id') \
+            and values.get('merged_into_id'):
+        return retire_main_of_merged(line)
+    renamed = (fields is None or 'sku' in fields) and before.get('sku') not in (None, values.get('sku'))
+    back = (fields is None or {'merged_into', 'estado', 'active'} & set(fields)) and (
+        before.get('merged_into_id') is not None or before.get('estado') == 'unificada')
+    retyped = (fields is None or {'tipo', 'is_OEM'} & set(fields)) and before.get('tipo') not in (None, values.get('tipo'))
+    if not (adding or renamed or back or retyped) or not is_live(line):
+        return None
+    return ensure_main(line, line_wins=bool(retyped and not renamed))
+
+
+def retire_main_of_merged(line):
+    """A line merged by code that writes merged_into directly (old code, tests): its main is retired, as a merge does (I3), so the
+    line it went into can hold its codigo."""
+    Reference, _ = _models()
+    rows = Reference.objects.filter(part_id=line.pk, is_main=True)
+    return retire(rows, reason='Línea unificada en otra', allow_main=True) if rows.exists() else 0
+
+
+def _bump(rows, **values):
+    """A queryset update of References that keeps their version and updated_at (no signals: is_main and tipo mean nothing to the OEM
+    library mirror)."""
+    from django.db.models import F
+    return rows.update(**values, version=F('version') + 1, updated_at=timezone.now())
+
+
+def _mark_main(line, ref, current):
+    """is_main on ref and off every other main of the line (current: the line's mains, locked). Returns ref."""
+    Reference, _ = _models()
+    others = [row.pk for row in current if row.pk != ref.pk]
+    if others:
+        _bump(Reference.all_objects.filter(pk__in=others), is_main=False)
+    if not ref.is_main:
+        _bump(Reference.all_objects.filter(pk=ref.pk), is_main=True)
+        ref.is_main = True
+    return ref
+
+
+def _retype(ref, tipo):
+    Reference, _ = _models()
+    if ref.tipo != tipo:
+        _bump(Reference.all_objects.filter(pk=ref.pk), tipo=tipo, ref_type=REF_TYPE_OF[tipo])
+        ref.tipo, ref.ref_type = tipo, REF_TYPE_OF[tipo]
+    return ref
+
+
+def sync_line_tipo(line, ref):
+    """The line's tipo (and is_OEM) as its main says, written without signals when it differs."""
+    from .models import Part
+    tipo = line_tipo(ref.tipo)
+    if line.__dict__.get('tipo') != tipo or line.__dict__.get('is_OEM') != (tipo == 'OEM'):
+        Part.objects.filter(pk=line.pk).update(tipo=tipo, is_OEM=tipo == 'OEM')
+        line.tipo, line.is_OEM = tipo, tipo == 'OEM'
+        if hasattr(line, '_identity'):
+            line._identity.update(tipo=tipo, is_OEM=tipo == 'OEM')
+    return line
+
+
+def dispute_note_for(code, other):
+    """The note of a main that cannot hold its key: another line holds it (a person decides, through a merge case)."""
+    sku = getattr(getattr(other, 'part', None), 'sku', '') or ''
+    return (f'El código {code} ya es de otro SKU ({sku}): caso de unificación.' if sku else
+            f'El código {code} ya es de otro SKU: caso de unificación.')
+
+
+def ensure_main(line, *, brand='', tipo=None, source='', actor=None, strict=False, line_wins=False, estado=None):
+    """The main of a live line on its codigo (returns it; None for a unificada line). A main already on the codigo stays. Otherwise a
+    live Reference of the line with the codigo's key becomes the main (the exact spelling first, then the brand asked, then the tipo
+    asked; another spelling is respelled to the codigo and kept in printed_forms), or a new one is added with `brand`, `tipo` (the
+    line's when None) and `source`. A key another line holds makes the new main disputa with a note (strict: ReferenceConflict
+    instead). Then the line's tipo follows the main, or with line_wins the main's tipo follows the line (a tipo written on the line by
+    code that only knows is_OEM). The caller locks the line when it matters."""
+    Reference, _ = _models()
+    if not is_live(line):
+        return None
+    code = code_key(line.sku)
+    key = clave(code)
+    with transaction.atomic():
+        lock(key)
+        current = list(Reference.all_objects.select_for_update().filter(part_id=line.pk, is_main=True).order_by('pk'))
+        target = next((row for row in current if row.code == code and row.estado != 'retirada'), None)
+        wanted = tipo or main_tipo(line.tipo)
+        if target is None:
+            rows = list(Reference.objects.select_for_update().filter(part_id=line.pk, clave=key, supplier__isnull=True).order_by('pk'))
+            rows.sort(key=lambda row: (row.code != code, row.brand != brand_key(brand), (row.tipo == 'oem') != (wanted == 'oem'),
+                                       ESTADO_RANK.get(row.estado, 9), row.pk))
+            target = rows[0] if rows else None
+            if target is not None and target.code != code:
+                target = update(target, code=code, actor=actor)
+            if target is None:  # a main this line had before (a merge retired it): it comes back, brand and tipo as they were
+                former = (Reference.all_objects.filter(part_id=line.pk, clave=key, estado='retirada', supplier__isnull=True)
+                          .order_by(exact_first(code), '-pk').first())
+                if former is not None:
+                    brand, tipo, wanted = former.brand, tipo or former.tipo, tipo or former.tipo
+            if target is None:
+                try:
+                    target, _ = add(line, code, brand, tipo=wanted, source=source, actor=actor, estado=estado)
+                except ReferenceConflict as error:
+                    if strict or error.reference is None or error.reference.part_id == line.pk:
+                        raise
+                    target, _ = add(line, code, brand, tipo=wanted, source=source, actor=actor, estado='disputa',
+                                    dispute_note=dispute_note_for(code, error.reference))
+            elif tipo and target.tipo != tipo:
+                _retype(target, tipo)
+        if line_wins and not tipo and line.tipo == 'OEM' and target.tipo != 'oem':
+            # Marked OEM by code that only knows is_OEM: a branded OEM Reference of the codigo becomes the main rather than a second
+            # OEM row made of the brandless one.
+            branded = (Reference.objects.filter(part_id=line.pk, code=code, tipo='oem', supplier__isnull=True).exclude(brand='')
+                       .order_by('brand', 'pk').first())
+            target = branded or target
+        _mark_main(line, target, current)
+        if line_wins and not tipo:
+            _retype(target, main_tipo(line.tipo, target.tipo))
+        sync_line_tipo(line, target)
+    return target
+
+
+def exact_first(code):
+    """An ordering that puts the rows spelled exactly `code` first."""
+    from django.db.models import Case, IntegerField, Value, When
+    return Case(When(code=code, then=Value(0)), default=Value(1), output_field=IntegerField())
+
+
+def codigo_holder(line, code):
+    """Another line whose codigo is `code` (any estado: UNIQUE(sku) covers every line until S4), or None."""
+    from .lines import all_lines
+    return all_lines().filter(sku__iexact=code_key(code)).exclude(pk=line.pk).order_by('pk').first()
+
+
+def open_main_case(line, holder, ref, reason=''):
+    """A legacy catalog case (method main_codigo) asking whether a line that wants holder's codigo as its main is holder's part: today's
+    Agrupación inteligente approves it as a merge into holder, or keeps the two apart."""
+    from .matching_engine import part_row, save_case
+    from .models import Part
+    source, target = (Part.objects.prefetch_related('codes').get(pk=pk) for pk in (line.pk, holder.pk))
+    return save_case(key=f'catalog:main:{line.pk}:{holder.pk}', kind='catalog', sources=[part_row(source)], candidates=[part_row(target)],
+                     target=holder.sku, method='main_codigo',
+                     reason=(f'{reason}: ' if reason else '') + f'{source.sku} quiere como código principal {ref.code}, que es el SKU de '
+                            f'{holder.sku}. Si son el mismo repuesto, agrúpalos; si no, mantenlos separados.')
+
+
+def set_main(line, ref, actor=None, reason='', *, open_case=False):
+    """Make `ref` (a live Reference of the line, or its id) the line's main, and return it. While the line is live its codigo follows
+    the main (OD3): sku and, when it was the old codigo, name take the main's code and a CatalogIdentityChange records the change;
+    the line's tipo and is_OEM follow the main's tipo either way. A former main stays one of the line's References (a brandless one
+    keeps reserving its code for every brand next to a branded main of the same code). Refuses (MainConflict) when another line has
+    that codigo, opening a merge case with open_case. The caller holds the line (Account → Part) when it matters; this locks the line and
+    its mains."""
+    Reference, _ = _models()
+    from .models import CatalogIdentityChange, Part
+    holder = None
+    with transaction.atomic():
+        list(Part.objects.select_for_update().filter(pk=line.pk).values_list('pk', flat=True))
+        ref = Reference.all_objects.select_for_update().get(pk=getattr(ref, 'pk', ref))
+        if ref.part_id != line.pk:
+            raise ReferenceConflict('La referencia principal tiene que ser de este SKU.')
+        if ref.estado == 'retirada':
+            raise ReferenceConflict('Una referencia retirada no puede ser la principal del SKU.')
+        live, old_sku = is_live(line), line.sku
+        if live and ref.code != old_sku:
+            holder = codigo_holder(line, ref.code)
+        if holder is None:
+            _switch_main(line, ref, live, old_sku, actor, reason)
+    if holder is not None:  # outside the atomic block, so the case outlives the refusal unless the caller rolls back too
+        case = open_main_case(line, holder, ref, reason) if open_case else None
+        raise MainConflict(f'El código {ref.code} ya es el SKU {holder.sku}. Si son el mismo repuesto, usa Agrupar SKU.', ref,
+                           line=holder, case=case)
+    return ref
+
+
+def _switch_main(line, ref, live, old_sku, actor, reason):
+    """set_main's write, inside its transaction: is_main moves to ref, the codigo and tipo follow, the change is recorded."""
+    Reference, _ = _models()
+    from .models import CatalogIdentityChange
+    current = list(Reference.all_objects.select_for_update().filter(part_id=line.pk, is_main=True).order_by('pk'))
+    if live and not current and ref.code != old_sku:  # no main yet (before the backfill): the old codigo stays one of its References
+        current = [ensure_main(line, actor=actor)]
+    _mark_main(line, ref, current)
+    fields, tipo = [], line_tipo(ref.tipo)
+    if live and line.sku != ref.code:
+        line.sku = ref.code
+        fields.append('sku')
+        if line.name == old_sku:
+            line.name = ref.code
+            fields.append('name')
+    if line.tipo != tipo or line.is_OEM != (tipo == 'OEM'):
+        line.tipo, line.is_OEM = tipo, tipo == 'OEM'
+        fields += ['tipo', 'is_OEM']
+    if fields:
+        line._main_followed = True
+        line.save(update_fields=fields)
+    if live and old_sku != line.sku:
+        previous = next((row for row in current if row.pk != ref.pk), None)
+        CatalogIdentityChange.objects.create(part=line, previous_sku=old_sku, sku=line.sku, actor=actor if getattr(actor, 'pk', None) else None,
+                                             reference={'code': ref.code, 'brand': ref.brand, 'ref_type': ref.ref_type, 'tipo': ref.tipo,
+                                                        'reference_source': ref.reference_source, 'action': 'set_main', 'reason': reason,
+                                                        'main': ref.pk, 'previous_main': previous.pk if previous else None})
+    return ref
+
+
+def retype_main(line, tipo, *, brand=None, actor=None, reason=''):
+    """Give the line's main this tipo (oem, aftermarket, interno or otro) and, when brand is given and its key is free (no other row of
+    the line under it, and validate() lets it), that brand; the line's tipo and is_OEM follow. A line without a main gets one first
+    (ensure_main). Written without signals: a mark is no evidence for the OEM library. Returns the main, or None for a unificada
+    line."""
+    Reference, _ = _models()
+    if tipo not in REF_TYPE_OF or tipo == 'interno':
+        raise ReferenceConflict(f'Tipo de referencia principal no válido aquí: {tipo}.')
+    with transaction.atomic():
+        main = main_of(line, lock=True) or ensure_main(line, actor=actor)
+        if main is None:
+            return None
+        values = {}
+        if brand is not None and brand_key(brand) != main.brand:
+            wanted = brand_key(brand)
+            if not Reference.objects.filter(part_id=line.pk, clave=main.clave, brand=wanted, supplier__isnull=True).exclude(pk=main.pk).exists():
+                try:  # as an exclusive key, even for a main in disputa: the brand is taken only when nobody else holds it
+                    validate(main.code, wanted, line=line.pk, estado='declarado', exclude=main.pk)
+                    values['brand'] = wanted
+                except ReferenceConflict:
+                    pass
+        if main.tipo != tipo:
+            values.update(tipo=tipo, ref_type=REF_TYPE_OF[tipo])
+        if values:
+            _bump(Reference.all_objects.filter(pk=main.pk), **values)
+            for name, value in values.items():
+                setattr(main, name, value)
+        if line.tipo != line_tipo(main.tipo) or line.is_OEM != (line_tipo(main.tipo) == 'OEM'):
+            line.tipo = line_tipo(main.tipo)
+            line.is_OEM = line.tipo == 'OEM'
+            line._main_followed = True
+            line.save(update_fields=['tipo', 'is_OEM'])
+    return main
+
+
+def absorb_into(ref, line, *, actor=None, reason='', tipo=None):
+    """A merge's absorb (S2b): `ref` (a source line's main, say) stays on its line as retirada, replaced by the Reference of the same
+    key on `line` (found, or added with ref's brand and tipo, or `tipo`), which Separar can bring back. Returns (that Reference,
+    added)."""
+    Reference, _ = _models()
+    with transaction.atomic():
+        ref = Reference.all_objects.select_for_update().get(pk=getattr(ref, 'pk', ref))
+        retire(ref, actor=actor, reason=reason or 'Absorbida por otra línea', allow_main=True)
+        kept, added = add(line, ref.code, ref.brand, tipo=tipo or ref.tipo, actor=actor)
+        if kept.pk != ref.pk:
+            _bump(Reference.all_objects.filter(pk=ref.pk), reemplazado_por=kept.pk)
+    return kept, added
+
+
+def move(refs, line, *, actor=None):
+    """Move References (ids, rows or a queryset) to another line, never as its main: a merge carries a source's codes, its former main
+    among them, onto the line it joins. One UPDATE (no signals, like the merge before S2b). Returns how many moved."""
+    Reference, _ = _models()
+    ids = list(refs.values_list('pk', flat=True)) if hasattr(refs, 'values_list') else [getattr(ref, 'pk', ref) for ref in refs]
+    if not ids:
+        return 0
+    return _bump(Reference.all_objects.filter(pk__in=ids), part_id=getattr(line, 'pk', line), is_main=False)
+
+
+def bulk_mains(lines, *, actor=None):
+    """Built (unsaved) mains for live lines just inserted in bulk (mall.lines.bulk_create_lines): brandless, tipo from the line, the
+    codigo as code; disputa with a note when another line (or an earlier line of the batch) holds the key, since the bulk path cannot
+    stop a whole import for it."""
+    Reference, _ = _models()
+    lines = [line for line in lines if is_live(line)]
+    keys = {clave(code_key(line.sku)) for line in lines}
+    held = {}
+    for row in (Reference.objects.filter(clave__in=keys, estado__in=EXCLUSIVE, supplier__isnull=True).select_related('part').order_by('pk')):
+        held.setdefault(row.clave, row)
+    built = []
+    for line in lines:
+        code = code_key(line.sku)
+        key = clave(code)
+        other = held.get(key)
+        if other is not None and other.part_id != line.pk:
+            ref = build(line, code, '', tipo=main_tipo(line.tipo), estado='disputa', dispute_note=dispute_note_for(code, other), actor=actor)
+        else:
+            ref = build(line, code, '', tipo=main_tipo(line.tipo), actor=actor)
+            held[key] = ref
+        ref.is_main = True
+        built.append(ref)
+    return built
+
+
+def ensure_mains(*, limit=500, actor=None):
+    """ensure_main on up to `limit` live lines without a main on their codigo (lines inserted by a path that skipped it, or renamed by
+    a queryset update): the matching worker runs it on every pass until S10. Before mall.refactor.s2b_main_refs has created the first
+    mains it does nothing (status 'backfill_pending'), so the backfill's brand rules decide every line. Returns {'status', 'lines'}."""
+    Reference, _ = _models()
+    from django.db.models import Exists, OuterRef
+    from .lines import LIVE, catalog_lines
+    from .models import Part
+    if not Reference.objects.filter(is_main=True).exists():
+        return {'status': 'backfill_pending', 'lines': 0}
+    on_codigo = Reference.objects.filter(part_id=OuterRef('pk'), is_main=True, code=OuterRef('sku'))
+    ids = list(catalog_lines(LIVE).annotate(main_ok=Exists(on_codigo)).filter(main_ok=False).order_by('pk').values_list('pk', flat=True)[:limit])
+    done = 0
+    for pk in ids:
+        with transaction.atomic():
+            line = Part.objects.select_for_update().filter(pk=pk).first()
+            if line is not None and ensure_main(line, actor=actor) is not None:
+                done += 1
+    return {'status': 'ok', 'lines': done}
