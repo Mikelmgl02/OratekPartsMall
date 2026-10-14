@@ -18,9 +18,12 @@ OEMCrossReference rows, whether or not a SKU carries the number, and every SKU l
 those numbers (PartOEMLink, source catalog) when the makes agree. A number the catalog prints for two or more different parts (an
 inner and an outer joint of one drive shaft, a row the extract misread) says nothing about which part replaces it: it files no codes
 and ties no SKU, and a SKU matched to an item only through such numbers is tied to none of the item's numbers. Variants of one part
-(GWT-116A and GWT-116AH) count as one. A drive-shaft assembly number listed for a CV component files nothing either: a finder
-assembly class under the make's own or partner numbering (Ford and Kia print Mazda shafts), Kia's Mazda-era 25-40/50/60, a
-Mitsubishi MR number or a number linked to a SKU sold as a whole shaft (EJE COMPLETO, SEMIEJE). After an apply
+(GWT-116A and GWT-116AH, ATE 24.0108-0111.1 and its PowerDisc 24.0308-0111.1) count as one. A drive-shaft assembly number listed for
+a CV component files nothing either: a finder assembly class under the make's own or partner numbering (Ford and Kia print Mazda
+shafts), Kia's Mazda-era 25-40/50/60, a Mitsubishi MR number or a number linked to a SKU sold as a whole shaft (EJE COMPLETO,
+SEMIEJE). The catalog's own item code is filed even without a digit (ASVA FDWH-FOCMF); a competitor code needs one. A printed number
+whose twin spelling the library holds instead (16100-87795-000 and 16100-87795: mall.refactor.s0_normalize_numbers) is filed under
+the twin. After an apply
 the name links of every SKU are refreshed (mall.oem_links), since new numbers may name existing SKUs. Codes an OEM number carries to the
 SKU are not copied onto it as company alternos (alternos step 2c); a SKU matched only through shared numbers gets none either, so
 only an item whose codes no number can carry (no OEM number printed, or only shared or assembly ones) still writes them on the SKU.
@@ -90,6 +93,10 @@ SAMPLE = 40
 MIN_BARE_CODE = 4  # letters and digits an own item code without a digit needs to be filed (ASVA CH-WK)
 # Variants of one part a brand codes beyond a letter suffix, folded onto one key: ATE's PowerDisc 24.03 is its 24.01 disc, slotted.
 VARIANT_FOLDS = {'ATE': [(re.compile(r'^2403(\d{7})$'), r'2401\1')]}
+# Twin spellings of one OEM number (canonical_number).
+TRAILING_000_MAKES = {'DAIHATSU', 'SUZUKI', 'TOYOTA'}
+GM_FAMILY = {'OPEL', 'VAUXHALL', 'GM', 'CHEVROLET', 'DAEWOO', 'HOLDEN', 'SAAB'}
+OPEL_CATALOG_MAKES = {'OPEL', 'VAUXHALL'}
 # Drive-shaft classes the OEM finder's ASSEMBLY_CLASSES leave out: Kia's Mazda-era numbers (0K2N1-25-600) use Mazda's shaft groups.
 EXTRA_ASSEMBLY_CLASSES = {('KIA_LEGACY', '25-40'), ('KIA_LEGACY', '25-50'), ('KIA_LEGACY', '25-60')}
 # A SKU sold as a whole drive shaft: the numbers linked to it are shaft numbers, whatever CV component a catalog lists them for.
@@ -98,6 +105,27 @@ SHAFT_RE = re.compile(r'\bEJE COMPLETO\b|\bSEMI-?EJES?\b')
 
 def compact(value):
     return re.sub(r'[^0-9A-Z]', '', (value or '').upper())
+
+
+def canonical_number(manufacturer, number):
+    """The spelling twin OEM numbers settle on (compact): Daihatsu and Suzuki print a trailing -000 the same number drops elsewhere
+    (16100-87795-000 = 16100-87795, Toyota-badged Daihatsus included), and an Opel catalog number has seven digits, so a dropped
+    leading zero comes back (636160 -> 0636160) and one too many goes (02898355 -> 2898355), the latter across the GM family."""
+    make, number = ' '.join(str(manufacturer or '').upper().split()), compact(number)
+    if make in TRAILING_000_MAKES and len(number) > 10 and number.endswith('000'):
+        return number[:-3]
+    if make in GM_FAMILY and number.isdigit():
+        if len(number) == 8 and number.startswith('0'):
+            return number[1:]
+        if len(number) == 6 and make in OPEL_CATALOG_MAKES:
+            return '0' + number
+    return number
+
+
+def twin_scope(manufacturer):
+    """The makes whose numbers can be twins: the GM family shares Opel's catalog numbers, any other make has its own."""
+    make = ' '.join(str(manufacturer or '').upper().split())
+    return 'GM' if make in GM_FAMILY else make
 
 
 def variant_key(code, brand=''):
@@ -169,7 +197,7 @@ class CatalogImport:
         self.brand = self.catalog['brand'].strip().upper()
         self.report = {'catalog': self.catalog['key'], 'title': self.catalog['title'], 'items': len(self.items), 'counts': Counter(),
                        'reasons': Counter(), 'samples': defaultdict(list)}
-        self._oem_rows, self._shared, self.clean = None, None, {}
+        self._oem_rows, self._shared, self._twins, self.clean = None, None, None, {}
 
     def shared_numbers(self):
         """Compact OEM numbers this catalog prints for two or more of its parts that are not variants of one part."""
@@ -178,7 +206,7 @@ class CatalogImport:
             for item in self.items:
                 if (item.get('brand_code') or '').strip():
                     for o in item.get('oem', []):
-                        parts[compact(o['code'])].add(item['brand_code'])
+                        parts[self.number_key(o)[1]].add(item['brand_code'])
             self._shared = {number for number, codes in parts.items() if len(codes) > 1 and not one_part(codes, self.brand)}
             self.report['counts']['shared_numbers'] = len(self._shared)
         return self._shared
@@ -303,8 +331,28 @@ class CatalogImport:
 
     # ------------------------------------------------------------------ OEM table
     def number_key(self, oem):
-        """(manufacturer, compact number) an OEM number the catalog prints is filed under."""
-        return oem['manufacturer'].strip().upper(), compact(oem['code'])
+        """(manufacturer, compact number) an OEM number the catalog prints is filed under: as printed, or its twin spelling when the
+        library holds the twin and not the printed form (canonical_number: mall.refactor.s0_normalize_numbers made them one)."""
+        key = (oem['manufacturer'].strip().upper(), compact(oem['code']))
+        return self.twins().get(key, key)
+
+    def twins(self):
+        """{(manufacturer, printed number): (manufacturer, the library's twin)}, read once per catalog."""
+        if self._twins is None:
+            from .oem_links import chunks
+            from .oem_reference_models import OEMReference, manufacturer_name
+            wanted = {}
+            for item in self.items:
+                for o in item.get('oem', []):
+                    key = (o['manufacturer'].strip().upper(), compact(o['code']))
+                    if canonical_number(*key) != key[1]:
+                        wanted[key] = canonical_number(*key)
+            held = set()
+            for chunk in chunks(sorted({number for _, number in wanted} | set(wanted.values()))):
+                held.update(OEMReference.objects.filter(code__in=chunk).values_list('manufacturer', 'code'))
+            self._twins = {key: (key[0], twin) for key, twin in wanted.items()
+                           if (manufacturer_name(key[0]), key[1]) not in held and (manufacturer_name(key[0]), twin) in held}
+        return self._twins
 
     def is_assembly(self, manufacturer, code):
         """A drive-shaft assembly number, e.g. Hyundai 49501-2S300 printed next to a CV joint: an OEM finder assembly class under the
