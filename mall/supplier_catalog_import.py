@@ -20,10 +20,12 @@ inner and an outer joint of one drive shaft, a row the extract misread) says not
 and ties no SKU, and a SKU matched to an item only through such numbers is tied to none of the item's numbers. Variants of one part
 (GWT-116A and GWT-116AH, ATE 24.0108-0111.1 and its PowerDisc 24.0308-0111.1) count as one. A drive-shaft assembly number listed for
 a CV component files nothing either: a finder assembly class under the make's own or partner numbering (Ford and Kia print Mazda
-shafts), Kia's Mazda-era 25-40/50/60, a Mitsubishi MR number or a number linked to a SKU sold as a whole shaft (EJE COMPLETO,
-SEMIEJE). The catalog's own item code is filed even without a digit (ASVA FDWH-FOCMF); a competitor code needs one. A printed number
-whose twin spelling the library holds instead (16100-87795-000 and 16100-87795: mall.refactor.s0_normalize_numbers) is filed under
-the twin. After an apply
+shafts), Kia's Mazda-era 25-40/50/60, or a number linked to a SKU sold as a whole shaft (EJE COMPLETO, SEMIEJE: Mitsubishi's MR
+series names joints as well as shafts, so only such a SKU makes an MR number a shaft). The catalog's own item code is filed even
+without a digit (ASVA FDWH-FOCMF); a competitor code needs one. A printed number the library does not hold whose twin spelling it
+holds (16100-87795-000 and 16100-87795: mall.refactor.s0_normalize_numbers) is filed under the twin, and in the GM family under the
+make's own canonical spelling when another make of the family holds it; re-run that tool's dry run after an import all the same.
+After an apply
 the name links of every SKU are refreshed (mall.oem_links), since new numbers may name existing SKUs. Codes an OEM number carries to the
 SKU are not copied onto it as company alternos (alternos step 2c); a SKU matched only through shared numbers gets none either, so
 only an item whose codes no number can carry (no OEM number printed, or only shared or assembly ones) still writes them on the SKU.
@@ -58,6 +60,9 @@ COMPATIBLE = {
     'bushing': [('SUSPENSIÓN', 'BUJES DE BRAZO'), ('SUSPENSIÓN', 'BUJES DE ESTABILIZADORA'), ('SUSPENSIÓN', 'BUJES DE MUELLE'),
                 ('DIRECCIÓN', 'BUJES DE CREMALLERA')],
     'tensioner': [('MOTOR', 'TENSORES DE CORREA'), ('RODAMIENTOS', 'RODAMIENTOS DE TENSOR')],
+    # CV JOINT is the catalog's own subgrupo for CV joints (PUNTA FLECHA EXT/INT); the category rules say JUNTAS HOMOCINÉTICAS.
+    'cv_joint_outer': [('TRANSMISIÓN', 'JUNTAS HOMOCINÉTICAS'), ('TRANSMISIÓN', 'CV JOINT')],
+    'cv_joint_inner': [('TRANSMISIÓN', 'JUNTAS HOMOCINÉTICAS'), ('TRANSMISIÓN', 'CV JOINT')],
     'idler_pulley': [('MOTOR', 'TENSORES DE CORREA'), ('RODAMIENTOS', 'RODAMIENTOS DE TENSOR')],
     'wheel_hub': [('RODAMIENTOS', 'CUBOS DE RUEDA'), ('RODAMIENTOS', 'RODAMIENTOS DE RUEDA')],
     'hub_bearing': [('RODAMIENTOS', 'RODAMIENTOS DE RUEDA'), ('RODAMIENTOS', 'CUBOS DE RUEDA')],
@@ -99,8 +104,10 @@ GM_FAMILY = {'OPEL', 'VAUXHALL', 'GM', 'CHEVROLET', 'DAEWOO', 'HOLDEN', 'SAAB'}
 OPEL_CATALOG_MAKES = {'OPEL', 'VAUXHALL'}
 # Drive-shaft classes the OEM finder's ASSEMBLY_CLASSES leave out: Kia's Mazda-era numbers (0K2N1-25-600) use Mazda's shaft groups.
 EXTRA_ASSEMBLY_CLASSES = {('KIA_LEGACY', '25-40'), ('KIA_LEGACY', '25-50'), ('KIA_LEGACY', '25-60')}
-# A SKU sold as a whole drive shaft: the numbers linked to it are shaft numbers, whatever CV component a catalog lists them for.
-SHAFT_RE = re.compile(r'\bEJE COMPLETO\b|\bSEMI-?EJES?\b')
+# A SKU sold as a whole drive shaft: the numbers linked to it are shaft numbers, whatever CV component a catalog lists them for. Only
+# a description that starts with it: BOTA SEMIEJE or RETEN SEMIEJE is a part of the shaft.
+SHAFT_RE = re.compile(r'^(?:EJE COMPLETO|SEMI-?EJES?)\b')
+ASSEMBLY_TEXT = ('SEMIEJE (EJE COMPLETO)', 'SEMIEJES')  # the description and part type a shaft number listed for a component gets
 
 
 def compact(value):
@@ -331,42 +338,57 @@ class CatalogImport:
 
     # ------------------------------------------------------------------ OEM table
     def number_key(self, oem):
-        """(manufacturer, compact number) an OEM number the catalog prints is filed under: as printed, or its twin spelling when the
-        library holds the twin and not the printed form (canonical_number: mall.refactor.s0_normalize_numbers made them one)."""
+        """(manufacturer, compact number) an OEM number the catalog prints is filed under: as printed, or the twin spelling the library
+        holds instead (canonical_number: mall.refactor.s0_normalize_numbers made them one), so an import brings no pair back."""
         key = (oem['manufacturer'].strip().upper(), compact(oem['code']))
         return self.twins().get(key, key)
 
     def twins(self):
-        """{(manufacturer, printed number): (manufacturer, the library's twin)}, read once per catalog."""
+        """{(manufacturer, printed number): (manufacturer, spelling)} for the printed numbers the library does not hold under their make,
+        read once per catalog. The make holds a twin: its canonical spelling, else the one it has (a lone 16100-28030-000 takes a printed
+        16100-28030). Only another make of the GM family holds one: the make's own canonical spelling (VAUXHALL 636160 is filed as
+        0636160 beside OPEL 0636160), the spelling the normalization would rename it to."""
         if self._twins is None:
             from .oem_links import chunks
             from .oem_reference_models import OEMReference, manufacturer_name
-            wanted = {}
+            printed, candidates = set(), set()
             for item in self.items:
                 for o in item.get('oem', []):
                     key = (o['manufacturer'].strip().upper(), compact(o['code']))
-                    if canonical_number(*key) != key[1]:
-                        wanted[key] = canonical_number(*key)
-            held = set()
-            for chunk in chunks(sorted({number for _, number in wanted} | set(wanted.values()))):
-                held.update(OEMReference.objects.filter(code__in=chunk).values_list('manufacturer', 'code'))
-            self._twins = {key: (key[0], twin) for key, twin in wanted.items()
-                           if (manufacturer_name(key[0]), key[1]) not in held and (manufacturer_name(key[0]), twin) in held}
+                    canonical = canonical_number(*key)
+                    printed.add(key)
+                    candidates |= {key[1], canonical, canonical + '000', '0' + canonical, canonical[1:] if canonical.startswith('0') else canonical}
+            groups = defaultdict(set)  # (scope, canonical): {(manufacturer, code) held}
+            for chunk in chunks(sorted(candidates - {''})):
+                for manufacturer, code in OEMReference.objects.filter(code__in=chunk).values_list('manufacturer', 'code'):
+                    groups[(twin_scope(manufacturer), canonical_number(manufacturer, code))].add((manufacturer, code))
+            self._twins = {}
+            for make, number in printed:
+                canonical, name = canonical_number(make, number), manufacturer_name(make)
+                held = groups.get((twin_scope(make), canonical), set())
+                if (name, number) in held:
+                    continue
+                own = sorted(code for manufacturer, code in held if manufacturer == name)
+                if canonical in own:
+                    self._twins[(make, number)] = (make, canonical)
+                elif own:
+                    self._twins[(make, number)] = (make, own[0])
+                elif held and number != canonical:
+                    self._twins[(make, number)] = (make, canonical)
         return self._twins
 
     def is_assembly(self, manufacturer, code):
         """A drive-shaft assembly number, e.g. Hyundai 49501-2S300 printed next to a CV joint: an OEM finder assembly class under the
         make's own or platform-partner numbering (Ford G565-25-500B and Kia B002-25-400B are Mazda shafts), Kia's Mazda-era shafts
-        (0K2N1-25-600), a Mitsubishi MR number (the series ASVA prints for whole shafts: MR453384) or a number linked to a SKU sold as
-        a whole shaft (build_indexes 'shafts')."""
+        (0K2N1-25-600), or a number linked to a SKU sold as a whole shaft (build_indexes 'shafts'). Mitsubishi's MR series carries no
+        function code and names joints too (MR222052 is ASVA MT-08's only number, MR-567160-NDK a PUNTA), so an MR number is a shaft
+        only through such a SKU (MR453384)."""
         from .oem_finder import ASSEMBLY_CLASSES, MAKE_SYSTEMS, system_hits
         own, partners = MAKE_SYSTEMS.get(manufacturer, ([], []))
         for h in system_hits(code.strip().upper(), self.finder.table):
             if h['system'] not in own and h['system'] not in partners:
                 continue
             if (h['system'], h.get('lexkey')) in ASSEMBLY_CLASSES or (h['system'], h.get('lexkey')) in EXTRA_ASSEMBLY_CLASSES:
-                return True
-            if h['system'] == 'MITSU_OLD' and h['groups'].get('cls') == 'MR':
                 return True
         return compact(code) in self.ix.get('shafts', ())
 
@@ -404,11 +426,13 @@ class CatalogImport:
                 if not key[0] or not 1 <= len(key[1]) <= 60:
                     continue
                 assembly = self.listed_assembly(item, o)
-                # catalog: the extract that printed the number first, when several extracts of one catalog are replaced together.
+                # catalog: the extract that printed the number first, when several extracts of one catalog are replaced together;
+                # component: the description and part type the first item gives a number that is not a shaft's.
+                component = (item.get('name_es') or '', pt[1] if pt else '')
                 row = rows.setdefault(key, {'printed': set(), 'pages': set(), 'brand_codes': set(), 'product_types': set(), 'assembly': assembly,
-                                            'catalog': item.get('_extract') or self.catalog['key'],
-                                            'description': 'SEMIEJE (EJE COMPLETO)' if assembly else item.get('name_es') or '',
-                                            'part_type': 'SEMIEJES' if assembly else pt[1] if pt else '', 'apps': [], 'cross': {}})
+                                            'catalog': item.get('_extract') or self.catalog['key'], 'component': component,
+                                            'description': ASSEMBLY_TEXT[0] if assembly else component[0],
+                                            'part_type': ASSEMBLY_TEXT[1] if assembly else component[1], 'apps': [], 'cross': {}})
                 row['printed'].add(o['code'].strip().upper())
                 row['pages'].add(o.get('page'))
                 if item.get('brand_code'):

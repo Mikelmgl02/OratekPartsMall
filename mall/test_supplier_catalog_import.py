@@ -9,6 +9,7 @@ from . import supplier_catalog_import as sci
 from .catalog_identity import reconcile_identities
 from .models import Part, PartCode
 from .oem_links import part_equivalents
+from .oem_reference import upsert_reference
 from .oem_reference_models import OEMCrossReference, OEMReference, OEMReferenceSource, PartOEMLink
 from .technical_models import PartSpecification, PartType, TechnicalField
 from .test_oem_finder import Fresh
@@ -383,32 +384,61 @@ class CVAssemblyCheckTests(Fresh, TestCase):
         ref = OEMReference.objects.get(manufacturer=manufacturer, code=number)
         return ref.part_type == 'SEMIEJES' and ref.sources.get().detail.get('assembly_number_listed_for_component', False)
 
-    def test_partner_makes_kia_legacy_and_mitsubishi_mr_numbers_are_shafts(self):
+    def test_partner_makes_kia_legacy_and_shaft_sku_numbers_are_shafts(self):
         Part.objects.create(sku='28321-FG010', description='EJE COMPLETO SUB FORESTER 08-12 RH')  # a SKU sold as the whole shaft
         run_extract(extract([
             self.joint('MZ-056A44', [('G565-25-500B', 'FORD'), ('G572-22-510', 'FORD')]),  # Mazda shaft and Mazda joint under Ford
             self.joint('MZ-11', [('0K2N1-25-600', 'KIA'), ('B002-25-400B', 'KIA'), ('KK370-22-510', 'KIA')]),
-            self.joint('MT-99A50', [('MR453384', 'MITSUBISHI'), ('MB526438', 'MITSUBISHI')]),
             self.joint('SB-12', [('28321-FG010', 'SUBARU'), ('28391-FG010', 'SUBARU')]),
             self.joint('HY-IX35', [('49501-2S300', 'HYUNDAI')]),  # the finder's own class, as before
         ], key='asva_cv', title='ASVA CV', brand='ASVA', product_line='cv_joint'))
-        shafts = {('FORD', '565', 'G56525500B'), ('KIA', 'legacy', '0K2N125600'), ('KIA', 'mazda', 'B00225400B'), ('MITSUBISHI', 'MR', 'MR453384'),
-                  ('SUBARU', 'sku', '28321FG010'), ('HYUNDAI', 'finder', '495012S300')}
+        shafts = {('FORD', '565', 'G56525500B'), ('KIA', 'legacy', '0K2N125600'), ('KIA', 'mazda', 'B00225400B'), ('SUBARU', 'sku', '28321FG010'),
+                  ('HYUNDAI', 'finder', '495012S300')}
         for manufacturer, why, number in shafts:
             self.assertTrue(self.assembly(manufacturer, number), (why, number))
             self.assertFalse(OEMCrossReference.objects.filter(reference__code=number).exists(), number)
-        for manufacturer, number in [('FORD', 'G57222510'), ('KIA', 'KK37022510'), ('MITSUBISHI', 'MB526438'), ('SUBARU', '28391FG010')]:
+        for manufacturer, number in [('FORD', 'G57222510'), ('KIA', 'KK37022510'), ('SUBARU', '28391FG010')]:
             self.assertFalse(self.assembly(manufacturer, number), number)  # joint numbers keep the joint's codes
             self.assertTrue(OEMCrossReference.objects.filter(reference__code=number, brand='ASVA').exists(), number)
 
-    def test_a_joint_sku_named_after_a_shaft_number_gets_the_code_as_an_alterno_and_no_shaft_ties(self):
+    def test_a_shaft_sku_makes_its_numbers_shafts_by_its_oem_alterno_its_link_or_its_subgrupo(self):
+        alterno = Part.objects.create(sku='SEM-MIT-01', description='SEMIEJE MIT LANCER 05 LH')
+        PartCode.objects.create(part=alterno, brand='MITSUBISHI', code='MR453384', ref_type='oem')
+        linked = Part.objects.create(sku='SEM-MIT-02', description='EJE COMPLETO MIT LANCER 05 RH')
+        ref = upsert_reference('MITSUBISHI', 'MR453383', source_kind='aftermarket_catalog', citation='OTRO CATÁLOGO')[0]
+        PartOEMLink.objects.create(part=linked, reference=ref, source='catalog', citations=['OTRO CATÁLOGO'])
+        Part.objects.create(sku='MR498974', description='FLECHA COMPLETA MIT MONTERO', category='TRANSMISIÓN', subcategory='SEMIEJES')
+        boot = Part.objects.create(sku='BOT-MIT-01', description='BOTA SEMIEJE MIT LANCER')  # a part of the shaft, not the shaft
+        PartCode.objects.create(part=boot, brand='MITSUBISHI', code='MR580474', ref_type='oem')
+        self.assertTrue({'MR453384', 'MR453383', 'MR498974'} <= sci.shaft_numbers())
+        self.assertNotIn('MR580474', sci.shaft_numbers())
+        run_extract(extract([self.joint('MT-99A50', [('MR453384', 'MITSUBISHI'), ('MR453383', 'MITSUBISHI'), ('MR498974', 'MITSUBISHI'),
+                                                      ('MR580474', 'MITSUBISHI')])],
+                            key='asva_cv', title='ASVA CV', brand='ASVA', product_line='cv_joint'))
+        for number in ('MR453384', 'MR453383', 'MR498974'):
+            self.assertFalse(OEMCrossReference.objects.filter(reference__code=number).exists(), number)
+        self.assertTrue(OEMCrossReference.objects.filter(reference__code='MR580474', brand='ASVA', code='MT-99A50').exists())
+
+    def test_an_mr_number_is_the_joint_s_own_unless_a_shaft_sku_says_otherwise(self):
         joint = Part.objects.create(sku='MR-567160-NDK', description='PUNTA FLECHA EXT MIT LANCER 05')
-        result = run_extract(extract([self.joint('MT-38A43', [('MR567160', 'MITSUBISHI'), ('MR580474', 'MITSUBISHI')], apps=[('MITSUBISHI', 'LANCER')])],
+        result = run_extract(extract([self.joint('MT-38A43', [('MR567160', 'MITSUBISHI'), ('MR580474', 'MITSUBISHI')], apps=[('MITSUBISHI', 'LANCER')]),
+                                      self.joint('MT-08', [('MR222052', 'MITSUBISHI')], product_type='cv_joint_inner')],
                                      key='asva_cv', title='ASVA CV', brand='ASVA', product_line='cv_joint'))
         self.assertEqual(result['catalogs'][0]['counts']['linked_parts'], 1)
-        self.assertFalse(PartOEMLink.objects.filter(part=joint, source='catalog').exists())  # MR567160 is a shaft: the joint is not it
-        self.assertEqual(list(joint.codes.values_list('brand', 'code', 'ref_type')), [('ASVA', 'MT-38A43', 'company')])  # no number carries it
-        self.assertFalse(OEMCrossReference.objects.exists())
+        self.assertEqual(sorted(PartOEMLink.objects.filter(part=joint, source='catalog').values_list('reference__code', flat=True)),
+                         ['MR567160', 'MR580474'])  # MR is a series, not a shaft code: the SKU is the joint these numbers name
+        self.assertFalse(joint.codes.filter(ref_type='company').exists())  # its numbers carry the ASVA code
+        self.assertEqual(sorted(OEMCrossReference.objects.values_list('reference__code', 'code')),
+                         [('MR222052', 'MT-08'), ('MR567160', 'MT-38A43'), ('MR580474', 'MT-38A43')])
+        self.assertFalse(self.assembly('MITSUBISHI', 'MR222052'))
+
+    def test_a_sku_in_the_cv_joint_subgrupo_is_a_joint(self):
+        joint = Part.objects.create(sku='44010-S04-010-NDK', description='PUNTA FLECHA EXT HON CIVIC VTI 99', category='TRANSMISIÓN',
+                                    subcategory='CV JOINT')  # the catalog's own subgrupo for CV joints
+        run_extract(extract([self.joint('HO-28', [('44010-S04-010', 'HONDA'), ('44014-S04-000', 'HONDA')], apps=[('HONDA', 'CIVIC')])],
+                            key='asva_cv', title='ASVA CV', brand='ASVA', product_line='cv_joint'))
+        self.assertEqual(sorted(PartOEMLink.objects.filter(part=joint, source='catalog').values_list('reference__code', flat=True)),
+                         ['44010S04010', '44014S04000'])
 
     def test_cv_axle_items_are_shafts_themselves_and_keep_their_numbers(self):
         run_extract(extract([item('CVSK-001R', 'cv_axle', oem=[('0K012-25-500D', 'KIA')], name_es='SEMIEJE')],
