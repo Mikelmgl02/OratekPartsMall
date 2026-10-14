@@ -252,17 +252,13 @@ class OEMIdentityTests(APITestCase):
         self.assertTrue(promoted.is_OEM)
 
     def test_migration_backfills_only_existing_verified_main_reference(self):
-        from importlib import import_module
-        from django.apps import apps
-        from django.db import connection
-        from types import SimpleNamespace
+        from .test_factories import run_migration_function
         verified = Part.objects.create(sku='58411-1R000')
         PartCode.objects.create(part=verified, code='584111R000', brand='HYUNDAI', ref_type='oem', reference_source='CATÁLOGO')
         unverified = Part.objects.create(sku='51712-TEST')
         PartCode.objects.create(part=unverified, code=unverified.sku, brand='HYUNDAI', ref_type='oem')
         self.oem()  # A different OEM in the library doesn't classify the company main.
-        migration = import_module('mall.migrations.0026_part_is_oem_matching_progress')
-        migration.mark_verified_main_oems(apps, SimpleNamespace(connection=connection))
+        run_migration_function('0026_part_is_oem_matching_progress', 'mark_verified_main_oems')
         self.assertEqual(list(Part.objects.filter(is_OEM=True).values_list('pk',flat=True)), [verified.pk])
 
     def test_old_assistant_proposal_cannot_overwrite_changed_oem_identity(self):

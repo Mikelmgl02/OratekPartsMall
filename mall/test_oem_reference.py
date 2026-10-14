@@ -1,8 +1,5 @@
-import importlib
-from types import SimpleNamespace
 from unittest.mock import patch
 
-from django.apps import apps
 from django.db import IntegrityError, connection, transaction
 from django.db.models import F
 from django.test import SimpleTestCase, TestCase
@@ -12,10 +9,11 @@ from rest_framework.test import APITestCase
 from . import oem_apply as oa
 from . import oem_reference as orf
 from .models import Part, PartCode, User
-from .oem_reference import (classify_number, compact, derived_status, link_partcodes, linked_parts, refresh_status, seed_from_partcodes, source_of,
+from .oem_reference import (classify_number, compact, derived_status, linked_parts, refresh_status, source_of,
                             upsert_reference)
 from .oem_reference_models import OEMReference, OEMReferenceSource
 from .test_oem_apply import FLAG, RENAME, Catalog
+from .test_factories import historical_apps, migration_module, run_migration_function
 from .test_oem_finder import Fresh
 
 URL = '/api/v1/management/oem-references/'
@@ -308,6 +306,10 @@ class MissingTablesTests(Fresh, TestCase):
 
 
 class SeedTests(Fresh, TestCase):
+    """Migrations 0039 and 0040 seed and link the library from the catalog's OEM alternos, with frozen copies of the service on their
+    historical models: the result must equal what the live signal handlers mirror."""
+    SEED, LINK = '0039_oem_reference', '0040_partcode_oem_reference'
+
     def setUp(self):
         super().setUp()
         parts = [Part.objects.create(sku=sku, description=description) for sku, description in (
@@ -321,35 +323,44 @@ class SeedTests(Fresh, TestCase):
         oem(parts[0], 'ALT-1', 'ACME', ref_type='company')
         self.mirrored = state()
 
+    def seed(self):
+        old = historical_apps(self.SEED)
+        return migration_module(self.SEED).seed_from_partcodes(old.get_model('mall', 'OEMReference'), old.get_model('mall', 'OEMReferenceSource'),
+                                                              old.get_model('mall', 'PartCode'))
+
+    def link(self):
+        old = historical_apps(self.LINK)
+        return migration_module(self.LINK).link_partcodes(old.get_model('mall', 'OEMReference'), old.get_model('mall', 'PartCode'))
+
     def test_the_seed_rebuilds_the_mirror_and_is_idempotent(self):
         self.assertEqual(len(self.mirrored), 3)
         OEMReference.objects.all().delete()
-        self.assertEqual(seed_from_partcodes(OEMReference, OEMReferenceSource, PartCode), {'references': 3, 'sources': 3})
+        self.assertEqual(self.seed(), {'references': 3, 'sources': 3})
         self.assertEqual(state(), self.mirrored)
         versions = dict(OEMReference.objects.values_list('code', 'version'))
-        self.assertEqual(seed_from_partcodes(OEMReference, OEMReferenceSource, PartCode), {'references': 0, 'sources': 0})
+        self.assertEqual(self.seed(), {'references': 0, 'sources': 0})
         self.assertEqual((state(), dict(OEMReference.objects.values_list('code', 'version'))), (self.mirrored, versions))
 
     def test_the_seed_merges_into_existing_references(self):
         ref = OEMReference.objects.get(code='1780130070')
         ref.sources.all().delete()
         upsert_reference('TOYOTA', '1780130070', source_kind='price_list', citation='LISTA 2026')
-        self.assertEqual(seed_from_partcodes(OEMReference, OEMReferenceSource, PartCode), {'references': 0, 'sources': 1})
+        self.assertEqual(self.seed(), {'references': 0, 'sources': 1})
         ref = OEMReference.objects.get(code='1780130070')
         self.assertEqual((sorted(ref.sources.values_list('kind', flat=True)), ref.status), (['oem_finder', 'price_list'], 'verified'))
 
     def test_the_link_backfill_is_idempotent_and_skips_other_alternos(self):
         PartCode.objects.update(oem_reference=None)
-        self.assertEqual(link_partcodes(OEMReference, PartCode), 4)  # two TOYOTA spellings, HYUNDAI, MITSUBISHI
+        self.assertEqual(self.link(), 4)  # two TOYOTA spellings, HYUNDAI, MITSUBISHI
         linked = dict(PartCode.objects.values_list('code', 'oem_reference__code'))
         self.assertEqual((linked['17801-30070'], linked['1780130070'], linked['MR968365'], linked['ALT-1']), ('1780130070', '1780130070', None, None))
-        self.assertEqual(link_partcodes(OEMReference, PartCode), 0)
-        importlib.import_module('mall.migrations.0040_partcode_oem_reference').backfill(apps, SimpleNamespace(connection=connection))
+        self.assertEqual(self.link(), 0)
+        run_migration_function(self.LINK, 'backfill')
         self.assertEqual(dict(PartCode.objects.values_list('code', 'oem_reference__code')), linked)
 
     def test_the_migration_seed(self):
         OEMReference.objects.all().delete()
-        importlib.import_module('mall.migrations.0039_oem_reference').seed(apps, SimpleNamespace(connection=connection))
+        run_migration_function(self.SEED, 'seed')
         self.assertEqual(state(), self.mirrored)
 
 

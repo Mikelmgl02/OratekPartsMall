@@ -17,7 +17,6 @@ from functools import reduce
 from django.db import IntegrityError, OperationalError, ProgrammingError, connection, transaction
 from django.db.models import CharField, Func, Q, Value
 from django.db.models.functions import Concat, Replace, Upper
-from django.utils import timezone
 
 from .oem_reference_models import AUTOMATIC_KINDS, OEMReference, OEMReferenceSource, compact, manufacturer_name, spellings
 
@@ -261,20 +260,6 @@ def link(partcode, ref):
         partcode.oem_reference_id = ref_id
 
 
-def link_partcodes(Reference, PartCode, *, using='default'):
-    """Migration 0040 backfill, idempotent and safe with historical models: every OEM alterno with a brand points at the reference
-    for (brand, compact code); any other alterno points at none. Returns how many alternos changed."""
-    refs = {(m, c): pk for pk, m, c in Reference.objects.using(using).values_list('pk', 'manufacturer', 'code')}
-    changed = []
-    for row in PartCode.objects.using(using).only('pk', 'brand', 'code', 'ref_type', 'oem_reference').iterator(chunk_size=5000):
-        target = refs.get((manufacturer_name(row.brand), compact(row.code))) if row.ref_type == 'oem' and row.brand.strip() else None
-        if row.oem_reference_id != target:
-            row.oem_reference_id = target
-            changed.append(row)
-    PartCode.objects.using(using).bulk_update(changed, ['oem_reference'], batch_size=1000)
-    return len(changed)
-
-
 def guarded(sync, *args):
     """Run a library sync in a savepoint so it never breaks the PartCode write that triggered it; while the tables are not migrated
     it is skipped quietly (one warning per process)."""
@@ -373,61 +358,3 @@ def linked_q():
 def reference_pair():
     return Concat('manufacturer', Value(':'), 'code', output_field=CharField())
 
-
-def seed_from_partcodes(Reference, Source, PartCode, *, using='default', table=None):
-    """Migration 0039 seed, idempotent and safe with historical models: one reference per (brand, compact code) of the OEM alternos
-    already in the catalog, each with the source its reference_source names (the OEM finder rows of 2026-10-06 are inferred).
-    Existing references and sources are merged, never duplicated. Returns the counts it created."""
-    plan = {}
-    for row in (PartCode.objects.using(using).filter(ref_type='oem').order_by('pk')
-                .values('pk', 'part_id', 'code', 'brand', 'ref_type', 'reference_source', 'part__description')):
-        key = partcode_key(row)
-        if key is None:
-            continue
-        manufacturer, number, kind, citation = key
-        entry = plan.setdefault((manufacturer, number), {'forms': [], 'description': row['part__description'], 'sources': {}})
-        entry['forms'].append(row['code'])
-        detail = entry['sources'].setdefault((kind, citation), source_of(row['reference_source'])[2])
-        detail.setdefault('part_codes', []).append({'id': row['pk'], 'part': str(row['part_id']), 'code': row['code']})
-    if not plan:
-        return {'references': 0, 'sources': 0}
-    existing = {(ref.manufacturer, ref.code): ref for ref in Reference.objects.using(using).filter(code__in={number for _, number in plan})
-                if (ref.manufacturer, ref.code) in plan}
-    new = []
-    for (manufacturer, number), entry in plan.items():
-        if (manufacturer, number) not in existing:
-            forms = spellings(entry['forms'], number)
-            system, family = classify_number(manufacturer, number, forms, table)
-            fields = {key: value for key, value in part_defaults(entry['description']).items() if value}
-            new.append(Reference(manufacturer=manufacturer, code=number, printed_forms=forms, system=system, family=family,
-                                 status=derived_status([(kind, detail) for (kind, _), detail in entry['sources'].items()]), **fields))
-    Reference.objects.using(using).bulk_create(new, batch_size=500)
-    refs = {**existing, **{(ref.manufacturer, ref.code): ref for ref in new}}
-    have = {(s.reference_id, s.kind, s.citation): s for s in Source.objects.using(using).filter(reference_id__in=[r.pk for r in refs.values()])}
-    created, merged, touched = [], [], set()
-    for key, entry in plan.items():
-        ref = refs[key]
-        for (kind, citation), detail in entry['sources'].items():
-            source = have.get((ref.pk, kind, citation))
-            if source is None:
-                created.append(Source(reference_id=ref.pk, kind=kind, citation=citation, detail=detail))
-                touched.add(ref.pk)
-            elif merge_detail(source.detail, detail) != source.detail:
-                source.detail = merge_detail(source.detail, detail)
-                merged.append(source)
-                touched.add(ref.pk)
-    Source.objects.using(using).bulk_create(created, batch_size=500)
-    Source.objects.using(using).bulk_update(merged, ['detail'], batch_size=500)
-    stale = [ref for key, ref in existing.items()
-             if ref.pk in touched or spellings([*ref.printed_forms, *plan[key]['forms']], ref.code) != ref.printed_forms]
-    if stale:
-        sources = defaultdict(list)
-        for ref_id, kind, detail in Source.objects.using(using).filter(reference_id__in=[r.pk for r in stale]).values_list('reference_id', 'kind', 'detail'):
-            sources[ref_id].append((kind, detail))
-        now = timezone.now()
-        for ref in stale:
-            ref.printed_forms = spellings([*ref.printed_forms, *plan[(ref.manufacturer, ref.code)]['forms']], ref.code)
-            ref.status = ref.status if ref.status == 'disputed' else derived_status(sources[ref.pk])
-            ref.version, ref.updated_at = ref.version + 1, now
-        Reference.objects.using(using).bulk_update(stale, ['printed_forms', 'status', 'version', 'updated_at'], batch_size=500)
-    return {'references': len(new), 'sources': len(created)}
