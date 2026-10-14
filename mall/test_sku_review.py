@@ -10,6 +10,7 @@ from rest_framework.test import APITestCase
 from .category_suggestions import taxonomy
 from .catalog_classification import ClassificationProviderError
 from .matching_engine import item_row, save_case
+from .matching_models import MatchingCase
 from .models import Account, Part, PartCode, Role, SupplierItem, User
 from .oem_reference_models import OEMReference
 from .quote_assistant_models import AIUsageRecord
@@ -81,6 +82,26 @@ class SkuReviewTests(APITestCase):
 
     def verdict(self, sku):
         return SkuReviewVerdict.objects.get(proposal__sku=sku)
+
+    def test_possible_duplicates_put_code_base_skus_first_then_at_most_three_hints_of_unmatched_cases(self):
+        from .matching_engine import NO_CODE_EVIDENCE, part_row
+        from .sku_review import candidates
+        base = Part.objects.create(sku='F16-4121020-01AA-L', description='FAROL KAIYI FX11 IZQ')
+        hints = [Part.objects.create(sku=f'HINT-{i}', description=f'FAROL CROMADA {i}') for i in range(5)]
+        found = self.item(self.dealer, '1', 'F16-4121020-01AA', 'KAIYI', 'FAROL KAIYI FX11 CROMADA', case=None)
+        apart = self.item(self.other, '2', 'F16-4121020-01AA', 'KAIYI', 'FAROL KAIYI FX11', case=None)
+
+        def case(item, status, parts):
+            return save_case(key=f'supplier:{item.pk}', kind='supplier', sources=[item_row(item)], candidates=[part_row(p) for p in parts],
+                             item=item, status=status, method=NO_CODE_EVIDENCE)
+        hinted = case(found, 'unmatched', [base, *hints[:4]])   # the code-base SKU is a hint too: it is listed once
+        case(apart, 'dismissed', [hints[4]])                    # an administrator kept this one apart from its hint
+        propose()
+        proposal = self.proposal('F16-4121020-01AA')
+        self.assertEqual(proposal.items.count(), 2)
+        self.assertEqual([c['sku'] for c in candidates(proposal)], ['F16-4121020-01AA-L', 'HINT-0', 'HINT-1', 'HINT-2'])
+        MatchingCase.objects.filter(pk=hinted.pk).update(candidates=[part_row(base)])
+        self.assertEqual([c['sku'] for c in candidates(proposal)], ['F16-4121020-01AA-L'])   # HINT-4 stays out
 
     def test_rules_settle_known_codes_no_uso_and_placeholder_data_without_the_ai(self):
         target = Part.objects.create(sku='A-1', name='A-1')
