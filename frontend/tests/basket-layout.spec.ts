@@ -152,7 +152,7 @@ test('desktop basket has wide supplier groups and a sticky summary, while mobile
   await page.getByTestId('page-viewport').evaluate(viewport => viewport.scrollTo({ top: 0, behavior: 'instant' }));
   await expect(rows(basket(page))).toHaveCount(30);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
-  const lastItem = (await rows(basket(page)).last().boundingBox())!;
+  const lastItem = (await basket(page).locator('.basket-grid').last().boundingBox())!;  // the last grid (its rows scroll inside it)
   const mobileSummary = (await summary.boundingBox())!;
   expect(mobileSummary.y).toBeGreaterThanOrEqual(lastItem.y + lastItem.height);
   for (const grid of await basket(page).locator('.basket-grid').all()) {  // each grid fits the screen; its columns scroll inside it
