@@ -140,14 +140,19 @@ export default function ConversationsPanel({ initial, onClose, onShowing }: { in
     setLayout(current => current.sideOpen ? current : { ...current, sideOpen: true });
   }
   const widthOf = () => box.current?.getBoundingClientRect().width ?? 1200;
+  const paneWidth = (which: 'list' | 'side', current = layout) =>
+    box.current?.querySelector(`.inbox-${which}`)?.getBoundingClientRect().width || current[which];
   function limits(which: 'list' | 'side', current = layout) {
-    return which === 'list' ? [LIST_MIN, Math.min(LIST_MAX, widthOf() - CHAT_MIN - (current.sideOpen ? current.side : 0))]
-      : [SIDE_MIN, widthOf() - CHAT_MIN - (current.listOpen ? current.list : 0)];
+    const chat = box.current?.querySelector('.inbox-chat');
+    const beside = current.sideOpen && chat && getComputedStyle(chat).display !== 'none';
+    // Use the fitted widths, including the dividers and conversation border. Saved widths can exceed the available space after a resize.
+    return which === 'list' ? [LIST_MIN, Math.min(LIST_MAX, widthOf() - CHAT_MIN - 11 - (beside ? paneWidth('side', current) + 9 : 0))]
+      : [SIDE_MIN, widthOf() - CHAT_MIN - 11 - (current.listOpen ? paneWidth('list', current) + 9 : 0)];
   }
   function drag(which: 'list' | 'side') {
     return (event: ReactPointerEvent<HTMLDivElement>) => {
       event.preventDefault();
-      const startX = event.clientX, start = layout[which], [min, max] = limits(which), sign = which === 'list' ? 1 : -1;
+      const startX = event.clientX, start = paneWidth(which), [min, max] = limits(which), sign = which === 'list' ? 1 : -1;
       document.body.classList.add('inbox-resizing');
       const move = (moved: PointerEvent) => setLayout(current => ({ ...current, [which]: clamp(start + sign * (moved.clientX - startX), min, max) }));
       const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); document.body.classList.remove('inbox-resizing'); };
@@ -159,7 +164,7 @@ export default function ConversationsPanel({ initial, onClose, onShowing }: { in
       if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
       event.preventDefault();
       const grow = (event.key === 'ArrowRight') === (which === 'list');
-      setLayout(current => { const [min, max] = limits(which, current); return { ...current, [which]: clamp(current[which] + (grow ? STEP : -STEP), min, max) }; });
+      setLayout(current => { const [min, max] = limits(which, current); return { ...current, [which]: clamp(paneWidth(which, current) + (grow ? STEP : -STEP), min, max) }; });
     };
   }
   const [pricing, setPricing] = useState(false);

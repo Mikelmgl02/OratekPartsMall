@@ -1,7 +1,7 @@
 'use client';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { ArrowDown, Bot, FileText, FileWarning, Handshake, LoaderCircle, PackageSearch, Paperclip, RefreshCw, Send, TriangleAlert, X } from 'lucide-react';
+import { ArrowDown, Bot, FileText, FileWarning, Handshake, LoaderCircle, PackageSearch, Paperclip, Plus, RefreshCw, Send, Smile, TriangleAlert, X } from 'lucide-react';
 import Modal from './modal';
 import { type AfterMode } from './deal-after-handshake';
 import ReorderMissing from './reorder-missing';
@@ -19,6 +19,8 @@ const QuoteLinesGrid = dynamic(() => import('./quote-lines-grid'), { ssr: false,
 const QuoteTraceGrid = dynamic(() => import('./quote-trace-grid'), { ssr: false, loading: () => <div className="quotation-grid-loading" role="status"><LoaderCircle size={18} className="spin"/>Cargando origen de precios…</div> });
 
 const date = (value: string) => new Date(value).toLocaleString('es-PA', { timeZone: 'America/Panama', dateStyle: 'medium', timeStyle: 'short' });
+const chatEmojis = [['😀', 'Sonrisa'], ['😊', 'Feliz'], ['👍', 'Pulgar arriba'], ['👌', 'Perfecto'], ['🙏', 'Gracias'], ['❤️', 'Corazón'],
+  ['🎉', 'Celebración'], ['✅', 'Listo'], ['👋', 'Saludo'], ['🤝', 'Acuerdo'], ['📦', 'Paquete'], ['🚚', 'Entrega']];
 const money = (value: string | number, currency = 'USD') => new Intl.NumberFormat('es-PA', { style: 'currency', currency }).format(Number(value));
 const failure = (error: unknown) => error instanceof TypeError ? 'Se perdió la conexión. Puedes reintentar sin duplicar la operación.' : error instanceof Error ? error.message : 'No se pudo actualizar el acuerdo.';
 const actionNotices: Record<string, string> = {
@@ -333,6 +335,8 @@ export function DealChat({ account, orderId, thread, reference, active, supplier
   const [assistantNotice, setAssistantNotice] = useState(false);
   const [copied, setCopied] = useState('');  // the note of a draft put in the composer
   const composer = useRef<HTMLTextAreaElement>(null);
+  const emojiPicker = useRef<HTMLDivElement>(null);
+  const [emojisOpen, setEmojisOpen] = useState(false);
   const [error, setError] = useState('');
   const [ready, setReady] = useState(false);
   const [sending, setSending] = useState(false);
@@ -354,6 +358,36 @@ export function DealChat({ account, orderId, thread, reference, active, supplier
   const [threadId, setThreadId] = useState<string | null>(thread ?? null);
   const [solo, setSolo] = useState(false);
   const [general, setGeneral] = useState(startGeneral || !orderId);
+  useLayoutEffect(() => {
+    const input = composer.current;
+    if (!input) return;
+    const resize = () => {
+      if (!input.clientWidth) return;
+      input.style.height = '0px';
+      input.style.height = `${Math.min(input.scrollHeight, 136)}px`;
+    };
+    resize();
+    let width = input.getBoundingClientRect().width;
+    const observer = new ResizeObserver(() => {
+      const next = input.getBoundingClientRect().width;
+      if (next !== width) { width = next; resize(); }
+    });
+    observer.observe(input);
+    return () => observer.disconnect();
+  }, [body, files.length]);
+  useEffect(() => {
+    if (!emojisOpen) return;
+    const outside = (event: PointerEvent) => { if (!emojiPicker.current?.contains(event.target as Node)) setEmojisOpen(false); };
+    document.addEventListener('pointerdown', outside);
+    return () => document.removeEventListener('pointerdown', outside);
+  }, [emojisOpen]);
+  function insertEmoji(emoji: string) {
+    const input = composer.current;
+    const start = input?.selectionStart ?? body.length, end = input?.selectionEnd ?? body.length;
+    if (body.length - (end - start) + emoji.length > 4000) return;
+    setBody(body.slice(0, start) + emoji + body.slice(end)); setCopied(''); setEmojisOpen(false);
+    requestAnimationFrame(() => { input?.focus(); input?.setSelectionRange(start + emoji.length, start + emoji.length); });
+  }
   const scope = useRef({ orderId, solo });
   const query = (extra: Record<string, string>) => { const params = new URLSearchParams({ ...(solo ? { solo: '1' } : {}), ...extra }); return params.size ? `?${params}` : ''; };
   const merge = (items: DealMessage[]) => setMessages(values => [...new Map([...values, ...items].map(value => [value.id, value])).values()].sort((a, b) => a.id - b.id));
@@ -498,10 +532,25 @@ export function DealChat({ account, orderId, thread, reference, active, supplier
           : <span className={`deal-chat-order${message.order_id === orderId ? ' current' : ''}`} title={`Sobre la orden ${message.order_reference}`}>{shortReference(message.order_reference)}</span>
         : <span className="deal-chat-order general" title="Sobre la relación, sin orden">General</span>}</header>{message.body && <p>{message.body}</p>}{!!message.attachments?.length && <ChatFiles base={filesPath} files={message.attachments} retrying={retrying} onRetry={id => void retry(id)}/>}</article>)}</div>
     {newBelow && <button type="button" className="deal-chat-new" onClick={toLatest}><ArrowDown size={14}/>Mensajes nuevos</button>}
-    <form onSubmit={event => { event.preventDefault(); void send(); }}><label>Mensaje<textarea ref={composer} aria-label="Mensaje del acuerdo" required={!files.length} maxLength={4000} readOnly={sending} value={body} onChange={event => { setBody(event.target.value); setCopied(''); }} onKeyDown={composerKey} onPaste={pasted} placeholder={files.length ? 'Agrega un mensaje (opcional)…' : 'Escribe a la otra parte…'}/></label>
+    <form className="deal-chat-composer" onSubmit={event => { event.preventDefault(); void send(); }}>
+      {orderId && <div className="deal-chat-context"><button type="button" className={`deal-chat-tag${general ? ' general' : ''}`} disabled={sending} onClick={() => setGeneral(value => !value)} aria-label={general ? 'Escribes en general, sin orden. Cambiar a esta orden' : `Escribes sobre ${reference || 'esta orden'}. Cambiar a general`}
+        title={general ? 'Sin orden: sobre la relación. Toca para escribir sobre esta orden' : 'Toca para escribir en general, sin orden'}>{general ? 'General' : `Sobre ${reference ? shortReference(reference) : 'esta orden'}`}</button></div>}
       {!!files.length && <ul className="deal-chat-attached" aria-label="Archivos para enviar">{files.map((file, index) => <li key={`${file.name}-${index}`}><Paperclip size={13}/><span>{file.name}</span><small>{fileSize(file.size)}</small><button type="button" disabled={sending} aria-label={`Quitar ${file.name}`} onClick={() => setFiles(values => values.filter((_, other) => other !== index))}><X size={13}/></button></li>)}</ul>}
-      {copied && <small className="deal-chat-copied" role="status">{copied}</small>}<div className="deal-chat-send">
-        {orderId && <button type="button" className={`deal-chat-tag${general ? ' general' : ''}`} disabled={sending} onClick={() => setGeneral(value => !value)} aria-label={general ? 'Escribes en general, sin orden. Cambiar a esta orden' : `Escribes sobre ${reference || 'esta orden'}. Cambiar a general`}
-          title={general ? 'Sin orden: sobre la relación. Toca para escribir sobre esta orden' : 'Toca para escribir en general, sin orden'}>{general ? 'General' : `Sobre ${reference ? shortReference(reference) : 'esta orden'}`}</button>}<input ref={picker} type="file" multiple hidden accept={CHAT_ACCEPT} aria-label="Elegir archivos" onChange={event => { attach([...(event.target.files || [])]); event.target.value = ''; }}/><button type="button" className="button soft deal-chat-attach" disabled={sending} onClick={() => picker.current?.click()} aria-label="Adjuntar archivos" title="Fotos, PDF, Excel, Word, audio o video"><Paperclip size={15}/></button><small className="deal-chat-hint">Enter para enviar · Shift+Enter para otra línea</small><button type="submit" className="button primary" disabled={sending || (!body.trim() && !files.length)}>{sending ? <LoaderCircle size={15} className="spin"/> : <Send size={15}/>}Enviar mensaje</button></div></form>
+      {copied && <small className="deal-chat-copied" role="status">{copied}</small>}
+      <div className="deal-chat-input-bar">
+        <input ref={picker} type="file" multiple hidden accept={CHAT_ACCEPT} aria-label="Elegir archivos" onChange={event => { attach([...(event.target.files || [])]); event.target.value = ''; }}/>
+        <button type="button" className="deal-chat-attach" disabled={sending} onClick={() => picker.current?.click()} aria-label="Adjuntar archivos" title="Fotos, PDF, Excel, Word, audio o video"><Plus size={24}/></button>
+        <div className="deal-chat-input">
+          <textarea ref={composer} rows={1} aria-label="Mensaje del acuerdo" title="Enter para enviar · Shift+Enter para otra línea" required={!files.length} maxLength={4000} readOnly={sending} value={body} onChange={event => { setBody(event.target.value); setCopied(''); }} onKeyDown={composerKey} onPaste={pasted} placeholder={files.length ? 'Agrega un mensaje (opcional)…' : 'Mensaje…'}/>
+          <div ref={emojiPicker} className="deal-chat-emoji" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setEmojisOpen(false); }} onKeyDown={event => {
+            if (event.key === 'Escape' && emojisOpen) { event.preventDefault(); event.stopPropagation(); setEmojisOpen(false); emojiPicker.current?.querySelector('button')?.focus(); }
+          }}>
+            <button type="button" className="deal-chat-emoji-toggle" disabled={sending} aria-label="Insertar emoji" aria-expanded={emojisOpen} onClick={() => setEmojisOpen(value => !value)} title="Insertar emoji"><Smile size={21}/></button>
+            {emojisOpen && <div className="deal-chat-emojis" role="group" aria-label="Emojis">{chatEmojis.map(([emoji, label]) => <button key={emoji} type="button" aria-label={label} title={label} onClick={() => insertEmoji(emoji)}>{emoji}</button>)}</div>}
+          </div>
+        </div>
+        <button type="submit" className="deal-chat-submit" aria-label={sending ? 'Enviando mensaje' : 'Enviar mensaje'} title={sending ? 'Enviando mensaje' : 'Enviar mensaje'} disabled={sending || (!body.trim() && !files.length)}>{sending ? <LoaderCircle size={19} className="spin"/> : <Send size={19}/>}</button>
+      </div>
+    </form>
   </section>;
 }
