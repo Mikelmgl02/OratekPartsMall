@@ -117,6 +117,8 @@ test('a brand is created, renamed into its familia, given and stripped of an ali
   await expect(dialog.getByRole('status')).toHaveText('Alias TOY quitado.');
   expect(mock.writes.slice(-2)).toEqual(['POST brands/1/aliases {"alias":"TOYTA"}', 'DELETE brands/1/aliases/11']);
   await dialog.getByRole('button', { name: 'Cerrar ventana' }).click();
+  // the aliases saved in the editor show in the list once it closes
+  await expect(screen.getByRole('row', { name: /^TOYOTA/ }).locator('.brand-aliases')).toHaveText('TOYTA');
 
   await screen.getByRole('button', { name: 'Editar marca GMB' }).click();
   dialog = page.getByRole('dialog', { name: 'Marca · GMB' });
@@ -124,6 +126,14 @@ test('a brand is created, renamed into its familia, given and stripped of an ali
   await dialog.getByLabel('Buscar marca que queda').fill('toy');
   await dialog.getByRole('button', { name: /^TOYOTA/ }).click();
   await dialog.getByRole('button', { name: 'Unir GMB con TOYOTA' }).click();
+  // a merge removes the brand: it asks first, and Cancelar writes nothing
+  const confirm = dialog.getByRole('group', { name: 'Confirmar unión' });
+  await expect(confirm).toContainText('¿Unir GMB con TOYOTA? GMB desaparece y sus 990 referencias pasan a TOYOTA.');
+  const writes = mock.writes.length;
+  await confirm.getByRole('button', { name: 'Cancelar' }).click();
+  expect(mock.writes.length).toBe(writes);
+  await dialog.getByRole('button', { name: 'Unir GMB con TOYOTA' }).click();
+  await confirm.getByRole('button', { name: 'Confirmar unión' }).click();
   await expect(screen.getByRole('status')).toHaveText('GMB se unió a TOYOTA: sus códigos y alias pasaron a TOYOTA.');
   expect(mock.writes.at(-1)).toBe('PATCH brands/5 {"merge_into":1}');
   await expect(screen.getByRole('row', { name: /^GMB/ })).toHaveCount(0);

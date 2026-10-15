@@ -7,7 +7,7 @@ import { routeLinesFrom } from './lines-route';
 const empty = { count: 0, next: null, previous: null, results: [], pending_count: 0 };
 const ids = { parent: '0d000000-0000-4000-8000-000000000001', k: '0d000000-0000-4000-8000-000000000002', np: '0d000000-0000-4000-8000-000000000003',
   raz: '0d000000-0000-4000-8000-000000000004', other: '0d000000-0000-4000-8000-000000000005' };
-const items = { k: 'aa000000-0000-4000-8000-000000000001', np: 'aa000000-0000-4000-8000-000000000002' };
+const items = { k: 'aa000000-0000-4000-8000-000000000001', np: 'aa000000-0000-4000-8000-000000000002', gt: 'aa000000-0000-4000-8000-000000000003' };
 const description = 'TAMBOR KIA PICANTO 04-11';
 const row = (id: string, sku: string, merged = 0): ManagedPart => ({ id, sku, name: sku, description, category: 'FRENOS', subcategory: 'TAMBORES DE FRENO', part_type: null,
   is_OEM: false, active: true, codes: [], stock_record_count: 1, merged_count: merged, images: [], identity: { ref_type: 'unknown', brand: '' } } as ManagedPart);
@@ -24,8 +24,9 @@ const plan: SplitPlan = {
     { id: 14, brand: 'GMB', code: 'GT-77', ref_type: 'company', reference_source: '', suggested: '', alias_of: '', alias_returns: false },
   ],
   items: [
-    { id: items.k, supplier_name: 'GRUPO RAZOR', supplier_invent_id: 'INV-1', codigo: '58411-08000-K', brand: '', description, available_quantity: 5, suggested: ids.k },
-    { id: items.np, supplier_name: 'GRUPO RAZOR', supplier_invent_id: 'INV-2', codigo: '58411-08000-NP', brand: '', description, available_quantity: 2, suggested: ids.np },
+    { id: items.k, supplier_name: 'GRUPO RAZOR', supplier_invent_id: 'INV-1', codigo: '58411-08000-K', brand: '', description, available_quantity: 5, suggested: ids.k, reference: 12 },
+    { id: items.np, supplier_name: 'GRUPO RAZOR', supplier_invent_id: 'INV-2', codigo: '58411-08000-NP', brand: '', description, available_quantity: 2, suggested: ids.np, reference: 13 },
+    { id: items.gt, supplier_name: 'GMB PANAMA', supplier_invent_id: 'INV-3', codigo: 'GT-77', brand: 'GMB', description, available_quantity: 4, suggested: '', reference: 14 },
   ],
   images: [],
   warnings: ['58411-08000 es un SKU padre que se creó al agrupar: si separas todos sus SKU y no le queda nada, quedará inactivo.'],
@@ -90,9 +91,12 @@ test('Separar SKU lists the grouped SKUs, suggests where each row goes and bring
   // A supplier's stock follows its Reference (S8): its destination is shown, not chosen.
   await expect(dialog.getByLabel('Destino de GRUPO RAZOR 58411-08000-K')).toHaveText('Pasa a 58411-08000-K');
   await expect(dialog.getByLabel('Destino de GRUPO RAZOR 58411-08000-NP')).toHaveText('Se queda en 58411-08000');
-  await expect(dialog.getByRole('combobox', { name: /^Destino de GRUPO RAZOR/ })).toHaveCount(0);
+  await expect(dialog.getByLabel('Destino de GMB PANAMA GT-77')).toHaveText('Se queda en 58411-08000');
+  await expect(dialog.getByRole('combobox', { name: /^Destino de (GRUPO RAZOR|GMB PANAMA)/ })).toHaveCount(0);
+  // Moving the code a row hangs from moves the row with it.
   await dialog.getByLabel('Destino del alterno GT-77').selectOption({ label: 'Pasa a 58411-08000-K' });
-  await expect(dialog.getByText('58411-08000-K vuelve a estar activo con 2 alternos, 1 existencia y 0 imágenes; lo demás se queda en 58411-08000.')).toBeVisible();
+  await expect(dialog.getByLabel('Destino de GMB PANAMA GT-77')).toHaveText('Pasa a 58411-08000-K');
+  await expect(dialog.getByText('58411-08000-K vuelve a estar activo con 2 alternos, 2 existencias y 0 imágenes; lo demás se queda en 58411-08000.')).toBeVisible();
   const confirm = dialog.getByRole('button', { name: 'Separar 1 SKU' });
   await expect(confirm).toBeDisabled();
   await dialog.getByLabel('Revisé a qué SKU va cada alterno, existencia e imagen.').check();
@@ -101,7 +105,7 @@ test('Separar SKU lists the grouped SKUs, suggests where each row goes and bring
 
   await expect(dialog.getByRole('status').filter({ hasText: '1 SKU separado de 58411-08000: 58411-08000-K.' })).toBeVisible();  // back on the list, for the next one
   await expect(dialog.getByLabel('Agrupado por')).toHaveValue('automatic');  // where it was
-  expect(mock.splits).toEqual([{ restore: [{ id: ids.k, codes: [11, 14], items: [items.k], images: [] }] }]);
+  expect(mock.splits).toEqual([{ restore: [{ id: ids.k, codes: [11, 14], items: [items.k, items.gt], images: [] }] }]);
   await expect.poll(() => mock.lists.length).toBeGreaterThan(2);  // the list reads again
   expect(mock.unexpected).toEqual([]);
 });

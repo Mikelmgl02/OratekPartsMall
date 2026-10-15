@@ -2,19 +2,19 @@
 import { ArrowRight, Search } from 'lucide-react';
 import { PartPicker } from './admin-catalog-editors';
 import { UppercaseInput } from './uppercase-field';
-import { batchLabels, CASE_KINDS, caseKindLabels, caseStatusLabels } from '@/lib/line-types';
+import { batchLabels, CASE_KINDS, caseKindLabels, caseStatusLabel } from '@/lib/line-types';
 import type { CaseAction, CaseDecision, CaseRow, MatchingCase } from '@/lib/line-types';
 
 // One card per case kind of matching on References (plan S6.3, moved here in S8 so the Matching Cases queue and Agrupación inteligente
 // share them). Variants waiting on a code change or a variant case are out of stock, so each one is decidable on its card.
 type Code = { brand: string; code: string };
 export const guardLabels: Record<string, string> = { prefix: 'El prefijo del código no coincide.', noun: 'La descripción no coincide.', side: 'El lado no coincide (izquierdo / derecho, delantero / trasero).',
-  make: 'La marca del vehículo no coincide.', subgrupo: 'Las líneas tienen subgrupos distintos.', spec_conflict: 'Las especificaciones no coinciden con las de la línea OEM.',
-  separated: 'Estas líneas se mantuvieron separadas antes.', disputa: 'La referencia está en disputa.',
-  lineas: 'El código está en varias líneas.', catalogo: 'Un catálogo no revisado contra el PDF lo vincula.',
-  sin_codigo: 'El artículo no tiene código: corrígelo con el proveedor o elige su línea.', codigo_largo: 'El código supera 120 caracteres.',
-  conflicto: 'El código choca con el de otra línea.', en_catalogo: 'El código ya es de una línea del catálogo.',
-  unificada: 'La línea del código se unificó en otra.', colocacion: 'No se pudo crear su producto nuevo.',
+  make: 'La marca del vehículo no coincide.', subgrupo: 'Las líneas OEM tienen subgrupos distintos.', spec_conflict: 'Las especificaciones no coinciden con las de la línea OEM.',
+  separated: 'Estas líneas OEM se mantuvieron separadas antes.', disputa: 'La referencia está en disputa.',
+  lineas: 'El código está en varias líneas OEM.', catalogo: 'Un catálogo no revisado contra el PDF lo vincula.',
+  sin_codigo: 'El artículo no tiene código: corrígelo con el proveedor o elige su línea OEM.', codigo_largo: 'El código supera 120 caracteres.',
+  conflicto: 'El código choca con el de otra línea OEM.', en_catalogo: 'El código ya es de una línea OEM del catálogo.',
+  unificada: 'La línea OEM del código se unificó en otra.', colocacion: 'No se pudo crear su producto nuevo.',
   sufijo: 'El sufijo del código no es una marca conocida (origen, genuino, comercial).' };
 const estadoLabels: Record<string, string> = { preparacion: 'EN PREPARACIÓN', referencia: 'REFERENCIA', rechazada: 'RECHAZADA', retirada: 'RETIRADA', unificada: 'UNIFICADA' };
 const evidenceLabels: Record<string, string> = { numbers: 'NÚMEROS OEM', codes: 'CÓDIGOS', citations: 'FUENTES' };
@@ -26,8 +26,8 @@ export const decisionDone: Record<string, string> = {
   approve: 'Artículo vinculado a la línea OEM elegida.',
   dismiss: 'Caso descartado. No se repetirá mientras sus datos sean iguales.',
   separar_referencia: 'Referencia separada: el código queda como interno de este proveedor y el artículo pasa a Productos nuevos.',
-  merge: 'Líneas unificadas. Puedes separarlas después con Separar SKU.',
-  keep_apart: 'Las líneas se mantendrán separadas y no se volverán a proponer juntas.',
+  merge: 'Líneas OEM unificadas. Puedes separarlas después con Separar SKU.',
+  keep_apart: 'Las líneas OEM se mantendrán separadas y no se volverán a proponer juntas.',
 };
 export const refList = (refs: Code[]) => refs.map(ref => [ref.brand, ref.code].filter(Boolean).join(': ')).join(' · ');
 export const isOpen = (item: MatchingCase) => ['review', 'unmatched'].includes(item.status);
@@ -55,7 +55,7 @@ export const decisionMessage = (item: MatchingCase, action: CaseAction) => decis
 export function CaseArticle({ item, children }: { item: MatchingCase; children: React.ReactNode }) {
   return <article className={`inventory-ai-proposal ${item.status}`} aria-label={caseTitle(item)}>
     <div className="inventory-ai-proposal-heading"><strong>{item.supplier_name || (item.kind === 'merge' ? 'LÍNEAS DEL CATÁLOGO' : 'FAMILIA DEL CATÁLOGO')}</strong>
-      <span className="matching-case-pills">{isKnownKind(item) && <span className="pill">{caseKindLabels[item.kind]}</span>}{item.route === 'lote' && <span className="pill">LOTE · {batchLabels[item.batch_key || ''] ?? item.batch_key}</span>}<span className="pill">{caseStatusLabels[item.status] ?? item.status.toUpperCase()}</span></span></div>
+      <span className="matching-case-pills">{isKnownKind(item) && <span className="pill">{caseKindLabels[item.kind]}</span>}{item.route === 'lote' && <span className="pill">LOTE · {batchLabels[item.batch_key || ''] ?? item.batch_key}</span>}<span className="pill">{caseStatusLabel[item.status] ?? item.status.toUpperCase()}</span></span></div>
     {children}
   </article>;
 }
@@ -115,8 +115,8 @@ export function CaseCard({ item, busy, line, onLine, searching, onSearch, pickin
       {isOpen(item) && <>
         {picking && lineChoices('Línea OEM que recibe la referencia', chosen, true)}
         <div className="admin-toolbar-actions">
-          <button className="button primary small" disabled={busy || (picking && !chosen)} onClick={() => onDecide(chosen ? { action: 'approve', line: chosen } : { action: 'approve' }, say('approve'))}>{picking ? 'Aprobar en la línea elegida' : 'Aprobar'}</button>
-          <button className="button soft small" disabled={busy} aria-pressed={picking} onClick={onPick}>{picking ? 'Cancelar elección' : 'Elegir línea'}</button>
+          <button className="button primary small" disabled={busy || (picking && !chosen)} onClick={() => onDecide(chosen ? { action: 'approve', line: chosen } : { action: 'approve' }, say('approve'))}>{picking ? 'Aprobar en la línea OEM elegida' : 'Aprobar'}</button>
+          <button className="button soft small" disabled={busy} aria-pressed={picking} onClick={onPick}>{picking ? 'Cancelar elección' : 'Elegir línea OEM'}</button>
           <button className="button soft small" disabled={busy} onClick={() => onDecide({ action: 'dismiss' }, say('dismiss'))}>Rechazar</button>
         </div>
       </>}

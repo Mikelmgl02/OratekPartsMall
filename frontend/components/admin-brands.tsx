@@ -57,7 +57,7 @@ export default function AdminBrands() {
       </tr>)}</tbody></table></div>}
     {data && <div className="pagination"><span>{number(data.count)} {data.count === 1 ? 'marca' : 'marcas'}</span><div><button type="button" className="button soft small" disabled={!data.previous} onClick={() => setPage(page - 1)}>Anterior</button><span>Página {page}</span><button type="button" className="button soft small" disabled={!data.next} onClick={() => setPage(page + 1)}>Siguiente</button></div></div>}
     <p className="admin-footnote">Renombrar una marca cambia el nombre en todos sus códigos y deja el anterior como alias. Unir dos marcas pasa sus códigos y alias a la que queda. Una familia junta marcas que comparten números (KAIYI con CHERY) sin mezclar sus códigos.</p>
-    {editing !== undefined && <BrandEditor key={editing?.id ?? 'new'} brand={editing} onClose={() => setEditing(undefined)} onSaved={saved}/>}
+    {editing !== undefined && <BrandEditor key={editing?.id ?? 'new'} brand={editing} onClose={changed => { setEditing(undefined); if (changed) setRevision(value => value + 1); }} onSaved={saved}/>}
   </section>;
 }
 
@@ -78,7 +78,8 @@ function BrandChooser({ label, value, onChange, exclude }: { label: string; valu
   </div>;
 }
 
-function BrandEditor({ brand, onClose, onSaved }: { brand: Brand | null; onClose: () => void; onSaved: (text: string, keepOpen?: Brand) => void }) {
+// onClose(changed): an alias added or removed is saved at once, so closing after one re-reads the list.
+function BrandEditor({ brand, onClose, onSaved }: { brand: Brand | null; onClose: (changed: boolean) => void; onSaved: (text: string, keepOpen?: Brand) => void }) {
   const [current, setCurrent] = useState<Brand | null>(brand);
   const [nombre, setNombre] = useState(brand?.nombre ?? '');
   const [tipo, setTipo] = useState<BrandTipo>(brand?.tipo ?? '');
@@ -86,6 +87,8 @@ function BrandEditor({ brand, onClose, onSaved }: { brand: Brand | null; onClose
   const [notas, setNotas] = useState(brand?.notas ?? '');
   const [alias, setAlias] = useState('');
   const [mergeInto, setMergeInto] = useState<{ id: number; nombre: string } | null>(null);
+  const [confirming, setConfirming] = useState(false);   // a merge removes the brand: it asks first, as retiring a reference does
+  const [aliasChanged, setAliasChanged] = useState(false);
   const [busy, setBusy] = useState(''); const [error, setError] = useState(''); const [notice, setNotice] = useState('');
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy('save'); setError('');
@@ -100,7 +103,7 @@ function BrandEditor({ brand, onClose, onSaved }: { brand: Brand | null; onClose
       if (tipo !== current.tipo) changes.tipo = tipo;
       if ((familia?.id ?? null) !== (current.familia?.id ?? null)) changes.familia = familia?.id ?? null;
       if (notas !== current.notas) changes.notas = notas;
-      if (!Object.keys(changes).length) { onClose(); return; }
+      if (!Object.keys(changes).length) { onClose(aliasChanged); return; }
       const saved = await request<Brand>(`${base}/brands/${current.id}`, { method: 'PATCH', body: JSON.stringify(changes) });
       onSaved(changes.nombre ? `Marca renombrada a ${saved.nombre}: sus códigos la siguen y ${current.nombre} queda como alias.` : `Marca ${saved.nombre} guardada.`);
     } catch (caught) { setError(message(caught)); } finally { setBusy(''); }
@@ -110,7 +113,7 @@ function BrandEditor({ brand, onClose, onSaved }: { brand: Brand | null; onClose
     setBusy('alias'); setError(''); setNotice('');
     try {
       const result = await request<BrandAliasAdded>(`${base}/brands/${current.id}/aliases`, { method: 'POST', body: JSON.stringify({ alias }) });
-      setCurrent(result.brand); setAlias('');
+      setCurrent(result.brand); setAlias(''); setAliasChanged(true);
       setNotice(`Alias ${result.alias.alias} agregado.${result.moved ? ` ${number(result.moved)} ${result.moved === 1 ? 'código pasó' : 'códigos pasaron'} a ${result.brand.nombre}.` : ''}${result.cases.length ? ` ${number(result.cases.length)} ${result.cases.length === 1 ? 'caso de unificación abierto' : 'casos de unificación abiertos'} por códigos repetidos.` : ''}`);
     } catch (caught) { setError(message(caught)); } finally { setBusy(''); }
   }
@@ -119,19 +122,19 @@ function BrandEditor({ brand, onClose, onSaved }: { brand: Brand | null; onClose
     setBusy(`alias:${id}`); setError(''); setNotice('');
     try {
       await request(`${base}/brands/${current.id}/aliases/${id}`, { method: 'DELETE' });
-      setCurrent({ ...current, aliases: current.aliases.filter(row => row.id !== id) });
+      setCurrent({ ...current, aliases: current.aliases.filter(row => row.id !== id) }); setAliasChanged(true);
       setNotice(`Alias ${text} quitado.`);
     } catch (caught) { setError(message(caught)); } finally { setBusy(''); }
   }
   async function merge() {
     if (!current || !mergeInto) return;
-    setBusy('merge'); setError('');
+    setBusy('merge'); setError(''); setConfirming(false);
     try {
       const kept = await request<Brand>(`${base}/brands/${current.id}`, { method: 'PATCH', body: JSON.stringify({ merge_into: mergeInto.id }) });
       onSaved(`${current.nombre} se unió a ${kept.nombre}: sus códigos y alias pasaron a ${kept.nombre}.`);
     } catch (caught) { setError(message(caught)); } finally { setBusy(''); }
   }
-  return <Modal title={current ? `Marca · ${current.nombre}` : 'Crear marca'} onClose={() => { if (!busy) onClose(); }} wide>
+  return <Modal title={current ? `Marca · ${current.nombre}` : 'Crear marca'} onClose={() => { if (!busy) onClose(aliasChanged); }} wide>
     <form className="stack-form catalog-editor" autoComplete="off" onSubmit={save} aria-label="Datos de la marca">
       <div className="form-row"><label>Nombre<UppercaseInput aria-label="Nombre de la marca" value={nombre} required maxLength={120} onChange={event => setNombre(event.target.value)} placeholder="EJ.: TOYOTA"/></label>
         <label>Tipo<select aria-label="Tipo" value={tipo} onChange={event => setTipo(event.target.value as BrandTipo)}><option value="">SIN TIPO</option><option value="vehiculo">{brandTipoLabels.vehiculo}</option><option value="repuesto">{brandTipoLabels.repuesto}</option></select></label></div>
@@ -153,8 +156,12 @@ function BrandEditor({ brand, onClose, onSaved }: { brand: Brand | null; onClose
       </section>
       <section className="brand-merge" aria-label="Unir con otra marca">
         <strong>Unir con otra marca</strong>
-        <BrandChooser label="Marca que queda" value={mergeInto} onChange={setMergeInto} exclude={current.id}/>
-        <button type="button" className="button dark small" disabled={!!busy || !mergeInto} onClick={() => void merge()}>{busy === 'merge' && <LoaderCircle size={14} className="spin"/>}Unir {current.nombre}{mergeInto ? ` con ${mergeInto.nombre}` : ''}</button>
+        <BrandChooser label="Marca que queda" value={mergeInto} onChange={value => { setMergeInto(value); setConfirming(false); }} exclude={current.id}/>
+        {confirming && mergeInto
+          ? <div className="brand-merge-confirm" role="group" aria-label="Confirmar unión"><span className="reference-confirm">¿Unir {current.nombre} con {mergeInto.nombre}? {current.nombre} desaparece y sus {number(current.reference_count)} referencias pasan a {mergeInto.nombre}. No se puede deshacer desde aquí.</span>
+              <button type="button" className="button dark small" disabled={!!busy} onClick={() => void merge()}>Confirmar unión</button>
+              <button type="button" className="button soft small" disabled={!!busy} onClick={() => setConfirming(false)}>Cancelar</button></div>
+          : <button type="button" className="button dark small" disabled={!!busy || !mergeInto} onClick={() => setConfirming(true)}>{busy === 'merge' && <LoaderCircle size={14} className="spin"/>}Unir {current.nombre}{mergeInto ? ` con ${mergeInto.nombre}` : ''}</button>}
         <p className="form-footnote">{current.nombre} desaparece: su nombre y sus alias quedan como alias de la marca que queda, y sus {number(current.reference_count)} referencias pasan a ella.</p>
       </section>
     </>}

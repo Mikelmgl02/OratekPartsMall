@@ -42,7 +42,7 @@ test('Existencias por proveedor marks an item on a line in preparación and a co
   await expect(cell(page, 4, 'part')).toHaveText('Sin vincular');
   const pending = cell(page, 3, 'codigo').getByText('EN REVISIÓN: 43512-60151', { exact: true });
   await expect(pending).toBeVisible();
-  await expect(pending).toHaveAttribute('title', 'Código nuevo en revisión (Agrupación inteligente): 43512-60151');
+  await expect(pending).toHaveAttribute('title', 'Código nuevo en revisión (Casos de coincidencia): 43512-60151');
   await expect(cell(page, 1, 'codigo')).toHaveText(/^58411-1R000\s*HYUNDAI$/);  // no change waiting: the brand, as before
   await expect(cell(page, 3, 'match')).toContainText('Por revisar');
   await page.screenshot({ path: '/tmp/motionpartes-admin-stock-grid.png' });

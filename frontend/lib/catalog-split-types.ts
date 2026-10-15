@@ -9,7 +9,8 @@ export type SplitChild = SplitPart & {
 };
 /** suggested: the grouped SKU a row most likely came from ('' = it stays). alias_of: the grouped SKU whose own code this alterno is. */
 export type SplitCode = { id: number; brand: string; code: string; ref_type: 'unknown' | 'oem' | 'company'; reference_source: string; suggested: string; alias_of: string; alias_returns: boolean };
-export type SplitItem = { id: string; supplier_name: string; supplier_invent_id: string; codigo: string; brand: string; description: string; available_quantity: number; suggested: string };
+/** reference: the code (SplitCode id) the stock row hangs from; it goes wherever that code goes (S3). */
+export type SplitItem = { id: string; supplier_name: string; supplier_invent_id: string; codigo: string; brand: string; description: string; available_quantity: number; suggested: string; reference: number | null };
 export type SplitImage = CatalogImage & { suggested: string };
 export type SplitPlan = { target: SplitPart & { created_by_merge: boolean }; children: SplitChild[]; codes: SplitCode[]; items: SplitItem[]; images: SplitImage[]; warnings: string[] };
 export type SplitRestore = { id: string; codes: number[]; items: string[]; images: string[] };

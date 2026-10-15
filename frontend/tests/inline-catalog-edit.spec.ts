@@ -60,12 +60,19 @@ test('edits and pastes save each row with its version, flash what the server kep
   // A block pasted over estado and subgroup of both rows: the pump is published again, the disc's subgroup is refused, so the disc keeps
   // what it had and the message names it.
   await paste(page, 'PUBLICADA\tREFRIGERACIÓN / BOMBAS DE AGUA\nRETIRADA\tFRENOS / DISCOS DE FRENO', pump.id, 'estado');
-  await expect(page.getByRole('alert').filter({ hasText: 'DISCO-1' })).toContainText('Se guardaron 1 SKU; DISCO-1: Esta línea OEM tiene datos técnicos de su subgrupo.');
+  await expect(page.getByRole('alert').filter({ hasText: 'DISCO-1' })).toContainText('Se guardó BOMBA-1; no se guardó DISCO-1: Esta línea OEM tiene datos técnicos de su subgrupo.');
   await expect(cell(page, pump.id, 'estado')).toHaveText('PUBLICADA');
   await expect(cell(page, disc.id, 'estado')).toHaveText('PUBLICADA');
   await expect(cell(page, disc.id, 'subgroup')).toHaveText('—');
   expect(writes(mock.calls).slice(4)).toEqual([`POST lines/${pump.id}/transition {"estado":"publicada","expected_version":4}`,
     `PATCH lines/${disc.id} {"subgrupo":"${subgrupo(0, 0)}","expected_version":2}`]);
+  // The pump stays as the server saved it (version 5), so its next edit goes with that version.
+  await cell(page, pump.id, 'description').dblclick();
+  await page.keyboard.press('ControlOrMeta+A');
+  await page.keyboard.type('bomba agua toy 3l');
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('status').filter({ hasText: '1 SKU guardado.' })).toBeVisible();
+  expect(writes(mock.calls).slice(6)).toEqual([`PATCH lines/${pump.id} {"description":"bomba agua toy 3l","expected_version":5}`]);
 
   // Another person saved the disc meanwhile: its row is refused with the 409 and comes back as the server has it.
   mock.lines.get(disc.id)!.version = 9;

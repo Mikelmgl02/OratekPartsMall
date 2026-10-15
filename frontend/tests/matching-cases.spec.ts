@@ -144,13 +144,13 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     expect(mock.payloads[cases.codeChange.id]).toEqual([{ action: 'approve', fingerprint: cases.codeChange.fingerprint }]);
     await expect(change).toHaveCount(0);  // decided: it leaves POR REVISAR
 
-    // reference: Elegir línea shows the lines involved; the declared code is approved on the one chosen.
+    // reference: Elegir línea OEM shows the lines involved; the declared code is approved on the one chosen.
     const reference = card('REFERENCIA DECLARADA D-HYU-1R');
     await expect(reference.locator('p.matching-code')).toHaveText(/^REFERENCIA DECLARADA\s*58411-1R000\s*HYUNDAI$/);
-    await reference.getByRole('button', { name: 'Elegir línea', exact: true }).click();
-    await expect(reference.getByRole('button', { name: 'Aprobar en la línea elegida', exact: true })).toBeDisabled();
+    await reference.getByRole('button', { name: 'Elegir línea OEM', exact: true }).click();
+    await expect(reference.getByRole('button', { name: 'Aprobar en la línea OEM elegida', exact: true })).toBeDisabled();
     await reference.getByRole('radio', { name: /^58411-1R000/ }).check();
-    await reference.getByRole('button', { name: 'Aprobar en la línea elegida', exact: true }).click();
+    await reference.getByRole('button', { name: 'Aprobar en la línea OEM elegida', exact: true }).click();
     await expect(screen.getByRole('status').filter({ hasText: 'Referencia aprobada en la línea OEM.' })).toBeVisible();
     expect(mock.payloads[cases.reference.id]).toEqual([{ action: 'approve', fingerprint: cases.reference.fingerprint, line: L.accent.id }]);
 
@@ -180,20 +180,21 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await expect(merge.getByRole('radio', { name: /^04111-22152\s*JUEGO/ })).toBeChecked();
     await merge.getByRole('radio', { name: /^04111-22152-AS/ }).check();
     await merge.getByRole('button', { name: 'Unificar', exact: true }).click();
-    await expect(screen.getByRole('status').filter({ hasText: 'Líneas unificadas.' })).toBeVisible();
+    await expect(screen.getByRole('status').filter({ hasText: 'Líneas OEM unificadas.' })).toBeVisible();
     expect(mock.payloads[cases.merge.id]).toEqual([{ action: 'merge', fingerprint: cases.merge.fingerprint, line: L.sealAs.id }]);
 
     // merge, Mantener separadas (its lines read from sources and candidates).
     const keep = card('UNIFICAR LÍNEAS 81560-0K010 + 81550-0K010');
     await expect(keep.getByText('El lado no coincide (izquierdo / derecho, delantero / trasero).')).toBeVisible();
     await keep.getByRole('button', { name: 'Mantener separadas', exact: true }).click();
-    await expect(screen.getByRole('status').filter({ hasText: 'Las líneas se mantendrán separadas' })).toBeVisible();
+    await expect(screen.getByRole('status').filter({ hasText: 'Las líneas OEM se mantendrán separadas' })).toBeVisible();
     expect(mock.payloads[cases.keep.id]).toEqual([{ action: 'keep_apart', fingerprint: cases.keep.fingerprint }]);
 
     await expect(screen.getByText('No hay casos por revisar.', { exact: true })).toBeVisible();
     await screen.getByRole('button', { name: 'APLICADOS', exact: true }).click();
     await expect(screen.getByRole('button', { name: 'TODOS · 5', exact: true })).toBeVisible();
     await expect(card('CAMBIO DE CÓDIGO 58411-1R000').getByRole('button')).toHaveCount(0);  // decided cards are read only
+    await expect(card('CAMBIO DE CÓDIGO 58411-1R000').getByText('APLICADO', { exact: true })).toBeVisible();  // one case: singular
     expect(mock.unexpected).toEqual([]);
   });
 }
@@ -240,6 +241,24 @@ test('a case from before S6 keeps its own card: a SKU is confirmed or kept apart
   await card.getByRole('button', { name: 'Confirmar coincidencia', exact: true }).click();
   await expect(screen.getByRole('status').filter({ hasText: 'Coincidencia aprobada' })).toBeVisible();
   expect(mock.payloads[legacy.id]).toEqual([{ action: 'approve', target_sku: '58411-1R000', fingerprint: legacy.fingerprint }]);
+});
+
+test('a supplier case from before S6 that found no SKU waits under SIN COINCIDENCIA and is decided there', async ({ page }) => {
+  const unmatched = base(9, 'supplier', { status: 'unmatched', sources: [item(9, 'XK-2231', 'KOREA', 'BOMBA AGUA KIA RIO 06-11')], candidates: [], reason: 'Sin coincidencia en el catálogo.' });
+  const mock = await mockCases(page, [unmatched]);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const screen = await openCases(page);
+  await expect(screen.getByText('No hay casos por revisar.', { exact: true })).toBeVisible();
+  await screen.getByRole('button', { name: 'SIN COINCIDENCIA', exact: true }).click();
+  expect(mock.queries.at(-1)).toBe('status=unmatched&page=1');
+  const card = screen.getByRole('article', { name: 'ARTÍCULO DE PROVEEDOR XK-2231', exact: true });
+  await expect(card.getByText('SIN COINCIDENCIA', { exact: true })).toBeVisible();
+  await card.getByLabel('Destino para XK-2231').fill('25100-26902');
+  await card.getByRole('button', { name: 'Confirmar coincidencia', exact: true }).click();
+  await expect(screen.getByRole('status').filter({ hasText: 'Coincidencia aprobada' })).toBeVisible();
+  expect(mock.payloads[unmatched.id]).toEqual([{ action: 'approve', target_sku: '25100-26902', fingerprint: unmatched.fingerprint }]);
+  await expect(screen.getByText('No hay casos sin coincidencia.', { exact: true })).toBeVisible();
+  expect(mock.unexpected).toEqual([]);
 });
 
 test('a lote batch is decided together, each case on its own: the one that changed is named', async ({ page }) => {

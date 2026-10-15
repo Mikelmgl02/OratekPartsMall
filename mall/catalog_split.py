@@ -163,6 +163,8 @@ class SplitItemSerializer(serializers.Serializer):
     description = serializers.CharField()
     available_quantity = serializers.IntegerField()
     suggested = serializers.CharField()
+    reference = serializers.IntegerField(source='reference_id', allow_null=True,
+                                         help_text='La referencia de la que cuelga: el artículo va adonde vaya ese alterno (S3).')
 
 
 class SplitImageSerializer(PartImageSerializer):

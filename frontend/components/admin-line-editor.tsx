@@ -95,7 +95,7 @@ function LineGeneral({ line, onChanged, status, onStatus }: { line: OEMLine; onC
   const moves = lineTransitions[line.estado] ?? [];
   return <div className="stack-form catalog-editor line-general">
     <section className="line-summary" aria-label="Estado de la línea OEM">
-      <div><span className={`status ${line.estado === 'publicada' ? 'matched' : line.estado === 'preparacion' ? 'pending' : ''}`}>{lineEstadoLabels[line.estado]}</span>
+      <div><span className={`status ${line.estado === 'publicada' ? 'matched' : line.estado === 'preparacion' ? 'preparacion' : ''}`}>{lineEstadoLabels[line.estado]}</span>
         <span className={`sku-identity ${line.tipo === 'OEM' ? 'oem' : 'internal'}`}>{lineTipoLabels[line.tipo]}{line.brand ? ` · ${line.brand}` : ''}</span>
         <span className="pill">ORIGEN: {lineOrigenLabels[line.origen] ?? line.origen}</span></div>
       <p>{lineEstadoHints[line.estado]}</p>
@@ -123,7 +123,7 @@ function LineGeneral({ line, onChanged, status, onStatus }: { line: OEMLine; onC
         <label>Nota (opcional)<input aria-label="Nota del rechazo" value={note} maxLength={2000} onChange={event => setNote(event.target.value)}/></label>
         <button type="button" className="button dark small" disabled={!!busy} onClick={() => void move('rechazada')}>Confirmar rechazo</button>
       </div>}
-      <p className="form-footnote">Publicar la pone a la venta; retirarla la saca sin borrar sus códigos ni su historial. Una línea en preparación se publica o rechaza como en Productos nuevos.</p>
+      <p className="form-footnote">Publicar la pone a la venta; retirarla la saca sin borrar sus códigos ni su historial. Una línea OEM en preparación se publica o rechaza como en Productos nuevos.</p>
     </section>}
     {locked && <p className="notice">Esta línea OEM está unificada en otra: Separar SKU, desde la línea que la recibió, la devuelve.</p>}
   </div>;

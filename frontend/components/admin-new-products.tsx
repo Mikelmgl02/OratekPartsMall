@@ -176,6 +176,22 @@ export function ProposalDetail({ id, onClose, onSaved, onDone }: { id: string; o
     setForm({ sku: data.sku, description: data.description, oem_code: data.oem?.code ?? '', oem_brand: data.oem?.brand ?? '', internal_code: data.internal_code });
   }, []);
   useEffect(() => { let cancelled = false; request<Proposal>(`${base}/${id}`).then(data => { if (!cancelled) load(data); }).catch(error => { if (!cancelled) setError(errorText(error)); }); return () => { cancelled = true; }; }, [id, load]);
+  // A References write moves the line's version (and a new main its SKU): the proposal is read again so Aprobar sends what the server
+  // has, and the fields the administrator is editing keep what they typed.
+  async function reloadProposal() {
+    const before = proposal;
+    try {
+      const data = await request<Proposal>(`${base}/${id}`);
+      if (!before) { load(data); return; }
+      setProposal(data); setOwners([]);
+      setForm(current => ({ sku: current.sku === before.sku ? data.sku : current.sku,
+        description: current.description === before.description ? data.description : current.description,
+        oem_code: current.oem_code === (before.oem?.code ?? '') ? data.oem?.code ?? '' : current.oem_code,
+        oem_brand: current.oem_brand === (before.oem?.brand ?? '') ? data.oem?.brand ?? '' : current.oem_brand,
+        internal_code: current.internal_code === before.internal_code ? data.internal_code : current.internal_code }));
+      setPartType(current => (current?.id ?? null) === (before.part_type?.id ?? null) ? data.part_type : current);
+    } catch (error) { setError(errorText(error)); }
+  }
   const lineVersion = proposal?.version;
   useEffect(() => { let cancelled = false; setLineError(''); request<OEMLine>(`/api/management/lines/${id}`).then(data => { if (!cancelled) setLine(data); }).catch(error => { if (!cancelled) setLineError(errorText(error)); }); return () => { cancelled = true; }; }, [id, lineVersion]);
   const pending = proposal?.status === 'pending';
@@ -237,7 +253,7 @@ export function ProposalDetail({ id, onClose, onSaved, onDone }: { id: string; o
           Código interno del proveedor, no es un número OEM (mercancía, herramientas…) <Source source={proposal.field_sources.internal_code}/></label>
       </fieldset>
       <section className="new-product-references" aria-label="Referencias de la línea OEM"><h3>Referencias <Source source={proposal.field_sources.references}/></h3>
-        {line ? <ReferencesEditor line={line} onLine={next => { setLine(next); onSaved(); }}/> : lineError ? <div className="notice error" role="alert">{lineError}</div>
+        {line ? <ReferencesEditor line={line} onLine={next => { setLine(next); onSaved(); void reloadProposal(); }}/> : lineError ? <div className="notice error" role="alert">{lineError}</div>
           : <div className="loading"><LoaderCircle className="spin" size={16}/>Cargando referencias…</div>}</section>
       <h3>Artículos del proveedor</h3>
       <div className="table-scroll"><table className="new-product-items"><thead><tr><th>Proveedor</th><th>ID</th><th>Código</th><th>Marca</th><th>Descripción</th><th>Disponibles</th><th>Origen</th></tr></thead>

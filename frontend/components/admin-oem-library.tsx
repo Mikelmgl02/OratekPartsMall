@@ -309,7 +309,7 @@ function ReferenceDetail({ id, initialNotice = '', onOpen, onChanged }: { id: st
         <p>Las fuentes del catálogo, del buscador OEM y de las búsquedas con IA siguen a sus alternos: se retiran desde el inventario.</p>
       </section>
       <section className="suffix-editor-section" aria-label="Líneas OEM"><h4>Líneas OEM ({number(row.linked_count)})</h4>
-        {row.linked_count ? <ul className="oem-ref-skus">{row.linked_skus.map(sku => <li key={sku.id}><strong>{sku.sku}</strong><span>{[linkedViaLabels[sku.via], sku.code !== sku.sku ? `COMO ${sku.code}` : '', sku.is_OEM ? 'MAIN OEM' : '', sku.active ? 'PUBLICADA' : 'NO PUBLICADA'].filter(Boolean).join(' · ')}</span></li>)}</ul>
+        {row.linked_count ? <ul className="oem-ref-skus">{row.linked_skus.map(sku => <li key={sku.id}><strong>{sku.sku}</strong><span>{[linkedViaLabels[sku.via], sku.code !== sku.sku ? `COMO ${sku.code}` : '', sku.is_OEM ? 'MAIN OEM' : '', sku.active ? 'PUBLICADA' : 'RETIRADA'].filter(Boolean).join(' · ')}</span></li>)}</ul>
           : <p>Ninguna línea OEM del catálogo lleva este número: ni como su SKU, ni como una referencia, ni por su nombre o un catálogo.</p>}
         {row.linked_count > row.linked_skus.length && <p>Se muestran {number(row.linked_skus.length)} de {number(row.linked_count)}.</p>}
       </section>

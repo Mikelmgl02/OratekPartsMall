@@ -7,7 +7,7 @@ import { Boxes, BrainCircuit, Check, Combine, FileSpreadsheet, FileWarning, Hist
 import { CatalogImportIssuePage, ManagedAlternate, ManagedPart, ManagedStockItem, Page, request } from '@/lib/types';
 import { asManagedPart, LINE_TABS, lineTipoLabels } from '@/lib/line-types';
 import type { LineTipo, OEMLine } from '@/lib/line-types';
-import { useGridEdits } from '@/lib/use-grid-edits';
+import { PartialSaveError, useGridEdits } from '@/lib/use-grid-edits';
 import { subgrupoOptions, useGrupos } from '@/lib/use-grupos';
 import ServerGrid from './server-grid';
 import { alternateColumns, alternateOrdering, CatalogGridActions, catalogColumns, catalogContextMenu, catalogFieldColumns, catalogOrdering, pastedCodes,
@@ -159,18 +159,24 @@ function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditA
       const current = grid.current?.getRowNode(row.id)?.data;
       let version = current?.version;
       const label = current?.sku ?? 'SKU';
+      let line: OEMLine | null = null;
       try {
         const { id, estado, ...fields } = row;
-        let line: OEMLine | null = null;
         if (Object.keys(fields).length) {
           line = await request<OEMLine>(`/api/management/lines/${id}`, { method: 'PATCH', body: JSON.stringify({ ...fields, expected_version: version }) });
           version = line.version;
         }
         if (estado) line = await request<OEMLine>(`/api/management/lines/${id}/transition`, { method: 'POST', body: JSON.stringify({ estado, expected_version: version }) });
         if (line) saved.push(line);
-      } catch (error) { failed.push(`${label}: ${errorMessage(error)}`); }
+      } catch (error) {
+        if (line) saved.push(line);  // its other cells were saved before its estado was refused: the row keeps them, with the server's estado
+        failed.push(`${label}: ${errorMessage(error)}`);
+      }
     }
-    if (failed.length) throw new Error(`${saved.length ? `Se guardaron ${saved.length} SKU; ` : 'No se guardó ningún cambio: '}${failed.join(' · ')}`);
+    if (failed.length) {
+      const kept = saved.map(line => line.sku);
+      throw new PartialSaveError<OEMLine>(`${kept.length ? `${kept.length === 1 ? 'Se guardó' : 'Se guardaron'} ${kept.join(', ')}; no se guardó ` : 'No se guardó ningún cambio: '}${failed.join(' · ')}`, saved);
+    }
     return saved;
   }, []);
   const { status: cellStatus, setStatus: setCellStatus, isSaving, refreshRows, queue, flush } = useGridEdits<OEMLine>({ grid, fieldColumns: catalogFieldColumns,
@@ -226,7 +232,7 @@ function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditA
   const codeColumns = useMemo(() => alternateColumns(wide), [wide]);
   const label = kind === 'catalog' ? 'Buscar repuestos' : kind === 'inventory' ? 'Buscar existencias' : 'Buscar alternos';
   const filtered = !!(query || tipoFilter);
-  const emptyCatalog = tab.key === 'catalogo' ? 'Todavía no hay SKU en el inventario interno.' : `No hay líneas OEM ${tab.label.toLowerCase()}.`;
+  const emptyCatalog = tab.key === 'catalogo' ? 'Todavía no hay SKU en el inventario interno.' : `No hay líneas OEM ${tab.key === 'referencia' ? 'en referencia' : tab.label.toLowerCase()}.`;
   const empty = <div className="empty-state">{kind === 'alternates' ? <Repeat2 size={30}/> : <Boxes size={30}/>}<h3>{filtered ? 'No encontramos resultados.' : kind === 'alternates' ? 'Todavía no hay alternos registrados.' : kind === 'catalog' ? emptyCatalog : 'Todavía no hay existencias reportadas.'}</h3><p>{filtered ? 'Prueba con otra búsqueda o filtro.' : kind === 'alternates' ? 'Selecciona Crear alterno para agregar un código a un SKU interno.' : kind === 'catalog' ? 'Selecciona Crear SKU para agregarlo junto con sus referencias.' : 'Los registros aparecerán cuando los proveedores publiquen su inventario.'}</p></div>;
   return <>
     {kind === 'catalog' && <div className="admin-inventory-tabs line-estado-tabs" role="group" aria-label="Estado de la línea OEM">{LINE_TABS.map(item =>

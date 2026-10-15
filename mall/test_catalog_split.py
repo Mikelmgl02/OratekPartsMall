@@ -64,6 +64,8 @@ class CatalogSplitTests(APITestCase):
         self.assertEqual(codes['KX-100']['suggested'], children['58411-08000-K']['id'])
         self.assertEqual((codes['58411-08000-NP']['alias_of'], codes['58411-08000-NP']['suggested']), (children['58411-08000-NP']['id'],) * 2)
         self.assertEqual({item['codigo']: item['suggested'] for item in plan['items']}, {sku: child['id'] for sku, child in children.items()})
+        # each stock row names the code it hangs from (its line's former main, filed as an alias): the screen moves it with that code
+        self.assertEqual({item['codigo']: item['reference'] for item in plan['items']}, {sku: codes[sku]['id'] for sku in children})
 
     def test_a_split_brings_the_sku_back_with_its_rows_and_the_worker_leaves_it_apart(self):
         parent = self.grouped()

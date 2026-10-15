@@ -12,7 +12,7 @@ type Options<T> = {
   fieldColumns: Record<string, string>;
   /** The rows as the server has them now. */
   reread: (ids: string[]) => Promise<T[]>;
-  /** One batch, all rows or none; resolves to the saved rows. */
+  /** One batch; resolves to the saved rows. A save that keeps some rows and refuses others throws a PartialSaveError with the kept ones. */
   save: (rows: (Record<string, unknown> & { id: string })[]) => Promise<T[]>;
   /** The editable columns, refreshed when a save starts and ends so their editable cue follows. */
   cueColumns: string[];
@@ -26,11 +26,17 @@ const BATCH_MS = 500;  // edits collect this long after the last one, then save 
 const POLL_MS = 15000;  // the rows on screen are re-read this often, so changes made elsewhere show (and flash)
 const errorText = (error: unknown) => error instanceof Error ? error.message : 'No se pudo guardar el cambio. Inténtalo de nuevo.';
 
+/** A batch saved row by row where some rows were refused: saved holds the rows the server kept, which stay as saved. */
+export class PartialSaveError<T> extends Error {
+  saved: T[];
+  constructor(message: string, saved: T[]) { super(message); this.name = 'PartialSaveError'; this.saved = saved; }
+}
+
 /**
  * EssaMobileApp's grid editing, shared by the Inventario and Biblioteca OEM grids. Edits and pastes collect for BATCH_MS and save as one
- * batch, all rows or none; the saved rows come back into the grid and only the cells that changed flash. A refused batch puts every one
- * of its cells back, then re-reads them (another person's change shows). The rows on screen are re-read every POLL_MS, but never while
- * a cell is being edited or saved: a poll must never move a cell under the cursor.
+ * batch; the saved rows come back into the grid and only the cells that changed flash. A refused batch puts every one of its cells back,
+ * then re-reads them (another person's change shows); a batch saved row by row keeps the rows the server saved (PartialSaveError). The
+ * rows on screen are re-read every POLL_MS, but never while a cell is being edited or saved: a poll must never move a cell under the cursor.
  */
 export function useGridEdits<T extends { id: string }>(options: Options<T>) {
   const settings = useRef(options);
@@ -65,17 +71,23 @@ export function useGridEdits<T extends { id: string }>(options: Options<T>) {
     const before = new Map([...batch].map(([id, entry]) => [id, { ...(grid.current?.getRowNode(id)?.data ?? {}), ...entry.restore }]));
     setSaving(true);
     setStatus({ kind: 'saving', text: `Guardando ${name(batch.size)}…` });
+    const keep = (saved: T[]) => {  // the server's rows into the grid; only the cells that changed flash
+      if (!grid.current) return;
+      for (const row of saved) { const node = grid.current.getRowNode(row.id); if (node?.data) node.setData({ ...node.data, ...before.get(row.id) } as T); }
+      patchRows(grid.current, saved, settings.current.fieldColumns);
+    };
     try {
       const saved = await settings.current.save([...batch].map(([id, entry]) => ({ id, ...entry.fields })));
-      if (grid.current) {
-        for (const row of saved) { const node = grid.current.getRowNode(row.id); if (node?.data) node.setData({ ...node.data, ...before.get(row.id) } as T); }
-        patchRows(grid.current, saved, settings.current.fieldColumns);
-      }
+      keep(saved);
       setStatus({ kind: 'saved', text: `${name(saved.length)} ${saved.length === 1 ? 'guardado' : 'guardados'}.` });
     } catch (error) {
-      for (const [id, entry] of batch) { const node = grid.current?.getRowNode(id); if (node?.data) node.setData({ ...node.data, ...entry.restore }); }
+      // The rows the server kept stay as it saved them (with their new version); only the refused ones put their cells back.
+      const saved = error instanceof PartialSaveError ? error.saved as T[] : [];
+      const kept = new Set(saved.map(row => row.id));
+      for (const [id, entry] of batch) { if (kept.has(id)) continue; const node = grid.current?.getRowNode(id); if (node?.data) node.setData({ ...node.data, ...entry.restore }); }
+      keep(saved);
       setStatus({ kind: 'error', text: errorText(error) });
-      refreshRows([...batch.keys()], true).catch(() => 0);
+      refreshRows([...batch.keys()].filter(id => !kept.has(id)), true).catch(() => 0);
     } finally { setSaving(false); }
   }, [grid, refreshRows, setSaving]);
   /** One cell edit: fields go to the server, restore holds each field's value before the batch (kept from the first edit). */

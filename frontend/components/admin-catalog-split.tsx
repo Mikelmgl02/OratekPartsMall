@@ -111,9 +111,16 @@ function SplitEditor({ target, onBack, onBusyChange, onSaved }: { target: Target
   };
   const options: [string, string][] = [['', `Se queda en ${main.sku}`], ...chosen.map(child => [child.id, `Pasa a ${child.sku}`] as [string, string])];
   const movable = plan.codes.filter(code => !code.alias_of);
+  // A stock row goes where the code it hangs from goes (S3): with the admin's choice for a movable code, else its own suggestion (a
+  // grouped SKU's own code returns with it; the main and a supplier's interno codes stay with their rows).
+  const hangs = new Map(movable.map(code => [code.id, code]));
+  const itemOwner = (item: SplitPlan['items'][number]) => {
+    const code = item.reference === null ? undefined : hangs.get(item.reference);
+    return code ? owner(`code:${code.id}`, code.suggested) : owner(`item:${item.id}`, item.suggested);
+  };
   const restore = chosen.map(child => ({ id: child.id,
     codes: movable.filter(code => owner(`code:${code.id}`, code.suggested) === child.id).map(code => code.id),
-    items: plan.items.filter(item => owner(`item:${item.id}`, item.suggested) === child.id).map(item => item.id),
+    items: plan.items.filter(item => itemOwner(item) === child.id).map(item => item.id),
     images: plan.images.filter(image => owner(`image:${image.id}`, image.suggested) === child.id).map(image => image.id) }));
   const moving = restore.reduce((sum, entry) => ({ codes: sum.codes + entry.codes.length, items: sum.items + entry.items.length, images: sum.images + entry.images.length }), { codes: 0, items: 0, images: 0 });
   const empties = main.created_by_merge && chosen.length === children.length && moving.codes === movable.length && moving.items === plan.items.length && moving.images === plan.images.length;
@@ -162,7 +169,7 @@ function SplitEditor({ target, onBack, onBusyChange, onSaved }: { target: Target
           {plan.items.length ? <div className="split-rows">{plan.items.map(item => <div className="split-row" key={item.id}>
             <div className="split-row-main"><strong>{item.supplier_name} · {item.codigo}{item.brand ? ` · ${item.brand}` : ''}</strong><small>{item.description || 'Sin descripción'} · {item.available_quantity.toLocaleString('es-PA')} disponibles</small>{hint(item.suggested)}</div>
             {/* A variant hangs from a Reference and goes with it (plan S8.9): its destination is read, never chosen. */}
-            <span className="split-locked" role="status" aria-label={`Destino de ${item.supplier_name} ${item.codigo}`}>{owner(`item:${item.id}`, item.suggested) ? `Pasa a ${sku(owner(`item:${item.id}`, item.suggested))}` : `Se queda en ${main.sku}`}</span>
+            <span className="split-locked" role="status" aria-label={`Destino de ${item.supplier_name} ${item.codigo}`}>{itemOwner(item) ? `Pasa a ${sku(itemOwner(item))}` : `Se queda en ${main.sku}`}</span>
           </div>)}</div> : <p>{main.sku} no tiene existencias de proveedores.</p>}
           {!!plan.items.length && <p className="form-footnote">Cada existencia sigue a la referencia de la que cuelga: va con su código cuando ese código pasa a otro SKU.</p>}
         </div>

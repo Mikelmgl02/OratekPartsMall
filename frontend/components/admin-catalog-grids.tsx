@@ -66,7 +66,7 @@ function CodesCell({ data }: Cell<OEMLine>) {
   return <div className="admin-grid-codes"><div className="admin-grid-chips">{codes.slice(0, ALTERNATES_SHOWN).map(chip)}</div>{hidden > 0 && <span className="more">+{hidden}</span>}</div>;
 }
 function EstadoCell({ data }: Cell<OEMLine>) {
-  return data ? <span className={`status ${data.estado === 'publicada' ? 'matched' : data.estado === 'preparacion' ? 'pending' : ''}`}>{lineEstado(data.estado)}</span> : null;
+  return data ? <span className={`status ${data.estado === 'publicada' ? 'matched' : data.estado === 'preparacion' ? 'preparacion' : ''}`}>{lineEstado(data.estado)}</span> : null;
 }
 function PartActions({ data, context }: Cell<OEMLine>) {
   if (!data) return null;
@@ -184,7 +184,7 @@ function StockCodeCell({ data }: Cell<ManagedStockItem>) {
   if (!data) return null;
   const pending = data.codigo_pendiente || data.brand_pendiente;
   const fresh = [data.codigo_pendiente || data.codigo, data.brand_pendiente].filter(Boolean).join(' · ');
-  return <div className="admin-grid-stack"><strong>{data.codigo}</strong>{pending ? <small className="stock-code-pending" title={`Código nuevo en revisión (Agrupación inteligente): ${fresh}`}>EN REVISIÓN: {fresh}</small> : <small>{data.brand}</small>}</div>;
+  return <div className="admin-grid-stack"><strong>{data.codigo}</strong>{pending ? <small className="stock-code-pending" title={`Código nuevo en revisión (Casos de coincidencia): ${fresh}`}>EN REVISIÓN: {fresh}</small> : <small>{data.brand}</small>}</div>;
 }
 // A line that is not publicada (S6: Productos nuevos are lines in preparación) holds the item out of the storefront.
 function LinkedSkuCell({ data }: Cell<ManagedStockItem>) {

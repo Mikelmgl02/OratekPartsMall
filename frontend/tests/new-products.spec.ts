@@ -31,7 +31,7 @@ test('Productos nuevos lists the proposed SKUs and approves, edits, rejects and 
   const refWrites: unknown[] = [];
   await page.route(/\/api\/management\/lines\/[0-9a-f-]{36}(\/references)?$/, route => {
     const parts = new URL(route.request().url()).pathname.split('/'), id = parts[4], row = rows.find(entry => entry.id === id)!;
-    const line = makeLine(1, row.sku, row.description, { id, estado: row.status === 'pending' ? 'preparacion' : 'publicada', origen: 'proveedor' });
+    const line = makeLine(1, row.sku, row.description, { id, version: row.version, estado: row.status === 'pending' ? 'preparacion' : 'publicada', origen: 'proveedor' });
     lineRefs[id] ??= [makeReference(1, line, row.sku, { is_main: true, brand: row.brand }), ...row.references.map((ref, index) => makeReference(index + 2, line, ref.code, { brand: ref.brand, tipo: ref.ref_type === 'oem' ? 'oem' : 'otro' }))];
     if (parts[5] !== 'references') return route.fulfill({ json: { ...line, reference_count: lineRefs[id].length } });
     if (route.request().method() === 'GET') return route.fulfill({ json: lineRefs[id] });
@@ -39,6 +39,8 @@ test('Productos nuevos lists the proposed SKUs and approves, edits, rejects and 
     refWrites.push(body);
     const added = makeReference(50 + lineRefs[id].length, line, body.code, { brand: body.brand, tipo: body.tipo });
     lineRefs[id].push(added);
+    // A References write can move the line's version (a new main always does): the proposal's version is the line's.
+    rows = rows.map(entry => entry.id === id ? { ...entry, version: entry.version + 1 } : entry);
     return route.fulfill({ status: 201, json: { added: true, reference: added } });
   });
   await page.route(/\/api\/management\/catalog\/proposals(?:\?.*)?$/, route => {
@@ -134,7 +136,8 @@ test('Productos nuevos lists the proposed SKUs and approves, edits, rejects and 
   expect(refWrites).toEqual([{ code: 'WPT-111', brand: 'AISIN', tipo: 'aftermarket', estado: 'declarado' }]);
   await expect(gmb.getByLabel(/^Alternos/)).toHaveCount(0);  // the References editor replaced the text field
   await gmb.getByRole('button', { name: 'Vincular a 16100-39315' }).click();
-  await expect.poll(() => posts.at(-1)).toEqual({ path: '55555555-5555-4555-8555-555555555555', body: { action: 'link', expected_version: 1, part: 'part-1' } });
+  // the proposal was read again after the References write: the link goes with the line's new version, not a 409
+  await expect.poll(() => posts.at(-1)).toEqual({ path: '55555555-5555-4555-8555-555555555555', body: { action: 'link', expected_version: 2, part: 'part-1' } });
   await expect(gmb).toBeHidden();
   await page.getByRole('button', { name: 'Ver detalle de A-1' }).click();
   await expect(page.getByRole('dialog').getByRole('note')).toContainText('Este código ya está en el catálogo');   // its items belong to that SKU

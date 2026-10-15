@@ -225,7 +225,7 @@ class CaseBatch(ErrorBodies, APIView):
                 failed.append({'id': pk, 'detail': MatchingConflict.default_detail})
                 continue
             if case.kind not in reference_matching.KINDS:
-                failed.append({'id': pk, 'detail': 'Este caso es anterior a S6: decídelo en Agrupación inteligente.'})
+                failed.append({'id': pk, 'detail': 'Este caso es anterior a S6: decídelo por separado en Casos de coincidencia.'})
                 continue
             if case.status != 'review':
                 failed.append({'id': pk, 'detail': 'El caso ya tiene una decisión.'})

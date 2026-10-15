@@ -120,6 +120,8 @@ export const caseKindLabels: Record<string, string> = { code_change: 'CAMBIO DE 
   seed: 'FAMILIA SIN SKU PRINCIPAL' };
 export const CASE_KINDS: CaseKind[] = ['code_change', 'reference', 'variant', 'line', 'merge'];
 export const caseStatusLabels: Record<string, string> = { review: 'POR REVISAR', unmatched: 'SIN COINCIDENCIA', applied: 'APLICADOS', dismissed: 'DESCARTADOS', resolved: 'RESUELTOS' };
+/** One case's status, on its card (the plural labels name the tabs and counts). */
+export const caseStatusLabel: Record<string, string> = { review: 'POR REVISAR', unmatched: 'SIN COINCIDENCIA', applied: 'APLICADO', dismissed: 'DESCARTADO', resolved: 'RESUELTO' };
 export const batchLabels: Record<string, string> = { 'legacy-auto-merge': 'UNIFICACIONES AUTOMÁTICAS ANTERIORES' };
 export const brandTipoLabels: Record<Exclude<BrandTipo, ''>, string> = { vehiculo: 'MARCA DE VEHÍCULO', repuesto: 'MARCA DE REPUESTOS' };
 export const calidadLabels: Record<Calidad, string> = { original: 'ORIGINAL', oes: 'OES (EQUIPO ORIGINAL)', alternativo: 'ALTERNATIVO' };

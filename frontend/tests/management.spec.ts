@@ -47,6 +47,9 @@ test('ordinary signed-in user cannot open or write to administration', async ({ 
 });
 
 test('superuser creates catalog codes, reviews stock, and manages alternos inside the panel', async ({ page, browser }) => {
+  // S8 replaced the SKU editor this test drives (Guardar SKU, Código 1/2, Editar SKU, SKU activo) with the line editor and the References
+  // editor; it writes live data, so it is rewritten on them with the S10 cleanup instead of blind here.
+  test.fixme(true, 'Drives the SKU editor S8 removed: rewrite on the line editor and the References editor (S10).');
   test.skip(!process.env.E2E_ADMIN_USERNAME || !process.env.E2E_ADMIN_PASSWORD || !process.env.E2E_USERNAME || !process.env.E2E_PASSWORD, 'Disposable superuser and supplier fixtures are required.');
   const partName = `${process.env.E2E_ADMIN_USERNAME}-catálogo`.toUpperCase();
   const code = `${process.env.E2E_ADMIN_USERNAME}-native`.toUpperCase();

@@ -18,7 +18,9 @@ const VIEWS: { key: View; slug: string; label: string; Icon: typeof ListChecks }
   { key: 'cases', slug: 'casos', label: 'Casos', Icon: ListChecks }, { key: 'batches', slug: 'lotes', label: 'Lotes', Icon: Layers3 },
   { key: 'merges', slug: 'unificaciones', label: 'Unificaciones automáticas', Icon: GitMerge },
 ];
-const STATUSES = [['review', 'POR REVISAR'], ['applied', 'APLICADOS'], ['dismissed', 'DESCARTADOS']] as const;
+// unmatched: a supplier case from before S6 that found no SKU; it is still decided on its card (cases/<id>).
+const STATUSES = [['review', 'POR REVISAR'], ['unmatched', 'SIN COINCIDENCIA'], ['applied', 'APLICADOS'], ['dismissed', 'DESCARTADOS']] as const;
+const emptyStatus: Record<string, string> = { review: 'por revisar', unmatched: 'sin coincidencia', applied: 'aplicados', dismissed: 'descartados' };
 // Why the matching service merged (CatalogMerge.summary.reason): the rule names it records; free text from older merges shows as written.
 const mergeReasons: Record<string, string> = { compact_duplicate: 'Mismo código con otra grafía (con o sin guiones o espacios).' };
 
@@ -99,7 +101,7 @@ function CaseQueue({ revision }: { revision: number }) {
     {error && <div className="notice error" role="alert">{error}</div>}
     {notice && <div className="notice success" role="status">{notice}</div>}
     {!data && !error && <div className="loading"><LoaderCircle className="spin" size={18}/>Cargando casos…</div>}
-    {data && !data.results.length && <div className="notice">No hay casos {status === 'review' ? 'por revisar' : status === 'applied' ? 'aplicados' : 'descartados'}{kind ? ` de este tipo` : ''}.</div>}
+    {data && !data.results.length && <div className="notice">No hay casos {emptyStatus[status]}{kind ? ` de este tipo` : ''}.</div>}
     <div className="inventory-ai-proposals">{data?.results.map(item => {
       const key = `${item.id}:${item.fingerprint}`;
       return <CaseArticle key={key} item={item}>{isKnownKind(item)
