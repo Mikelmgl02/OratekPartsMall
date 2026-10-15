@@ -1,14 +1,12 @@
 'use client';
 
-import { FormEvent, useEffect, useId, useRef, useState } from 'react';
-import { LoaderCircle, Plus, Trash2 } from 'lucide-react';
+import { FormEvent, useEffect, useState } from 'react';
+import { LoaderCircle, Split } from 'lucide-react';
 import Modal from './modal';
-import PartTypePicker from './part-type-picker';
-import OEMReferenceLookup from './oem-reference-lookup';
-import PartOEMEquivalentsSection from './part-oem-equivalents';
-import { PartTechnicalForm } from './part-technical';
-import { UppercaseInput, UppercaseTextarea } from './uppercase-field';
-import { PartReference, ManagedAlternate, ManagedPart, ManagedStockItem, Page, request } from '@/lib/types';
+import { UppercaseInput } from './uppercase-field';
+import { ManagedAlternate, ManagedPart, ManagedStockItem, Page, request } from '@/lib/types';
+import { lineEstadoLabels } from '@/lib/line-types';
+import type { OEMLine } from '@/lib/line-types';
 
 const base = '/api/management';
 const message = (error: unknown) => error instanceof Error ? error.message : 'No se pudo guardar el cambio. Inténtalo de nuevo.';
@@ -19,77 +17,6 @@ function FormError({ error }: { error: string }) {
 }
 function SaveButton({ busy, disabled, children }: { busy: boolean; disabled?: boolean; children: React.ReactNode }) {
   return <button className="button primary full" disabled={busy || disabled}>{busy && <LoaderCircle size={16} className="spin"/>}{busy ? 'Guardando…' : children}</button>;
-}
-
-export type EditorTab = 'general' | 'specs' | 'codes';
-const EDITOR_TABS: [EditorTab, string][] = [['general', 'General'], ['specs', 'Ficha técnica'], ['codes', 'Alternos']];
-
-// The SKU editor, a side panel in three tabs. General and Alternos are one form (Guardar SKU sends both); the Ficha técnica saves on its
-// own and loads the first time its tab opens. A field the browser refuses in a hidden tab brings its tab forward.
-export function PartEditor({ part, initialTab = 'general', onClose, onSaved }: { part: ManagedPart | null; initialTab?: EditorTab; onClose: () => void; onSaved: (part: ManagedPart) => void }) {
-  const first: EditorTab = part ? initialTab : 'general';
-  const [tab, setTab] = useState<EditorTab>(first);
-  const [visited, setVisited] = useState<Set<EditorTab>>(() => new Set([first]));
-  const tabs = useId();
-  function open(next: EditorTab) { setTab(next); setVisited(current => new Set(current).add(next)); }
-  const [isOEM, setIsOEM] = useState(part?.is_OEM ?? false);
-  const [category, setCategory] = useState(part?.category || '');
-  const [subcategory, setSubcategory] = useState(part?.subcategory || '');
-  const [codes, setCodes] = useState(() => (part?.codes.length ? part.codes : [{ brand: '', code: '' }] as PartReference[]).map((code, key) => ({ ...code, ref_type: code.ref_type || (code.kind === 'oem' ? 'oem' : code.kind === 'manufacturer' ? 'company' : 'unknown'), reference_source: code.reference_source || '', key })));
-  const nextKey = useRef(codes.length);
-  const [mainReference, setMainReference] = useState('auto');
-  const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
-  function changeCode(key: number, field: 'brand' | 'code' | 'ref_type' | 'reference_source', value: string) { setCodes(rows => rows.map(row => row.key === key ? { ...row, [field]: value } : row)); }
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setError(''); setBusy(true);
-    const form = new FormData(event.currentTarget);
-    const payload = { sku: form.get('internal_sku'), is_OEM: isOEM, name: form.get('part_label'), description: form.get('part_details'), category: form.get('part_category'), subcategory: form.get('part_subcategory'), active: form.has('active'), codes: codes.filter(row => row.code.trim() || row.brand.trim()).map(row => ({ brand: row.brand.trim(), code: row.code, ref_type: row.ref_type, reference_source: row.reference_source })), ...(mainReference !== 'auto' && codes.some(row => String(row.key) === mainReference) ? { main_reference: (() => { const row = codes.find(row => String(row.key) === mainReference)!; return { code: row.code, brand: row.brand }; })() } : {}) };
-    try { onSaved(await request<ManagedPart>(`${base}/catalog${part ? `/${part.id}` : ''}`, { method: part ? 'PATCH' : 'POST', body: JSON.stringify(payload) })); }
-    catch (error) { setError(message(error)); } finally { setBusy(false); }
-  }
-  const filled = codes.filter(row => row.code.trim()).length;
-  const subgroupChanged = !!part && (category !== (part.category || '') || subcategory !== (part.subcategory || ''));
-  const panel = (key: EditorTab) => ({ role: 'tabpanel', id: `${tabs}-${key}`, 'aria-labelledby': `${tabs}-${key}-tab`, 'data-tab': key, hidden: tab !== key, className: 'editor-tab-panel' });
-  // A side panel over the grid, which stays as it was (rows and scroll position) behind it.
-  return <Modal title={part ? `Editar SKU · ${part.sku}` : 'Crear SKU'} onClose={onClose} wide drawer className="side-panel">
-    <div className="inventory-view-tabs editor-tabs" role="tablist" aria-label="Secciones del SKU">{EDITOR_TABS.map(([key, label]) =>
-      <button key={key} type="button" role="tab" id={`${tabs}-${key}-tab`} aria-controls={`${tabs}-${key}`} aria-selected={tab === key} className={tab === key ? 'selected' : ''}
-        disabled={key === 'specs' && !part} title={key === 'specs' && !part ? 'Guarda el SKU para completar su ficha técnica.' : undefined} onClick={() => open(key)}>
-        {label}{key === 'codes' && filled > 0 && <span className="editor-tab-count">{filled}</span>}</button>)}</div>
-    <form autoComplete="off" className="stack-form catalog-editor" hidden={tab === 'specs'} onSubmit={submit}
-      onInvalidCapture={event => { const key = (event.target as HTMLElement).closest<HTMLElement>('[data-tab]')?.dataset.tab as EditorTab | undefined; if (key && key !== tab) open(key); }}>
-      <div {...panel('general')}>
-      <div className="form-row"><label>SKU principal (MAIN)<UppercaseInput name="internal_sku" defaultValue={part?.sku} onChange={() => setIsOEM(false)} required maxLength={200} placeholder="Ej.: 58411-1R000"/></label><label>Nombre del repuesto (opcional)<UppercaseInput name="part_label" defaultValue={part?.name} maxLength={200} placeholder="Ej.: Disco de freno delantero"/></label></div>
-      <label className="admin-checkbox"><input type="checkbox" name="is_OEM" checked={isOEM} onChange={event => setIsOEM(event.target.checked)}/>EL SKU PRINCIPAL ES OEM</label>
-      <p className="form-footnote">Marca esta opción cuando hayas identificado el código principal como OEM: solo se guarda si el código está en la Biblioteca OEM o lo registras como alterno OEM con su marca y fuente. Sin marcar significa interno, de empresa o aún sin verificar. Cada alterno conserva su propio tipo de referencia.</p>
-      <label>Descripción<UppercaseTextarea aria-label="Descripción" name="part_details" defaultValue={part?.description} rows={3} placeholder="Características, aplicación o medidas del repuesto"/></label>
-      <div className="form-row"><label>Grupo (opcional)<UppercaseInput name="part_category" value={category} onChange={e => setCategory(e.target.value)} maxLength={120} placeholder="EJ.: FRENOS"/></label><label>Subgrupo / tipo de repuesto (opcional)<UppercaseInput name="part_subcategory" value={subcategory} onChange={e => setSubcategory(e.target.value)} maxLength={120} placeholder="EJ.: DISCOS DE FRENO"/></label></div>
-      <PartTypePicker onSelect={type => { setCategory(type.category); setSubcategory(type.name); }}/>
-      <p className="form-footnote">El subgrupo define los campos de la ficha técnica: guarda el SKU y complétala en la pestaña Ficha técnica.</p>
-      <section className="notice oem-preference"><strong>MAIN basado en una referencia OEM</strong><p>Usamos el OEM verificado como código principal y conservamos los códigos de empresa como alternos. El ID del repuesto y las existencias de los proveedores se mantienen.</p>
-        <label>OEM para el MAIN<select aria-label="OEM para el MAIN" value={mainReference} onChange={event => setMainReference(event.target.value)}><option value="auto">AUTOMÁTICO · CONSERVAR OEM ACTUAL O USAR EL ÚNICO VERIFICADO</option>{codes.filter(row => row.ref_type === 'oem' && row.code.trim() && row.brand.trim() && row.reference_source.trim()).map(row => <option key={row.key} value={row.key}>{row.code} · {row.brand}</option>)}</select></label>
-        <p className="form-footnote">Al promover una referencia OEM verificada, el MAIN se marca como OEM automáticamente. Si hay varios OEM, elige el principal. Una referencia a un conjunto completo no demuestra que la pieza individual sea equivalente.</p>
-      </section>
-      <label className="admin-checkbox"><input name="active" type="checkbox" defaultChecked={part?.active ?? true}/>SKU activo</label><p className="form-footnote">El SKU agrupa repuestos idénticos de distintas marcas y proveedores. Las existencias se conservan por artículo del proveedor.</p>
-      </div>
-      <div {...panel('codes')}>
-      {part && <OEMReferenceLookup part={part} onAdd={references => setCodes(existing => { const pairs = new Set(existing.map(row => `${row.brand}:${row.code}`)); return [...existing, ...references.filter(row => !pairs.has(`${row.brand}:${row.code}`)).map(row => ({...row, ref_type: row.ref_type || 'oem', reference_source: row.reference_source || '', key: nextKey.current++}))]; })}/>}
-      <fieldset className="catalog-codes"><legend>Biblioteca de equivalencias del SKU maestro</legend><p>Agrega referencias OEM y de fabricantes que identifiquen la misma pieza, aunque sus códigos sean distintos. El fabricante pertenece a la referencia; los artículos y las existencias de cada proveedor se gestionan por separado.</p>
-        {codes.map((row, index) => <div className="catalog-reference-entry" key={row.key}>
-          <div className="catalog-code-row"><label>{row.ref_type === 'company' ? 'Empresa / fabricante' : 'Fabricante del código'} {index + 1}{row.ref_type === 'company' ? '' : ' (opcional)'}<UppercaseInput aria-label={`Marca del código ${index + 1}`} name={`part_code_maker_${row.key}`} value={row.brand} onChange={event => changeCode(row.key, 'brand', event.target.value)} required={row.ref_type === 'company'} maxLength={120} placeholder="EJ.: TOYOTA, FEBEST, NIBK"/></label><label>Código {index + 1}<UppercaseInput name={`part_code_value_${row.key}`} value={row.code} onChange={event => changeCode(row.key, 'code', event.target.value)} required={!!row.brand.trim()} maxLength={120} placeholder="EJ.: 51712-1R000"/></label><button type="button" className="icon-button danger-text" aria-label={`Quitar código ${index + 1}`} onClick={() => { setCodes(rows => rows.filter(code => code.key !== row.key)); if (mainReference === String(row.key)) setMainReference('auto'); }}><Trash2 size={17}/></button></div>
-          <div className="form-row"><label>Tipo de referencia {index + 1}<select aria-label={`Tipo de referencia ${index + 1}`} value={row.ref_type} onChange={event => { changeCode(row.key, 'ref_type', event.target.value); if (mainReference === String(row.key)) setMainReference('auto'); }}><option value="unknown">SIN CLASIFICAR</option><option value="oem">OEM</option><option value="company">EMPRESA / FABRICANTE</option></select></label><label>Fuente de la equivalencia {index + 1}<input autoComplete="off" maxLength={500} value={row.reference_source} onChange={event => changeCode(row.key, 'reference_source', event.target.value)} placeholder="Catálogo, ficha técnica o enlace"/></label></div>
-        </div>)}
-        <button type="button" className="button soft small" onClick={() => setCodes(rows => [...rows, { key: nextKey.current++, brand: '', code: '', ref_type: 'unknown', reference_source: '' }])}><Plus size={15}/>Agregar código</button>
-        <p>Registra equivalencias verificadas. Una aplicación parecida, una variante o un kit no bastan para considerarlas la misma pieza.</p>
-      </fieldset>
-      {part && <PartOEMEquivalentsSection partId={part.id}/>}
-      </div>
-      <FormError error={error}/><SaveButton busy={busy}>Guardar SKU</SaveButton>
-    </form>
-    {part && visited.has('specs') && <div {...panel('specs')}>
-      <PartTechnicalForm part={part} pending={subgroupChanged ? 'Cambiaste el grupo o subgrupo en General: guarda el SKU para cargar la plantilla del nuevo subgrupo.' : ''}/>
-    </div>}
-  </Modal>;
 }
 
 export function PartPicker({ label, value, initial, onChange, exclude }: { label: string; value: string; initial?: Choice; onChange: (value: string) => void; exclude?: string }) {
@@ -138,24 +65,43 @@ export function RemoveAlternate({ alternate, onClose, onSaved }: { alternate: Ma
   return <Modal title="Retirar alterno" onClose={onClose}><p className="modal-description">Se retirará el código <strong>{alternate.code}</strong> del SKU <strong>{alternate.part_sku}</strong>. El SKU, los artículos de los proveedores y sus existencias se conservarán.</p><FormError error={error}/><button className="button dark full" disabled={busy} onClick={remove}>{busy && <LoaderCircle size={16} className="spin"/>}Confirmar retiro</button></Modal>;
 }
 
-export function MatchEditor({ item, onClose, onSaved }: { item: ManagedStockItem; onClose: () => void; onSaved: () => void }) {
+// Revisar coincidencia (Existencias por proveedor): the item's OEM line, read through management/lines/<id> in any estado, can be changed
+// for another (the item's Reference moves with it), or the item gets a line of its own with Separar referencia (its code becomes an
+// interno code of its supplier, the line waits in Productos nuevos).
+export function MatchEditor({ item, onClose, onSaved }: { item: ManagedStockItem; onClose: () => void; onSaved: (text?: string) => void }) {
   const [part, setPart] = useState(item.part || ''); const [status, setStatus] = useState(item.matching_status);
-  const [initial, setInitial] = useState<Choice>(); const [ready, setReady] = useState(!item.part); const [loadError, setLoadError] = useState(''); const [revision, setRevision] = useState(0);
-  const [busy, setBusy] = useState(false); const [error, setError] = useState('');
+  const [initial, setInitial] = useState<Choice>(); const [line, setLine] = useState<OEMLine | null>(null);
+  const [ready, setReady] = useState(!item.part); const [loadError, setLoadError] = useState(''); const [revision, setRevision] = useState(0);
+  const [busy, setBusy] = useState(''); const [error, setError] = useState(''); const [separating, setSeparating] = useState(false);
   useEffect(() => {
     if (!item.part) return;
     let cancelled = false; setLoadError('');
-    request<ManagedPart>(`${base}/catalog/${item.part}`).then(part => { if (!cancelled) { setInitial(part); setReady(true); } }).catch(error => { if (!cancelled) setLoadError(message(error)); });
+    request<OEMLine>(`${base}/lines/${item.part}`).then(found => { if (!cancelled) { setLine(found); setInitial({ id: found.id, sku: found.sku, name: found.name, active: found.estado === 'publicada' }); setReady(true); } })
+      .catch(error => { if (!cancelled) setLoadError(message(error)); });
     return () => { cancelled = true; };
   }, [item.part, revision]);
   async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setBusy(true); setError('');
+    event.preventDefault(); setBusy('save'); setError('');
     try { await request(`${base}/inventory/${item.id}`, { method: 'PATCH', body: JSON.stringify({ part: part || null, matching_status: status }) }); onSaved(); }
-    catch (error) { setError(message(error)); } finally { setBusy(false); }
+    catch (error) { setError(message(error)); } finally { setBusy(''); }
   }
-  return <Modal title="Revisar coincidencia" onClose={onClose}><div className="match-summary"><strong>{item.codigo} · {item.brand}</strong><span>{item.supplier_name}</span><p>{item.description || 'Sin descripción del proveedor'}</p>{!!item.references?.length && <p>REFERENCIAS DECLARADAS: {item.references.map(ref => [ref.brand, ref.code].filter(Boolean).join(': ')).join(' · ')}</p>}<small>ID del proveedor: {item.supplier_invent_id}</small></div><form autoComplete="off" className="stack-form catalog-editor" onSubmit={submit}>
+  async function separate() {
+    setBusy('separate'); setError('');
+    try {
+      const result = await request<{ line: OEMLine }>(`${base}/inventory/${item.id}/separate`, { method: 'POST', body: JSON.stringify({}) });
+      onSaved(`Referencia separada: ${item.codigo} queda como código interno de ${item.supplier_name} en la línea OEM ${result.line.sku}, que espera en Productos nuevos.`);
+    } catch (error) { setError(message(error)); } finally { setBusy(''); }
+  }
+  const pending = item.codigo_pendiente || item.brand_pendiente;
+  return <Modal title="Revisar coincidencia" onClose={onClose}><div className="match-summary"><strong>{item.codigo} · {item.brand}</strong><span>{item.supplier_name}</span><p>{item.description || 'Sin descripción del proveedor'}</p>{!!item.references?.length && <p>REFERENCIAS DECLARADAS (EN REVISIÓN): {item.references.map(ref => [ref.brand, ref.code].filter(Boolean).join(': ')).join(' · ')}</p>}{pending && <p className="stock-code-pending">CÓDIGO NUEVO EN REVISIÓN: {[item.codigo_pendiente || item.codigo, item.brand_pendiente].filter(Boolean).join(' · ')}. Se decide en Casos de coincidencia.</p>}{line && <p>LÍNEA OEM ACTUAL: {line.sku}{line.estado !== 'publicada' ? ` · ${lineEstadoLabels[line.estado]}` : ''}</p>}<small>ID del proveedor: {item.supplier_invent_id}</small></div><form autoComplete="off" className="stack-form catalog-editor" onSubmit={submit}>
     {ready ? <PartPicker label="SKU del catálogo" value={part} initial={initial} onChange={setPart}/> : loadError ? <div className="notice error" role="alert">{loadError}<button type="button" onClick={() => setRevision(value => value + 1)}>Intentar de nuevo</button></div> : <div className="loading"><LoaderCircle size={18} className="spin"/>Cargando repuesto…</div>}
     <label>Estado de coincidencia<select value={status} onChange={event => setStatus(event.target.value as ManagedStockItem['matching_status'])}><option value="pending">Pendiente</option><option value="review">Por revisar</option><option value="matched">Vinculado</option></select></label><p className="form-footnote">Selecciona el repuesto correcto y marca Vinculado para aprobarlo. Las cantidades y el historial de existencias se conservan.</p>
-    <FormError error={error}/><SaveButton busy={busy} disabled={!ready || (status === 'matched' && !part)}>Guardar coincidencia</SaveButton>
-  </form></Modal>;
+    <FormError error={error}/><SaveButton busy={busy === 'save'} disabled={!ready || !!busy || (status === 'matched' && !part)}>Guardar coincidencia</SaveButton>
+  </form>
+  {item.part && <section className="match-separate" aria-label="Separar referencia">{separating ? <div className="admin-toolbar-actions"><span>El artículo deja {line?.sku || 'su línea OEM'} y pasa a una línea propia en Productos nuevos.</span>
+      <button type="button" className="button dark small" disabled={!!busy} onClick={() => void separate()}>{busy === 'separate' && <LoaderCircle size={14} className="spin"/>}Confirmar Separar referencia</button>
+      <button type="button" className="button soft small" disabled={!!busy} onClick={() => setSeparating(false)}>Cancelar</button></div>
+    : <button type="button" className="button text small" disabled={!!busy} onClick={() => setSeparating(true)}><Split size={14} aria-hidden="true"/>Separar referencia</button>}
+    <p className="form-footnote">Úsalo cuando el código del proveedor no es esta pieza: su código queda como interno de este proveedor y nunca se vuelve a vincular solo a esta línea OEM.</p></section>}
+  </Modal>;
 }

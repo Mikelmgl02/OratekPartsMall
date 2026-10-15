@@ -1,6 +1,7 @@
 import { expect, Page, test } from '@playwright/test';
 import type { OEMReferenceDetail, OEMReferencePage, OEMReferenceSource, OEMReferenceStatus, OEMSourceKind } from '../lib/oem-reference-types';
 import { noNewProducts } from './new-products-route';
+import { routeLinesFrom } from './lines-route';
 
 const stamp = '2026-10-07T12:00:00Z';
 const empty = { count: 0, next: null, previous: null, results: [], pending_count: 0 };
@@ -65,6 +66,7 @@ async function fixture(page: Page) {
   await page.route('**/api/market/analytics/events', route => route.fulfill({ status: 202, json: { recorded: true } }));
   await page.route(/\/api\/management\/(roles|catalog\/import\/issues|part-types)(?:\?.*)?$/, route => route.fulfill({ json: route.request().url().includes('/roles') ? [] : empty }));
   await page.route(/\/api\/management\/catalog(?:\?.*)?$/, route => route.fulfill({ json: empty }));
+  await routeLinesFrom(page, () => []);  // the Inventario grid reads OEM lines (S8)
   await page.route(/\/api\/management\/oem-references(?:\?.*)?$/, route => {
     if (route.request().method() === 'POST') {
       const body = route.request().postDataJSON() as { manufacturer: string; code: string; part_type?: string; description?: string; source?: { kind: OEMSourceKind; citation: string; verified?: boolean } };

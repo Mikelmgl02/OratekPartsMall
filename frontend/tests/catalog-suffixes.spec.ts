@@ -2,6 +2,7 @@ import { expect, Page, test } from '@playwright/test';
 import type { CatalogSuffix, CatalogSuffixDetail, CatalogSuffixPage, CompanySuffixes } from '../lib/suffix-types';
 import type { ManagedPart } from '../lib/types';
 import { noNewProducts } from './new-products-route';
+import { routeLinesFrom } from './lines-route';
 
 const stamp = '2026-10-06T12:00:00Z';
 const empty = { count: 0, next: null, previous: null, results: [], pending_count: 0 };
@@ -33,6 +34,7 @@ async function fixture(page: Page, { parts = [] as ManagedPart[], company = { su
   await page.route('**/api/market/analytics/events', route => route.fulfill({ status: 202, json: { recorded: true } }));
   await page.route(/\/api\/management\/(roles|catalog\/import\/issues|part-types)(?:\?.*)?$/, route => route.fulfill({ json: route.request().url().includes('/roles') ? [] : empty }));
   await page.route(/\/api\/management\/catalog(?:\?.*)?$/, route => route.fulfill({ json: { ...empty, count: parts.length, results: parts } }));
+  await routeLinesFrom(page, () => parts);  // the Inventario grid reads OEM lines (S8)
   await page.route('**/api/management/catalog/company-suffixes', route => route.fulfill({ json: company }));
   await page.route(/\/api\/management\/catalog\/[0-9a-f-]{36}\/oem-equivalents$/, route => route.fulfill({ json: { numbers: [], cross_references: [] } }));
   await page.route(/\/api\/management\/catalog\/suffixes(?:\?.*)?$/, route => {
@@ -152,9 +154,9 @@ test('the OEM lookup reads company suffixes from the suffix table', async ({ pag
     stock_record_count: 0, codes: [], identity: { ref_type: 'company', brand: 'ACME CORP' } };
   const mock = await fixture(page, { parts: [part], company: { suffixes: { ACME: 'acme corp' }, registry: 'table' } });
   await page.goto('/administracion?seccion=inventario');
-  await page.getByRole('button', { name: `Editar SKU ${part.sku}`, exact: true }).click();
+  await page.getByRole('button', { name: `Editar línea OEM ${part.sku}`, exact: true }).click();
   const dialog = page.getByRole('dialog');
-  await dialog.getByRole('tab', { name: /^Alternos/ }).click();
+  await dialog.getByRole('tab', { name: /^Referencias/ }).click();
   await dialog.getByText('Buscar referencias OEM con IA', { exact: true }).click();
   await expect(dialog.getByLabel('Empresa del código', { exact: true })).toHaveValue('ACME CORP');
   await expect(dialog.getByLabel('Código de empresa', { exact: true })).toHaveValue('ABC-123456');

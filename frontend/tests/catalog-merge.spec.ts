@@ -2,6 +2,7 @@ import { expect, Page, test } from '@playwright/test';
 import type { ManagedPart } from '../lib/types';
 import type { SplitPlan } from '../lib/catalog-split-types';
 import { noNewProducts } from './new-products-route';
+import { routeLinesFrom } from './lines-route';
 
 const empty = { count: 0, next: null, previous: null, results: [], pending_count: 0 };
 const ids = { parent: '0f000000-0000-4000-8000-000000000001', disc: '0f000000-0000-4000-8000-000000000002', oem: '0f000000-0000-4000-8000-000000000003',
@@ -30,6 +31,7 @@ async function fixture(page: Page, { refuse = false } = {}) {
     const results = wanted ? wanted.split(',').map(id => rows[id]).filter(Boolean) : Object.values(rows).filter(part => !search || `${part.sku} ${part.description}`.includes(search));
     return route.fulfill({ json: { count: results.length, next: null, previous: null, results } });
   });
+  await routeLinesFrom(page, () => Object.values(rows));  // the Inventario grid reads OEM lines (S8)
   await page.route(`**/api/management/catalog/${ids.parent}/split`, route => route.fulfill({ json: {
     target: { ...rows[ids.parent], created_by_merge: true }, children: [], codes: [], items: [], images: [], warnings: [] } as unknown as SplitPlan }));
   await page.route('**/api/management/catalog/grouping/merge', route => {

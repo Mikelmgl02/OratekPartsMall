@@ -1,7 +1,7 @@
 // The inventory refactor's shapes (plan §2; S7's management API: mall/line_views.py, case_views.py, brand_views.py, matching_views.py).
 // An OEM line (Part) holds References (PartCode); supplier items (variants) hang from a Reference. "Línea OEM" in the admin, never
 // plain "Línea": pricing calls the supplier's discount groups líneas.
-import type { CatalogImage, StockItem } from './types';
+import type { CatalogImage, ManagedPart, StockItem } from './types';
 
 export type LineEstado = 'referencia' | 'preparacion' | 'publicada' | 'rechazada' | 'retirada' | 'unificada';
 export type LineOrigen = 'catalogo' | 'biblioteca' | 'proveedor';
@@ -136,3 +136,11 @@ export const LINE_TABS: { key: string; estado: string; label: string }[] = [
 export const lineText = (line: Pick<OEMLine, 'sku' | 'name' | 'description'>) => line.description || (line.name !== line.sku ? line.name : '') || '';
 export const subgrupoLabel = (line: Pick<OEMLine, 'grupo' | 'subgrupo' | 'category' | 'subcategory'>) =>
   [line.grupo?.nombre ?? line.category, line.subgrupo?.name ?? line.subcategory].filter(Boolean).join(' / ');
+// A line as the screens that still take catalog/ rows read it (Agrupar con…, Imágenes, the Ficha técnica, the OEM lookup).
+export function asManagedPart(line: OEMLine): ManagedPart {
+  return { id: line.id, sku: line.sku, is_OEM: line.tipo === 'OEM', name: line.name, description: line.description,
+    category: line.grupo?.nombre ?? line.category, subcategory: line.subgrupo?.name ?? line.subcategory, part_type: line.subgrupo?.id ?? null,
+    codes: (line.codes ?? []).map(code => ({ id: code.id, brand: code.brand, code: code.code, ref_type: code.tipo === 'oem' ? 'oem' as const : code.tipo === 'aftermarket' ? 'company' as const : 'unknown' as const })),
+    images: line.images, active: line.estado === 'publicada', stock_record_count: line.variant_count, merged_count: line.merged_count,
+    identity: { ref_type: line.main?.tipo === 'oem' ? 'oem' : line.main?.tipo === 'aftermarket' ? 'company' : 'unknown', brand: line.brand } };
+}
