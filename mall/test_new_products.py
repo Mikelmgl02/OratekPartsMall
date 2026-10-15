@@ -1,7 +1,14 @@
-"""Productos nuevos as lines in preparación (inventory refactor S6.2, mall.new_products and mall.lines' transitions)."""
+"""Productos nuevos as lines in preparación (inventory refactor S6.2, mall.new_products, mall.lines' transitions and the data step
+mall.refactor.s6_new_products)."""
+import io
+import json
+import os
+import tempfile
 import uuid
+from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
+from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
 from . import lines, new_products
@@ -11,6 +18,9 @@ from .matching_engine import NO_CODE_EVIDENCE, item_row, save_case
 from .matching_models import MatchingCase, MatchingDecision
 from .models import Part, Reference, SupplierItem
 from .new_products import PLACED_REASON, PlaceRefused, ProposalConflict
+from .refactor import s6_new_products
+from .sku_proposal_models import SkuProposal
+from .sku_review_models import SkuReviewRun, SkuReviewVerdict
 from .test_factories import make_library_number, make_line, make_reference, make_supplier, make_user
 
 
@@ -304,3 +314,127 @@ class DecisionTests(Helpers, TestCase):
         main = self.main(line)
         self.assertEqual((main.tipo, main.supplier_id, new_products.oem_of(line).code), ('oem', None, 'PELU-KY'))   # a make's code is its OEM number
         self.assertFalse(Reference.all_objects.filter(part=line, tipo='interno').exclude(estado='retirada').exists())
+
+
+@override_settings(CATALOG_EXTRA_MAKES=['KAIYI'])
+class DataStepTests(Helpers, TestCase):
+    """python -m mall.refactor.s6_new_products on proposals as the code before S6 left them."""
+
+    def setUp(self):
+        super().setUp()
+        self.output = tempfile.TemporaryDirectory()
+        self.addCleanup(self.output.cleanup)
+        patcher = patch.dict(os.environ, {'REFACTOR_OUTPUT': self.output.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def proposal(self, sku, items, **fields):
+        proposal = SkuProposal.objects.create(key=f'{sku}|', sku=sku, fingerprint='x', **fields)
+        for item in items:
+            proposal.items.create(item=item, snapshot=item_row(item))
+        return proposal
+
+    def cli(self, *args):
+        out = io.StringIO()
+        return s6_new_products.main([*args], stdout=out), out.getvalue()
+
+    def test_pending_proposals_become_lines_with_their_ids_and_rollback_gives_them_back(self):
+        dealer = self.item(self.dealer, '1', 'F02-4121010-01AA', 'KAIYI', 'FARO KAIYI', references=[{'code': 'FARO-77', 'brand': 'DEPO'}])
+        twin = self.item(self.other, '2', 'F024121010-01AA', 'KAIYI', 'FARO')
+        genuine = self.proposal('F02-4121010-01AA', [dealer, twin], brand='KAIYI', oem_code='F02-4121010-01AA', oem_brand='KAIYI',
+                                description='FARO KAIYI', field_sources={'sku': {'source': 'supplier'}}, version=4)
+        cap = self.proposal('KYJP000484', [self.item(self.dealer, '3', 'KYJP000484', 'KAIYI', 'GORRA')], brand='KAIYI', internal_code=True)
+        own = self.proposal('URT-22', [self.item(self.dealer, '4', 'URT-22', 'MOTION MOTORS', 'ESCOBILLA')], brand='MOTION MOTORS')
+        number = make_library_number('TOYOTA', '16100-39315')
+        library = self.proposal('16100-39315', [self.item(self.dealer, '5', '16100-39315', 'TOYOTA', 'BOMBA')], brand='TOYOTA',
+                                oem_code='16100-39315', oem_brand='TOYOTA')
+        approved_line = make_line('OLD-1')
+        approved = SkuProposal.objects.create(key='OLD1|', sku='OLD-1', fingerprint='x', status='approved', part=approved_line,
+                                              decided_at=timezone.now())
+        run = SkuReviewRun.objects.create(id=uuid.uuid4(), created_by=self.root, batch_size=2, completed_batches=1,
+                                          proposal_ids=[str(genuine.pk), str(approved.pk), str(cap.pk), str(own.pk)])
+        verdict = SkuReviewVerdict.objects.create(run=run, proposal=genuine, position=0, proposal_version=4, method='ai', verdict='good')
+        old = SkuReviewVerdict.objects.create(run=run, proposal=approved, position=1, proposal_version=1, method='ai', verdict='good')
+        code, out = self.cli('--dry-run')
+        self.assertEqual(code, 0, out)
+        self.assertFalse(Part.objects.filter(pk=genuine.pk).exists())
+        self.assertIn('líneas nuevas en preparación', out)
+        code, out = self.cli('--apply', '--user', self.root.username)
+        self.assertEqual(code, 0, out)
+        line = Part.objects.get(pk=genuine.pk)
+        main = self.main(line)
+        self.assertEqual((line.estado, line.origen, line.sku, line.version, line.description), ('preparacion', 'proveedor', 'F02-4121010-01AA', 4, 'FARO KAIYI'))
+        self.assertEqual((main.brand, main.tipo, main.supplier_id), ('KAIYI', 'oem', None))
+        self.assertEqual(SupplierItem.objects.filter(part=line, reference=main).count(), 2)   # its other printed form, same key
+        self.assertEqual(self.main(Part.objects.get(pk=cap.pk)).tipo, 'interno')
+        self.assertEqual(self.main(Part.objects.get(pk=own.pk)).tipo, 'interno')   # OD20
+        library_line = number.part
+        library_line.refresh_from_db()
+        self.assertFalse(Part.objects.filter(pk=library.pk).exists())   # its code joined the library's line (rule 7)
+        self.assertEqual((library_line.estado, SupplierItem.objects.get(supplier_invent_id='5').reference_id), ('preparacion', number.pk))
+        self.assertEqual(MatchingCase.objects.filter(kind='reference').count(), 1)
+        self.assertEqual(set(MatchingCase.objects.filter(kind='supplier').values_list('status', flat=True)), {'dismissed'})
+        verdict.refresh_from_db()
+        old.refresh_from_db()
+        self.assertEqual((verdict.line_id, old.line_id), (line.pk, approved_line.pk))
+        run.refresh_from_db()
+        self.assertEqual(run.proposal_ids, [str(genuine.pk), str(approved_line.pk), str(cap.pk), str(own.pk)])
+        self.assertEqual(SkuProposal.objects.get(pk=genuine.pk).status, 'pending')   # the proposal rows never change
+        code, out = self.cli('--apply', '--user', self.root.username)                # the catch-up changes nothing
+        self.assertEqual(code, 0, out)
+        self.assertEqual(Part.objects.filter(estado='preparacion').count(), 4)
+        run.refresh_from_db()
+        self.assertEqual(run.proposal_ids[1], str(approved_line.pk))
+        code, out = self.cli('--rollback', '--user', self.root.username)
+        self.assertEqual(code, 0, out)
+        self.assertFalse(Part.objects.filter(pk__in=[genuine.pk, cap.pk, own.pk]).exists())
+        library_line.refresh_from_db()
+        self.assertEqual(library_line.estado, 'referencia')
+        self.assertEqual(set(SupplierItem.objects.values_list('part_id', 'reference_id', 'matching_status')), {(None, None, 'pending')})
+        self.assertEqual(MatchingCase.objects.filter(kind='reference').count(), 0)
+        self.assertEqual(set(MatchingCase.objects.filter(kind='supplier').values_list('status', flat=True)), {'unmatched'})
+        verdict.refresh_from_db()
+        run.refresh_from_db()
+        self.assertEqual((verdict.line_id, run.proposal_ids[1]), (None, str(approved.pk)))
+        manifest = [json.loads(row) for row in open(os.path.join(self.output.name, s6_new_products.MANIFEST), encoding='utf-8')]
+        self.assertTrue(any(row.get('action') == 'rolled_back' for row in manifest))
+
+    def test_an_oem_number_of_the_library_takes_the_aftermarket_code_and_a_free_one_becomes_a_reference(self):
+        number = make_library_number('TOYOTA', '16100-39315')
+        pump = self.proposal('GWT-41A', [self.item(self.dealer, '1', 'GWT-41A', 'GMB', 'BOMBA DE AGUA')], brand='GMB',
+                             oem_code='16100-39315', oem_brand='TOYOTA', field_sources={'oem': {'source': 'oem_library', 'note': 'GMB v3'}})
+        lamp = self.proposal('LMP-9', [self.item(self.dealer, '2', 'LMP-9', 'GMB', 'FARO')], brand='GMB', oem_code='81130-0K010',
+                             oem_brand='TOYOTA', field_sources={'oem': {'source': 'admin', 'by': 'root'}})
+        code, out = self.cli('--apply', '--user', self.root.username)
+        self.assertEqual(code, 0, out)
+        library = Part.objects.get(pk=number.part_id)
+        item = SupplierItem.objects.get(supplier_invent_id='1')
+        self.assertFalse(Part.objects.filter(pk=pump.pk).exists())
+        self.assertEqual((library.estado, library.sku, item.part_id, item.reference.code, item.reference.tipo),
+                         ('preparacion', '16100-39315', library.pk, 'GWT-41A', 'aftermarket'))   # the SKU uses the OEM number
+        line = Part.objects.get(pk=lamp.pk)
+        oem = new_products.oem_of(line)
+        self.assertEqual((oem.code, oem.brand, oem.is_main), ('81130-0K010', 'TOYOTA', False))
+        self.assertTrue(oem.sources.filter(kind='admin').exists())
+
+    def test_a_run_with_ids_that_map_to_nothing_is_closed_at_what_it_reviewed(self):
+        kept = self.proposal('K-1', [self.item(self.dealer, '1', 'K-1', 'WURTH', 'PIEZA')], brand='WURTH')
+        gone = str(uuid.uuid4())
+        run = SkuReviewRun.objects.create(id=uuid.uuid4(), created_by=self.root, batch_size=1, completed_batches=1,
+                                          proposal_ids=[str(kept.pk), gone, str(uuid.uuid4())])
+        code, out = self.cli('--apply', '--user', self.root.username)
+        self.assertEqual(code, 0, out)
+        run.refresh_from_db()
+        self.assertEqual((run.proposal_ids, run.finished_at is not None), ([str(kept.pk)], True))
+        self.assertIn('Cerrada en S6', run.metrics['nota'])
+
+    def test_lines_placed_after_landing_go_back_too(self):
+        line, _ = new_products.place(self.item(self.dealer, '1', 'LATE-1', 'WURTH', 'PIEZA'))
+        published, _ = new_products.place(self.item(self.dealer, '2', 'LATE-2', 'WURTH', 'PIEZA'))
+        published.refresh_from_db()
+        new_products.publish(published.pk, self.root, published.version)
+        code, out = self.cli('--rollback', '--user', self.root.username)
+        self.assertEqual(code, 0, out)
+        self.assertFalse(Part.objects.filter(pk=line.pk).exists())
+        self.assertTrue(Part.objects.filter(pk=published.pk, estado='publicada').exists())   # decided since: left, listed
+        self.assertIn('LATE-2', out)
