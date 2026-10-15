@@ -16,7 +16,7 @@ from .matching_engine import item_row, part_row, save_case
 from .matching_models import MatchingCase
 from .models import Part, Reference, SupplierItem
 from .refactor import s6_brands, s6_cases
-from .test_factories import make_supplier, make_user
+from .test_factories import make_line, make_supplier, make_user
 
 
 class Output:
@@ -84,6 +84,20 @@ class CasesStepTests(Output, TestCase):
         self.assertFalse(MatchingCase.objects.filter(kind='reference').exists())
         manifest = [json.loads(row) for row in open(os.path.join(self.output.name, s6_cases.MANIFEST), encoding='utf-8')]
         self.assertTrue(any(row.get('action') == 'rolled_back' for row in manifest))
+
+    def test_a_disputa_main_whose_legacy_case_became_a_merge_case_gets_no_second_case(self):
+        from . import references
+        keeper = make_line('13780-75F00')
+        duplicate = create_line('13780-75F00_')   # its main waits in disputa: the compact form is keeper's
+        compact = save_case(key='catalog:compact:1378075F00', kind='catalog', sources=[part_row(duplicate)], candidates=[part_row(keeper)],
+                            target=keeper.sku, method='compact_duplicate')
+        code, out = self.cli(s6_cases, '--apply', '--user', self.root.username)
+        self.assertEqual(code, 0, out)
+        compact.refresh_from_db()
+        self.assertEqual((compact.kind, set(compact.lines.values_list('pk', flat=True))), ('merge', {keeper.pk, duplicate.pk}))
+        self.addCleanup(references.FAILED_MAINS.clear)
+        self.assertEqual(references.ensure_mains()['cases'], 0)   # the worker's pass: the converted case already asks about the pair
+        self.assertFalse(MatchingCase.objects.filter(method='main_codigo').exists())
 
     def test_the_od18_batch_holds_each_doubtful_legacy_merge_still_in_place(self):
         target = create_line('04111-22152', description='EMP OVER TOY 1ZZ-FE COROLLA 00-')

@@ -945,13 +945,22 @@ MAIN_CASE_METHOD = 'main_codigo'
 
 
 def covering_case(line_ids):
-    """A legacy catalog case (any status) whose lines include all of these (compact_duplicate, shared_oem_number, main_codigo...), or
-    None: such a pair already waits for a person, or one decided it."""
+    """A case (any status) that already asks about all these lines, or None: such a pair already waits for a person, or one decided
+    it. A legacy catalog case whose rows name them all (compact_duplicate, shared_oem_number, main_codigo...) or, from S6, a merge case
+    listing them all: mall.refactor.s6_cases turns the legacy catalog cases into merge cases, and ensure_mains must not open a second
+    case for a disputa main the converted one covers."""
     from .matching_models import MatchingCase
+    ids = {str(getattr(line, 'pk', line)) for line in line_ids}
     rows = MatchingCase.objects.filter(kind='catalog')
-    for pk in {str(getattr(line, 'pk', line)) for line in line_ids}:
+    for pk in ids:
         rows = rows.filter(Q(sources__contains=[{'id': pk}]) | Q(candidates__contains=[{'id': pk}]))
-    return rows.order_by('pk').first()
+    found = rows.order_by('pk').first()
+    if found is not None or not ids:
+        return found
+    merge = MatchingCase.objects.filter(kind='merge')
+    for pk in ids:
+        merge = merge.filter(lines__pk=pk)
+    return merge.order_by('pk').first()
 
 
 def open_main_case(line, holder, ref, reason=''):
