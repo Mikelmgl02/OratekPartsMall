@@ -150,9 +150,10 @@ confirm_db() {  # confirm_db <database> <code dir>: that code's app container re
     echo "  $code se conecta a $db."
 }
 
-live_manifests() {  # checksum, size and path of every manifest outside the rehearsals' folders: the live ones
+live_manifests() {  # checksum, size and path of every manifest outside the rehearsals' folders: the live ones (manifest.jsonl, or
+    # <step>_manifest.jsonl when a stage has several CLIs, as S6's new_products_, cases_ and brands_manifest.jsonl)
     [ -d "$REPO/output/refactor" ] || return 0
-    find "$REPO/output/refactor" -name manifest.jsonl -not -path '*/rehearsal-*' | LC_ALL=C sort | while IFS= read -r file; do cksum "$file"; done
+    find "$REPO/output/refactor" -name '*manifest.jsonl' -not -path '*/rehearsal-*' | LC_ALL=C sort | while IFS= read -r file; do cksum "$file"; done
 }
 
 manifests_untouched() {  # no live manifest changed, so a live --rollback never replays the copy's ids and before-values
@@ -167,7 +168,7 @@ manifests_untouched() {  # no live manifest changed, so a live --rollback never 
 
 rehearsal_manifest() {  # the CLI wrote its manifest in the rehearsal's folder, so its --rollback has something to reverse
     if [ "$PRINT" = 1 ]; then echo "  (comprueba que el manifiesto de la CLI quedó en $HOST_MOUNT)"; return 0; fi
-    [ -z "$(find "$HOST_MOUNT" -name manifest.jsonl -size +0 | head -n 1)" ] || return 0
+    [ -z "$(find "$HOST_MOUNT" -name '*manifest.jsonl' -size +0 | head -n 1)" ] || return 0
     echo "La CLI no dejó su manifiesto en $HOST_MOUNT (REFACTOR_OUTPUT=$STAGE_OUT; mall.refactor.output.manifest_path): no se sigue." >&2
     return 1
 }
