@@ -122,7 +122,7 @@ class WhichReferenceTests(VariantTestCase):
         self.assertIsNone(item.part_id)
         variants.vincular(item, prepared, status='matched', actor=self.root)
         self.assertEqual((item.part_id, item.matching_status), (prepared.pk, 'pending'))
-        Part.objects.filter(pk=prepared.pk).update(estado='publicada', active=True)
+        Part.objects.filter(pk=prepared.pk).update(estado='publicada')
         prepared.refresh_from_db()
         self.assertEqual(variants.recompute_status(prepared), 1)
         self.assertEqual(SupplierItem.objects.get(pk=item.pk).matching_status, 'matched')
@@ -540,7 +540,7 @@ class TightenTests(VariantTestCase):
         merged = make_line('MERGED-9')
         stranded = self.loose('T-7', 'NADA-3')
         SupplierItem.objects.filter(pk=stranded.pk).update(part=merged)
-        Part.objects.filter(pk=merged.pk).update(merged_into=self.plain, estado='unificada', active=False)
+        Part.objects.filter(pk=merged.pk).update(merged_into=self.plain, estado='unificada')
         with self.assertRaisesMessage(RuntimeError, 'líneas unificadas'):
             run_migration_function(self.MIGRATION, 'repair_variants')
         SupplierItem.objects.filter(pk=stranded.pk).update(part=None, matching_status='pending')

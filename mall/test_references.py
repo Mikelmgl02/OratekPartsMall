@@ -13,7 +13,6 @@ from .brand_models import Brand
 from .catalog_grouping import merge_catalog_parts
 from .catalog_import import build_plan, save_plan
 from .models import PartCode, Reference, ReferenceDeleteRefused, ReferenceSource
-from .oem_reference_models import OEMReference, OEMReferenceSource
 from .services import matching_part
 from .test_factories import (make_client, make_code, make_line, make_reference, make_supplier, make_user, make_variant, run_migration_function)
 
@@ -287,7 +286,6 @@ class RetireTests(APITestCase):
 
     def test_an_oem_alterno_is_the_library_row_itself_and_nothing_mirrors_it(self):
         ref, _ = references.add(self.line, '17801-30070', 'TOYOTA', ref_type='oem', source=ALGO)
-        self.assertFalse(OEMReference.objects.exists() or OEMReferenceSource.objects.exists())  # S4: the OEM table is frozen
         self.assertTrue(Reference.objects.filter(references.library_q(), pk=ref.pk).exists())
         references.retire(ref)  # only the OEM finder backs it: no library number, so it retires as before
         self.assertFalse(Reference.objects.filter(references.library_q(), pk=ref.pk).exists())

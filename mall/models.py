@@ -57,8 +57,8 @@ class Invitation(models.Model):
 
 class Part(models.Model):
     # The OEM line's lifecycle (inventory refactor S1; mall.lines is its writer and the readers' querysets). merged_into is set exactly
-    # on unificada lines. `active` mirrors estado == 'publicada' and `is_OEM` mirrors tipo == 'OEM' for the readers that still name
-    # them: from S10 nothing writes either (0086's trigger keeps the columns in step; 0089 makes them generated columns).
+    # on unificada lines. `active` (estado == 'publicada') and `is_OEM` (tipo == 'OEM') are generated mirrors for the readers that still
+    # name them (S10: 0086's trigger writes the columns until 0089 makes them generated columns).
     ESTADOS = [('referencia', 'Referencia'), ('preparacion', 'En preparación'), ('publicada', 'Publicada'), ('rechazada', 'Rechazada'),
                ('retirada', 'Retirada'), ('unificada', 'Unificada')]
     ORIGENES = [('catalogo', 'Catálogo'), ('biblioteca', 'Biblioteca OEM'), ('proveedor', 'Proveedor')]
@@ -72,23 +72,16 @@ class Part(models.Model):
     # S4). Lines in referencia (library numbers with no product) and in preparación may share one across makes (44310-STX-305 for
     # ACURA and HONDA); a unificada line's codigo is frozen and left out, since the References' uniqueness already stops its reuse.
     sku = models.CharField(max_length=200, db_index=True, verbose_name='SKU interno')
-    is_OEM = models.BooleanField(default=False, db_index=True, verbose_name='El SKU principal es OEM')
-    # S10 contract, step 1 (0086): nothing reads or writes the columns name, category, subcategory or legacy_brand any more. The first
-    # three are legacy_* here (their columns kept by db_column) so the names are free for the properties below; a database default fills
-    # them all for the inserts, until step 2 takes them out of the state and step 3 (0089) drops them.
-    legacy_name = models.CharField(max_length=200, blank=True, default='', db_default='', db_column='name', editable=False,
-                                   verbose_name='nombre (anterior a S10)')
+    is_OEM = models.GeneratedField(expression=Q(tipo='OEM'), output_field=models.BooleanField(), db_persist=True, db_index=True,
+                                   verbose_name='El SKU principal es OEM')
+    # S10: name, category, subcategory and legacy_brand are no fields (step 2, 0087; 0089 drops their columns): name and the subgrupo's
+    # names are the properties below.
     description = models.TextField(blank=True, verbose_name='descripción')
     tipo = models.CharField(max_length=12, choices=TIPOS, default='UNKNOWN', db_default='UNKNOWN', db_index=True, verbose_name='tipo')
-    legacy_category = models.CharField(max_length=120, blank=True, default='', db_default='', db_column='category', editable=False,
-                                       verbose_name='categoría (anterior a S10)')
-    legacy_subcategory = models.CharField(max_length=120, blank=True, default='', db_default='', db_column='subcategory', editable=False,
-                                          verbose_name='subcategoría (anterior a S10)')
     part_type = models.ForeignKey('PartType', on_delete=models.PROTECT, null=True, blank=True, related_name='parts')
     technical_revision = models.PositiveIntegerField(default=0, editable=False)
     applications = models.ManyToManyField('Application', through='ItemApplication', related_name='parts', blank=True)
-    legacy_brand = models.CharField(max_length=120, blank=True, default='', db_default='', editable=False, verbose_name='marca histórica')
-    active = models.BooleanField(default=True, verbose_name='activo')
+    active = models.GeneratedField(expression=Q(estado='publicada'), output_field=models.BooleanField(), db_persist=True, verbose_name='activo')
     merged_into = models.ForeignKey('self', on_delete=models.PROTECT, null=True, blank=True,
                                     related_name='merged_parts', editable=False, verbose_name='SKU unificado')
     estado = models.CharField(max_length=12, choices=ESTADOS, default='publicada', db_default='publicada', db_index=True, verbose_name='estado')
@@ -141,8 +134,8 @@ class Part(models.Model):
         fields = kwargs.get('update_fields')
         adding = self._state.adding
         before = dict(getattr(self, '_identity', {})) if not adding else {}
-        # active and is_OEM only mirror estado and tipo (inventory refactor S10): 0086's trigger writes them in the database, and
-        # this keeps the loaded instance in step without reading a deferred field.
+        # active and is_OEM are generated from estado and tipo (S10): a save never writes them, and this keeps the loaded instance in
+        # step (an UPDATE returns no generated value) without reading a deferred field.
         if 'estado' in self.__dict__:
             self.active = self.estado == 'publicada'
         if 'tipo' in self.__dict__:
@@ -174,14 +167,8 @@ class Part(models.Model):
                                               name='line_unificada_iff_merged'),
                        models.CheckConstraint(condition=~Q(estado='rechazada') | (~Q(decision_reason='') & Q(decided_at__isnull=False)),
                                               name='line_rejected_has_reason'),
-                       # Transition until 0089 (S10's contract, step 3) makes active a generated mirror of estado; from 0086 a trigger
-                       # writes it, so no writer can break this.
-                       models.CheckConstraint(condition=Q(active=True, estado='publicada') | Q(active=False) & ~Q(estado='publicada'),
-                                              name='line_active_iff_publicada'),
-                       # From 0076 (S2b's tighten): tipo mirrors the main Reference; is_OEM mirrors tipo (0086's trigger writes it;
-                       # 0089 makes it a generated column and drops line_oem_iff_tipo).
-                       models.CheckConstraint(condition=Q(tipo__in=['OEM', 'AFTERMARKET', 'UNKNOWN']), name='line_valid_tipo'),
-                       models.CheckConstraint(condition=Q(is_OEM=True, tipo='OEM') | Q(is_OEM=False) & ~Q(tipo='OEM'), name='line_oem_iff_tipo')]
+                       # From 0076 (S2b's tighten): tipo mirrors the main Reference (is_OEM is generated from it, S10).
+                       models.CheckConstraint(condition=Q(tipo__in=['OEM', 'AFTERMARKET', 'UNKNOWN']), name='line_valid_tipo')]
         # The lookups of a codigo in every estado (mall.lines.lines_by_codigos), which unique_sku_case_insensitive served until S4.
         indexes = [models.Index(Lower('sku'), name='line_codigo_lower_idx')]
 
@@ -306,17 +293,9 @@ class Reference(models.Model):
     part = models.ForeignKey(Part, on_delete=models.PROTECT, related_name="codes", verbose_name='repuesto del catálogo')
     brand = BrandField(max_length=120, null=True, blank=True, default='', verbose_name='marca opcional')
     code = models.CharField(max_length=120, verbose_name='código')
+    # The JSON's legacy ref_type (S10: no field; ref_type below derives it from tipo, and a code's citation is in its sources,
+    # mall.references.source_text).
     REF_TYPES = [('unknown', 'SIN CLASIFICAR'), ('oem', 'OEM'), ('company', 'EMPRESA / FABRICANTE')]
-    # S10 contract, step 1 (0086): the columns ref_type, reference_source and oem_reference are no longer read or written (ref_type's
-    # database default and trigger, reference_source's default, oem_reference's NULL); the first two are legacy_* here (columns kept by
-    # db_column), ref_type is the property below and a code's citation is in its sources (mall.references.source_text). Step 2 takes
-    # them out of the state and 0089 drops them.
-    legacy_ref_type = models.CharField(max_length=20, choices=REF_TYPES, default='unknown', db_default='unknown', db_index=True,
-                                       db_column='ref_type', editable=False)
-    legacy_reference_source = models.CharField(max_length=500, blank=True, default='', db_default='', db_column='reference_source',
-                                               editable=False, verbose_name='fuente de la equivalencia (anterior a S10)')
-    oem_reference = models.ForeignKey('mall.OEMReference', on_delete=models.SET_NULL, null=True, blank=True, related_name='alternos',
-                                      verbose_name='referencia OEM')
     # The public id: PostgreSQL fills it for every row, old code's inserts included. From S4 it is the Biblioteca's id of a library
     # number (tipo oem with a brand): the OEMReference id for the numbers the library had before S4, a new uuid after.
     uid = models.UUIDField(db_default=RandomUUID(), unique=True, editable=False, verbose_name='identificador público')
@@ -366,9 +345,6 @@ class Reference(models.Model):
             models.CheckConstraint(condition=Q(tipo__in=['oem', 'aftermarket', 'interno', 'otro']), name='reference_valid_tipo'),
             models.CheckConstraint(condition=Q(estado__in=['verificado', 'declarado', 'inferido', 'disputa', 'retirada']),
                                    name='reference_valid_estado'),
-            # Transition until 0089 drops ref_type (from 0086 a trigger writes it from tipo, so no writer can break this).
-            models.CheckConstraint(condition=Q(tipo='oem', legacy_ref_type='oem') | Q(tipo='aftermarket', legacy_ref_type='company')
-                                   | Q(tipo__in=['interno', 'otro'], legacy_ref_type='unknown'), name='reference_tipo_matches_ref_type'),
             models.CheckConstraint(condition=Q(tipo='interno', supplier__isnull=False) | (~Q(tipo='interno') & Q(supplier__isnull=True)),
                                    name='reference_interno_has_supplier'),
             models.CheckConstraint(condition=~Q(code=''), name='reference_code_set'),
@@ -518,16 +494,6 @@ class CatalogImportIssue(models.Model):
         ordering = ['created_at', 'row']
         constraints = [models.UniqueConstraint(fields=['job', 'row'], name='unique_catalog_import_issue_row')]
 
-class Alternate(models.Model):
-    # Historical compatibility records; the active alternos library uses Reference.
-    part = models.ForeignKey(Part, on_delete=models.PROTECT, related_name="alternates", verbose_name='repuesto del catálogo')
-    replacement = models.ForeignKey(Part, on_delete=models.PROTECT, related_name="replaces", verbose_name='repuesto alterno')
-    notes = models.TextField(blank=True, verbose_name='notas')
-    class Meta:
-        verbose_name = 'alterno'
-        verbose_name_plural = 'alternos'
-        constraints = [models.UniqueConstraint(fields=["part", "replacement"], name="unique_alternate"), models.CheckConstraint(condition=~Q(part=models.F("replacement")), name="different_alternate")]
-
 class SupplierItem(models.Model):
     # A variant (inventory refactor S3): a supplier's item hangs from one Reference of its line, and part is always that Reference's
     # line (mall.variants.attach is the only writer of both; from 0078 a composite foreign key keeps them in step, so moving a
@@ -663,7 +629,7 @@ from .analytics_models import UsageEvent, UsageVisit
 from .assistant_models import WhatsAppAssistantSession
 from .basket_models import BasketEvent, BasketItem
 from .inbox_models import AccountWhatsApp, ConversationRead, InboxCursor, InboxGroup, PushSubscription, WhatsAppContact, WhatsAppMessage
-from .matching_models import MatchingQueue, MatchingCase, SupplierCodeMapping, MatchingDecision
+from .matching_models import MatchingQueue, MatchingCase, MatchingDecision
 from .technical_models import Grupo, PartType, TechnicalTemplate, TechnicalField, PartSpecification, Application, ItemApplication
 from .pricing_models import (SupplierPricingSettings, PricingAuditEvent, PriceList, PriceListEntry, SupplierItemPricing, PriceChange,
                              ClientPricingProfile, PricingRule)
@@ -672,11 +638,9 @@ from .price_import_models import PriceImportJob, PriceImportBatch
 from .quote_assistant_models import QuoteAssistantRun, AIUsageRecord
 from .catalog_suffix_models import CatalogCodeSuffix, CatalogCodeSuffixChange
 from .oem_finder_models import OEMFinderRun, OEMReviewCase, OEMFinderChange, OEMApplyHalt, OEMReviewDecision, OEMAutoCandidate
-from .oem_reference_models import OEMReference, OEMReferenceSource, OEMCrossReference, OEMCrossReferenceRetired, PartOEMLink
 from .catalog_split_models import CatalogSplit, CatalogSeparation
 from .apiag_models import ApiagConnection
 from .apiag_sync_models import ApiagSucursal, ApiagSync, SupplierItemBranchStock
-from .sku_proposal_models import SkuProposal, SkuProposalItem
 from .sku_review_models import SkuReviewRun, SkuReviewVerdict
 from .brand_models import Brand, BrandAlias
 from .search_document_models import SearchDocument, SearchDocumentRebuild

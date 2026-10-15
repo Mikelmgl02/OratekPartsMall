@@ -84,7 +84,6 @@ class CatalogFilterTests(APITestCase):
         """S5, S10: the filters and facets keep their text parameters but read each line's subgrupo (its grupo's nombre and its name);
         a line with no subgrupo has none (S10: its old text is never read)."""
         disc = self.part('DISC')
-        Part.objects.filter(pk=disc.pk).update(legacy_category='TEXTO VIEJO', legacy_subcategory='OTRO')  # the old text: never read
         make_line(sku='HALF', description='REPUESTO', category='FRENOS')  # half a pair: no subgrupo
         facets = self.client.get(self.url, {'include_facets': '1'}).data['facets']
         self.assertEqual({row['value']: row['count'] for row in facets['category']}, {'FRENOS': 1, '': 1})

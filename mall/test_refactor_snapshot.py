@@ -68,9 +68,7 @@ class CaptureTests(Fresh, TestCase):
         self.assertIn(f'admin_grid/sku p1/results[id={self.line.pk}]/description', [path for path, _, _ in allowed['expected']])
 
     def test_checks_run_what_today_has_and_skip_what_no_stage_added_yet(self):
-        from .oem_reference_models import OEMReference
         make_line('17801-30070-OLD', active=False)  # C1 (S1): publicada, unificada and retirada lines, as on the live catalog
-        OEMReference.objects.all().delete()  # C4 (S4): every number of the OEM table has its Reference once S4's backfill ran
         from . import search_document
         search_document.rebuild()  # I8 (S7): the documents are written when a transaction commits, which a TestCase never does
         results = {(check_id, outcome) for check_id, _, outcome, _ in snapshot.run_checks()}

@@ -10,7 +10,6 @@ the app itself uses. Each stage of the refactor changes these functions, not the
 - make_variant: a supplier's item, today a SupplierItem loaded through ingest_inventory like an upload.
 - make_library_number: a number of the OEM library: from S4 a Reference (tipo oem, its manufacturer as brand) on the line that carries
   it or on a line of its own in referencia, with one source (mall.references.add_library_number).
-- make_legacy_number: a number of the OEM table as it was before S4 (OEMReference), for S4's backfill and the tools before it.
 - make_account, make_supplier, make_client: accounts with one role and their members.
 
 historical_apps() is the app registry as of one migration, for tests that run a data migration's functions: the live registry carries
@@ -127,55 +126,6 @@ def make_library_number(manufacturer, code, *, source_kind='manual', citation=''
     texts = {key: value for key, value in (defaults or {}).items() if key in ('description', 'part_type', 'applications') and value}
     return references.add_library_number(manufacturer, code, source_kind=source_kind, citation=citation, source_detail=detail,
                                          **texts, **fields)[0]
-
-
-def make_legacy_number(manufacturer, code, *, source_kind='manual', citation='', detail=None, status=None, **fields):
-    """A number of the OEM table as it was before S4 (OEMReference with one OEMReferenceSource), which S4's backfill turns into a
-    Reference and the tools that ran before it (S0, S2b) still read. fields: printed_forms, description, part_type, applications..."""
-    from .oem_reference import derived_status
-    from .oem_reference_models import OEMReference, OEMReferenceSource
-    ref = OEMReference.objects.create(manufacturer=manufacturer, code=code, printed_forms=fields.pop('printed_forms', [code]),
-                                      status=status or derived_status([(source_kind, detail or {})]), **fields)
-    OEMReferenceSource.objects.create(reference=ref, kind=source_kind, citation=citation, detail=detail or {})
-    return ref
-
-
-def legacy_mirror(ref):
-    """What the OEM table's mirror (the signal handlers before S4) made of an OEM alterno: the OEMReference (manufacturer = its brand,
-    the compact code) with the source its reference_source names, the alterno listed in that source's part_codes, and the alterno's
-    oem_reference pointing at it. For the tests of the tools that run on the library as it was before S4 (S2a, S2b, S0)."""
-    from .oem_reference import classify_number, derived_status, part_defaults, source_of
-    from .oem_reference_models import OEMReference, OEMReferenceSource, compact
-    kind, citation, detail = source_of(ref.reference_source)
-    texts = {key: value for key, value in part_defaults(Part.objects.filter(pk=ref.part_id).values_list('description', flat=True).first()).items() if value}
-    system, family = classify_number(ref.brand, compact(ref.code), [ref.code])
-    number, _ = OEMReference.objects.get_or_create(manufacturer=ref.brand, code=compact(ref.code), defaults={
-        'printed_forms': [ref.code], 'system': system, 'family': family, **texts})
-    source, created = OEMReferenceSource.objects.get_or_create(reference=number, kind=kind, citation=citation, defaults={'detail': detail})
-    entries = {entry['id']: entry for entry in source.detail.get('part_codes') or []}
-    entries[ref.pk] = {'id': ref.pk, 'part': str(ref.part_id), 'code': ref.code}
-    source.detail = {**source.detail, 'part_codes': sorted(entries.values(), key=lambda entry: entry['id'])}
-    source.save(update_fields=['detail'])
-    if number.status != 'disputed':
-        number.status = derived_status(number.sources.values_list('kind', 'detail'))
-        number.save()
-    Reference.all_objects.filter(pk=ref.pk).update(oem_reference=number)
-    return number
-
-
-S4_TIGHTEN = {'mall_oemcrossreference': 'cross_reference_unique', 'mall_oemcrossreferenceretired': 'cross_reference_retired_unique',
-              'mall_partoemlink': 'part_link_unique'}
-
-
-def before_s4_tighten():
-    """0080's NOT NULL ref_id and keys on ref_id dropped inside the test's transaction (they come back when it rolls back): the state
-    S4's backfill, and the tools that ran before it, write the aftermarket codes, tombstones and links in (reference_id only)."""
-    with connection.cursor() as cursor:
-        cursor.execute('SET CONSTRAINTS ALL IMMEDIATE')
-        for table, constraint in S4_TIGHTEN.items():
-            cursor.execute(f'ALTER TABLE {table} ALTER COLUMN ref_id DROP NOT NULL')
-            if constraint in connection.introspection.get_constraints(cursor, table):
-                cursor.execute(f'ALTER TABLE {table} DROP CONSTRAINT {constraint}')
 
 
 class Fresh:

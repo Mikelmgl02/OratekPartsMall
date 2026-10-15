@@ -155,7 +155,7 @@ class AnalyticsTests(APITestCase):
     def test_reviewed_sku_merges_preserve_usage_and_date_filters_exclude_older_visits(self):
         self.post('part_view', part_id=str(self.part.pk))
         target = Part.objects.create(sku='CANONICAL-TAMBOR')
-        Part.objects.filter(pk=self.part.pk).update(active=False, merged_into=target, estado='unificada')
+        Part.objects.filter(pk=self.part.pk).update(merged_into=target, estado='unificada')
         self.post('part_view', part_id=str(target.pk))
         old = UsageVisit.objects.create(user=self.buyer, key=uuid.uuid4(), last_seen_at=timezone.now()-timedelta(days=100))
         UsageVisit.objects.filter(pk=old.pk).update(started_at=timezone.now()-timedelta(days=100))

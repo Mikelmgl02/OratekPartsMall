@@ -305,7 +305,6 @@ class CatalogImportTests(APITestCase):
         """S5: the columns compare against the line's subgrupo by its FK, and a changed SUBCATEGORIA names the subgrupo in the grupo the
         line already has."""
         line = make_line(sku='CATEG-FK', category='FRENOS', subcategory='DISCOS')
-        Part.objects.filter(pk=line.pk).update(legacy_category='TEXTO VIEJO')  # the old text column: never read (S10)
         columns = ['SKU', 'CATEGORIA', 'SUBCATEGORIA']
         preview = self.upload(self.excel([['CATEG-FK', 'frenos', 'discos']], columns)).data
         self.assertEqual((preview['summary']['unchanged_skus'], preview['preview'][0]['category']), (1, 'FRENOS'))

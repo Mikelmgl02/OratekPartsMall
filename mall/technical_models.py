@@ -34,13 +34,10 @@ class Grupo(models.Model):
 
 class PartType(models.Model):
     """A subgrupo: a kind of part within its grupo, with its TechnicalTemplate (1:1). From S10 the grupo FK is its only record of the
-    grupo: the column category (the grupo's nombre as text until then) is no longer read or written (legacy_category here, its column
-    kept by db_column; 0086 gives it a database default, step 2 takes it out of the state and 0089 drops it), and category is the grupo's
-    nombre (load it with select_related('grupo'))."""
+    grupo (its old text column left the state in 0087 and the table in 0089), and category is the grupo's nombre (load it with
+    select_related('grupo'))."""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     grupo = models.ForeignKey(Grupo, on_delete=models.PROTECT, related_name='subgrupos', verbose_name='grupo')
-    legacy_category = models.CharField(max_length=120, blank=True, default='', db_default='', db_column='category', editable=False,
-                                       verbose_name='grupo (texto anterior a S10)')
     name = models.CharField(max_length=120, verbose_name='subgrupo')
 
     @property

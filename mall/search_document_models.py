@@ -15,10 +15,6 @@ class SearchDocument(models.Model):
     codes = models.TextField(blank=True, default='', verbose_name='códigos',
                              help_text='Las referencias públicas no retiradas y sus otras grafías; una en disputa solo si es la principal.')
     compact = models.TextField(blank=True, default='', verbose_name='códigos compactos', help_text='Los mismos códigos sin separadores.')
-    # S10 contract, step 1 (0086): nothing fills or reads reach any more (the aftermarket codes it held were OEMCrossReference rows, which
-    # S10 archives); a database default fills it until step 2 takes it out of the state and 0089 drops it with its index.
-    reach = models.TextField(blank=True, default='', db_default='', verbose_name='números alcanzados',
-                             help_text='Hasta S9: los números OEM vinculados a la línea y los códigos posventa archivados bajo sus números, compactos.')
     internal = models.JSONField(default=dict, blank=True, verbose_name='códigos internos',
                                 help_text='{id del proveedor: [códigos]}: sus códigos internos, solo para su propio catálogo.')
     text = models.TextField(blank=True, default='', verbose_name='texto',
@@ -34,7 +30,6 @@ class SearchDocument(models.Model):
         verbose_name_plural = 'documentos de búsqueda'
         indexes = [GinIndex(fields=['codes'], opclasses=['gin_trgm_ops'], name='search_document_codes_trgm'),
                    GinIndex(fields=['compact'], opclasses=['gin_trgm_ops'], name='search_document_compact_trgm'),
-                   GinIndex(fields=['reach'], opclasses=['gin_trgm_ops'], name='search_document_reach_trgm'),
                    GinIndex(fields=['text'], opclasses=['gin_trgm_ops'], name='search_document_text_trgm')]
 
     def __str__(self):

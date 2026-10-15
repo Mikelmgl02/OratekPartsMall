@@ -23,11 +23,9 @@ class GrupoTests(TestCase):
             Grupo.objects.create(nombre='frenos')
 
     def test_a_subgrupos_grupo_is_its_fk_and_its_text_is_no_longer_written(self):
-        """S10: PartType.category is its grupo's nombre (a property); the code neither reads nor writes the old text column (0086's
-        trigger writes it for the code before S10: mall.test_s10_legacy_text)."""
+        """S10: PartType.category is its grupo's nombre (a property)."""
         pads = PartType.objects.create(grupo=grupo_for('frenos'), name='pastillas')
         self.assertEqual((pads.name, pads.category), ('PASTILLAS', 'FRENOS'))
-        self.assertEqual(PartType.objects.filter(pk=pads.pk).values_list('legacy_category', flat=True).get(), 'FRENOS')
         pads.grupo = grupo_for('FRENADO')
         pads.save(update_fields=['grupo'])
         self.assertEqual(PartType.objects.select_related('grupo').get(pk=pads.pk).category, 'FRENADO')
@@ -53,7 +51,6 @@ class SubgrupoWriterTests(TestCase):
         self.assertEqual((line.category, line.subcategory), ('FRENOS', 'DISCOS'))
         self.assertTrue(TechnicalTemplate.objects.filter(part_type=line.part_type).exists())
         self.assertEqual(make_line('S5-B', part_type=part_type_for('FRENOS', 'DISCOS')).part_type_id, line.part_type_id)
-        self.assertEqual(Part.objects.filter(pk=line.pk).values_list('legacy_category', 'legacy_subcategory').get(), ('FRENOS', 'DISCOS'))
 
     def test_a_pair_of_texts_names_a_subgrupo_and_half_a_pair_is_refused(self):
         part_type = part_type_for('suspension', 'muelles')
@@ -100,7 +97,6 @@ class PartTypeApiTests(APITestCase):
         self.assertEqual(response.status_code, 201, response.data)
         part_type = PartType.objects.get(pk=response.data['id'])
         self.assertEqual((response.data['category'], part_type.grupo.nombre), ('CARROCERIA', 'CARROCERIA'))
-        PartType.objects.filter(pk=part_type.pk).update(legacy_category='TEXTO VIEJO')  # the FK is what the API shows
         self.assertEqual(self.client.get(f'{self.url}{part_type.pk}/').data['category'], 'CARROCERIA')
         duplicate = self.client.post(self.url, {'category': 'Carroceria', 'name': 'Faros'}, format='json')
         self.assertEqual(duplicate.status_code, 400)

@@ -15,7 +15,7 @@ from django.db.models import Case, IntegerField, Q, Value, When
 from django.db.models.lookups import Contains
 
 from .oem_links import MIN_SEARCH
-from .oem_reference_models import compact
+from .oem_reference import compact
 
 # Words that join a search but name nothing (filtro de aceite para Toyota). Not DEL: the catalog writes it for delantero.
 FILLER = {'DE', 'LA', 'LAS', 'EL', 'LOS', 'PARA', 'CON', 'Y', 'EN', 'POR', 'UN', 'UNA'}

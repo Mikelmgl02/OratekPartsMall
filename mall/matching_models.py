@@ -67,20 +67,6 @@ class MatchingCase(models.Model):
         indexes = [models.Index(fields=['kind', 'status'], name='matching_case_kind_status')]
 
 
-class SupplierCodeMapping(models.Model):
-    """A reviewed local code is not automatically a universal OEM alias."""
-    supplier = models.ForeignKey('mall.Account', on_delete=models.CASCADE)
-    code = models.CharField(max_length=120)
-    brand = models.CharField(max_length=120, blank=True)
-    description = models.TextField(blank=True)
-    part = models.ForeignKey('mall.Part', on_delete=models.PROTECT)
-    actor = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        constraints = [models.UniqueConstraint(fields=['supplier', 'code', 'brand'], name='unique_supplier_code_mapping')]
-
-
 class MatchingDecision(models.Model):
     case = models.ForeignKey(MatchingCase, null=True, on_delete=models.SET_NULL)
     actor = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL)

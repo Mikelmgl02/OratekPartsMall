@@ -88,7 +88,6 @@ class CategoryEngineTests(TestCase):
         """S5: an existing subgrupo enters the choices under its grupo's nombre (the FK), whatever its text says, and wins over a rule's
         spelling of the same pair."""
         custom = part_type_for('OTRO', 'CUSTOM')
-        PartType.objects.filter(pk=custom.pk).update(legacy_category='TEXTO VIEJO')  # the old text column: never read (S10)
         rule = part_type_for('Frenos', 'Pastillas de freno')
         choices = taxonomy()
         self.assertIn(('OTRO', 'CUSTOM'), choices)

@@ -144,7 +144,6 @@ class SkuReviewTests(APITestCase):
         self.assertEqual((twins.verdict, twins.reason, twins.link_part), ('bad', 'duplicate', None))   # a person chooses which SKU
         self.assertIn('TW1, TWIN-A', twins.reasons[0])
         self.assertEqual(self.line('A1').version, known.proposal_version)  # rules write nothing
-        self.assertEqual(known.proposal_id, None)
 
     def test_the_ai_reviews_and_fills_only_what_it_may(self):
         lights = type_index('CARROCERÍA', 'FAROS')
@@ -231,7 +230,7 @@ class SkuReviewTests(APITestCase):
     def test_a_retired_catalog_owner_leaves_the_choice_to_a_person(self):
         owner = make_line(sku='OWN-1', name='OWN-1')
         Reference.objects.create(part=owner, code='ZZ-100', brand='ACME')
-        Part.objects.filter(pk=owner.pk).update(active=False, estado='retirada')
+        Part.objects.filter(pk=owner.pk).update(estado='retirada')
         self.item(self.dealer, '1', 'ZZ100', 'ACME', 'PIEZA')
         propose()
         with patch('mall.sku_review.generate_json') as ai:

@@ -237,7 +237,7 @@ class SplitLegacyTests(TestCase):
         SupplierItem.objects.filter(pk__in=[item.pk for item in items]).update(part=target)
         for item in SupplierItem.objects.filter(pk__in=[item.pk for item in items]):
             variants.ensure_attached(item)  # what S3's backfill does with them since
-        Part.objects.filter(pk=source.pk).update(merged_into=target, estado='unificada', active=False)
+        Part.objects.filter(pk=source.pk).update(merged_into=target, estado='unificada')
         CatalogMerge.objects.create(actor=self.root, target=target, summary={}, sources=[{'id': str(source.pk), 'sku': source.sku, 'codes': [],
                                     'items': [str(item.pk) for item in items], 'images': []}])
         return alias

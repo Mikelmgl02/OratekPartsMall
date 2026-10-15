@@ -35,15 +35,13 @@ class SkuReviewRun(models.Model):
 class SkuReviewVerdict(models.Model):
     """What a run concluded about one product: good (approve it), bad (reject or link it) or unsure (a person decides), why, and what
     it filled in. It holds for the product's version after that fill (proposal_version: the line's version from S6); once the product
-    changes it is stale («cambió»). From S6 it hangs from the line (line); proposal stays on the verdicts given before S6, whose
-    proposal's id is its line's (mall.refactor.s6_new_products points each at its line)."""
+    changes it is stale («cambió»). From S6 it hangs from the line (line); the proposal the verdicts given before S6 named left with
+    S10 (its table is archived; each of those verdicts has its line)."""
     VERDICTS = [('good', 'Buena'), ('bad', 'Mala'), ('unsure', 'Dudosa')]
     METHODS = [('rule', 'Regla'), ('ai', 'IA')]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     run = models.ForeignKey(SkuReviewRun, on_delete=models.CASCADE, related_name='verdicts', verbose_name='revisión')
-    proposal = models.ForeignKey('mall.SkuProposal', on_delete=models.CASCADE, null=True, blank=True, related_name='review_verdicts',
-                                 verbose_name='SKU propuesto')
     line = models.ForeignKey('mall.Part', on_delete=models.SET_NULL, null=True, blank=True, related_name='review_verdicts', verbose_name='línea')
     position = models.PositiveIntegerField(verbose_name='posición en la revisión')
     proposal_version = models.PositiveIntegerField(verbose_name='versión revisada')
@@ -63,9 +61,7 @@ class SkuReviewVerdict(models.Model):
         verbose_name = 'veredicto de la revisión IA'
         verbose_name_plural = 'veredictos de la revisión IA'
         constraints = [
-            models.UniqueConstraint(fields=['run', 'proposal'], name='sku_review_one_verdict_per_run'),
             models.UniqueConstraint(fields=['run', 'line'], name='sku_review_one_verdict_per_run_line'),
             models.CheckConstraint(condition=models.Q(verdict__in=['good', 'bad', 'unsure']), name='sku_review_valid_verdict'),
         ]
-        indexes = [models.Index(fields=['proposal', '-created_at'], name='sku_review_latest'),
-                   models.Index(fields=['line', '-created_at'], name='sku_review_line_latest')]
+        indexes = [models.Index(fields=['line', '-created_at'], name='sku_review_line_latest')]
