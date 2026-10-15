@@ -240,7 +240,7 @@ def stock_plan(supplier, rows, *, lock=False):
         action_taken = resolution.action if resolution is not None else plan.rule
         if resolution is not None and resolution.line is not None:
             parts.setdefault(resolution.line.pk, resolution.line)
-        outcomes.append((row['row'], action_taken, str(part_id or ''), status, plan.pending[0], plan.pending[1]))
+        outcomes.append((row['row'], *outcome_key(action_taken, parts.get(part_id), status), plan.pending[0] or '', plan.pending[1] or ''))
         compared = ['codigo', 'brand', 'description', 'references', *(field for field in OPTIONAL if field in data)]
         action = 'create' if not item else 'update' if any(getattr(item, field) != data[field] for field in compared) or difference else 'unchanged'
         summary['valid_rows'] += 1
@@ -290,8 +290,8 @@ def stock_plan(supplier, rows, *, lock=False):
                          item.source, item.reported_quantity, item.reserved_quantity, str(item.part_id),
                          item.matching_status, item.updated_at.isoformat(), item.references, item.reference_id,
                          item.codigo_pendiente, item.brand_pendiente) for item in items.values()),
-        'parts': sorted((str(part.pk), part.sku, part.description, part.active, str(part.merged_into_id), part.estado) for part in parts.values()),
-        'codes': sorted((alias.pk, str(alias.part_id), alias.brand, alias.code, alias.estado) for alias in aliases),
+        # S6: what the rows will do (each one's line and status) instead of the raw lines and codes they read: an earlier batch of the
+        # same job creates new products and Rule 3 codes, which change those rows without changing any outcome that matters.
         'outcomes': sorted(outcomes),
         'reservations': sorted((str(reservation.pk), reservation.quantity) for orders in held.values() for reservation in orders),
     }
@@ -375,6 +375,14 @@ class SupplierInventoryImport(APIView):
             if stock_plan(supplier, rows)[1] != initial_fingerprint:
                 raise StaleSupplierPreview()
         return Response(job_result(job))
+
+
+def outcome_key(action, line, status):
+    """A row's outcome as the snapshot compares it: its line and status, a new product (no line yet, or a line in preparación, which
+    an earlier row or batch of the same upload may have just made) as one token."""
+    if action == 'no_line' or (line is not None and line.estado == 'preparacion' and status == 'pending'):
+        return 'nuevo', 'pending'
+    return (str(line.pk) if line is not None else ''), status
 
 
 def same_outcome(item, expected):

@@ -121,6 +121,24 @@ class SupplierExcelImportTests(APITestCase):
         self.assertEqual((unknown.part.estado, unknown.matching_status), ('preparacion', 'pending'))
         self.assertEqual(Part.objects.filter(estado__in=['publicada', 'retirada']).count(), 2)
 
+    def test_a_later_batch_holding_a_code_an_earlier_batch_made_a_new_product_still_commits(self):
+        """S6: a batch's commit gives a code no line has a line of its own in preparación (rule 4) and adds rule 3's codes; a later batch
+        of the same upload that holds those codes is not stale for it (the snapshot compares what the rows do, not the rows read)."""
+        Part.objects.create(sku='77777-12345', description='BOMBA')
+        rows = [['NEW-1', 'ZZ-NUEVO-55555', 'KSM', 'BOMBA', 1], ['NEW-2', 'ZZ-NUEVO-55555', 'KSM', 'BOMBA', 2],
+                ['TAG-1', '77777-12345-GMB', '', 'BOMBA', 1], ['TAG-2', '77777-12345-GMB', '', 'BOMBA', 3]]
+        with patch('mall.supplier_import.BATCH_SIZE', 1):
+            result = self.preview(rows)
+            self.assertEqual(result.status_code, 200, result.data)
+            self.assertEqual([row['resolucion'] for row in result.data['preview']], ['no_line', 'no_line', 'new_reference_on_line', 'new_reference_on_line'])
+            for index in range(4):
+                committed = self.commit(result.data['job_id'], index)
+                self.assertEqual(committed.status_code, 200, (index, committed.data))
+        first, second = (SupplierItem.objects.get(supplier_invent_id=pk) for pk in ('NEW-1', 'NEW-2'))
+        self.assertEqual((first.part_id, first.part.estado, second.matching_status), (second.part_id, 'preparacion', 'pending'))
+        tagged = SupplierItem.objects.filter(supplier_invent_id__in=['TAG-1', 'TAG-2'])
+        self.assertEqual({(item.part.sku, item.matching_status, item.reference.code) for item in tagged}, {('77777-12345', 'matched', '77777-12345-GMB')})
+
     def test_apiag_owned_rows_and_every_duplicate_stable_id_are_deferred(self):
         apiag = self.seed('ERP-OWNED', source='apiag', quantity=9)
         result = self.preview([

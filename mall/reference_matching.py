@@ -649,16 +649,19 @@ def add_reference(new, item, *, actor=None):
 
 # --- loads -----------------------------------------------------------------------------------------------------------------------------
 
-def open_review_case(item, kinds=HOLDS_STOCK):
+def open_review_case(item, kinds=HOLDS_STOCK, ignore=None):
     """The open case that keeps the item in review: its code change, or a contradiction with the line it is on now (a variant case
-    of a line it left holds nothing)."""
+    of a line it left holds nothing). ignore: a case being decided right now."""
     MatchingCase, _ = _cases()
     if item is None or not item.pk:
         return None
     held = Q(kind__in=[kind for kind in kinds if kind != 'variant'])
     if 'variant' in kinds:
         held |= Q(kind='variant', key=f'variant:{item.pk}:{item.part_id}')
-    return MatchingCase.objects.filter(held, item_id=item.pk, status='review').order_by('created_at', 'pk').first()
+    rows = MatchingCase.objects.filter(held, item_id=item.pk, status='review')
+    if ignore is not None:
+        rows = rows.exclude(pk=ignore.pk)
+    return rows.order_by('created_at', 'pk').first()
 
 
 def rejected_change(item, codigo, brand):
@@ -756,12 +759,14 @@ def finish_load(item, load, *, actor=None, changed=True):
         sync_declared(item)
 
 
-def settle_item(item):
-    """An attached item that no case holds any more takes its line's status (matched on a catalog line)."""
+def settle_item(item, *, ignore=None):
+    """An attached item that no case holds any more (ignore: the case being decided) takes its line's status (matched on a catalog
+    line)."""
     from .variants import status_for
     SupplierItem = _models()[2]
     item.refresh_from_db(fields=['reference', 'part', 'matching_status', 'codigo_pendiente', 'brand_pendiente'])
-    if item.reference_id is None or open_review_case(item) is not None or item.codigo_pendiente is not None or item.brand_pendiente is not None:
+    if (item.reference_id is None or open_review_case(item, ignore=ignore) is not None or item.codigo_pendiente is not None
+            or item.brand_pendiente is not None):
         return item
     status = status_for(item.part)
     if status != item.matching_status:
@@ -1172,10 +1177,11 @@ class CaseChanged(ValidationError):
 
 
 def lock_for(case, line_ids=()):
-    """The locks of a decision on an item case, in the plan's order: the supplier's Account, the lines by id, the item, the case. Returns
-    (item, {line id: Part}, case)."""
+    """The locks of a decision on an item case, in the plan's order (§1.6.5): the supplier's Account, then the lines by id; the item is
+    read under the Account's lock (every writer of a supplier's items takes it first) and written last by the decision, and the case is
+    locked when it is decided (confirm). Refuses (CaseChanged) a case decided or changed meanwhile, or a supplier importing. Returns
+    (item, {line id: Part})."""
     from .models import Account, Part
-    MatchingCase, _ = _cases()
     _, _, SupplierItem = _models()
     item = SupplierItem.objects.filter(pk=case.item_id).first()
     if item is None:
@@ -1186,11 +1192,28 @@ def lock_for(case, line_ids=()):
         raise CaseChanged('Espera a que termine la importación de este proveedor.')
     ids = sorted({str(pk) for pk in [*line_ids, item.part_id] if pk})
     lines = {str(line.pk): line for line in Part.objects.select_for_update().filter(pk__in=ids).order_by('pk')}
-    item = SupplierItem.objects.select_for_update(of=('self',)).select_related('supplier', 'part', 'reference').get(pk=item.pk)
-    locked = MatchingCase.objects.select_for_update().get(pk=case.pk)
-    if locked.fingerprint != case.fingerprint or locked.status != 'review':
+    item = SupplierItem.objects.select_related('supplier', 'part', 'reference').get(pk=item.pk)
+    current(case)
+    return item, lines
+
+
+def current(case):
+    """The case as stored, refused (CaseChanged) when it was decided or its evidence changed since the person opened it."""
+    MatchingCase, _ = _cases()
+    stored = MatchingCase.objects.filter(pk=case.pk).first()
+    if stored is None or stored.fingerprint != case.fingerprint or stored.status != 'review':
         raise CaseChanged('El caso cambió. Actualiza las coincidencias antes de confirmar.')
-    return item, lines, locked
+    return stored
+
+
+def confirm(case):
+    """The case locked, last (plan §1.6.5: cases after the catalog rows and the items), and checked again before it is decided: a
+    change meanwhile refuses the decision (CaseChanged) and rolls back what it wrote."""
+    MatchingCase, _ = _cases()
+    locked = MatchingCase.objects.select_for_update().filter(pk=case.pk).first()
+    if locked is None or locked.fingerprint != case.fingerprint or locked.status != 'review':
+        raise CaseChanged('El caso cambió. Actualiza las coincidencias antes de confirmar.')
+    return locked
 
 
 def line_reference(line, item):
@@ -1269,8 +1292,8 @@ def decide(case, action, *, actor, line=None):
                  line: Separar referencia (an item never waits without a Reference and without a case)
     separar_referencia  line or variant: the item gets a line of its own (interno main)
     merge, keep_apart   merge cases (keep_apart writes CatalogSeparation pairs; on lines a legacy merge joined it takes them apart)
-    Returns the case."""
-    from .models import Part
+    One transaction, in the plan's lock order: the supplier's Account and the lines (lock_for), the catalog rows, the item, then the
+    cases (confirm: a case changed meanwhile rolls everything back). Returns the case."""
     from .variants import VariantConflict
     kind = case.kind
     if kind == 'merge':
@@ -1278,99 +1301,99 @@ def decide(case, action, *, actor, line=None):
     if action in ('merge', 'keep_apart'):
         raise ValidationError('Esta acción es solo para casos de unificación.')
     extra = [line] if line else []
+    holder = None
     if kind == 'code_change':
         holder = references.find(case.new_code, case.new_brand, supplier=case.item.supplier_id if case.item_id else None)
         if holder is not None:
             extra.append(holder.part_id)
     try:
         with transaction.atomic():
-            item, lines, locked = lock_for(case, extra)
+            item, lines = lock_for(case, extra)
             if line and str(line) not in lines:
-                found = Part.objects.select_for_update().filter(pk=line).first()
-                if found is None:
-                    raise CaseChanged('La línea elegida no existe.')
-                lines[str(found.pk)] = found
+                raise CaseChanged('La línea elegida no existe.')
             chosen = lines.get(str(line)) if line else None
-            if action == 'separar_referencia' or (action == 'dismiss' and kind == 'line'):
-                if kind not in ('line', 'variant'):
-                    raise ValidationError('Separar referencia es para casos de línea o de variante.')
-                if kind == 'variant' and str(item.part_id) not in {str(pk) for pk in locked.lines.values_list('pk', flat=True)}:
-                    raise CaseChanged('El artículo ya no está en la línea de este caso.')
-                new = separate(item, actor=actor)
-                close_case(locked, 'applied', actor=actor, action='separated', evidence={'line': str(new.pk)})
-                close_item_cases(item, keep=locked, actor=actor)
-                return locked
-            if kind == 'line':
-                if item.reference_id is not None:
-                    raise CaseChanged('El artículo ya cuelga de una referencia.')
-                if chosen is None:
-                    raise ValidationError('Elige la línea del artículo.')
-                hang_on_line(item, chosen, actor=actor)
-                remember_choice(item, chosen, actor)
-                close_case(locked, 'applied', actor=actor, action='approved', evidence={'line': str(chosen.pk)})
-                return locked
-            if kind == 'variant':
-                case_line = next(iter(locked.lines.all()), None)
-                if case_line is None or item.part_id != case_line.pk:
-                    raise CaseChanged('El artículo ya no está en la línea de este caso.')
-                if action == 'dismiss' or chosen is None or chosen.pk == case_line.pk:
-                    close_case(locked, 'dismissed' if action == 'dismiss' else 'applied', actor=actor,
-                               action='dismissed' if action == 'dismiss' else 'approved', evidence={'line': str(case_line.pk)})
-                    settle_item(item)
-                    return locked
-                hang_on_line(item, chosen, actor=actor)
-                remember_choice(item, chosen, actor)
-                close_case(locked, 'applied', actor=actor, action='approved', evidence={'line': str(chosen.pk), 'from': str(case_line.pk)})
-                close_item_cases(item, keep=locked, actor=actor)
-                return locked
-            if kind == 'code_change':
-                if (item.codigo_pendiente or item.codigo, item.brand if item.brand_pendiente is None else item.brand_pendiente) != \
-                        (case.new_code, case.new_brand) or (item.codigo_pendiente is None and item.brand_pendiente is None):
-                    raise CaseChanged('El cambio de código ya no es el de este caso.')
-                if action == 'dismiss':
-                    item.codigo_pendiente = item.brand_pendiente = None
-                    item._attached = True
-                    item.save(update_fields=['codigo_pendiente', 'brand_pendiente', 'updated_at'])
-                    close_case(locked, 'dismissed', actor=actor, action='dismissed')
-                    settle_item(item)
-                    return locked
-                destination = chosen or (lines.get(str(holder.part_id)) if holder is not None else None) or item.part
-                moved = destination.pk != item.part_id
-                hang_on_line(item, destination, actor=actor, approve=True)
-                remember_choice(item, destination, actor)
-                close_case(locked, 'applied', actor=actor, action='approved', evidence={'line': str(destination.pk)})
-                if moved:
-                    close_item_cases(item, keep=locked, actor=actor)
-                settle_item(item)
-                return locked
-            if kind == 'reference':
-                declared = [row for row in (item.references or []) if references.clave(row.get('code', '')) == references.clave(case.new_code)
-                            and (row.get('brand', '') or '') == case.new_brand]
-                if not declared or item.part_id is None:
-                    raise CaseChanged('El proveedor ya no declara este código para el artículo.')
-                if action == 'dismiss':
-                    close_case(locked, 'dismissed', actor=actor, action='dismissed')
-                    return locked
-                if chosen is not None and chosen.pk != item.part_id:
-                    hang_on_line(item, chosen, actor=actor, approve=False)
-                    remember_choice(item, chosen, actor)
-                    close_case(locked, 'applied', actor=actor, action='approved', evidence={'line': str(chosen.pk), 'moved': True})
-                    close_item_cases(item, keep=locked, actor=actor)
-                    settle_item(item)
-                    return locked
-                tipo = references.tipo_of(declared[0].get('ref_type', 'unknown'))
-                from .variants import declared_by
-                try:
-                    with transaction.atomic():
-                        ref, _ = references.add(item.part, case.new_code, case.new_brand, tipo=tipo, estado='declarado',
-                                                source=declared_by(item), actor=actor, detail={TAG: stamp('referencia_declarada', item)})
-                except references.ReferenceConflict as error:
-                    raise ValidationError(f'{error.message} Elige esa línea para el artículo o unifica las dos líneas.')
-                close_case(locked, 'applied', actor=actor, action='approved', evidence={'reference': ref.pk})
-                return locked
+            outcome = decide_item(case, action, item, chosen, lines, holder, actor)
+            if outcome is None:
+                raise ValidationError('Acción no válida para este caso.')
+            status, decision, evidence, others = outcome
+            close_case(confirm(case), status, actor=actor, action=decision, evidence=evidence)
+            if others:
+                close_item_cases(item, keep=case, actor=actor)
+            return case
     except VariantConflict as error:
         raise ValidationError(error.message)
-    raise ValidationError('Acción no válida para este caso.')
+
+
+def decide_item(case, action, item, chosen, lines, holder, actor):
+    """decide's writes on the catalog and the item, before the case is locked: (status, decision, evidence, close the item's other
+    cases) for the case, or None for an action the case does not take."""
+    kind = case.kind
+    if action == 'separar_referencia' or (action == 'dismiss' and kind == 'line'):
+        if kind not in ('line', 'variant'):
+            raise ValidationError('Separar referencia es para casos de línea o de variante.')
+        if kind == 'variant' and str(item.part_id) not in {str(pk) for pk in case.lines.values_list('pk', flat=True)}:
+            raise CaseChanged('El artículo ya no está en la línea de este caso.')
+        new = separate(item, actor=actor)
+        return 'applied', 'separated', {'line': str(new.pk)}, True
+    if kind == 'line':
+        if item.reference_id is not None:
+            raise CaseChanged('El artículo ya cuelga de una referencia.')
+        if chosen is None:
+            raise ValidationError('Elige la línea del artículo.')
+        hang_on_line(item, chosen, actor=actor)
+        remember_choice(item, chosen, actor)
+        return 'applied', 'approved', {'line': str(chosen.pk)}, False
+    if kind == 'variant':
+        case_line = next(iter(case.lines.all()), None)
+        if case_line is None or item.part_id != case_line.pk:
+            raise CaseChanged('El artículo ya no está en la línea de este caso.')
+        if action == 'dismiss' or chosen is None or chosen.pk == case_line.pk:
+            settle_item(item, ignore=case)
+            if action == 'dismiss':
+                return 'dismissed', 'dismissed', {'line': str(case_line.pk)}, False
+            return 'applied', 'approved', {'line': str(case_line.pk)}, False
+        hang_on_line(item, chosen, actor=actor)
+        remember_choice(item, chosen, actor)
+        settle_item(item, ignore=case)
+        return 'applied', 'approved', {'line': str(chosen.pk), 'from': str(case_line.pk)}, True
+    if kind == 'code_change':
+        waiting = (item.codigo_pendiente or item.codigo, item.brand if item.brand_pendiente is None else item.brand_pendiente)
+        if waiting != (case.new_code, case.new_brand) or (item.codigo_pendiente is None and item.brand_pendiente is None):
+            raise CaseChanged('El cambio de código ya no es el de este caso.')
+        if action == 'dismiss':
+            item.codigo_pendiente = item.brand_pendiente = None
+            item._attached = True
+            item.save(update_fields=['codigo_pendiente', 'brand_pendiente', 'updated_at'])
+            settle_item(item, ignore=case)
+            return 'dismissed', 'dismissed', {}, False
+        destination = chosen or (lines.get(str(holder.part_id)) if holder is not None else None) or item.part
+        moved = destination.pk != item.part_id
+        hang_on_line(item, destination, actor=actor, approve=True)
+        remember_choice(item, destination, actor)
+        settle_item(item, ignore=case)
+        return 'applied', 'approved', {'line': str(destination.pk)}, moved
+    if kind == 'reference':
+        declared = [row for row in (item.references or []) if references.clave(row.get('code', '')) == references.clave(case.new_code)
+                    and (row.get('brand', '') or '') == case.new_brand]
+        if not declared or item.part_id is None:
+            raise CaseChanged('El proveedor ya no declara este código para el artículo.')
+        if action == 'dismiss':
+            return 'dismissed', 'dismissed', {}, False
+        if chosen is not None and chosen.pk != item.part_id:
+            hang_on_line(item, chosen, actor=actor, approve=False)
+            remember_choice(item, chosen, actor)
+            settle_item(item, ignore=case)
+            return 'applied', 'approved', {'line': str(chosen.pk), 'moved': True}, True
+        from .variants import declared_by
+        try:
+            with transaction.atomic():
+                ref, _ = references.add(item.part, case.new_code, case.new_brand, tipo=references.tipo_of(declared[0].get('ref_type', 'unknown')),
+                                        estado='declarado', source=declared_by(item), actor=actor,
+                                        detail={TAG: stamp('referencia_declarada', item)})
+        except references.ReferenceConflict as error:
+            raise ValidationError(f'{error.message} Elige esa línea para el artículo o unifica las dos líneas.')
+        return 'applied', 'approved', {'reference': ref.pk}, False
+    return None
 
 
 def remember_choice(item, line, actor):
@@ -1384,21 +1407,20 @@ def decide_merge(case, action, *, actor, line=None):
     """merge (or approve): the case's lines merged into `line` (one of them; the case's first by default) through
     mall.line_merge.merge_lines; a merge that waits (guard subgrupo) refuses with the reason and keeps the case. keep_apart (or dismiss):
     CatalogSeparation pairs; lines a legacy merge joined (the legacy-auto-merge batch) are taken apart first (Separar SKU, as the
-    merge recorded). A batch case whose lines are one line already: approve keeps them merged."""
+    merge recorded). A batch case whose lines are one line already: approve keeps them merged. The case is locked and checked last, in
+    the same transaction as the merge or the split (plan §1.6.5)."""
     from .line_merge import MergeGuard, keep_apart, merge_lines
     from .lines import canonical_ids
     from .models import Part
     MatchingCase, _ = _cases()
+    current(case)
     ids = [str(pk) for pk in case.lines.values_list('pk', flat=True)]
     canonical = canonical_ids(ids)
     merged = len({canonical.get(pk, pk) for pk in ids}) == 1
-    with transaction.atomic():
-        locked = MatchingCase.objects.select_for_update().get(pk=case.pk)
-        if locked.fingerprint != case.fingerprint or locked.status != 'review':
-            raise CaseChanged('El caso cambió. Actualiza las coincidencias antes de confirmar.')
     if action in ('approve', 'merge'):
         if merged:
-            return close_case(locked, 'applied', actor=actor, action='approved', note='Se conserva la unificación.')
+            with transaction.atomic():
+                return close_case(confirm(case), 'applied', actor=actor, action='approved', note='Se conserva la unificación.')
         first = (case.sources or [{}])[0].get('id') or ids[0]  # the case's first line: publicada before the rest (merge_case_spec)
         target_id = str(line) if line else str(first)
         if target_id not in ids:
@@ -1406,18 +1428,19 @@ def decide_merge(case, action, *, actor, line=None):
         target = Part.objects.get(pk=canonical.get(target_id, target_id))
         sources = list(Part.objects.filter(pk__in=sorted({canonical.get(pk, pk) for pk in ids} - {str(target.pk)})).order_by('pk'))
         try:
-            merge = merge_lines(target, sources, actor=actor, reason='Caso de unificación')
+            with transaction.atomic():
+                merge = merge_lines(target, sources, actor=actor, reason='Caso de unificación')
+                return close_case(confirm(case), 'applied', actor=actor, action='approved',
+                                  evidence={'target': str(target.pk), 'merge_id': str(merge.pk) if merge is not None else None})
         except MergeGuard as guard:
-            MatchingCase.objects.filter(pk=locked.pk).update(guard=guard.guard)
+            MatchingCase.objects.filter(pk=case.pk).update(guard=guard.guard)
             raise
-        return close_case(locked, 'applied', actor=actor, action='approved',
-                          evidence={'target': str(target.pk), 'merge_id': str(merge.pk) if merge is not None else None})
     if action in ('keep_apart', 'dismiss'):
-        if merged and len(ids) > 1:
-            split_legacy(ids, canonical, actor=actor)
         with transaction.atomic():
-            pairs = keep_apart(ids, actor=actor, case=locked, reason='caso')
-        return close_case(locked, 'dismissed', actor=actor, action='dismissed', evidence={'separated': pairs})
+            if merged and len(ids) > 1:
+                split_legacy(ids, canonical, actor=actor)
+            pairs = keep_apart(ids, actor=actor, case=case, reason='caso')
+            return close_case(confirm(case), 'dismissed', actor=actor, action='dismissed', evidence={'separated': pairs})
     raise ValidationError('Acción no válida para un caso de unificación.')
 
 
