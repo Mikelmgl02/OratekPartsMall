@@ -1387,7 +1387,9 @@ def decide_item(case, action, item, chosen, lines, holder, actor):
         from .variants import declared_by
         try:
             with transaction.atomic():
-                ref, _ = references.add(item.part, case.new_code, case.new_brand, tipo=references.tipo_of(declared[0].get('ref_type', 'unknown')),
+                # The brand as its canonical nombre (I12 from S6: an alias spelling such as TOY is written TOYOTA).
+                ref, _ = references.add(item.part, case.new_code, Lookups().canonical(case.new_brand),
+                                        tipo=references.tipo_of(declared[0].get('ref_type', 'unknown')),
                                         estado='declarado', source=declared_by(item), actor=actor,
                                         detail={TAG: stamp('referencia_declarada', item)})
         except references.ReferenceConflict as error:

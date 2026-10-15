@@ -326,6 +326,12 @@ class DecisionTests(Matching, APITestCase):
         self.assertEqual(self.decide(case, 'approve').status_code, 200)
         ref = Reference.objects.get(part=self.disc, code='GWT-77B')
         self.assertEqual((ref.brand, ref.tipo, ref.estado), ('GMB', 'aftermarket', 'declarado'))
+        from .brand_models import BrandAlias
+        BrandAlias.objects.create(alias='TOY', brand=Brand.objects.get(nombre='TOYOTA'))
+        self.ingest('58411-1R000', stable='ALIAS', description='DISCO FRENO DEL', references_=[{'code': '58411-1R099', 'brand': 'TOY'}])
+        alias_case = MatchingCase.objects.get(kind='reference', new_code='58411-1R099')
+        self.assertEqual(self.decide(alias_case, 'approve').status_code, 200)
+        self.assertEqual(Reference.objects.get(part=self.disc, code='58411-1R099').brand, 'TOYOTA')  # I12: the canonical nombre
         other = self.ingest('ZZ-OTRO-1', supplier=self.other, description='TAMBOR', references_=[{'code': 'J69-3502010', 'brand': 'CHERY'}])
         case = MatchingCase.objects.get(key__startswith=f'reference:{other.pk}:')
         self.assertEqual(set(case.lines.values_list('pk', flat=True)), {other.part_id, self.chery.pk})
