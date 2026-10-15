@@ -1,23 +1,13 @@
-import io
-import json
 import threading
-from datetime import timedelta
 from unittest import skipUnless
-from unittest.mock import patch
 
 from django.db import connection
-from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
-from django.utils import timezone
+from django.test import SimpleTestCase, TransactionTestCase
 
 from . import oem_finder as of
-from .catalog_suffix_models import CatalogCodeSuffix
 from .catalog_suffixes import SuffixTable, fixture_rows
-from .matching_queue import MATCHING_LOCK, matching_lock
+from .matching_queue import matching_lock
 from .matching_worker import process_queue
-from .models import Account, CatalogImportJob, Part, PartCode, SupplierItem, User
-from .oem_finder_models import OEMFinderRun, OEMReviewCase
-from .refactor import s0_suffix_revert as revert
-from .test_catalog_suffixes import relabel_night, scratch_checkout
 from .test_factories import Fresh, make_catalog  # Fresh: the OEM modules import it from here
 
 # Representative rows from the prototype samples, plus the class members the lexicon needs (>= 5 other keys = strong).
@@ -149,23 +139,6 @@ class TierTests(SimpleTestCase):
         self.assertEqual((mit['proposed_main'], mit['written_form'], mit['proposed_brand']), ('MR968365', 'MR-968365', 'MITSUBISHI'))
         self.assertEqual(self.res['31110-07600-MOBIS']['proposed_brand'], 'KIA')
 
-    def test_report_selection_and_scenario(self):
-        counts = of.report(self.finder, self.res, list(self.res))
-        self.assertEqual(sum(v[0] for v in counts['tiers'].values()), len(CATALOG))
-        self.assertEqual(counts['scenario'], {})
-        self.assertEqual(counts['tiers']['AUTO_FLAG_CURRENT'], [6, 0])
-        self.assertEqual(of.select(self.finder, self.res, tier='CONFLICT', limit=2), ['48654-0K050-MANDO', '48654-0K050-NAK'])
-        _, base = evaluate(table=baseline_table())
-        self.assertEqual(len([r for r in base.values() if r['tier'] == 'STRONG_PENDING_OWNER_TAGS']), 1)
-
-    def test_in_stock_first_orders_the_selection(self):
-        items = [{'supplier_id': 's1', 'part_id': '333512', 'codigo': '333512', 'brand': 'KYB', 'references': [],
-                  'reported_quantity': 4, 'reserved_quantity': 1}]
-        finder, res = evaluate(items=items)
-        self.assertEqual(finder.avail['333512'], 3)
-        self.assertEqual(of.select(finder, res, in_stock_first=True)[0], '333512')
-        self.assertNotEqual(of.select(finder, res)[0], '333512')
-
 
 class LearningPopulationTests(SimpleTestCase):
     """oem-finder-3: an OEM-flagged SKU is graded no more but still teaches every learned index (owner decision)."""
@@ -182,7 +155,7 @@ class LearningPopulationTests(SimpleTestCase):
         finder, res = self.grade(self.BASES + [('48654-0K010-G', 'BASE AMORT TOY HILUX')], oem)  # -G: the key of an OEM-flagged SKU
         self.assertEqual((set(res), len(finder.learn)), ({'48654-30030', '48654-35010', '48654-0K010-G'}, 7))
         self.assertEqual(sorted(k for k, _, _ in finder.lex[('TOYOTA', '48654')]), sorted(of.norm_key(s) for s, _ in self.BASES))
-        self.assertEqual(of.report(finder, res, list(res))['lexicon'], {'classes': 1, 'class_keys': 6, 'model_hints': len(finder.model_hints)})
+        self.assertEqual((len(finder.lex), sum(len(keys) for keys in finder.lex.values())), (1, 6))
         current = res['48654-30030']
         self.assertEqual((current['tier'], current['primary']['lexicon']['result'], current['primary']['lexicon']['n_other_keys']),
                          ('AUTO_FLAG_CURRENT', 'agree_strong', 5))
@@ -246,234 +219,6 @@ def create_catalog(rows=CATALOG):
     return make_catalog(rows)
 
 
-class ReviewCaseTests(Fresh, TestCase):
-    def setUp(self):
-        super().setUp()
-        self.parts = create_catalog()
-
-    def run_finder(self, **kwargs):
-        return of.execute(**kwargs)
-
-    def case(self, sku):
-        return OEMReviewCase.objects.get(part=self.parts[sku])
-
-    def test_a_dry_run_records_the_run_and_queues_only_review_tiers(self):
-        codes = PartCode.objects.count()
-        outcome = self.run_finder()
-        run = outcome['run']
-        self.assertEqual((run.mode, run.status, run.rules_version), ('dry_run', 'completed', 'oem-finder-3'))
-        self.assertTrue(run.suffix_table_version.startswith('db:'))
-        self.assertEqual(run.counts['tiers']['AUTO_FLAG_CURRENT'], [6, 0])
-        self.assertEqual(run.scope, {'in_stock_first': False, 'limit': None, 'tier': None, 'stage': 'command'})
-        tiers = {sku: outcome['results'][str(p.pk)]['tier'] for sku, p in self.parts.items()}
-        queued = {c.part.sku for c in OEMReviewCase.objects.select_related('part')}
-        self.assertEqual(queued, {sku for sku, t in tiers.items() if t in of.REVIEW_TIERS})
-        self.assertEqual(run.counts['cases']['created'], len(queued))
-        # never a PartCode (reconcile_identities would promote a verified OEM one) and never a rename
-        self.assertEqual(PartCode.objects.count(), codes)
-        self.assertFalse(Part.objects.filter(is_OEM=True).exists())
-        self.assertEqual(sorted(Part.objects.values_list('sku', flat=True)), sorted(s for s, _ in CATALOG))
-        case = self.case('48654-0K040-MANDO')
-        self.assertEqual((case.tier, case.candidate, case.written_form, case.brand, case.system, case.chain, case.status),
-                         ('PROBABLE_BASE', '48654-0K040', '48654-0K040', 'TOYOTA', 'TOYOTA', 'MANDO', 'review'))
-        self.assertEqual((case.blockers, case.snapshot['sku'], case.run_id), (['no_second_unit'], '48654-0K040-MANDO', run.pk))
-        self.assertEqual(case.evidence['primary']['lexicon']['result'], 'agree_strong')
-        conflict = self.case('48654-60020-MANDO')
-        self.assertEqual(conflict.blockers, ['conflict:base_is_existing_active_part', 'family_incompatible'])
-        self.assertEqual(self.case('MR-968365').candidate, 'MR968365')
-
-    def test_re_running_is_idempotent_and_keeps_decisions(self):
-        first = self.run_finder()['counts']['cases']
-        before = dict(OEMReviewCase.objects.values_list('part_id', 'fingerprint'))
-        OEMReviewCase.objects.filter(part=self.parts['333512']).update(status='dismissed')
-        second = self.run_finder()['counts']['cases']
-        self.assertEqual(second, {'created': 0, 'updated': 0, 'restamped': 0, 'unchanged': first['created'], 'stock_changed': 0, 'resolved': 0, 'skipped': 0})
-        self.assertEqual(dict(OEMReviewCase.objects.values_list('part_id', 'fingerprint')), before)
-        self.assertEqual(self.case('333512').status, 'dismissed')
-
-    def test_changed_evidence_reopens_and_departed_parts_resolve(self):
-        self.run_finder()
-        OEMReviewCase.objects.filter(part=self.parts['43211-29026-JR']).update(status='dismissed', decision={'action': 'dismiss'})
-        Part.objects.filter(pk=self.parts['43211-29026-JR'].pk).update(description='MUÑEQUILLA TOY HIACE 05-')
-        Part.objects.filter(pk=self.parts['333512'].pk).update(is_OEM=True, tipo='OEM')  # the pair moves together (0076)
-        stats = self.run_finder()['counts']['cases']
-        self.assertEqual((stats['updated'], stats['resolved']), (1, 1))
-        reopened = self.case('43211-29026-JR')
-        self.assertEqual((reopened.status, reopened.decision, reopened.snapshot['description']), ('review', {}, 'MUÑEQUILLA TOY HIACE 05-'))
-        self.assertEqual(self.case('333512').status, 'resolved')
-        Part.objects.filter(pk=self.parts['333512'].pk).update(is_OEM=False, tipo='UNKNOWN')
-        self.assertEqual(self.run_finder()['counts']['cases']['updated'], 1)
-        self.assertEqual(self.case('333512').status, 'review')
-
-    def test_a_scoped_run_only_touches_its_selection(self):
-        self.run_finder()
-        Part.objects.filter(pk=self.parts['333512'].pk).update(is_OEM=True, tipo='OEM')  # the pair moves together (0076)
-        outcome = self.run_finder(tier='CONFLICT', limit=2)
-        self.assertEqual(outcome['counts']['scope'], {'CONFLICT': 2})
-        self.assertEqual(outcome['counts']['cases'], {'created': 0, 'updated': 0, 'restamped': 0, 'unchanged': 2, 'stock_changed': 0, 'resolved': 0, 'skipped': 0})
-        self.assertEqual(self.case('333512').status, 'review')
-        self.assertEqual(self.run_finder()['counts']['cases']['resolved'], 1)
-
-    def test_a_rules_bump_refreshes_the_evidence_and_keeps_every_decision(self):
-        self.run_finder()
-        before = dict(OEMReviewCase.objects.values_list('part_id', 'fingerprint'))
-        OEMReviewCase.objects.filter(part=self.parts['333512']).update(status='dismissed', decision={'action': 'dismiss', 'reason': 'not_oem'})
-        OEMReviewCase.objects.filter(part=self.parts['43211-29026-JR']).update(evidence={})
-        with patch.object(of, 'OEM_FINDER_VERSION', 'oem-finder-9'):
-            outcome = self.run_finder()
-            text, again = of.render(outcome), self.run_finder()['counts']['cases']
-        self.assertEqual({k: outcome['counts']['cases'][k] for k in ('created', 'updated', 'restamped', 'unchanged', 'resolved')},
-                         {'created': 0, 'updated': 0, 'restamped': len(before), 'unchanged': 0, 'resolved': 0})
-        self.assertEqual(dict(OEMReviewCase.objects.values_list('part_id', 'fingerprint')), before)  # decisions keep their fingerprint
-        dismissed, refreshed = self.case('333512'), self.case('43211-29026-JR')
-        self.assertEqual((dismissed.status, dismissed.decision['action'], dismissed.run_id), ('dismissed', 'dismiss', outcome['run'].pk))
-        self.assertEqual((refreshed.status, refreshed.evidence['tier'], refreshed.run.rules_version), ('review', 'UNKNOWN_SUFFIX', 'oem-finder-9'))
-        self.assertEqual((again['restamped'], again['unchanged']), (0, len(before)))
-        self.assertIn(f'{len(before)} con la evidencia de las reglas oem-finder-9 (conservan su decisión)', text)
-
-    def test_suffix_labels_retier_only_the_parts_that_read_them(self):
-        # Two parts read tokens D4 reverts (S0.1): RH and STD, variants relabelled as brands on 2026-10-07.
-        self.parts.update(create_catalog([('48654-60040-RH', 'BASE AMORT TOY PRADO RH'), ('11701-11020-STD', 'CASQ BANCADA TOY 3E 5E')]))
-        self.run_finder()
-        before = dict(OEMReviewCase.objects.values_list('part_id', 'fingerprint'))
-        row = CatalogCodeSuffix.objects.get(token='U')
-        row.notes = 'REVISAR'
-        row.save()
-        outcome = self.run_finder()
-        self.assertNotEqual(outcome['run'].suffix_table_version, OEMFinderRun.objects.order_by('id').first().suffix_table_version)
-        self.assertEqual(outcome['counts']['cases']['updated'], 0)
-        jr = CatalogCodeSuffix.objects.get(token='JR')
-        jr.cls, jr.tag_kind, jr.status, jr.owner_confirmed, jr.confidence = 'TAG', 'brand', 'owner_confirmed', True, 'medium'
-        jr.save()
-        outcome = self.run_finder()
-        self.assertEqual(outcome['counts']['cases']['updated'], 1)
-        case = self.case('43211-29026-JR')
-        self.assertEqual((case.tier, case.chain, case.blockers), ('WEAK', 'JR', []))  # unblocked: base F2 (no class data)
-        self.assertEqual({k: v for k, v in OEMReviewCase.objects.values_list('part_id', 'fingerprint') if k != case.part_id},
-                         {k: v for k, v in before.items() if k != case.part_id})
-        # The owner's relabel of the 45 tokens re-tiered only the two parts that read one of them; the D4 revert takes them back to
-        # the evidence they had before it, and every other decision keeps its fingerprint.
-        before = dict(OEMReviewCase.objects.values_list('part_id', 'fingerprint'))
-        reading = {self.parts['48654-60040-RH'].pk, self.parts['11701-11020-STD'].pk}
-        self.assertEqual((self.case('48654-60040-RH').tier, self.case('11701-11020-STD').tier), ('VARIANT_REVIEW', 'WEAK'))
-        relabel_night(User.objects.create_superuser('miguel', 'miguel@example.invalid', 'Example938!'))
-        self.assertEqual(self.run_finder()['counts']['cases']['updated'], 2)
-        rh = self.case('48654-60040-RH')
-        self.assertEqual((rh.tier, rh.chain, rh.blockers), ('PROBABLE_BASE', 'RH', ['no_second_unit', 'side_not_confirmed_by_class']))
-        self.assertEqual({k: v for k, v in OEMReviewCase.objects.values_list('part_id', 'fingerprint') if k not in reading},
-                         {k: v for k, v in before.items() if k not in reading})
-        with scratch_checkout():
-            self.assertEqual(revert.run(apply=True, username='miguel', stdout=io.StringIO())['revert'], 45)
-        outcome = self.run_finder()
-        self.assertEqual(outcome['counts']['cases']['updated'], 2)
-        self.assertEqual(dict(OEMReviewCase.objects.values_list('part_id', 'fingerprint')), before)
-        self.assertEqual((self.case('48654-60040-RH').tier, self.case('48654-60040-RH').blockers), ('VARIANT_REVIEW', []))
-
-    def test_stock_changes_update_the_flag_without_reopening(self):
-        self.run_finder()
-        OEMReviewCase.objects.filter(part=self.parts['333512']).update(status='dismissed')
-        supplier = Account.objects.create(name='Proveedor')
-        SupplierItem.objects.create(supplier=supplier, supplier_invent_id='1', part=self.parts['333512'], codigo='333512', brand='KYB',
-                                    source='upload', reported_quantity=3)
-        stats = self.run_finder(in_stock_first=True)['counts']['cases']
-        self.assertEqual((stats['stock_changed'], stats['updated']), (1, 0))
-        case = self.case('333512')
-        self.assertEqual((case.in_stock, case.status), (True, 'dismissed'))
-
-    def test_read_only_writes_nothing(self):
-        outcome = self.run_finder(store=False)
-        self.assertIsNone(outcome['run'])
-        self.assertNotIn('cases', outcome['counts'])
-        self.assertFalse(OEMFinderRun.objects.exists() or OEMReviewCase.objects.exists())
-
-    def test_a_failed_run_is_recorded(self):
-        with patch.object(of, 'load_snapshot', side_effect=RuntimeError('boom')), self.assertRaises(RuntimeError):
-            self.run_finder()
-        run = OEMFinderRun.objects.get()
-        self.assertEqual((run.status, run.errors), ('failed', [{'error': 'RuntimeError', 'detail': 'boom'}]))
-        self.assertFalse(OEMReviewCase.objects.exists())
-
-    def test_only_the_dry_run_mode_exists(self):
-        with self.assertRaises(ValueError):
-            self.run_finder(mode='apply_auto')
-
-
-class CommandTests(Fresh, TestCase):
-    def setUp(self):
-        super().setUp()
-        create_catalog()
-
-    def call(self, *argv):
-        out = io.StringIO()
-        return of.main(list(argv), stdout=out), out.getvalue()
-
-    def test_dry_run_command(self):
-        code, out = self.call('--dry-run', '--in-stock-first')
-        self.assertEqual(code, 0)
-        self.assertIn('Buscador OEM oem-finder-3', out)
-        self.assertIn('Casos de revisión:', out)
-        self.assertEqual(OEMFinderRun.objects.get().scope['in_stock_first'], True)
-
-    def test_read_only_json_scope(self):
-        with patch('sys.stderr', io.StringIO()) as log:
-            code, out = self.call('--dry-run', '--read-only', '--tier', 'CONFLICT', '--json', '-')
-        self.assertEqual(code, 0)
-        self.assertIn('Solo lectura', log.getvalue())
-        doc = json.loads(out)
-        self.assertEqual({r['tier'] for r in doc['results']}, {'CONFLICT'})
-        self.assertEqual(len(doc['results']), 3)
-        self.assertEqual(doc['summary']['tiers']['AUTO_RENAME_BASE'], [1, 0])
-        self.assertFalse(OEMFinderRun.objects.exists())
-
-    def test_before_migrating_only_read_only_runs(self):
-        with patch.object(of, 'tables_ready', return_value=False):
-            code, out = self.call('--dry-run')
-            self.assertEqual((code, OEMFinderRun.objects.exists()), (1, False))
-            self.assertIn('aún no están migradas', out)
-            self.assertEqual(self.call('--dry-run', '--read-only')[0], 0)
-            with self.assertLogs('mall.oem_finder', 'WARNING'):
-                self.assertEqual(of.worker_stage(None), {'status': 'not_migrated'})
-        self.assertFalse(OEMFinderRun.objects.exists() or OEMReviewCase.objects.exists())
-
-    def test_the_command_waits_for_a_catalog_import(self):
-        owner = User.objects.create_user('importa', password='x')
-        CatalogImportJob.objects.create(owner=owner, filename='CATALOGO.xlsx', status='importing',
-                                        expires_at=timezone.now() + timedelta(hours=1))
-        code, out = self.call('--dry-run')
-        self.assertEqual((code, OEMFinderRun.objects.exists()), (2, False))
-        self.assertIn('importación del catálogo en curso', out)
-        self.assertEqual(self.call('--dry-run', '--read-only')[0], 0)
-
-    def test_the_command_requires_dry_run(self):
-        with patch('sys.stderr', io.StringIO()), self.assertRaises(SystemExit):
-            self.call('--limit', '5')
-
-
-class WorkerStageTests(Fresh, TestCase):
-    def setUp(self):
-        super().setUp()
-        create_catalog(CATALOG[:8])
-
-    def test_the_stage_is_off_by_default(self):
-        summary = process_queue(force=True, use_ai=False)
-        self.assertNotIn('oem_finder', summary)
-        self.assertFalse(OEMFinderRun.objects.exists())
-
-    @override_settings(OEM_FINDER_AUTO_STAGE=True)
-    def test_the_stage_runs_a_dry_run_inside_the_pass(self):
-        summary = process_queue(force=True, use_ai=False)
-        run = OEMFinderRun.objects.get()
-        self.assertEqual(summary['oem_finder'], {'status': 'completed', 'run': run.pk, 'cases': run.counts['cases']})
-        self.assertEqual((run.scope['stage'], run.actor.username), ('worker', 'motionpartes-matching-service'))
-
-    @override_settings(OEM_FINDER_AUTO_STAGE=True)
-    def test_a_failing_stage_does_not_fail_the_pass(self):
-        with patch.object(of, 'load_snapshot', side_effect=RuntimeError('boom')), self.assertLogs('mall.oem_finder', 'ERROR'):
-            summary = process_queue(force=True, use_ai=False)
-        self.assertEqual(summary['oem_finder'], {'status': 'failed'})
-        self.assertEqual(OEMFinderRun.objects.get().status, 'failed')
-
-
 class LockTests(SimpleTestCase):
     def test_the_lock_is_a_no_op_off_postgresql(self):
         if connection.vendor == 'postgresql':
@@ -484,39 +229,6 @@ class LockTests(SimpleTestCase):
 
 @skipUnless(connection.vendor == 'postgresql', 'Requires PostgreSQL advisory locks.')
 class AdvisoryLockTests(Fresh, TransactionTestCase):
-    def hold_lock_elsewhere(self):
-        """Another session holds the matching lock (as a running matching pass does) until released."""
-        from django.db import connection as thread_connection
-        held, release = threading.Event(), threading.Event()
-
-        def hold():
-            try:
-                with thread_connection.cursor() as cursor:
-                    cursor.execute('SELECT pg_advisory_lock(%s)', [MATCHING_LOCK])
-                    held.set()
-                    release.wait(10)
-                    cursor.execute('SELECT pg_advisory_unlock(%s)', [MATCHING_LOCK])
-            finally:
-                thread_connection.close()
-        thread = threading.Thread(target=hold)
-        thread.start()
-        held.wait(10)
-        return thread, release
-
-    def test_the_finder_never_overlaps_a_matching_pass(self):
-        create_catalog(CATALOG[:3])
-        thread, release = self.hold_lock_elsewhere()
-        try:
-            out = io.StringIO()
-            self.assertEqual(of.main(['--dry-run'], stdout=out), 2)
-            self.assertIn('búsqueda OEM en curso', out.getvalue())
-            self.assertFalse(OEMFinderRun.objects.exists())
-        finally:
-            release.set()
-            thread.join()
-        self.assertEqual(of.main(['--dry-run'], stdout=io.StringIO()), 0)
-        self.assertEqual(OEMFinderRun.objects.count(), 1)
-
     def test_a_matching_pass_waits_for_the_finder(self):
         results = []
 

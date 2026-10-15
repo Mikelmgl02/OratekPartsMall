@@ -155,20 +155,6 @@ SPECTACULAR_SETTINGS = {"TITLE": "MotionPartes API", "VERSION": "0.1.0", "COMPON
     # Code suffix table (OEM finder). Labels must match CatalogCodeSuffix.status.
     "CatalogSuffixStatusEnum": [("seed_confirmed", "Confirmado en la semilla"), ("needs_owner_confirmation", "Por confirmar"),
                                 ("needs_owner_label", "Por etiquetar"), ("owner_confirmed", "Confirmado por el propietario")],
-    # OEM finder runs and auto-apply (superuser-only).
-    "OEMRunModeEnum": ["dry_run", "apply_auto", "ai"], "OEMRunStatusEnum": ["running", "completed", "failed"],
-    "OEMApplyTierEnum": ["AUTO_FLAG_CURRENT", "AUTO_RENAME_BASE", "STRONG_PENDING_OWNER_TAGS"],
-    "OEMApplyMethodEnum": ["flag_current", "rename_base", "rename_confirmed_tags"], "OEMHaltActionEnum": ["halt", "resume"],
-    # Revisión OEM queue (superuser-only). Tiers and statuses must match mall.oem_finder.REVIEW_TIERS and OEMReviewCase.status.
-    "OEMReviewTierEnum": ["STRONG_PENDING_OWNER_TAGS", "CURRENT_REVIEW", "PROBABLE_BASE", "CURRENT_LIKELY_OEM", "LOCAL_XREF", "MULTI_OEM",
-                          "CONFLICT", "VARIANT_REVIEW", "UNKNOWN_SUFFIX", "WEAK", "NEEDS_AI"],
-    "OEMReviewStatusEnum": ["review", "applied", "dismissed", "resolved"], "OEMReviewMethodEnum": ["flag", "rename"],
-    "OEMReviewActionEnum": ["approve", "choose_oem", "send_to_merge", "dismiss", "reopen"],
-    "OEMDismissReasonEnum": ["not_oem", "other_part", "keep_code", "data_error", "other"], "OEMReviewOutcomeEnum": ["applied", "conflict", "skipped"],
-    "OEMBulkStepActionEnum": ["continue", "stop"],
-    # Pendientes de aplicación automática (superuser-only). Must match mall.oem_auto (TIERS, STATUSES, MODES, ORDERINGS).
-    "OEMAutoTierEnum": ["AUTO_FLAG_CURRENT", "AUTO_RENAME_BASE"], "OEMAutoStatusEnum": ["pending", "applied", "sent_to_review", "excluded", "stale"],
-    "OEMAutoModeEnum": ["canary", "batch"], "OEMAutoOrderingEnum": ["stock", "sku"],
     # OEM reference library (superuser-only). Labels must match OEMReference.status.
     "OEMReferenceStatusEnum": [("verified", "Verificado"), ("declared", "Declarado"), ("inferred", "Inferido"), ("disputed", "En disputa")]}}
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY') or os.getenv('GEM_API_KEY', '')
@@ -179,13 +165,6 @@ APIAG_LOCALHOST = os.getenv('APIAG_LOCALHOST', 'host.docker.internal' if os.path
 # The apiag-sync service (mall.apiag_sync): minutes between pulls of each connection, and the local time of the daily 24-hour pass.
 APIAG_SYNC_MINUTES = max(1, int(os.getenv('APIAG_SYNC_MINUTES', '5')))
 APIAG_SYNC_DAILY_AT = os.getenv('APIAG_SYNC_DAILY_AT', '03:30')
-# Productos nuevos (mall.sku_proposals): the matching worker proposes catalog SKUs for supplier items that match nothing, and these
-# supplier brands count as vehicle makes besides the ones the OEM finder and the OEM library know (their codes are that make's OEM numbers).
-SKU_PROPOSALS_STAGE = os.getenv('SKU_PROPOSALS_STAGE', '1').lower() in ('true', '1', 'yes')
-CATALOG_EXTRA_MAKES = [make.strip().upper() for make in os.getenv('CATALOG_EXTRA_MAKES', 'KAIYI').split(',') if make.strip()]
-# What the storefront search reads (inventory refactor S7, mall.catalog_search): legacy (the catalog tables, as before S7) until the
-# owner flips it to document (the Search Document, mall.search_document) once the counts verify; flipping it back is S7's rollback.
-CATALOG_SEARCH_SOURCE = os.getenv('CATALOG_SEARCH_SOURCE', 'legacy').strip().lower()
 # The matching worker rebuilds every Search Document this often (hours; 0 turns the stage off).
 SEARCH_DOCUMENT_REBUILD_HOURS = float(os.getenv('SEARCH_DOCUMENT_REBUILD_HOURS', '6') or 0)
 # Browser push notifications of the deal inbox (mall.push); off while any is empty. python -m mall.vapid_keys makes a pair.
@@ -251,12 +230,6 @@ GEMINI_OUTPUT_USD_PER_MTOK = env_usd('GEMINI_OUTPUT_USD_PER_MTOK', '5.00')
 GEMINI_GROUNDING_USD_PER_CALL = env_usd('GEMINI_GROUNDING_USD_PER_CALL', '0.035')
 # Every quotation is published from the supplier-reviewed server draft (draft_version). 0 re-opens the draftless legacy API path.
 QUOTES_REQUIRE_DRAFT = os.getenv('QUOTES_REQUIRE_DRAFT', '1').lower() in ('true', '1', 'yes')
-# OEM finder dry run as a matching worker stage after catalog grouping (off by default; python -m mall.oem_finder runs it by hand).
-# Keep it off: its review queue has no screen since the owner retired OEM linking on 2026-10-14.
-OEM_FINDER_AUTO_STAGE = os.getenv('OEM_FINDER_AUTO_STAGE', '0').lower() in ('true', '1', 'yes')
-# 1 makes every matching pass mark OEM the SKUs whose code is a declared or verified number of the OEM list (mall.catalog_identity).
-# Off by default: the owner retired OEM linking on 2026-10-14 (a SKU's OEM numbers become references on its line).
-OEM_EXACT_MARK = os.getenv('OEM_EXACT_MARK', '0').lower() in ('true', '1', 'yes')
 # Owner decision D1 in the matching engine: a supplier item no code ties to a SKU goes to Productos nuevos, and its description words
 # are only hints. Off keeps the engine as it was; it is switched on once the owner has checked the dry run (refactor stage S0.9).
 MATCHING_NO_CODE_EVIDENCE = os.getenv('MATCHING_NO_CODE_EVIDENCE', '0').lower() in ('true', '1', 'yes')

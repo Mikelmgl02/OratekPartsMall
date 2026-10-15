@@ -22,6 +22,9 @@ RESEND_API_KEY = GEMINI_API_KEY = WHATSAPP_ACCESS_TOKEN = VAPID_PRIVATE_KEY = ''
 DO_SPACES_KEY = DO_SPACES_SECRET = DO_SPACES_BUCKET = ''
 REDIS_URL, CHANNEL_LAYERS = '', {}  # test_realtime brings its own in-memory layer
 CHAT_MEDIA_STORAGE = 'local'
+# A test's transaction never commits, so the Search Documents (the storefront search's only source from S10) are written as each
+# writer refreshes them instead of on commit (mall.search_document.refresh); the tests of the commit hook turn it off.
+SEARCH_DOCUMENT_SYNC = True
 STORAGES = {**STORAGES,
             'catalog_media': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
             'chat_media': {'BACKEND': 'django.core.files.storage.FileSystemStorage', 'OPTIONS': {'location': CHAT_MEDIA_ROOT, 'base_url': None}}}  # noqa: F405

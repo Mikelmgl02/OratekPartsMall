@@ -3,10 +3,10 @@ read before S6, now from mall.new_products' lines."""
 import re
 from datetime import timedelta
 
-from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient, APITestCase
 
+from .brand_models import Brand
 from . import new_products
 from .matching_engine import item_row, save_case
 from .matching_models import MatchingCase
@@ -20,9 +20,9 @@ OLD_KEYS = {'id', 'status', 'status_label', 'version', 'sku', 'description', 'br
             'reject_reason', 'reject_reason_label', 'reject_note', 'created_at', 'updated_at', 'earlier'}
 
 
-@override_settings(CATALOG_EXTRA_MAKES=['KAIYI'])
 class ProductosNuevosApiTests(APITestCase):
     def setUp(self):
+        Brand.objects.get_or_create(nombre='KAIYI', defaults={'tipo': 'vehiculo'})  # a vehicle make (mall.sku_proposals.vehicle_makes)
         self.root = User.objects.create_superuser('root', 'root@example.com', 'SecureRoot938!')
         self.dealer = self.supplier('Motion Motors')
         self.other = self.supplier('Repuestos Chinos')

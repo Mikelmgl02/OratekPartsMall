@@ -19,10 +19,14 @@ class APISchemaTests(SimpleTestCase):
         ids = [operation['operationId'] for operation in operations.values()]
         self.assertEqual(len(ids), len(set(ids)))
         for path, method in [('/api/v1/management/matching/', 'get'), ('/api/v1/management/matching/', 'post'),
-                             ('/api/v1/management/matching/{id}/', 'post'), ('/api/v1/management/catalog/{id}/oem-lookup/', 'post'),
-                             ('/api/v1/management/oem-finder/pending/', 'get'), ('/api/v1/management/oem-finder/pending/preview/', 'post'),
-                             ('/api/v1/management/oem-finder/pending/apply/', 'post'), ('/api/v1/management/oem-finder/pending/send-to-review/', 'post')]:
+                             ('/api/v1/management/matching/{id}/', 'post'), ('/api/v1/management/catalog/{id}/oem-lookup/', 'post')]:
             self.assertIn((path, method), operations)
+        # The OEM-link routes the owner retired on 2026-10-14 and the grouping suggestions left with S10.
+        retired = [path for path, _ in operations if path.startswith(('/api/v1/management/oem-finder/', '/api/v1/management/oem-review/'))
+                   or path in ('/api/v1/management/catalog/mark-oem/', '/api/v1/management/catalog/create-oem/',
+                               '/api/v1/management/catalog/unmark-oem/', '/api/v1/management/catalog/grouping/',
+                               '/api/v1/management/catalog/grouping/classify/')]
+        self.assertEqual(retired, [])
         # The inventory refactor's S7 routes (S8's contract).
         for path, method in [('/api/v1/management/lines/', 'get'), ('/api/v1/management/lines/{id}/', 'get'), ('/api/v1/management/lines/{id}/', 'patch'),
                              ('/api/v1/management/lines/{id}/transition/', 'post'), ('/api/v1/management/lines/{id}/references/', 'get'),

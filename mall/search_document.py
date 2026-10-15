@@ -242,7 +242,9 @@ def _flush():
 def refresh(line_ids):
     """Bring the documents of these lines (Parts or ids) up to date with what they show. Inside a transaction the ids wait for the commit
     (one write for the whole transaction, whatever writers asked, and nothing if it rolls back); outside one they are written at once.
-    A failure is logged, never raised: the writer's own change stands and the next rebuild repairs the document. Returns how many ids."""
+    A failure is logged, never raised: the writer's own change stands and the next rebuild repairs the document. SEARCH_DOCUMENT_SYNC
+    (the test settings) writes them at once inside a transaction too: a test's transaction never commits, and the storefront search reads
+    nothing else (S10). Returns how many ids."""
     ids = _ids(line_ids)
     if not ids:
         return 0
@@ -252,7 +254,7 @@ def refresh(line_ids):
         pending = set()
         setattr(current, PENDING, pending)
     pending.update(ids)
-    if current.in_atomic_block:
+    if current.in_atomic_block and not getattr(settings, 'SEARCH_DOCUMENT_SYNC', False):
         # One callback per transaction; a callback a rollback dropped is registered again by the next writer.
         if not any(entry[1] is _flush for entry in current.run_on_commit):
             transaction.on_commit(_flush, robust=True)

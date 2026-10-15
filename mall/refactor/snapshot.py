@@ -12,9 +12,9 @@ them, and refuses to go on if they were read earlier with a value.
 
 What it captures: the storefront catalog and suggest for 30 searches, the offers of 50 lines and the availability of every live line;
 the admin grid (pages 1-3 in 4 orderings); the Biblioteca (pages 1-3 and 50 numbers); Productos nuevos (list and summary); each
-supplier's first inventory page; 20 rows of Revisión OEM and of Pendientes; the equivalents of every line that has them; the matching
-overview with its review and unmatched cases; the merged list, 10 split plans and the alternates grid; 50 oem-equivalents, a mark-oem plan
-of 20 lines, 20 technical sheets and a 200-row supplier import preview.
+supplier's first inventory page; the equivalents of every line that has them; the matching overview with its review and unmatched
+cases; the merged list, 10 split plans and the alternates grid; 50 oem-equivalents, 20 technical sheets and a 200-row supplier import
+preview (Revisión OEM, Pendientes and the mark-oem plan left with the owner's retirement of OEM linking: inventory refactor S10).
 
 Each snapshot keeps its sample (the users, searches, lines, numbers and import rows it read) and is saved as gzipped JSON in --out.
 --diff captures again with the base's sample, so both read the same inputs (BASE defaults to the newest snapshot in --out; --against
@@ -27,7 +27,6 @@ Appendix C; a check waits for the column its own stage adds, so an earlier stage
 import argparse
 import fnmatch
 import gzip
-import hashlib
 import json
 import os
 import re
@@ -42,8 +41,8 @@ WORDS = ['FILTRO AIRE', 'BOMBA AGUA', 'BASE AMORT', 'TERM ESTAB', 'PASTILLA FREN
          'SENSOR OXIGENO']
 ORDERINGS = ['sku', '-stock_record_count', 'description', '-is_OEM']
 PAGES = (1, 2, 3)
-SIZES = {'searches': 30, 'offers': 50, 'biblioteca': 50, 'oem_equivalents': 50, 'mark_oem': 20, 'technical': 20, 'split': 10,
-         'review_rows': 20, 'import_rows': 200, 'import_new': 20}
+SIZES = {'searches': 30, 'offers': 50, 'biblioteca': 50, 'oem_equivalents': 50, 'technical': 20, 'split': 10, 'import_rows': 200,
+         'import_new': 20}
 MATCHING_STATUSES = ('review', 'unmatched')
 # What the matching worker changes between two reads of an unchanged catalog: the run's state in the overview of each status. Anchored
 # there, so a case's own keys (results[id=…]/ai/error) still count.
@@ -94,18 +93,12 @@ def choose_sample(username=None):
     stocked = SupplierItem.objects.filter(matching_status='matched', reported_quantity__gt=F('reserved_quantity'), supplier__active=True)
     numbered = Q(pk__in=PartCode.objects.filter(ref_type='oem', oem_reference__isnull=False).values('part_id')) | Q(
         pk__in=PartOEMLink.objects.values('part_id'))
-    # mark-oem: lines whose code is a library number and are not OEM yet, then those already OEM, then any line.
-    library = set(OEMReference.objects.values_list('code', flat=True))
-    mark = [pk for _, _, pk in sorted((0 if compact(sku) in library and not is_oem else 1 if compact(sku) in library else 2,
-                                        hashlib.md5(str(pk).encode()).hexdigest(), str(pk))
-                                       for pk, sku, is_oem in live.values_list('pk', 'sku', 'is_OEM').iterator())[:SIZES['mark_oem']]]
     return {
         'users': {'admin': admin.pk, 'client': client, 'suppliers': suppliers},
         'searches': searches,
         'offers': ids(live.filter(pk__in=stocked.values('part_id')), SIZES['offers']),
         'biblioteca': ids(OEMReference.objects.all(), SIZES['biblioteca']),
         'oem_equivalents': ids(live.filter(numbered), SIZES['oem_equivalents']),
-        'mark_oem': mark,
         'technical': ids(live.filter(part_type__isnull=False), SIZES['technical']),
         'split': ids(live.filter(pk__in=catalog_lines(('unificada',)).values('merged_into_id')), SIZES['split']),
         'import': import_rows(skus),
@@ -226,14 +219,11 @@ def sections(sample, reader):
         ('productos_nuevos', lambda: {'list': get(admin, f'{management}/catalog/proposals/'),
                                       'summary': get(admin, f'{management}/catalog/proposals/summary/')}),
         ('supplier_inventory', lambda: {pk: get(member, f'/api/v1/accounts/{pk}/inventory/') for pk, member in users['suppliers'].items()}),
-        ('oem_review', lambda: {'review': first_rows(get(admin, f'{management}/oem-review/'), SIZES['review_rows']),
-                                'pending': first_rows(get(admin, f'{management}/oem-finder/pending/'), SIZES['review_rows'])}),
         ('matching', lambda: {status: get(admin, f'{management}/matching/', {'status': status}) for status in MATCHING_STATUSES}),
         ('merged', lambda: {'p1': get(admin, f'{management}/catalog/merged/')}),
         ('split', lambda: {pk: get(admin, f'{management}/catalog/{pk}/split/') for pk in sample['split']}),
         ('alternates', lambda: {f'p{page}': get(admin, f'{management}/alternates/', {'page': page}) for page in PAGES}),
         ('oem_equivalents', lambda: {pk: get(admin, f'{management}/catalog/{pk}/oem-equivalents/') for pk in sample['oem_equivalents']}),
-        ('mark_oem', lambda: {'plan': get(admin, f'{management}/catalog/mark-oem/', {'ids': ','.join(sample['mark_oem'])})} if sample['mark_oem'] else {}),
         ('technical', lambda: {pk: get(admin, f'{management}/catalog/{pk}/technical/') for pk in sample['technical']}),
         ('import_preview', lambda: reader.run('import_preview', lambda: import_preview(sample['import']))),
     ]

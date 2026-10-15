@@ -381,11 +381,6 @@ class ManagedPartSerializer(serializers.ModelSerializer):
                 # The flag describes this exact main code, not every alternate.
                 if new_sku != old_sku:
                     validated_data.setdefault('is_OEM', False)
-                elif old_is_oem and validated_data.get('is_OEM') is False:
-                    from .catalog_oem_mark import listed_refusal
-                    problem = listed_refusal(instance)  # its code is in the OEM list: dispute the number instead
-                    if problem:
-                        raise serializers.ValidationError({'is_OEM': problem})
                 if new_sku != old_sku:
                     # A rename is a new main (S2b): the Reference of the new code (found on the line, or added) becomes the main and
                     # the codigo follows it; the old main stays one of the line's codes.
@@ -408,11 +403,6 @@ class ManagedPartSerializer(serializers.ModelSerializer):
                 if main or not flag_edit or codes is not None:
                     instance = prefer_oem(instance, actor=getattr(self.context.get('request'), 'user', None), selected=main,
                                           confirm_current=codes is not None and not flag_edit)
-                if instance.is_OEM and not old_is_oem:  # a SKU is OEM when its code is in the OEM list (an OEM alterno saved here files it)
-                    from .catalog_oem_mark import unlisted_refusal
-                    problem = unlisted_refusal(instance)
-                    if problem:
-                        raise serializers.ValidationError({'is_OEM': problem})
                 instance.stock_record_count = instance.supplier_items.count()
                 return instance
         except IntegrityError:

@@ -4,9 +4,6 @@ merge case a disputa main lacks, prefer_oem opens the case set_main promises, su
 backfill's catch-up never reopens a decided case, its rollback leaves a merge it cannot undo and deletes the mains the code made, Separar
 gives an OEM review case back whole, and the matching service's account stays disabled."""
 import io
-import json
-import os
-import tempfile
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -23,10 +20,7 @@ from . import reference_matching as rm
 from .matching_models import MatchingCase
 from .models import CatalogMerge, Part, Reference
 from .oem_finder_models import OEMReviewCase
-from .oem_reference_models import PartOEMLink
-from .refactor import s2b_main_refs
-from .test_factories import (Fresh, before_s4_tighten, make_legacy_number, make_line, make_reference, make_supplier, make_user,
-                             make_variant)
+from .test_factories import Fresh, make_line, make_reference, make_supplier, make_user, make_variant
 from .test_main_references import broken_invariants
 
 TIGHTEN = {'mall_part': ('line_oem_iff_tipo',), 'mall_partcode': ('reference_one_main_per_line', 'reference_main_not_retired')}
@@ -182,61 +176,6 @@ class SupplierFamilyTests(TestCase):
         # S6: no parent is invented from suffixed codes (create_supplier_families is gone): each code is a new product of its own.
         self.assertFalse(Part.objects.filter(sku='23300-79185').exists())  # estado: no line in any estado
         self.assertFalse(Reference.objects.filter(estado='disputa').exists())
-
-
-class BackfillCatchUpTests(Fresh, TestCase):
-    def setUp(self):
-        super().setUp()
-        self.root = make_user('s2b-catchup', superuser=True)
-        self.output = tempfile.TemporaryDirectory()
-        self.addCleanup(self.output.cleanup)
-        patcher = patch.dict(os.environ, {'REFACTOR_OUTPUT': self.output.name})
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        drop_tighten_constraints()
-        before_s4_tighten()  # S2b's backfill runs before S4: its links hang from the OEM table (reference_id)
-        tightened = patch.object(s2b_main_refs, 'tightened', return_value=False)
-        tightened.start()
-        self.addCleanup(tightened.stop)
-        number = make_legacy_number('TOYOTA', '4351260150', printed_forms=['43512-60150'], source_kind='catalog_approval', citation='CATÁLOGO')
-        self.carrier, self.linked = make_line('43512-60150'), make_line('DISCO-X')
-        PartOEMLink.objects.create(part=self.linked, legacy_reference=number, source='catalog')
-        references.purge(Reference.all_objects.filter(is_main=True).values_list('pk', flat=True))
-
-    def manifest(self):
-        with open(os.path.join(self.output.name, 'manifest.jsonl'), encoding='utf-8') as handle:
-            return [json.loads(line) for line in handle]
-
-    def apply(self):
-        return s2b_main_refs.run(apply=True, username=self.root.username, stdout=io.StringIO(), hook=lambda groups, **kwargs: {})
-
-    def test_a_catch_up_never_reopens_a_decided_case_and_logs_only_the_cases_it_creates(self):
-        self.apply()
-        case = MatchingCase.objects.get(method='shared_oem_number')
-        self.apply()  # the case is still in review: refreshed, not created again
-        created = [line for line in self.manifest() if line.get('model') == 'matching.MatchingCase' and line['action'] == 'create']
-        self.assertEqual(len(created), 1)
-        case.status = 'dismissed'
-        case.save(update_fields=['status'])
-        make_reference(self.linked, 'DX-2', brand='ACME', tipo='aftermarket')  # its fingerprint moves
-        self.apply()
-        self.assertEqual(MatchingCase.objects.get(pk=case.pk).status, 'dismissed')
-        line_merge.keep_apart([self.carrier.pk, self.linked.pk], actor=self.root, case=case, reason='shared_oem_number')
-        self.assertEqual(s2b_main_refs.plan(hook=None)['shared'], [])  # every pair kept apart: no group
-
-    def test_rollback_deletes_the_mains_the_code_made_after_landing_and_unmarks_the_rest(self):
-        alterno = make_reference(self.linked, 'DISCO-X2')  # an alterno from before S2b landed
-        landed = timezone.now()
-        self.apply()
-        made = create_line('NUEVA-S2B')  # the code's own main, outside the manifest
-        references.set_main(self.linked, alterno, actor=self.root, reason='prueba')
-        out = io.StringIO()
-        result = s2b_main_refs.run(rollback=True, username=self.root.username, stdout=out, landed_at=landed)
-        self.assertFalse(Reference.all_objects.filter(part=made).exists())
-        self.assertFalse(Reference.all_objects.filter(is_main=True).exists())
-        self.assertEqual(Reference.all_objects.get(pk=alterno.pk).part_id, self.linked.pk)  # it was there before: it stays, unmarked
-        self.assertEqual((result['purged'], result['unmarked']), (1, 1))
-        self.assertIn('principales del código borradas 1', out.getvalue())
 
 
 class RollbackHookTests(Fresh, TestCase):

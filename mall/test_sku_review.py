@@ -8,6 +8,7 @@ from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
+from .brand_models import Brand
 from . import new_products
 from .catalog_classification import ClassificationProviderError
 from .category_suggestions import taxonomy
@@ -21,7 +22,7 @@ from .reference_matching import backlog as propose  # the matching worker's back
 from .sku_review import DOUBTFUL_OEM, guarded, typo_fix
 from .sku_review_models import SkuReviewRun, SkuReviewVerdict
 
-ENABLED = dict(GEMINI_API_KEY='test-key-not-real', SKU_REVIEW_MONTHLY_USD='10', AI_MONTHLY_BUDGET_USD='200', CATALOG_EXTRA_MAKES=['KAIYI'])
+ENABLED = dict(GEMINI_API_KEY='test-key-not-real', SKU_REVIEW_MONTHLY_USD='10', AI_MONTHLY_BUDGET_USD='200')
 USAGE = {'input_tokens': 1200, 'output_tokens': 300, 'thinking_tokens': 0, 'total_tokens': 1500}
 
 
@@ -52,6 +53,7 @@ def type_index(category, name):
 @override_settings(**ENABLED)
 class SkuReviewTests(APITestCase):
     def setUp(self):
+        Brand.objects.get_or_create(nombre='KAIYI', defaults={'tipo': 'vehiculo'})  # a vehicle make (mall.sku_proposals.vehicle_makes)
         self.root = User.objects.create_superuser('root', 'root@example.com', 'SecureRoot938!')
         self.dealer = self.supplier('Motion Motors')
         self.other = self.supplier('Repuestos Chinos')

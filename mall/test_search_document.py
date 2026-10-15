@@ -1,19 +1,15 @@
 """The Search Document (inventory refactor S7): what each document holds, I8, the refresh hooks, the rebuild and its worker stage, the
 CLI."""
-import json
-import tempfile
 from datetime import timedelta
-from io import StringIO
-from pathlib import Path
 from unittest.mock import patch
 
-from django.db import connection, transaction
+from django.db import transaction
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from . import lines, references, search_document
 from .brand_models import Brand, BrandAlias
-from .models import Part, PartType, Reference, SearchDocument, SearchDocumentRebuild, SupplierItem
+from .models import Part, Reference, SearchDocument, SearchDocumentRebuild, SupplierItem
 from .oem_reference_models import OEMCrossReference, PartOEMLink
 from .technical_data import part_type_for
 from .test_factories import make_line, make_supplier, make_user
@@ -97,6 +93,7 @@ class DocumentContentTests(TestCase):
         self.assertEqual(set(search_document.documents([on_sale, retired])), {str(on_sale.pk)})
 
 
+@override_settings(SEARCH_DOCUMENT_SYNC=False)  # what a rebuild writes is what the writers left unwritten
 class RebuildTests(TestCase):
     def setUp(self):
         fresh_hooks()
@@ -168,6 +165,7 @@ class RebuildTests(TestCase):
         self.assertTrue(SearchDocument.objects.filter(line__sku='P-1').exists())
 
 
+@override_settings(SEARCH_DOCUMENT_SYNC=False)
 class RefreshHookTests(TestCase):
     def setUp(self):
         fresh_hooks()
@@ -283,39 +281,3 @@ class RefreshHookTests(TestCase):
         self.assertTrue(SearchDocument.objects.filter(line=line).exists())
 
 
-class CommandTests(TestCase):
-    def setUp(self):
-        fresh_hooks()
-
-    def run_command(self, *args):
-        from .refactor import s7_search
-        out = StringIO()
-        with tempfile.TemporaryDirectory() as folder, patch.dict('os.environ', {'REFACTOR_OUTPUT': str(Path(folder) / 's7')}):
-            code = s7_search.main([*args], stdout=out)
-            manifest = Path(folder) / 's7' / 'manifest.jsonl'
-            entries = [json.loads(line) for line in manifest.read_text().splitlines()] if manifest.exists() else []
-        return code, out.getvalue(), entries
-
-    def test_dry_run_apply_check_and_rollback(self):
-        make_line('C-1', description='UNO')
-        code, out, entries = self.run_command('--dry-run')
-        result = json.loads(out)
-        self.assertEqual((code, result['lines'], result['would_write'], entries), (0, 1, 1, []))
-        code, out, entries = self.run_command('--apply', '--user', 'miguel')
-        self.assertEqual(json.loads(out)['written'], 1)
-        self.assertEqual(entries[0]['action'], 'apply')
-        self.assertEqual(json.loads(self.run_command('--check')[1]), {'missing': 0, 'stale': 0})
-        with override_settings(CATALOG_SEARCH_SOURCE='document'):
-            with self.assertRaises(SystemExit):
-                self.run_command('--rollback')
-        code, out, entries = self.run_command('--rollback')
-        self.assertEqual(json.loads(out), {'deleted': 1})
-        self.assertFalse(SearchDocument.objects.exists())
-
-    def test_compare_lists_what_each_search_finds(self):
-        from .refactor import s7_search
-        make_line('51750-J9000', description='CUBO DE RUEDA')
-        make_line('X-2', description='CUBO GENERICO')
-        search_document.rebuild()
-        rows = s7_search.compare(['cubo', '51750J9000', ''])
-        self.assertEqual([(row['legacy'], row['document'], row['superset']) for row in rows], [(2, 2, True), (1, 1, True), (2, 2, True)])

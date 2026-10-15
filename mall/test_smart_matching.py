@@ -6,6 +6,7 @@ from unittest.mock import patch
 from django.test import SimpleTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APITestCase
+from .brand_models import Brand
 from . import references
 from .lines import create_line
 from .models import Account, Part, User, SupplierItem, StockEntry, InventoryUpdate, MatchingCase, MatchingDecision, MatchingQueue
@@ -211,8 +212,8 @@ class SmartMatchingTests(APITestCase):
             result = process_queue(force=True)
         self.assertEqual((result['supplier_examined'], result['ai_eligible'], result['ai_status'], result['ai_analyzed']), (1, 1, 'failed', 0))
 
-    @override_settings(CATALOG_EXTRA_MAKES=['KAIYI'])
     def test_word_only_items_go_to_new_products_and_keep_only_informative_hints(self):
+        Brand.objects.get_or_create(nombre='KAIYI', defaults={'tipo': 'vehiculo'})  # a vehicle make (mall.sku_proposals.vehicle_makes)
         # D1: description words never link an item; they are hints (possible duplicates) for Revisión IA.
         create_line('025CHA-1504110', description='TAPA KAIYI FX11 2025 55W')
         create_line('RX1809-RAINX-KIT', description='LIMPIAPARABRISAS RAINX KAIYI 2025')

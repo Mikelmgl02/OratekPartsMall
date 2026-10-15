@@ -1,12 +1,11 @@
-import io
 
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 from rest_framework.test import APITestCase
 
-from . import link_oem_numbers, references
+from . import references
 from .models import Part, User
-from .oem_links import name_key, name_targets, part_equivalents, refresh_name_links, store_catalog_links, store_cross_references
+from .oem_links import name_key, part_equivalents, store_catalog_links, store_cross_references
 from .oem_reference import linked_parts
 from .oem_reference_models import OEMCrossReference, PartOEMLink
 from .test_oem_finder import Fresh
@@ -28,31 +27,6 @@ class NameKeyTests(Fresh, TestCase):
     def test_variants_retired_skus_and_codes_without_digits_name_nothing(self):
         for sku in ('DAC47880055-KIT-FEB', '43512-52120-ANULADO', '43512-52120_7_DELETED', 'ABCDEF', '123', '', None):
             self.assertEqual(name_key(sku), '', sku)
-
-
-class RetiredNameLinkTests(Fresh, TestCase):
-    """S4 retires the name links: a number a line's codigo names is one of its References, or rule 3 proposes it (S6)."""
-
-    def test_saving_a_sku_links_nothing_and_the_refresh_writes_nothing(self):
-        ref = number('TOYOTA', '16100-79445')
-        part = Part.objects.create(sku='16100-79445-NPW', description='BOMBA AGUA TOY HILUX')
-        self.assertFalse(PartOEMLink.objects.exists())
-        self.assertEqual(refresh_name_links(), {'skus': 0, 'links': 0, 'new': 0, 'removed': 0, 'retired': True})
-        self.assertFalse(PartOEMLink.objects.exists())
-        # name_targets still says which number a codigo names (read-only: S4's backfill lists the links it would have added).
-        self.assertEqual(name_targets([(part.pk, part.sku, part.description, '')]), {str(part.pk): {str(ref.pk)}})
-
-    def test_the_command_says_it_is_retired(self):
-        out = io.StringIO()
-        link_oem_numbers.main(['--dry-run'], stdout=out)
-        self.assertIn('retirado con S4', out.getvalue())
-
-    def test_a_number_under_sister_makes_is_named_under_each_unless_the_description_rules_one_out(self):
-        refs = {maker: number(maker, '05085702AJ') for maker in ('DODGE', 'CHRYSLER', 'NISSAN')}
-        rows = [('1', '05085702AJ-G', 'SENSOR', ''), ('2', '05085702AJ-NPW', 'SENSOR DODGE RAM', '')]
-        found = name_targets(rows)
-        self.assertEqual(found['1'], {str(ref.pk) for ref in refs.values()})
-        self.assertEqual(found['2'], {str(refs['DODGE'].pk), str(refs['CHRYSLER'].pk)})
 
 
 class StoreTests(Fresh, TestCase):

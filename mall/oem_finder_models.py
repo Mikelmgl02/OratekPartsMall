@@ -1,9 +1,10 @@
-"""OEM finder runs, the 'Revisión OEM' queue (phase 2), the auto-apply audit (phase 2B) and its pending AUTO rows. New tables only.
+"""OEM finder runs, the 'Revisión OEM' queue (phase 2), the auto-apply audit (phase 2B) and its pending AUTO rows: history since the
+owner retired OEM linking on 2026-10-14 (inventory refactor S10 removed the code that wrote them; mall.line_merge still carries a
+merged line's rows along, and Separar SKU brings them back).
 
-OEMFinderRun records one pass (mode, rules and suffix table versions, scope, tier counts, timings). OEMReviewCase holds one
-review-tier proposal per Part; its fingerprint covers the fingerprint schema, the Part snapshot, the candidate, the tier, the
-blockers and the suffix entries the decision read, so a re-run (under new rules too) keeps every decision whose proposal did not change.
-A review candidate is never a PartCode: reconcile_identities would promote a verified OEM PartCode on its own.
+OEMFinderRun recorded one pass (mode, rules and suffix table versions, scope, tier counts, timings). OEMReviewCase held one
+review-tier proposal per Part; its fingerprint covered the fingerprint schema, the Part snapshot, the candidate, the tier, the
+blockers and the suffix entries the decision read.
 """
 from django.conf import settings
 from django.db import models
@@ -143,8 +144,8 @@ AUTO_STATUSES = [('pending', 'Pendiente'), ('applied', 'Aplicado'), ('sent_to_re
 
 
 class OEMAutoCandidate(models.Model):
-    """One SKU the finder grades AUTO_FLAG_CURRENT or AUTO_RENAME_BASE (tier), with the apply tier mall.oem_apply would run it under,
-    as of the last refresh. status: pending (the next apply run of its tier takes it), applied (an unreverted OEMFinderChange and the
+    """One SKU the finder graded AUTO_FLAG_CURRENT or AUTO_RENAME_BASE (tier), with the apply tier the automatic application (retired
+    in S10) ran it under, as of the last refresh. status: pending (the next apply run of its tier takes it), applied (an unreverted OEMFinderChange and the
     OEM flag now), excluded (reverted before with the same OEM, an open apply conflict, or the same OEM dismissed in the review queue:
     never applied automatically, reason says which), sent_to_review (a person took it out of automatic application: apply_auto skips
     it and its OEMReviewCase decides; a refresh never undoes it), stale (it no longer grades AUTO)."""

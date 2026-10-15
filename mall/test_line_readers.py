@@ -224,10 +224,6 @@ class AdminReaderTests(APITestCase):
         rows = self.client.get('/api/v1/management/catalog/merged/').data['results']
         self.assertEqual([row['sku'] for row in rows], [self.part.sku])
 
-    def test_the_mark_oem_plan(self):  # Alternos › Por revisar retired with the merge pass (S9)
-        from .catalog_oem_mark import plan_rows
-        self.assertEqual([str(row['id']) for row in plan_rows([self.part.pk, *[line.pk for line in self.hidden.values()]])], [str(self.part.pk)])
-
 
 class CatalogToolReaderTests(TestCase):
     """The catalog's AI, grouping, identity, import and matching tools work on the lines on sale (or the catalog's), and see every
@@ -244,24 +240,6 @@ class CatalogToolReaderTests(TestCase):
         self.assertEqual(list(eligible_parts('unclassified', 'PASTILLA')), [part])
         self.assertTrue(all(line.sku not in str(list(eligible_parts('all', ''))) for line in lines.values()))
 
-    def test_grouping_suggestions_leave_them_out_but_their_codigos_block_a_parent(self):
-        from .catalog_grouping_suggestions import suggested_families
-        description = 'TAMBOR HYU ACCENT 11-16'
-        make_line('58411-1R000', description=description)
-        make_line('58411-1R000-KSM', description=description)
-        make_line('58411-1R000-RAZ', description=description, estado='referencia')
-        make_line('58411-1R000-GMB', description=description, estado='preparacion')
-        make_line('90915-YZZD2-KSM', description='FILTRO ACEITE TOY', estado='referencia')  # no parent from lines off sale
-        make_line('90915-YZZD2-RAZ', description='FILTRO ACEITE TOY', estado='preparacion')
-        make_line('23300-0L041-KSM', description='FILTRO COMBUSTIBLE TOY')  # a parent another line holds is not proposed
-        make_line('23300-0L041-RAZ', description='FILTRO COMBUSTIBLE TOY')
-        make_line('23300-0L041', estado='preparacion')
-        make_line('16100-79445-KSM', description='BOMBA AGUA TOY')  # S4: a library number's line in referencia blocks no parent:
-        make_line('16100-79445-RAZ', description='BOMBA AGUA TOY')  # creating the parent promotes it (mall.lines.create_line)
-        make_line('16100-79445', estado='referencia', origen='biblioteca')
-        families = suggested_families()
-        self.assertEqual(set(families), {'58411-1R000', '16100-79445'})
-        self.assertEqual([row['sku'] for row in families['58411-1R000']['sources']], ['58411-1R000-KSM'])
 
     def test_grouping_refuses_a_line_off_sale_as_source_or_target(self):
         from .catalog_grouping import merge_catalog_parts
@@ -368,20 +346,6 @@ class LibraryReaderTests(TestCase):
         ref.refresh_from_db()
         self.assertEqual(([(row['sku'], row['via']) for row in linked_parts([ref])[ref.pk]], linked()), ([('17801 30070', 'linea')], True))
 
-    def test_the_oem_review_reads_lines_on_sale_and_every_owner(self):
-        from .oem_review import key_owners, merge_family, sku_claimants
-        part = make_line('48654-0K040', description='BASE AMORT TOY')
-        sibling = make_line('48654-0K040-KSM', description='BASE AMORT TOY')
-        lines = {'referencia': make_line('48654-0K040-NAK', estado='referencia'), 'preparacion': make_line('48654-0K040-RAZ', estado='preparacion')}
-        case = SimpleNamespace(evidence={}, part_id=part.pk, candidate='48654-0K040', brand='TOYOTA', written_form='')
-        self.assertEqual([sku for _, sku in sku_claimants(part, case, '486540K040')], [sibling.sku])
-        case.evidence = {'primary': {'key': '486540K040', 'conflicts': [{'part_id': str(line.pk), 'kind': 'active_sku'} for line in lines.values()]},
-                         'shared_with': [line.sku for line in lines.values()]}
-        self.assertEqual(merge_family(case)['source_skus'], [])
-        make_line('486540K040', estado='referencia', origen='biblioteca')  # S4: a library number's line owns nothing (rule 3f)
-        self.assertEqual(key_owners(part, '48654-0K040'), [])
-        owner = make_line('48654 0K040', estado='preparacion')  # who holds the number: every other estado
-        self.assertEqual(key_owners(part, '48654-0K040'), [(str(owner.pk), owner.sku)])
 
     def test_productos_nuevos_owners_and_links(self):
         from .new_products import link, place

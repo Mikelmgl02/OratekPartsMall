@@ -17,7 +17,7 @@ from .services import ingest_inventory
 class MissingCatalogParentTests(APITestCase):
     base = '58411-07000'
     assistant = '/api/v1/management/catalog/assistant/'
-    grouping = '/api/v1/management/catalog/grouping/'
+    grouping = '/api/v1/management/catalog/grouping/'  # Agrupar SKU's merge/ (the suggestions list went with S10)
 
     def setUp(self):
         self.root = User.objects.create_superuser('family-root', 'family@example.invalid', 'Family938!')
@@ -47,20 +47,6 @@ class MissingCatalogParentTests(APITestCase):
     def decisions(self, data):
         return [{key: item[key] for key in ['id', 'target_sku', 'category', 'subcategory']} for item in data['results']]
 
-    def test_missing_base_is_reviewable_with_all_four_children_and_year_warning(self):
-        response = self.client.get(self.grouping, {'search': self.parts[1].sku})
-        self.assertEqual(response.status_code, 200, response.data)
-        family = response.data['results'][0]
-        self.assertEqual(family['target_sku'], self.base)
-        self.assertTrue(family['target']['proposed_parent'])
-        self.assertEqual(set(family['source_skus']), {part.sku for part in self.parts})
-        self.assertEqual(family['source_count'], 4)
-        self.assertIn('años', family['warnings'][0])
-        with patch('mall.catalog_grouping_suggestions.call_provider', side_effect=self.provider):
-            result = self.client.post(self.grouping + 'classify/', {'target_sku': self.base, 'source_skus': family['source_skus']}, format='json')
-        self.assertEqual(result.status_code, 200, result.data)
-        self.assertEqual(len(result.data['source_skus']), 4)
-        self.assertFalse(Part.objects.filter(sku=self.base).exists())
 
     def test_ai_sees_family_outside_filter_and_marks_year_difference(self):
         _, data = self.analyze(search=self.parts[1].sku)
@@ -117,7 +103,6 @@ class MissingCatalogParentTests(APITestCase):
         self.assertEqual(self.client.post(self.grouping + 'merge/', payload, format='json').status_code, 400)
         unrelated = Part.objects.create(sku='OTHER')
         PartCode.objects.create(part=unrelated, code=self.base)
-        self.assertEqual(self.client.get(self.grouping).data['count'], 0)
         self.assertEqual(self.client.post(self.grouping + 'merge/', {**payload, 'create_target': True}, format='json').status_code, 400)
         self.assertFalse(Part.objects.filter(sku=self.base).exists())
         references.retire(unrelated.codes.filter(is_main=False))  # a retired code holds nothing

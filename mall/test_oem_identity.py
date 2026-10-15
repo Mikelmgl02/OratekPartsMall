@@ -182,20 +182,6 @@ class OEMIdentityTests(APITestCase):
         self.assertEqual(parse_reference_cell(format_references(refs)), refs)
         self.assertEqual({r['ref_type'] for r in refs}, {'oem','company'})
 
-    def test_oem_boolean_follows_the_oem_list(self):
-        self.oem(code=self.part.sku)  # its OEM alterno files the code in the OEM list
-        result = self.client.patch(self.url, {'is_OEM': True}, format='json')
-        self.assertEqual(result.status_code, 200, result.data)
-        self.assertTrue(result.data['is_OEM'])
-        self.assertEqual(result.data['identity']['status'], 'oem')
-        result = self.client.patch(self.url, {'is_OEM': False}, format='json')
-        self.assertEqual(result.status_code, 400)  # a SKU whose code is in the list is OEM: the number is disputed instead
-        self.assertIn('ponlo en disputa', str(result.data['is_OEM']))
-        reconcile_identities(self.admin)
-        self.part.refresh_from_db()
-        self.assertTrue(self.part.is_OEM)
-        self.assertEqual(identity_status(self.part)['status'], 'oem')
-        self.assertEqual(self.part.codes.filter(ref_type='oem').count(), 1)
 
     def test_oem_default_filter_and_public_api(self):
         self.assertFalse(self.part.is_OEM)
@@ -256,17 +242,6 @@ class OEMIdentityTests(APITestCase):
         promoted.refresh_from_db()
         self.assertTrue(promoted.is_OEM)
 
-    def test_migration_backfills_only_existing_verified_main_reference(self):
-        from .test_factories import run_migration_function
-        verified = Part.objects.create(sku='58411-1R000')
-        PartCode.objects.create(part=verified, code='584111R000', brand='HYUNDAI', ref_type='oem', reference_source='CATÁLOGO')
-        unverified = Part.objects.create(sku='51712-TEST')
-        PartCode.objects.create(part=unverified, code=unverified.sku, brand='HYUNDAI', ref_type='oem')
-        self.oem()  # A different OEM in the library doesn't classify the company main.
-        from .test_refactor_s2b import drop_tighten_constraints
-        drop_tighten_constraints()  # 0026 writes is_OEM alone, as the database of its time allowed (0076 pairs it with tipo)
-        run_migration_function('0026_part_is_oem_matching_progress', 'mark_verified_main_oems')
-        self.assertEqual(list(Part.objects.filter(is_OEM=True).values_list('pk',flat=True)), [verified.pk])
 
     def test_old_assistant_proposal_cannot_overwrite_changed_oem_identity(self):
         from .catalog_assistant import current_row, unchanged

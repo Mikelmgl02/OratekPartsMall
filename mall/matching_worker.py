@@ -13,7 +13,6 @@ import logging
 import math
 import uuid
 from datetime import timedelta
-from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from .matching_models import MatchingQueue, MatchingCase
@@ -166,10 +165,6 @@ def _process_queue(*, force=False, use_ai=True):
             from . import reference_matching
             summary['mains_ensured'] = ensure_mains(actor=actor)['lines']
             summary['merge_cases_opened'] = reference_matching.open_reference_merge_cases()
-            if settings.OEM_FINDER_AUTO_STAGE:
-                from .oem_finder import worker_stage
-                stage('oem')
-                summary['oem_finder'] = worker_stage(actor)
             stage('suppliers')
             backlog = reference_matching.backlog(actor=actor, stats=summary)
             summary['matched_items'] = backlog['attached']

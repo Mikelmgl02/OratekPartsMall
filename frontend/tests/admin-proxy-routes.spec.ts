@@ -53,6 +53,17 @@ test('the proxy no longer forwards the OEM-link routes the owner retired on 2026
   }
 });
 
+test('the proxy no longer forwards the grouping suggestions retired with the inventory refactor (S10)', async ({ page }) => {
+  test.skip(!process.env.E2E_ADMIN_TOKEN, 'A disposable superuser token is required.');
+  await page.context().addCookies([{ name: 'partsmall_session', value: process.env.E2E_ADMIN_TOKEN!, url: origin, httpOnly: true, sameSite: 'Strict' }]);
+  // Agrupación inteligente's old suggestions: merge cases replaced them (S6). Agrupar SKU's merge stays.
+  for (const response of [await page.request.get('/api/management/catalog/grouping'),
+    await page.request.post('/api/management/catalog/grouping/classify', { data: {}, headers: { Origin: origin } })]) {
+    expect(response.status()).toBe(404);
+    expect(await response.text()).toContain('La ruta solicitada no existe');
+  }
+});
+
 test('the proxy no longer forwards Alternos › Por revisar, retired with the catalog merge pass (S9)', async ({ page }) => {
   test.skip(!process.env.E2E_ADMIN_TOKEN, 'A disposable superuser token is required.');
   await page.context().addCookies([{ name: 'partsmall_session', value: process.env.E2E_ADMIN_TOKEN!, url: origin, httpOnly: true, sameSite: 'Strict' }]);

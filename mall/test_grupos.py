@@ -1,10 +1,5 @@
 """Grupo / Subgrupo (inventory refactor S5): the Grupo table, PartType.grupo kept in step with its text, the writers that resolve or
 create a grupo (mall.technical_data, mall.lines.set_subgrupo), and the backfill CLI (python -m mall.refactor.s5_grupos)."""
-import io
-import json
-import os
-import tempfile
-from unittest.mock import patch
 
 from django.db import IntegrityError, connection, transaction
 from django.test import TestCase
@@ -12,7 +7,6 @@ from rest_framework.test import APITestCase
 
 from . import lines
 from .models import Grupo, Part, PartType, TechnicalTemplate
-from .refactor import s5_grupos
 from .technical_data import bind_part_types, classification, grupo_for, part_type_for
 from .test_factories import make_line, make_user, run_migration_function
 
@@ -161,127 +155,6 @@ class PartTypeApiTests(APITestCase):
         self.assertEqual(PartType.objects.get(pk=line.part_type_id).grupo.nombre, 'FRENADO')
         self.assertEqual(Part.objects.filter(pk=line.pk).values_list('category', 'subcategory').get(), ('FRENADO', 'DISCOS'))
         self.assertEqual(set(Grupo.objects.values_list('nombre', flat=True)), {'FRENOS', 'FRENADO'})
-
-
-class GrupoBackfillTests(TestCase):
-    """python -m mall.refactor.s5_grupos on rows as 0081 leaves them: subgrupos with their text and no grupo."""
-
-    def setUp(self):
-        allow_no_grupo()  # before any subgrupo is written: PostgreSQL alters no table with pending trigger events
-        self.root = make_user('s5-backfill-root', superuser=True)
-        self.output = tempfile.TemporaryDirectory()
-        self.addCleanup(self.output.cleanup)
-        patcher = patch.dict(os.environ, {'REFACTOR_OUTPUT': self.output.name})
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        self.discs = make_line('S5-DISC', category='FRENOS', subcategory='DISCOS').part_type
-        self.pads = PartType.objects.create(category='FRENOS', name='PASTILLAS')
-        self.oil = PartType.objects.create(category='FILTROS', name='ACEITE')
-        as_0081_leaves_it()
-        PartType.objects.filter(pk=self.pads.pk).update(category='Frenos')  # one grupo, spelled two ways
-
-    def run_cli(self, *args):
-        out = io.StringIO()
-        code = s5_grupos.main([*args], stdout=out)
-        return code, out.getvalue()
-
-    def manifest(self):
-        with open(os.path.join(self.output.name, 'manifest.jsonl'), encoding='utf-8') as handle:
-            return [json.loads(line) for line in handle]
-
-    def stored(self):
-        return {name: (grupo, category) for name, grupo, category in PartType.objects.values_list('name', 'grupo__nombre', 'category')}
-
-    def test_a_dry_run_counts_and_writes_nothing(self):
-        code, out = self.run_cli('--dry-run')
-        self.assertEqual(code, 0, out)
-        self.assertIn('Simulación · S5', out)
-        self.assertIn('FILTROS 1 (nuevo) · FRENOS 2 (nuevo)', out)
-        self.assertIn('Líneas cuyo texto difiere de su subgrupo: 0 (las facetas no cambian)', out)
-        self.assertFalse(Grupo.objects.exists())
-        self.assertFalse(os.path.exists(os.path.join(self.output.name, 'manifest.jsonl')))
-
-    def test_apply_gives_every_subgrupo_its_grupo_once_and_logs_every_row(self):
-        self.assertEqual(self.run_cli('--apply')[0], 1)  # --user is required
-        filtros = Grupo.objects.create(nombre='FILTROS')  # a grupo the code already created is reused
-        code, out = self.run_cli('--apply', '--user', self.root.username)
-        self.assertEqual(code, 0, out)
-        self.assertEqual(self.stored(), {'DISCOS': ('FRENOS', 'FRENOS'), 'PASTILLAS': ('FRENOS', 'FRENOS'), 'ACEITE': ('FILTROS', 'FILTROS')})
-        self.assertEqual(PartType.objects.get(name='ACEITE').grupo_id, filtros.pk)
-        rows = self.manifest()
-        self.assertEqual(rows[0]['action'], 'run')
-        self.assertEqual([row['after']['nombre'] for row in rows if row.get('model') == 'mall.Grupo'], ['FRENOS'])
-        updates = {row['name']: row for row in rows if row.get('model') == 'mall.PartType'}
-        self.assertEqual(set(updates), {'DISCOS', 'PASTILLAS', 'ACEITE'})
-        self.assertEqual(updates['PASTILLAS']['before'], {'grupo_id': None, 'category': 'Frenos'})
-        code, out = self.run_cli('--apply', '--user', self.root.username)  # the catch-up after landing: nothing new
-        self.assertEqual(code, 0, out)
-        self.assertEqual(len(self.manifest()), len(rows))
-
-    def test_what_needs_a_person_is_listed_and_left(self):
-        blank = PartType.objects.create(category='X', name='SIN GRUPO')
-        PartType.objects.filter(pk=blank.pk).update(grupo=None, category='')
-        twice = PartType.objects.create(category='TMP', name='discos')  # FRENOS / DISCOS again, its text not normalized
-        PartType.objects.filter(pk=twice.pk).update(grupo=None, category='FRENOS ')
-        moved = PartType.objects.create(category='MOTOR', name='BIELAS')
-        PartType.objects.filter(pk=moved.pk).update(category='TRANSMISION')  # a writer of the text alone
-        code, out = self.run_cli('--dry-run')
-        self.assertEqual(code, 0, out)
-        self.assertIn('Subgrupos sin texto de grupo (1)', out)
-        self.assertIn('Subgrupos repetidos en un grupo (1)', out)
-        self.assertIn('FRENOS / discos: 2', out)
-        self.assertIn('Subgrupos cuyo texto nombra otro grupo (1)', out)
-        code, out = self.run_cli('--apply', '--user', self.root.username)
-        self.assertEqual(code, 0, out)
-        self.assertEqual(PartType.objects.filter(pk=blank.pk).values_list('grupo', 'category').get(), (None, ''))
-        self.assertEqual(PartType.objects.filter(pk=moved.pk).values_list('grupo__nombre', 'category').get(), ('MOTOR', 'TRANSMISION'))
-        self.assertEqual(set(PartType.objects.filter(pk__in=[self.discs.pk, twice.pk]).values_list('grupo', flat=True)), {None})
-        self.assertEqual(PartType.objects.get(pk=self.pads.pk).grupo.nombre, 'FRENOS')
-
-    def test_the_lines_text_is_checked_against_its_subgrupo(self):
-        Part.objects.filter(sku='S5-DISC').update(category='OTRO')
-        make_line('S5-HALF', category='FRENOS')
-        code, out = self.run_cli('--dry-run')
-        self.assertEqual(code, 0, out)
-        self.assertIn('Líneas cuyo texto difiere de su subgrupo: 1 (las facetas cambiarían', out)
-        self.assertIn('clasificaciones parciales (grupo sin subgrupo): 1', out)
-
-    def test_rollback_puts_back_what_the_apply_changed(self):
-        self.run_cli('--apply', '--user', self.root.username)
-        later = PartType.objects.create(category='FILTROS', name='AIRE')  # the code from S5 adds a subgrupo to a created grupo
-        code, out = self.run_cli('--rollback', '--user', self.root.username)
-        self.assertEqual(code, 0, out)
-        self.assertEqual(PartType.objects.filter(pk=self.pads.pk).values_list('grupo', 'category').get(), (None, 'Frenos'))
-        self.assertEqual(PartType.objects.filter(pk=self.discs.pk).values_list('grupo', 'category').get(), (None, 'FRENOS'))
-        self.assertEqual(list(Grupo.objects.values_list('nombre', flat=True)), ['FILTROS'])  # it has a subgrupo since: kept
-        self.assertIn('grupo FILTROS: cambió o tiene subgrupos', out)
-        self.assertEqual(PartType.objects.get(pk=later.pk).grupo.nombre, 'FILTROS')
-        code, out = self.run_cli('--rollback')  # again, and without --user (plan §1.2.3): nothing left to put back
-        self.assertEqual(code, 0, out)
-        self.assertIn('0 subgrupos restaurados · 0 grupos borrados', out)
-        self.assertEqual(self.run_cli('--rollback', '--user', 'nadie')[0], 1)
-
-    def test_rollback_keeps_a_subgrupo_changed_since(self):
-        self.run_cli('--apply', '--user', self.root.username)
-        PartType.objects.filter(pk=self.oil.pk).update(grupo=grupo_for('MOTOR'), category='MOTOR')
-        code, out = self.run_cli('--rollback', '--user', self.root.username)
-        self.assertEqual(code, 0, out)
-        self.assertIn('subgrupo ACEITE', out)
-        self.assertEqual(PartType.objects.get(pk=self.oil.pk).grupo.nombre, 'MOTOR')
-
-    def test_rollback_refuses_while_0082_is_applied(self):
-        with patch.object(s5_grupos, 'tightened', return_value=True):
-            code, out = self.run_cli('--rollback', '--user', self.root.username)
-        self.assertEqual(code, 1)
-        self.assertIn('0082', out)
-
-    def test_a_manifest_of_another_database_is_refused(self):
-        with open(os.path.join(self.output.name, 'manifest.jsonl'), 'w', encoding='utf-8') as handle:
-            handle.write(json.dumps({'stage': 's5', 'database': 'partsmall_rehearsal', 'action': 'run'}) + '\n')
-        code, out = self.run_cli('--apply', '--user', self.root.username)
-        self.assertEqual(code, 1)
-        self.assertIn('otra base', out)
-        self.assertFalse(Grupo.objects.exists())
 
 
 class GrupoTightenTests(TestCase):

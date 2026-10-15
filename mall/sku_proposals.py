@@ -13,7 +13,6 @@ catalog_owners() (the catalog SKUs a code already is, for the duplicate checks) 
 worker's proposals stage is gone: its backlog stage (mall.reference_matching.backlog) places the items no line takes."""
 from collections import Counter
 
-from django.conf import settings
 from rest_framework import status as http
 from rest_framework.exceptions import APIException, ValidationError
 
@@ -57,7 +56,8 @@ def clean(value):
 def vehicle_makes():
     """Supplier brands that are a vehicle make (a dealer's genuine parts), each with the manufacturer its OEM numbers are filed under:
     the OEM finder's make names and their unambiguous abbreviations (TOY and TOYTA → TOYOTA, NIS → NISSAN, VW → VOLKSWAGEN), plus
-    CATALOG_EXTRA_MAKES. A make inside a group keeps its own name (AUDI, JEEP, GMC), not the group's."""
+    every brand of tipo vehiculo (KAIYI, SERES: inventory refactor S10 replaced the CATALOG_EXTRA_MAKES setting with the Marcas table).
+    A make inside a group keeps its own name (AUDI, JEEP, GMC), not the group's."""
     from .oem_finder import MAKE_TOKENS
     from .oem_links import EXTRA_MAKES
     makes = {}
@@ -66,7 +66,8 @@ def vehicle_makes():
             continue
         abbreviation = token != canonical and len(token) < len(canonical) and canonical.startswith(token[:3])
         makes[token] = MAKE_NAMES.get(token) or (canonical if abbreviation else token)
-    for make in settings.CATALOG_EXTRA_MAKES:
+    from .brand_models import Brand
+    for make in Brand.objects.filter(tipo='vehiculo').values_list('nombre', flat=True):
         make = clean(make)
         if make:
             makes.setdefault(make, make)

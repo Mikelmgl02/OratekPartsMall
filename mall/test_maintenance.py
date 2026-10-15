@@ -7,7 +7,6 @@ import signal
 import sys
 import tempfile
 import uuid
-from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -23,8 +22,7 @@ from django.urls import URLPattern, URLResolver, get_resolver
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
-from . import (link_oem_numbers, mark_exact_oem, merge_pass, oem_finder, oem_finder_revert, stock_reservations, supplier_catalog_import,
-               supplier_catalog_replace)
+from . import stock_reservations, supplier_catalog_import, supplier_catalog_replace
 from . import test_deals as deal_tests
 from . import test_stock_reservations as reservation_tests
 from .apiag_models import ApiagConnection
@@ -38,7 +36,7 @@ from .matching_runner import STOP, WorkerStopping
 from .matching_worker import process_queue
 from .models import Account, CatalogImportJob, DealEvent, Membership, Part, Role, SupplierItem, User, WishlistItem
 from .pricing_models import SupplierPricingSettings
-from .refactor import migrate_retry, s0_normalize_numbers, s0_suffix_revert
+from .refactor import migrate_retry
 from .refactor.guard import live_database, refusal
 from .refactor.migration_ops import LockTimeout, with_lock_timeout
 from .request_models import StockReservation
@@ -102,8 +100,7 @@ class FreezeMiddlewareTests(FreezeFolderMixin, SimpleTestCase):
         ('post', f'/api/v1/management/catalog/{ID}/images/'), ('put', f'/api/v1/management/catalog/{ID}/technical/'),
         ('patch', f'/api/v1/management/inventory/{ID}/'), ('post', '/api/v1/management/alternates/'),
         ('delete', '/api/v1/management/alternates/7/'),
-        ('patch', f'/api/v1/management/oem-references/{ID}/'), ('post', '/api/v1/management/oem-review/bulk/'),
-        ('post', '/api/v1/management/oem-finder/pending/apply/'), ('post', '/api/v1/management/oem-finder/runs/3/revert/'),
+        ('patch', f'/api/v1/management/oem-references/{ID}/'),
         ('post', '/api/v1/management/matching/'), ('post', f'/api/v1/management/matching/{ID}/'),
         ('post', '/api/v1/management/part-types/'), ('patch', f'/api/v1/management/part-types/{ID}/template/'),
         ('delete', f'/api/v1/management/applications/{ID}/'),
@@ -445,41 +442,18 @@ class CliGuardTests(FreezeFolderMixin, TestCase):
             self.assertNotIn('SupplierInventoryImportJob', reason)  # expired
             self.assertIn('El catálogo está congelado, pero todavía escribe', reason)
             with self.assertRaises(SystemExit) as refused:
-                link_oem_numbers.main(['--apply'], stdout=io.StringIO())
+                supplier_catalog_import.main(['--apply', '/nonexistent.json'], stdout=io.StringIO())
             self.assertEqual(refused.exception.code, reason)
 
     def test_the_catalog_clis_refuse_apply_on_the_live_database_until_it_is_frozen(self):
         if connection.vendor != 'postgresql':
             self.skipTest('The live database is PostgreSQL.')
-        Part.objects.create(sku='16100-79445', name='Bomba')
         with self.live():
-            for main, argv in [(link_oem_numbers.main, ['--apply']), (mark_exact_oem.main, ['--apply']),
-                               (supplier_catalog_replace.main, ['--apply', '/nonexistent.json']),
-                               (supplier_catalog_import.main, ['--apply', '/nonexistent.json']),
-                               (merge_pass.main, ['--apply', '--user', 'root']), (merge_pass.main, ['--rollback']),
-                               (oem_finder.main, ['--apply-auto']),
-                               (oem_finder_revert.main, ['--run', '1']),
-                               (s0_suffix_revert.main, ['--apply', '--user', 'root']), (s0_suffix_revert.main, ['--rollback', '--user', 'root']),
-                               (s0_normalize_numbers.main, ['--apply'])]:
+            for main, argv in [(supplier_catalog_replace.main, ['--apply', '/nonexistent.json']),
+                               (supplier_catalog_import.main, ['--apply', '/nonexistent.json'])]:
                 with self.assertRaises(SystemExit) as refused:
                     main(argv, stdout=io.StringIO())
                 self.assertIn('sin el congelamiento del catálogo', str(refused.exception.code), argv)
-            # The OEM finder's dry run and its read-only preview pass the guard (they reach its matching lock, here held elsewhere).
-            for argv in (['--dry-run'], ['--apply-auto', '--read-only']):
-                with patch('mall.oem_finder.matching_lock', held_elsewhere):
-                    self.assertEqual(oem_finder.main(argv, stdout=io.StringIO()), 2, argv)
-            out = io.StringIO()
-            link_oem_numbers.main(['--dry-run'], stdout=out)
-            self.assertIn('Simulación', out.getvalue())
-            self.freeze('catalog')
-            out = io.StringIO()
-            link_oem_numbers.main(['--apply'], stdout=out)
-            self.assertIn('Aplicado', out.getvalue())
-
-
-@contextmanager
-def held_elsewhere():
-    yield False
 
 
 class LockTimeoutTests(TestCase):

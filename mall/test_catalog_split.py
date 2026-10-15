@@ -89,8 +89,6 @@ class CatalogSplitTests(APITestCase):
         part.refresh_from_db()
         self.assertIsNone(part.merged_into_id)  # never grouped again on its own
         self.assertEqual(parent.merged_parts.count(), 2)
-        family = next(row for row in self.client.get(f'{URL}grouping/', {'search': '58411-08000'}).json()['results'] if row['target_sku'] == '58411-08000')
-        self.assertIn('se separaron', ' '.join(family['warnings']))  # Agrupar SKU still offers it, saying so
 
     def test_splitting_every_sku_retires_the_empty_parent_and_nothing_regroups(self):
         parent = self.grouped()

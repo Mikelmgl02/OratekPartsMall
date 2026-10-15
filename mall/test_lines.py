@@ -1,11 +1,6 @@
 """The OEM line's lifecycle (inventory refactor S1): estado and active kept in step by Part.save and the bulk writers, the readers'
 querysets, the writers that merge, split, retire and create lines, and the backfill CLI (mall.refactor.s1_lifecycle)."""
-import io
-import json
-import os
-import tempfile
 from datetime import timedelta
-from unittest.mock import patch
 
 from django.db import IntegrityError, connection, transaction
 from django.test import TestCase
@@ -13,13 +8,10 @@ from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from . import lines
-from .brand_models import Brand, BrandAlias
 from .catalog_grouping import merge_catalog_parts
 from .catalog_import import build_plan, save_plan
 from .models import Part, SupplierItem
-from .refactor import s1_lifecycle
-from .sku_proposal_models import SkuProposal
-from .test_factories import make_line, make_reference, make_supplier, make_user, run_migration_function
+from .test_factories import make_line, make_supplier, make_user, run_migration_function
 
 # 0072's CHECKs, which a test of the backfill drops inside its own transaction to stage the rows 0071 leaves (merged lines still
 # publicada) before the backfill runs.
@@ -425,115 +417,6 @@ class LineWriterFlowTests(APITestCase):
             self.assertEqual((line.origen, line.estado), ('proveedor', 'preparacion'))
 
 
-class LifecycleBackfillTests(TestCase):
-    """python -m mall.refactor.s1_lifecycle on rows as 0071 leaves them: every line publicada and from the catalog."""
-
-    def setUp(self):
-        self.root = make_user('backfill-root', superuser=True)
-        self.output = tempfile.TemporaryDirectory()
-        self.addCleanup(self.output.cleanup)
-        patcher = patch.dict(os.environ, {'REFACTOR_OUTPUT': self.output.name})
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        drop_lifecycle_checks()
-        self.live, self.target = make_line('B-LIVE'), make_line('B-TARGET')
-        self.merged, self.retired = make_line('B-MERGED'), make_line('B-RETIRED')
-        self.from_proposal = make_line('B-PROPOSED')
-        when = timezone.now() - timedelta(days=3)
-        SkuProposal.objects.create(key='BPROPOSED|', sku='B-PROPOSED', fingerprint='x', status='approved', part=self.from_proposal,
-                                   decided_by=self.root, decided_at=when)
-        self.decided_at = when
-        # 0071 leaves the old pair as it was and every estado at its default.
-        Part.objects.filter(pk=self.merged.pk).update(merged_into=self.target, active=False, estado='publicada')
-        Part.objects.filter(pk=self.retired.pk).update(active=False, estado='publicada')
-        make_reference(self.live, 'B-LIVE', brand='MOTION  MOTORS', tipo='aftermarket')
-
-    def run_cli(self, *args):
-        out = io.StringIO()
-        code = s1_lifecycle.main([*args], stdout=out)
-        return code, out.getvalue()
-
-    def manifest(self):
-        with open(os.path.join(self.output.name, 'manifest.jsonl'), encoding='utf-8') as handle:
-            return [json.loads(line) for line in handle]
-
-    def test_a_dry_run_counts_and_writes_nothing(self):
-        code, out = self.run_cli('--dry-run')
-        self.assertEqual(code, 0, out)
-        self.assertIn('Simulación', out)
-        self.assertEqual(stored(self.merged), ('publicada', False))
-        self.assertFalse(Brand.objects.exists())
-        self.assertFalse(os.path.exists(os.path.join(self.output.name, 'manifest.jsonl')))
-
-    def test_apply_sets_estado_origen_and_brands_once_and_logs_every_row(self):
-        self.assertEqual(self.run_cli('--apply')[0], 1)  # --user is required
-        code, out = self.run_cli('--apply', '--user', self.root.username)
-        self.assertEqual(code, 0, out)
-        self.assertEqual(stored(self.merged), ('unificada', False))
-        self.assertEqual(stored(self.retired), ('retirada', False))
-        self.assertEqual(stored(self.live), ('publicada', True))
-        line = Part.objects.get(pk=self.from_proposal.pk)
-        self.assertEqual((line.origen, line.decided_by, line.decided_at), ('proveedor', self.root, self.decided_at))
-        motion = Brand.objects.get(nombre='MOTION MOTORS')
-        self.assertEqual(motion.tipo, 'repuesto')
-        self.assertTrue(BrandAlias.objects.filter(alias='MOTION  MOTORS', brand=motion).exists())
-        rows = self.manifest()
-        self.assertEqual(rows[0]['action'], 'run')
-        updates = {row['sku']: row for row in rows if row.get('model') == 'mall.Part'}
-        self.assertEqual(set(updates), {'B-MERGED', 'B-RETIRED', 'B-PROPOSED'})
-        self.assertEqual((updates['B-MERGED']['before']['estado'], updates['B-MERGED']['after']['estado']), ('publicada', 'unificada'))
-        self.assertTrue(any(row.get('model') == 'mall.Brand' and row['after']['nombre'] == 'MOTION MOTORS' for row in rows))
-        brands = Brand.objects.count()
-        code, out = self.run_cli('--apply', '--user', self.root.username)  # the catch-up after landing: nothing new
-        self.assertEqual(code, 0, out)
-        self.assertEqual(len(self.manifest()), len(rows))
-        self.assertEqual(Brand.objects.count(), brands)
-
-    def test_rollback_puts_back_what_the_apply_changed(self):
-        self.run_cli('--apply', '--user', self.root.username)
-        Part.objects.filter(pk=self.retired.pk).update(description='EDITADA')  # edits outside the pair do not block it
-        code, out = self.run_cli('--rollback', '--user', self.root.username)
-        self.assertEqual(code, 0, out)
-        self.assertEqual(stored(self.merged), ('publicada', False))
-        self.assertEqual(stored(self.retired), ('publicada', False))
-        self.assertEqual(Part.objects.get(pk=self.from_proposal.pk).origen, 'catalogo')
-        self.assertFalse(Brand.objects.exists())
-        self.assertFalse(BrandAlias.objects.exists())
-        code, out = self.run_cli('--rollback', '--user', self.root.username)  # again: nothing left to put back
-        self.assertEqual(code, 0, out)
-        self.assertIn('0 filas restauradas · 0 marcas o alias borrados · 0 cambiadas', out)
-
-    def test_rollback_after_two_applies_keeps_a_change_made_between_them(self):
-        self.run_cli('--apply', '--user', self.root.username)
-        Part.objects.filter(pk=self.retired.pk).update(active=True)  # reactivated meanwhile by a writer that only knows active
-        code, out = self.run_cli('--apply', '--user', self.root.username)  # the catch-up publishes it
-        self.assertEqual((code, stored(self.retired)), (0, ('publicada', True)), out)
-        code, out = self.run_cli('--rollback', '--user', self.root.username)
-        self.assertEqual(code, 0, out)
-        self.assertEqual(stored(self.retired), ('retirada', True))  # as the reactivation left it, not retired again
-        self.assertIn('B-RETIRED: cambió entre dos aplicaciones', out)
-        self.assertEqual(stored(self.merged), ('publicada', False))
-        code, out = self.run_cli('--rollback')  # --user is optional here (plan §1.2.3)
-        self.assertEqual(code, 0, out)
-        self.assertIn('0 filas restauradas · 0 marcas o alias borrados · 0 cambiadas', out)
-        self.assertEqual(self.run_cli('--rollback', '--user', 'nadie')[0], 1)
-
-    def test_rollback_refuses_while_the_tighten_checks_are_in_place(self):
-        with patch.object(s1_lifecycle, 'checks_in_place', return_value=True):
-            code, out = self.run_cli('--rollback', '--user', self.root.username)
-        self.assertEqual(code, 1)
-        self.assertIn('0072', out)
-        self.assertFalse(s1_lifecycle.checks_in_place())  # this test dropped them, as on a database where 0072 was reversed
-
-    def test_a_manifest_of_another_database_is_refused(self):
-        with open(os.path.join(self.output.name, 'manifest.jsonl'), 'w', encoding='utf-8') as handle:
-            handle.write(json.dumps({'stage': 's1', 'database': 'partsmall_rehearsal', 'action': 'run'}) + '\n')
-        code, out = self.run_cli('--apply', '--user', self.root.username)
-        self.assertEqual(code, 1)
-        self.assertIn('otra base', out)
-        self.assertEqual(stored(self.merged), ('publicada', False))
-
-
 def suffix(token, attribution, *, confidence='low', status='owner_confirmed', kind='brand'):
     """A brand TAG row of the code suffix table as catalog_suffixes reads it."""
     return {'token': token, 'match': 'exact', 'cls': 'TAG', 'tag_kind': kind, 'variant_kind': '', 'attribution': attribution,
@@ -541,64 +424,3 @@ def suffix(token, attribution, *, confidence='low', status='owner_confirmed', ki
             'owner_confirmed': status == 'owner_confirmed', 'alias_of': None, 'notes': ''}
 
 
-class BrandSeedTests(TestCase):
-    """The Brand seed of mall.refactor.s1_lifecycle: the 13 brand columns plus the suffix TAG names that identify one brand."""
-
-    def setUp(self):
-        from .oem_reference_models import OEMCrossReference
-        from .test_factories import before_s4_tighten, make_legacy_number as make_library_number  # S1's seed read the OEM table before S4
-        before_s4_tighten()
-        for make, code in (('TOYOTA', '90915-YZZE1'), ('LEXUS', '90915-YZZE2'), ('KAIYI', 'KY-0001'), ('CHERY', 'CH-0001'), ('NISSAN', '15208-65F0E')):
-            make_library_number(make, code)
-        OEMCrossReference.objects.create(legacy_reference=make_library_number('TOYOTA', '04465-0K290'), brand='LEX', code='LX-1', number='LX1')
-        line = make_line('SEED-1')
-        for code, brand in (('S-1', 'TOY'), ('S-2', 'VAG'), ('S-3', 'AISAN'), ('S-4', 'MOTION  MOTORS')):
-            make_reference(line, code, brand=brand, tipo='otro')  # not a company code: a company brand keeps its own spelling (LEX)
-        self.rows = [
-            suffix('DG', 'brand: DONGIL', confidence='high', status='seed_confirmed'),              # names another brand than its token
-            suffix('DENSO', 'brand: DENSO', confidence='high', status='seed_confirmed'),           # a confident seed row names itself
-            suffix('MON', 'brand: MONROE', confidence='high', status='seed_confirmed'),
-            suffix('V', 'brand: VALEO (descriptions of -V items say VALEO)', confidence='high', status='seed_confirmed'),
-            suffix('PRO', 'brand: PROFIX', confidence='high', status='seed_confirmed'),
-            suffix('NIS', 'brand: NISSIN', confidence='high', status='seed_confirmed'),             # NIS is NISSAN's abbreviation too
-            suffix('AMARILLA', 'brand: AMARILLA (unverified)'),                                    # only repeats its token
-            suffix('OEM', 'brand: OEM'),
-            suffix('DAI', 'DAI (unidentified mount/rubber brand)', confidence='medium'),
-            suffix('AISAN', 'brand: AISAN (unverified)'),                                          # unverified, but a column has it
-            suffix('SPK/WAP', 'brand: SPK/WAP'),
-            suffix('RAZ/NDK', 'brands: alternatives', confidence='medium', status='seed_confirmed'),
-            suffix('PC', 'brand: PC'),
-        ]
-
-    def plan(self):
-        with patch.object(s1_lifecycle, 'suffix_rows', return_value=self.rows):
-            return s1_lifecycle.brand_plan()
-
-    def test_a_tag_name_is_a_brand_only_when_it_identifies_one(self):
-        plan = self.plan()
-        brands, skipped = plan['brands'], {row['name']: row['reason'] for row in plan['skipped_tags']}
-        for name in ('DONGIL', 'DENSO', 'MONROE', 'VALEO', 'PROFIX', 'NISSIN', 'AISAN'):
-            self.assertEqual(brands.get(name, {}).get('tipo'), 'repuesto', name)
-        self.assertEqual(skipped, {'AMARILLA': 'unidentified', 'OEM': 'unidentified', 'DAI': 'unidentified', 'SPK/WAP': 'compound',
-                                   'ALTERNATIVES': 'compound', 'PC': 'short'})
-        self.assertFalse({'AMARILLA', 'OEM', 'DAI', 'SPK/WAP', 'ALTERNATIVES', 'PC'} & set(brands))
-
-    def test_makes_keep_the_library_spelling_and_their_tipo(self):
-        plan = self.plan()
-        brands = plan['brands']
-        self.assertNotIn('TOY', brands)  # folded into TOYOTA
-        self.assertEqual(plan['aliases']['TOY'], 'TOYOTA')
-        self.assertEqual(brands['LEX']['tipo'], 'repuesto')  # its own cross-reference brand, not LEXUS
-        for make in ('TOYOTA', 'LEXUS', 'KAIYI', 'CHERY', 'NISSAN', 'VAG'):
-            self.assertEqual(brands[make]['tipo'], 'vehiculo', make)
-        self.assertEqual(plan['familias'], {'KAIYI': 'CHERY', 'LEXUS': 'TOYOTA'})
-
-    def test_aliases_leave_out_compound_short_generic_and_ambiguous_tokens(self):
-        plan = self.plan()
-        aliases = plan['aliases']
-        self.assertEqual((aliases['DG'], aliases['MON'], aliases['MOTION  MOTORS']), ('DONGIL', 'MONROE', 'MOTION MOTORS'))
-        skipped = {row['alias']: row['reason'] for row in plan['skipped_aliases']}
-        self.assertFalse({'V', 'PRO', 'NIS', 'RAZ/NDK', 'SPK/WAP'} & set(aliases))
-        self.assertIn('menos de 2 letras', skipped['V'])
-        self.assertIn('genérica', skipped['PRO'])
-        self.assertEqual(skipped['NIS'], 'nombraría dos marcas')

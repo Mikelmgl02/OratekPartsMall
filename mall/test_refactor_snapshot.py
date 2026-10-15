@@ -42,19 +42,16 @@ class CaptureTests(Fresh, TestCase):
         self.assertEqual([q['sql'] for q in queries.captured_queries if snapshot.WRITES.match(q['sql']) or LOCKS.search(q['sql'])], [])
         sections, sample, line = snap['sections'], snap['sample'], str(self.line.pk)
         self.assertEqual(list(sections), ['catalog', 'suggest', 'offers', 'availability', 'equivalents', 'admin_grid', 'biblioteca', 'productos_nuevos',
-                                          'supplier_inventory', 'oem_review', 'matching', 'merged', 'split', 'alternates', 'oem_equivalents',
-                                          'mark_oem', 'technical', 'import_preview'])
+                                          'supplier_inventory', 'matching', 'merged', 'split', 'alternates', 'oem_equivalents', 'technical',
+                                          'import_preview'])
         self.assertEqual(sample['users']['admin'], self.root.pk)
         self.assertEqual(sample['users']['suppliers'], {str(self.supplier.pk): self.supplier.memberships.get().user_id})
         self.assertEqual((sample['offers'], sample['split']), ([line], [line]))
-        # mark-oem reads the SKUs whose code is a library number first, then the others
-        self.assertEqual(sample['mark_oem'][2], str(self.lines['28113-F2000'].pk))
         self.assertIn('17801-30070', [row['sku'] for row in sections['catalog']['FILTRO AIRE']['results']])
         self.assertEqual(sections['availability'][line]['supplier_count'], 1)
         self.assertEqual([offer['supplier_name'] for offer in sections['offers'][line]], ['PROVEEDOR INSTANTANEA'])
         self.assertEqual(sections['admin_grid']['sku p1']['count'], 3)
         self.assertEqual(sections['admin_grid']['sku p2']['status'], 404)  # one page of rows: pages 2 and 3 do not exist
-        self.assertEqual(len(sections['mark_oem']['plan']['rows']), 3)
         self.assertEqual(sections['import_preview']['summary']['valid_rows'], len(sample['import']['rows']))
         self.assertEqual(sections['supplier_inventory'][str(self.supplier.pk)]['count'], 1)
 

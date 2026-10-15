@@ -74,16 +74,8 @@ services:
       GEMINI_GROUNDING_USD_PER_CALL: ${GEMINI_GROUNDING_USD_PER_CALL:-0.035}
       # Quotations are published only from the supplier-reviewed draft; 0 re-opens the draftless legacy API path.
       QUOTES_REQUIRE_DRAFT: ${QUOTES_REQUIRE_DRAFT:-1}
-      # 1 runs the OEM finder dry run (review queue only, never renames) as a matching worker stage after catalog grouping.
-      # Keep it 0: the review queue has no screen since the owner retired OEM linking on 2026-10-14.
-      OEM_FINDER_AUTO_STAGE: ${OEM_FINDER_AUTO_STAGE:-0}
-      # 1 marks OEM, on every matching pass, the SKUs whose code is a declared or verified number of the OEM list (Biblioteca OEM).
-      # Off by default since the owner retired OEM linking on 2026-10-14.
-      OEM_EXACT_MARK: ${OEM_EXACT_MARK:-0}
       # 1 sends a supplier item no code ties to a SKU to Productos nuevos (owner decision D1); its description words stay hints.
       MATCHING_NO_CODE_EVIDENCE: ${MATCHING_NO_CODE_EVIDENCE:-0}
-      # What the storefront search reads (inventory refactor S7): legacy until the Search Document's counts verify, then document.
-      CATALOG_SEARCH_SOURCE: ${CATALOG_SEARCH_SOURCE:-legacy}
       # The matching worker rebuilds every Search Document this often (hours; 0 turns it off).
       SEARCH_DOCUMENT_REBUILD_HOURS: ${SEARCH_DOCUMENT_REBUILD_HOURS:-6}
       CATALOG_LOW_STOCK_THRESHOLD: ${CATALOG_LOW_STOCK_THRESHOLD:-5}

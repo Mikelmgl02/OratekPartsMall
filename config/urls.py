@@ -29,16 +29,11 @@ from mall.catalog_assistant import CatalogAssistantList, CatalogAssistantDetail
 from mall.catalog_import_issues import CatalogImportIssueList, CatalogImportIssueDetail
 from mall.catalog_grouping import CatalogGroupingMerge
 from mall.catalog_split import CatalogMergedList, CatalogSplitView
-from mall.catalog_oem_mark import CatalogCreateOEM, CatalogMarkOEM, CatalogUnmarkOEM
 from mall.oem_lookup import CatalogOEMLookup
 from mall.catalog_suffix_views import CompanySuffixes, SuffixDetail, SuffixList
-from mall.oem_finder_views import OEMApplyHaltView, OEMRunDetail, OEMRunList, OEMRunRevert, OEMRunSpotCheck
-from mall.oem_review_views import OEMReviewBulk, OEMReviewBulkStep, OEMReviewDecide, OEMReviewList, OEMReviewSummary
-from mall.oem_auto_views import OEMPendingApply, OEMPendingList, OEMPendingPreview, OEMPendingSendToReview
 from mall.oem_reference_views import (OEMReferenceBulkEdit, OEMReferenceCrossReference, OEMReferenceCrossReferences, OEMReferenceItem, OEMReferenceList,
                                      OEMReferencePartTypes, PartOEMEquivalents)
 from mall.catalog_media import CatalogImages, CatalogImageDetail, CatalogImageOrder
-from mall.catalog_grouping_suggestions import CatalogGroupingList, CatalogGroupingClassify
 from mall.supplier_import import SupplierInventoryImport, SupplierInventoryImportTemplate, SupplierInventoryImportJobView, SupplierInventoryImportErrors
 from mall.request_views import AccountRequests, ClientSentRequests, ClientSentRequestSummary, ClientSentRequestDetail, ClientPartRequestState, ClientOpenUnits, ClientOpenUnitOrders, SupplierRequestDetail, SupplierRequestReview
 from mall.deal_views import DealActions, DealMessages, PurchaseActivity
@@ -80,13 +75,8 @@ urlpatterns = [
     path('api/v1/management/catalog/<uuid:pk>/technical/', ItemTechnicalDetail.as_view()),
     path('api/v1/management/catalog/assistant/', CatalogAssistantList.as_view()),
     path('api/v1/management/catalog/assistant/<uuid:pk>/', CatalogAssistantDetail.as_view()),
-    path('api/v1/management/catalog/grouping/', CatalogGroupingList.as_view()),
-    path('api/v1/management/catalog/grouping/classify/', CatalogGroupingClassify.as_view()),
     path('api/v1/management/catalog/grouping/merge/', CatalogGroupingMerge.as_view()),
     path('api/v1/management/catalog/merged/', CatalogMergedList.as_view()),
-    path('api/v1/management/catalog/mark-oem/', CatalogMarkOEM.as_view()),
-    path('api/v1/management/catalog/create-oem/', CatalogCreateOEM.as_view()),
-    path('api/v1/management/catalog/unmark-oem/', CatalogUnmarkOEM.as_view()),
     path('api/v1/management/catalog/<uuid:pk>/split/', CatalogSplitView.as_view()),
     path('api/v1/management/catalog/import/', CatalogImport.as_view()),
     path('api/v1/management/catalog/import/issues/', CatalogImportIssueList.as_view()),
@@ -104,20 +94,6 @@ urlpatterns = [
     path('api/v1/management/catalog/<uuid:pk>/images/', CatalogImages.as_view()),
     path('api/v1/management/catalog/<uuid:pk>/images/order/', CatalogImageOrder.as_view()),
     path('api/v1/management/catalog/<uuid:pk>/images/<uuid:image_id>/', CatalogImageDetail.as_view()),
-    path('api/v1/management/oem-finder/runs/', OEMRunList.as_view()),
-    path('api/v1/management/oem-finder/runs/<int:pk>/', OEMRunDetail.as_view()),
-    path('api/v1/management/oem-finder/runs/<int:pk>/spot-check/', OEMRunSpotCheck.as_view()),
-    path('api/v1/management/oem-finder/runs/<int:pk>/revert/', OEMRunRevert.as_view()),
-    path('api/v1/management/oem-finder/halt/', OEMApplyHaltView.as_view()),
-    path('api/v1/management/oem-finder/pending/', OEMPendingList.as_view()),
-    path('api/v1/management/oem-finder/pending/preview/', OEMPendingPreview.as_view()),
-    path('api/v1/management/oem-finder/pending/apply/', OEMPendingApply.as_view()),
-    path('api/v1/management/oem-finder/pending/send-to-review/', OEMPendingSendToReview.as_view()),
-    path('api/v1/management/oem-review/', OEMReviewList.as_view()),
-    path('api/v1/management/oem-review/summary/', OEMReviewSummary.as_view()),
-    path('api/v1/management/oem-review/bulk/', OEMReviewBulk.as_view()),
-    path('api/v1/management/oem-review/bulk/<int:pk>/', OEMReviewBulkStep.as_view()),
-    path('api/v1/management/oem-review/<int:pk>/', OEMReviewDecide.as_view()),
     path('api/v1/management/oem-references/', OEMReferenceList.as_view()),
     path('api/v1/management/oem-references/part-types/', OEMReferencePartTypes.as_view()),
     path('api/v1/management/oem-references/bulk-edit/', OEMReferenceBulkEdit.as_view()),

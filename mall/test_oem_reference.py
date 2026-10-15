@@ -6,12 +6,10 @@ from django.test import SimpleTestCase, TestCase
 from django.test.utils import CaptureQueriesContext
 from rest_framework.test import APITestCase
 
-from . import oem_apply as oa
 from . import references
 from .models import Part, PartCode, Reference, ReferenceSource, User
 from .oem_reference import classify_number, compact, derived_status, linked_parts, source_of
 from .oem_reference_models import OEMReference, OEMReferenceSource
-from .test_oem_apply import FLAG, Catalog
 from .test_factories import historical_apps, legacy_mirror, migration_module, run_migration_function
 from .test_oem_finder import Fresh
 
@@ -169,30 +167,6 @@ class MirrorRetiredTests(Fresh, TestCase):
         self.assertFalse(any('oemreference' in q['sql'].lower() for q in queries.captured_queries))
         references.add(self.part, '1780130070X', '', ref_type='oem')
         self.assertFalse(Reference.objects.filter(references.library_q()).exists())
-
-
-class ApplyRevertSyncTests(Catalog, TestCase):
-    def test_the_finder_apply_and_its_undo_reach_the_library(self):
-        run = self.canary(FLAG)['run']
-        rows = Reference.objects.filter(references.library_q())
-        self.assertEqual({row.estado for row in rows}, {'inferido'})  # S4: the finder's OEM numbers are library rows, inferred
-        number = rows.get(brand='TOYOTA', clave='4865430030')
-        self.assertEqual((number.detail['system'], number.detail['family']), ('TOYOTA', '48654'))
-        self.assertEqual(number.sources.get(kind='buscador').detail['run'], run.pk)
-        self.assertGreater(oa.revert_run(run.pk)['reverted'], 0)
-        self.assertFalse(Reference.objects.filter(references.library_q(), pk=number.pk).exists())  # only the finder backed it: retired
-
-    def test_a_disputed_number_is_never_applied_again(self):
-        number = references.add_library_number('TOYOTA', '48654-30030', source_kind='aftermarket_catalog', citation='ASVA · pág. 2')[0]
-        self.assertEqual(number.part_id, self.parts['48654-30030'].pk)  # the line whose codigo it is carries it
-        references.update(number, estado='disputa', dispute_note='Es de otro modelo')  # S4: a dispute is the number's estado
-        preview = oa.apply_auto(tier=FLAG, read_only=True)
-        self.assertEqual(preview['excluded'].get('disputed'), 1)
-        outcome = self.canary(FLAG)
-        self.assertEqual(outcome['summary']['excluded'].get('disputed'), 1)
-        self.assertFalse(Part.objects.get(sku='48654-30030').is_OEM)  # the person's 'no' is not overridden by a bulk apply
-        from .oem_finder_models import OEMAutoCandidate
-        self.assertEqual(OEMAutoCandidate.objects.filter(part__sku='48654-30030').values_list('status', 'reason').first(), ('excluded', 'disputed'))
 
 
 class MissingTablesTests(Fresh, TestCase):

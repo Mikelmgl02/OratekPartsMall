@@ -27,11 +27,9 @@ from .catalog_grouping import merge_catalog_parts
 from .lines import bulk_create_lines, create_line
 from .models import CatalogMerge, Part, Reference
 from .oem_reference_models import OEMCrossReference, OEMCrossReferenceRetired, OEMReference, PartOEMLink
-from .refactor import s0_normalize_numbers, s4_library
 from .supplier_import_models import SupplierInventoryImportJob
 from .technical_data import part_type_for
-from .test_factories import (Fresh, before_s4_tighten, make_legacy_number, make_line, make_reference, make_supplier, make_user,
-                             make_variant)
+from .test_factories import Fresh, make_line, make_reference, make_supplier, make_user, make_variant
 from .test_supplier_catalog_import import extract, item
 
 URL = '/api/v1/management/oem-references/'
@@ -72,113 +70,6 @@ class ShortNumberTests(Fresh, TestCase):
         self.assertIn('4405285,', ref.printed_forms)
         line = create_line('4405285', actor=self.root)  # Crear SKU with the number promotes its line
         self.assertEqual((line.pk, line.estado), (ref.part_id, 'publicada'))
-
-
-class BackfillFixture(Fresh):
-    def setUp(self):
-        super().setUp()
-        self.root = make_user('s4r-cli', superuser=True)
-        self.output = tempfile.TemporaryDirectory()
-        self.addCleanup(self.output.cleanup)
-        patcher = patch.dict(os.environ, {'REFACTOR_OUTPUT': self.output.name})
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        before_s4_tighten()
-        Brand.objects.create(nombre='TOYOTA', tipo='vehiculo')
-
-    def run_cli(self, *args):
-        out = io.StringIO()
-        with patch.object(s4_library, 'schema', return_value={'tipo': True, 'ref_id': True, 'mains': True, 'tightened': False}):
-            code = s4_library.main([*args], stdout=out)
-        return code, out.getvalue()
-
-    def manifest(self):
-        with open(os.path.join(self.output.name, 'manifest.jsonl'), encoding='utf-8') as handle:
-            return [json.loads(line) for line in handle]
-
-
-class BackfillReviewTests(BackfillFixture, TestCase):
-    def test_the_backfill_writes_short_numbers_without_edge_punctuation_and_marks_the_pending_name_links(self):
-        comma = make_legacy_number('TOYOTA', '4405285', printed_forms=['4405285,'], source_kind='aftermarket_catalog', citation='ATE')
-        named = make_line('16100-79445', description='BOMBA AGUA')  # its codigo names the number, with no name link
-        number = make_legacy_number('TOYOTA', '1610079445', printed_forms=['16100-79445'], source_kind='aftermarket_catalog', citation='GMB')
-        self.assertEqual(self.run_cli('--apply', '--user', 's4r-cli')[0], 0)
-        ref = Reference.objects.get(uid=comma.pk)
-        self.assertEqual((ref.code, ref.part.sku, ref.printed_forms), ('4405285', '4405285', ['4405285,']))
-        pending = Reference.objects.get(uid=number.pk)
-        self.assertEqual((pending.part_id, pending.estado, pending.detail['regla_5b']['sku']), (named.pk, 'declarado', '16100-79445'))
-        self.assertFalse(PartOEMLink.objects.filter(source='sku_name').exists())  # no link is created
-
-    def test_a_line_an_open_case_shows_keeps_its_blank_subgrupo(self):
-        from .matching_engine import part_row, save_case
-        line = make_line('16100-79445', description='BOMBA AGUA')
-        make_legacy_number('TOYOTA', '1610079445', printed_forms=['16100-79445'], source_kind='aftermarket_catalog', citation='GMB',
-                           part_type='BOMBAS DE AGUA', applications='HILUX')
-        other = make_line('BOMBA-OTRA', description='BOMBA AGUA')
-        case = save_case(key='catalog:prueba', kind='catalog', sources=[part_row(other)], candidates=[part_row(line)], target=line.sku,
-                         method='family_review', reason='prueba')
-        planned = s4_library.plan()
-        self.assertEqual(planned['final']['subgrupos_aplazados'], 1)
-        self.assertNotIn('category', planned['fills'][line.pk]['after'])  # the applications are filled; part_row has none
-        self.assertEqual(self.run_cli('--apply', '--user', 's4r-cli')[0], 0)
-        line.refresh_from_db()
-        self.assertEqual((line.subcategory, line.aplicaciones_texto), ('', 'HILUX'))
-        refreshed = save_case(key='catalog:prueba', kind='catalog', sources=[part_row(other)], candidates=[part_row(Part.objects.get(pk=line.pk))],
-                              target=line.sku, method='family_review', reason='prueba')
-        self.assertEqual(refreshed.fingerprint, case.fingerprint)
-
-
-class RollbackSafetyTests(BackfillFixture, TestCase):
-    def setUp(self):
-        super().setUp()
-        self.promoted = make_legacy_number('TOYOTA', '1610079445', printed_forms=['16100-79445'], source_kind='aftermarket_catalog', citation='GMB')
-        self.absorbed = make_legacy_number('TOYOTA', '1780130070', printed_forms=['17801-30070'], source_kind='aftermarket_catalog', citation='GMB')
-        self.free = make_legacy_number('TOYOTA', '0446560010', printed_forms=['04465-60010'], source_kind='aftermarket_catalog', citation='GMB')
-        self.carrier = make_line('90915-YZZE1')  # its brandless main carries the number
-        self.carried = make_legacy_number('TOYOTA', '90915YZZE1', printed_forms=['90915-YZZE1'], source_kind='price_list', citation='LISTA')
-        self.assertEqual(self.run_cli('--apply', '--user', 's4r-cli')[0], 0)
-
-    def test_the_rollback_leaves_what_moved_and_lists_it(self):
-        promoted = Reference.objects.get(uid=self.promoted.pk)
-        line = create_line('16100-79445', actor=self.root)  # Crear SKU promotes the number's line
-        self.assertEqual(line.pk, promoted.part_id)
-        sku = make_line('FILTRO-X')
-        references.add(sku, '17801-30070', 'TOYOTA', tipo='oem', actor=self.root)  # rule 3f: its line is absorbed
-        absorbed = Reference.objects.get(uid=self.absorbed.pk)
-        self.assertEqual(absorbed.part_id, sku.pk)
-        carried = Reference.objects.get(uid=self.carried.pk)
-        references.set_main(self.carrier, carried, actor=self.root, reason='prueba')  # a carrier's number made its main
-        free = Reference.objects.get(uid=self.free.pk)
-        code, out = self.run_cli('--rollback', '--user', 's4r-cli')
-        self.assertEqual(code, 0, out)
-        self.assertEqual(references.main_of(line).pk, promoted.pk)  # the published line keeps its main (I1)
-        self.assertEqual(Reference.objects.get(pk=absorbed.pk).part_id, sku.pk)  # the code the person added stays
-        self.assertEqual(references.main_of(self.carrier).pk, carried.pk)
-        self.assertFalse(Reference.all_objects.filter(pk=free.pk).exists())
-        self.assertFalse(Part.objects.filter(pk=free.part_id).exists())
-        deleted = {(row['model'], str(row['id'])) for row in self.manifest() if row.get('action') == 'delete'}
-        self.assertIn(('mall.Reference', str(free.pk)), deleted)
-        for model, pk in (('mall.Reference', promoted.pk), ('mall.Reference', absorbed.pk), ('mall.Reference', carried.pk),
-                          ('mall.Part', line.pk)):
-            self.assertNotIn((model, str(pk)), deleted)
-        self.assertIn(f'referencia {promoted.pk}', out)
-        again = self.run_cli('--rollback', '--user', 's4r-cli')[1]  # what was left is tried again, and listed again
-        self.assertIn(f'referencia {promoted.pk}', again)
-
-    def test_what_the_code_wrote_after_landing_goes_back_to_the_oem_table(self):
-        promoted = Reference.objects.get(uid=self.promoted.pk)
-        late = OEMCrossReference.objects.create(reference=promoted, brand='AISIN', code='WPT-9', number='WPT9', citations=['ATE'])
-        young, _ = references.add_library_number('KIA', '58101-2SA00', source_kind='manual', citation='MANUAL', actor=self.root)
-        orphan = OEMCrossReference.objects.create(reference=young, brand='MANDO', code='MBK-1', number='MBK1', citations=['MANDO'])
-        code, out = self.run_cli('--rollback', '--user', 's4r-cli')
-        self.assertEqual(code, 0, out)
-        late.refresh_from_db()
-        self.assertEqual((late.legacy_reference_id, late.reference_id), (self.promoted.pk, None))
-        self.assertFalse(OEMCrossReference.objects.filter(pk=orphan.pk).exists())  # its number is younger than S4: no OEM table row
-        recorded = [row for row in self.manifest() if row.get('model') == 'mall.OEMCrossReference' and row['id'] == orphan.pk]
-        self.assertEqual((recorded[0]['action'], recorded[0]['before']['code']), ('delete', 'MBK-1'))
-        self.assertIn('0 filas sin reference_id', out)
-        self.assertFalse(Reference.all_objects.filter(pk=promoted.pk).exists())  # released, nothing points at it any more
 
 
 class AbsorbRowsTests(Fresh, TestCase):
@@ -313,13 +204,6 @@ class ReviewGuardTests(Fresh, TestCase):
         self.assertEqual(response.status_code, 400, response.content)
         self.assertIn(line.sku, json.dumps(response.json(), ensure_ascii=False))
         self.assertEqual(Reference.objects.get(pk=ref.pk).estado, 'declarado')
-
-    def test_the_s0_twin_merge_refuses_to_write_after_s4(self):
-        self.assertIsNone(s0_normalize_numbers.library_moved())
-        number = make_legacy_number('TOYOTA', '1610079445', printed_forms=['16100-79445'])
-        ref, _ = references.add_library_number('TOYOTA', '16100-79445')
-        Reference.all_objects.filter(pk=ref.pk).update(uid=number.pk)  # as S4's backfill leaves it
-        self.assertIn('S4', s0_normalize_numbers.library_moved())
 
 
 class AutomaticPathTests(Fresh, TestCase):

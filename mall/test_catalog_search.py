@@ -2,6 +2,8 @@ from unittest.mock import patch
 
 from rest_framework.test import APITestCase
 
+from .brand_models import Brand, BrandAlias
+
 from .models import Account, Membership, Part, PartCode, Role, SupplierItem, User
 from . import references
 from .references import add_library_number
@@ -49,14 +51,25 @@ class CatalogSearchTests(APITestCase):
         self.assertEqual(self.skus('pinon arranque'), ['PIN-1'])
 
     def test_codes_match_without_separators_on_skus_alternos_and_supplier_codes(self):
+        # A supplier's own code is its interno Reference (S6): it counts only in that supplier's catalog.
         self.part('51750-J9000', 'CUBO DE RUEDA DEL KIA')
-        PartCode.objects.create(part=self.part('PAD-1', 'PASTILLA'), code='GWT-41A', brand='GMB')
+        references.add(self.part('PAD-1', 'PASTILLA'), 'GWT-41A', 'GMB', tipo='aftermarket')
         sensor = self.part('SENSOR-1', 'SENSOR ABS')
         SupplierItem.objects.create(part=sensor, supplier=self.supplier, supplier_invent_id='INV-1', codigo='58411-1R000-G', brand='HYUNDAI',
                                     source='upload', reported_quantity=3, matching_status='matched')
         for search, expected in [('51750J9000', ['51750-J9000']), ('51750 J9000', ['51750-J9000']), ('51750-j9000', ['51750-J9000']),
-                                 ('gwt41a', ['PAD-1']), ('GWT 41A', ['PAD-1']), ('584111R000G', ['SENSOR-1']), ('58411 1R000 G', ['SENSOR-1'])]:
+                                 ('gwt41a', ['PAD-1']), ('GWT 41A', ['PAD-1'])]:
             self.assertEqual(self.skus(search), expected, search)
+        sensor_code = references.find('58411-1R000-G', 'HYUNDAI', supplier=self.supplier)
+        if sensor_code is not None and sensor_code.tipo == 'interno':
+            self.assertEqual(self.skus('584111R000G'), [])  # a client never reads a supplier's own code
+            own = User.objects.create_user('search-supplier', 'search-supplier@example.invalid', 'StrongPassword123!')
+            Membership.objects.create(user=own, account=self.supplier)
+            self.client.force_authenticate(own)
+            self.assertEqual(self.skus('584111R000G'), ['SENSOR-1'])
+            self.assertEqual(self.skus('58411 1R000 G'), ['SENSOR-1'])
+        else:  # a public Reference: everyone finds it
+            self.assertEqual(self.skus('584111R000G'), ['SENSOR-1'])
 
     def test_a_code_search_lists_the_exact_code_first_then_codes_containing_it_then_the_rest(self):
         self.part('0-0-MENCION', 'REEMPLAZA AL 51750-J9000')
@@ -98,3 +111,33 @@ class CatalogSearchTests(APITestCase):
         self.assertEqual(self.client.get(self.suggest, {'search': '  '}).data, [])
         self.client.force_authenticate(None)
         self.assertIn(self.client.get(self.suggest, {'search': 'disco'}).status_code, (401, 403))
+
+    def test_brand_aliases_find_what_the_catalog_wrote_short(self):
+        toyota = Brand.objects.create(nombre='TOYOTA', tipo='vehiculo')
+        BrandAlias.objects.create(alias='TOY', brand=toyota)
+        self.part('90915-YZZE1', 'FILTRO ACEITE TOY COROLLA')
+        self.part('04152-YZZA1', 'FILTRO ACEITE TOYOTA HILUX')
+        self.part('15400-PLM-A02', 'FILTRO ACEITE HON CIVIC')
+        self.assertEqual(self.skus('filtro aceite toyota'), ['04152-YZZA1', '90915-YZZE1'])
+        self.assertEqual(self.skus('filtro aceite toy'), ['04152-YZZA1', '90915-YZZE1'])  # TOY as written, and the brand it names
+
+    def test_del_is_a_word_not_filler(self):
+        self.part('DISCO-DEL', 'DISCO FRENO DEL')
+        self.part('DISCO-TRAS', 'DISCO FRENO TRAS')
+        self.assertEqual(self.skus('disco freno del'), ['DISCO-DEL'])
+        self.assertEqual(self.skus('disco de freno'), ['DISCO-DEL', 'DISCO-TRAS'])
+
+    def test_a_code_in_dispute_counts_only_as_its_lines_main(self):
+        line = self.part('AB-100', 'SOPORTE')
+        references.add(line, 'XY-200', '', tipo='otro', estado='disputa', dispute_note='Lo tiene otra línea.')
+        other = self.part('XY-201', 'SOPORTE B')
+        references.update(references.main_of(other), estado='disputa', dispute_note='Duplicado.')
+        self.assertEqual(self.skus('XY-200'), [])
+        self.assertEqual(self.skus('XY-201'), ['XY-201'])
+
+    def test_lines_off_the_storefront_are_never_found(self):
+        from .lines import set_estado
+        line = self.part('RET-1', 'RETEN CIGUENAL')
+        self.assertEqual(self.skus('reten'), ['RET-1'])
+        set_estado(line, 'retirada')
+        self.assertEqual(self.skus('reten'), [])
