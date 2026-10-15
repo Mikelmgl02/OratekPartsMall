@@ -359,12 +359,14 @@ class DataStepTests(Helpers, TestCase):
                                           proposal_ids=[str(genuine.pk), str(approved.pk), str(cap.pk), str(own.pk)])
         verdict = SkuReviewVerdict.objects.create(run=run, proposal=genuine, position=0, proposal_version=4, method='ai', verdict='good')
         old = SkuReviewVerdict.objects.create(run=run, proposal=approved, position=1, proposal_version=1, method='ai', verdict='good')
+        stamps = dict(SupplierItem.objects.values_list('pk', 'updated_at'))   # what the suppliers last changed
         code, out = self.cli('--dry-run')
         self.assertEqual(code, 0, out)
         self.assertFalse(Part.objects.filter(pk=genuine.pk).exists())
         self.assertIn('líneas nuevas en preparación', out)
         code, out = self.cli('--apply', '--user', self.root.username)
         self.assertEqual(code, 0, out)
+        self.assertEqual(dict(SupplierItem.objects.values_list('pk', 'updated_at')), stamps)   # the data step moves no item's updated_at
         line = Part.objects.get(pk=genuine.pk)
         main = self.main(line)
         self.assertEqual((line.estado, line.origen, line.sku, line.version, line.description), ('preparacion', 'proveedor', 'F02-4121010-01AA', 4, 'FARO KAIYI'))
@@ -395,6 +397,11 @@ class DataStepTests(Helpers, TestCase):
         library_line.refresh_from_db()
         self.assertEqual(library_line.estado, 'referencia')
         self.assertEqual(set(SupplierItem.objects.values_list('part_id', 'reference_id', 'matching_status')), {(None, None, 'pending')})
+        self.assertEqual(dict(SupplierItem.objects.values_list('pk', 'updated_at')), stamps)   # nor does its rollback
+        # Nobody ticked «código interno» on the OD20 line: its interno main came from the data step, so the proposal keeps its flag.
+        self.assertEqual(dict(SkuProposal.objects.filter(pk__in=[own.pk, cap.pk]).values_list('sku', 'internal_code')),
+                         {'URT-22': False, 'KYJP000484': True})
+        self.assertNotIn('propuestas_actualizadas', out)
         self.assertEqual(MatchingCase.objects.filter(kind='reference').count(), 0)
         self.assertEqual(set(MatchingCase.objects.filter(kind='supplier').values_list('status', flat=True)), {'unmatched'})
         verdict.refresh_from_db()
@@ -442,6 +449,19 @@ class DataStepTests(Helpers, TestCase):
         self.assertFalse(Part.objects.filter(pk=line.pk).exists())
         self.assertTrue(Part.objects.filter(pk=published.pk, estado='publicada').exists())   # decided since: left, listed
         self.assertIn('LATE-2', out)
+
+    def test_the_rollback_writes_back_codigo_interno_only_when_someone_ticked_it(self):
+        ticked = self.proposal('T-88', [self.item(self.dealer, '1', 'T-88', 'WURTH', 'PIEZA')], brand='WURTH')
+        own = self.proposal('O-88', [self.item(self.dealer, '2', 'O-88', 'MOTION MOTORS', 'PIEZA')], brand='MOTION MOTORS')
+        code, out = self.cli('--apply', '--user', self.root.username)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.main(Part.objects.get(pk=own.pk)).tipo, 'interno')   # OD20, from the data step
+        line = Part.objects.get(pk=ticked.pk)
+        new_products.edit(line.pk, self.root, line.version, {'internal_code': True})
+        code, out = self.cli('--rollback', '--user', self.root.username)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(dict(SkuProposal.objects.filter(pk__in=[ticked.pk, own.pk]).values_list('sku', 'internal_code')),
+                         {'T-88': True, 'O-88': False})
 
     def test_the_rollback_writes_back_what_was_decided_and_takes_back_what_s6_did_after_landing(self):
         from . import reference_matching as rm

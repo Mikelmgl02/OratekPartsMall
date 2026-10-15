@@ -317,7 +317,7 @@ def write(planned, log, run, user):
     from django.utils import timezone
     from .. import lines, references, variants
     from ..matching_models import MatchingCase
-    from ..models import Part, Reference
+    from ..models import Part, Reference, SupplierItem
     from ..new_products import PLACED_REASON, canonical_brand, citation, declared_cases
     from ..reference_matching import written_brand
     from ..sku_review_models import SkuReviewRun, SkuReviewVerdict
@@ -361,6 +361,9 @@ def write(planned, log, run, user):
         if not items:
             return
         variants.hang([item.pk for item in items], ref)
+        # The data step moves no item's updated_at (S3's did not either): it stays what the supplier last changed, the code before S6
+        # does not see the items as changed (sku_proposals reads updated_at against seen_at), and --rollback gives the same values back.
+        SupplierItem.objects.bulk_update(items, ['updated_at'])
         for item in items:
             log.append({**run, 'model': 'mall.SupplierItem', 'id': str(item.pk), 'action': 'hang',
                         'before': {'reference_id': None, 'part_id': None, 'matching_status': item.matching_status},
@@ -584,8 +587,13 @@ def write_back(proposal, line, log, run, result):
         codes = list(Reference.objects.filter(part_id=line.pk).order_by('pk'))
         main, oem = references.main_in(codes), oem_of(line, codes)
         sources = {key: value for key, value in (line.field_sources or {}).items() if key != PREPARED}
+        # «código interno» comes back only when someone changed it since (edit and ai_fill mark field_sources['internal_code']): the
+        # data step itself makes a main interno without the flag (OD6, OD20: a brand that is the supplier's own name), and the proposal
+        # never had it.
+        edited = sources.get('internal_code') != (proposal.field_sources or {}).get('internal_code')
         fields = {'sku': line.sku, 'description': line.description, 'part_type_id': line.part_type_id, 'field_sources': sources,
-                  'version': line.version, 'internal_code': main is not None and main.tipo == 'interno',
+                  'version': line.version,
+                  'internal_code': (main is not None and main.tipo == 'interno') if edited else proposal.internal_code,
                   'oem_code': oem.code if oem is not None and oem.brand else '', 'oem_brand': oem.brand if oem is not None and oem.code else ''}
         if (sources.get('references') or {}).get('source') == 'admin':
             hung = set(SupplierItem.objects.filter(part_id=line.pk).values_list('reference_id', flat=True))
@@ -650,12 +658,17 @@ def undo(log, run):
             hung[str(line['after']['part_id'])].add(line['id'])
 
     def detach_all(items):
+        items = list(items)
+        stamps = {item.pk: item.updated_at for item in items}
         for item in items:
             log.append({**run, 'model': 'mall.SupplierItem', 'id': str(item.pk), 'action': 'rollback',
                         'before': recorded({'reference_id': item.reference_id, 'part_id': item.part_id, 'matching_status': item.matching_status,
                                             'codigo': item.codigo, 'codigo_pendiente': item.codigo_pendiente})})
             variants.detach(item)
             result['articulos'] += 1
+        for item in items:  # detach stamps updated_at: each item keeps the one it had (the apply left the supplier's own)
+            item.updated_at = stamps[item.pk]
+        SupplierItem.objects.bulk_update(items, ['updated_at'], batch_size=CHUNK)
 
     rule_7 = {str(pk) for pk in Part._base_manager.filter(prepared_q()).values_list('pk', flat=True)}
     for pk in sorted(created_lines - set(joined) - rule_7):
