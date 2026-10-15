@@ -157,6 +157,18 @@ class ManagementTests(APITestCase):
         self.assertEqual(self.client.patch(url, {'part': None}, format='json').status_code, 400)
         self.assertEqual(self.client.patch(url, {'part': None, 'matching_status': 'pending'}, format='json').status_code, 200)
 
+    def test_stock_rows_carry_their_line_estado(self):
+        # Existencias por proveedor shows "En preparación" from line_estado (S6): the item's line estado, null with no line.
+        published = Part.objects.create(sku='LINEA-PUBLICADA')
+        draft = Part.objects.create(sku='LINEA-PREPARACION', estado='preparacion')
+        SupplierItem.objects.create(supplier=self.account, supplier_invent_id='a-pub', codigo='LINEA-PUBLICADA', source='upload', part=published, matching_status='matched')
+        SupplierItem.objects.create(supplier=self.account, supplier_invent_id='b-prep', codigo='LINEA-PREPARACION', source='upload', part=draft, matching_status='pending')
+        SupplierItem.objects.create(supplier=self.account, supplier_invent_id='c-none', codigo='SIN-LINEA', source='upload')
+        rows = self.client.get('/api/v1/management/inventory/', {'ordering': 'supplier_invent_id'}).data['results']
+        self.assertEqual([(row['supplier_invent_id'], row['line_estado']) for row in rows], [('a-pub', 'publicada'), ('b-prep', 'preparacion'), ('c-none', None)])
+        detail = self.client.get(f"/api/v1/management/inventory/{rows[1]['id']}/").data
+        self.assertEqual((detail['part_sku'], detail['line_estado']), ('LINEA-PREPARACION', 'preparacion'))
+
     def test_approved_legacy_codes_remain_in_the_same_sku_library(self):
         part = Part.objects.create(sku='58411-1R000')
         pending = ingest_inventory(supplier=self.account, actor=self.user, data={'update_id': 'pending-alias', 'supplier_invent_id': 'pending', 'codigo': '58411-1R000-G', 'brand': 'GENERIC', 'source': 'upload', 'quantity': 3})

@@ -423,9 +423,11 @@ class ManagedInventorySerializer(SupplierItemSerializer):
     supplier_name = serializers.CharField(source='supplier.name', read_only=True)
     part_name = serializers.CharField(source='part.name', read_only=True, default=None)
     part_sku = serializers.CharField(source='part.sku', read_only=True, default=None)
+    # The estado of the item's line (S6, additive): Existencias shows "En preparación" when it is not publicada; null with no line.
+    line_estado = serializers.CharField(source='part.estado', read_only=True, default=None)
 
     class Meta(SupplierItemSerializer.Meta):
-        fields = SupplierItemSerializer.Meta.fields + ['supplier', 'supplier_name', 'part_name', 'part_sku']
+        fields = SupplierItemSerializer.Meta.fields + ['supplier', 'supplier_name', 'part_name', 'part_sku', 'line_estado']
         read_only_fields = fields
 
 

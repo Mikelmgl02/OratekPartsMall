@@ -413,4 +413,4 @@ class PricingPrivacyTests(APITestCase):
                                                               'matching_status', 'source', 'reported_quantity', 'reserved_quantity',
                                                               'available_quantity', 'updated_at', 'reference', 'codigo_pendiente',
                                                               'brand_pendiente'])
-        self.assertEqual(ManagedInventorySerializer.Meta.fields, SupplierItemSerializer.Meta.fields + ['supplier', 'supplier_name', 'part_name', 'part_sku'])
+        self.assertEqual(ManagedInventorySerializer.Meta.fields, SupplierItemSerializer.Meta.fields + ['supplier', 'supplier_name', 'part_name', 'part_sku', 'line_estado'])
