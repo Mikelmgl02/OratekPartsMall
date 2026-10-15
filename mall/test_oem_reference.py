@@ -7,22 +7,19 @@ from django.test.utils import CaptureQueriesContext
 from rest_framework.test import APITestCase
 
 from . import oem_apply as oa
-from . import oem_reference as orf
 from . import references
-from .models import Part, PartCode, Reference, User
-from .oem_reference import (classify_number, compact, derived_status, linked_parts, refresh_status, source_of,
-                            upsert_reference)
+from .models import Part, PartCode, Reference, ReferenceSource, User
+from .oem_reference import classify_number, compact, derived_status, linked_parts, source_of
 from .oem_reference_models import OEMReference, OEMReferenceSource
-from .test_oem_apply import FLAG, RENAME, Catalog
-from .test_factories import historical_apps, migration_module, run_migration_function
+from .test_oem_apply import FLAG, Catalog
+from .test_factories import historical_apps, legacy_mirror, migration_module, run_migration_function
 from .test_oem_finder import Fresh
 
 URL = '/api/v1/management/oem-references/'
 ALGO = 'algo:oem-finder:v2:current:2'
 
 
-# From S2a one OEM number lives on one line (0074's reference_one_live_line): a second line's alterno of it is in dispute, which the
-# mirror still files under the number.
+# From S2a one OEM number lives on one line (0074's reference_one_live_line): a second line's alterno of it is in dispute.
 SHARED = {'estado': 'disputa', 'dispute_note': 'OTRO SKU TIENE ESTE NÚMERO'}
 
 
@@ -31,7 +28,7 @@ def oem(part, code, brand='TOYOTA', source=ALGO, ref_type='oem', **fields):
 
 
 def state():
-    """The whole library as comparable data: every reference with its sources."""
+    """The whole OEM table (as it was before S4) as comparable data: every reference with its sources."""
     return sorted((r.manufacturer, r.code, tuple(r.printed_forms), r.system, r.family, r.part_type, r.description, r.status,
                    tuple(sorted((s.kind, s.citation, repr(sorted(s.detail.items()))) for s in r.sources.all())))
                   for r in OEMReference.objects.prefetch_related('sources'))
@@ -144,227 +141,75 @@ class FrozenSeedRuleTests(SimpleTestCase):
         self.assertEqual(self.seed.source_of('REVISADO A MANO'), ('catalog_approval', 'REVISADO A MANO', {}))
 
 
-class SyncTests(Fresh, TestCase):
+class MirrorRetiredTests(Fresh, TestCase):
+    """S4: the OEM table is frozen; an OEM alterno is a library row itself (a Reference of tipo oem with a brand), described from its
+    line the way the mirror described the number, and nothing writes OEMReference any more."""
+
     def setUp(self):
         super().setUp()
         self.part = Part.objects.create(sku='17801-30070', description='FILTRO AIRE TOY HILUX 2.7')
-        self.other = Part.objects.create(sku='0110-17801-FEB', description='FILTRO AIRE TOY')
 
-    def ref(self, number='1780130070', manufacturer='TOYOTA'):
-        return OEMReference.objects.filter(manufacturer=manufacturer, code=number).first()
-
-    def test_an_oem_finder_alterno_becomes_an_inferred_reference_with_its_run(self):
-        code = oem(self.part, '17801-30070')
-        ref = self.ref()
-        self.assertEqual((ref.printed_forms, ref.system, ref.family, ref.part_type, ref.description, ref.status, ref.version),
-                         (['17801-30070'], 'TOYOTA', '17801', 'FILTRO AIRE', 'FILTRO AIRE TOY HILUX 2.7', 'inferred', 1))
-        source = ref.sources.get()
-        self.assertEqual((source.kind, source.citation, source.created_by), ('oem_finder', ALGO, None))
-        self.assertEqual(source.detail, {'run': 2, 'rule': 'current', 'rules_version': 'v2',
-                                         'part_codes': [{'id': code.pk, 'part': str(self.part.pk), 'code': '17801-30070'}]})
-        code.save()  # an unchanged save changes nothing
-        self.assertEqual((self.ref().version, OEMReferenceSource.objects.count()), (1, 1))
-
-    def test_an_approved_ai_lookup_is_verified_and_a_catalog_approval_declared(self):
-        part = Part.objects.create(sku='MR-968365', description='BASE MIT MONTERO')
-        oem(part, 'MR-968365', 'MITSUBISHI', 'https://parts.example/MR968365')
-        ref = self.ref('MR968365', 'MITSUBISHI')
-        self.assertEqual((ref.status, ref.system, ref.sources.get().kind, ref.sources.get().detail['approved']), ('verified', 'MITSU_OLD', 'ai_lookup', True))
-        oem(self.part, '17801-30070', source='')
-        self.assertEqual((self.ref().status, self.ref().sources.get().kind, self.ref().sources.get().citation), ('declared', 'catalog_approval', ''))
-
-    def test_a_new_source_text_moves_the_alterno_to_the_new_source(self):
-        code = oem(self.part, '17801-30070')
-        code.reference_source = 'CATÁLOGO TOYOTA EPC 2024'
-        code.save()
-        ref = self.ref()
-        self.assertEqual([(s.kind, s.citation) for s in ref.sources.all()], [('catalog_approval', 'CATÁLOGO TOYOTA EPC 2024')])
-        self.assertEqual((ref.status, ref.version), ('declared', 2))
-
-    def test_retyping_renaming_or_retiring_the_alterno_removes_exactly_its_source(self):
-        def numbers():
-            return sorted((ref.manufacturer, ref.code, ref.sources.count()) for ref in OEMReference.objects.all())
-        code = oem(self.part, '17801-30070')
-        code.ref_type = 'unknown'
-        code.save()
-        self.assertEqual(numbers(), [('TOYOTA', '1780130070', 0)])  # its only source is gone; the number stays (S2a: never deleted)
-        code.ref_type = 'oem'
-        code.save()
-        code.code = '17801-30080'
-        code.save()
-        self.assertEqual(numbers(), [('TOYOTA', '1780130070', 0), ('TOYOTA', '1780130080', 1)])
-        code.brand = 'LEXUS'
-        code.save()
-        self.assertEqual(numbers(), [('LEXUS', '1780130080', 1), ('TOYOTA', '1780130070', 0), ('TOYOTA', '1780130080', 0)])
-        references.retire(code)
-        self.assertEqual(numbers(), [('LEXUS', '1780130080', 0), ('TOYOTA', '1780130070', 0), ('TOYOTA', '1780130080', 0)])
-        self.assertFalse(OEMReferenceSource.objects.exists())
-
-    def test_the_alterno_points_at_its_reference_through_every_change(self):
-        code = oem(self.part, '17801-30070')
+    def test_an_oem_alterno_is_the_library_row_and_takes_the_texts_the_mirror_gave(self):
+        code, _ = references.add(self.part, '17801-30070', 'TOYOTA', ref_type='oem', source=ALGO)
+        self.assertFalse(OEMReference.objects.exists() or OEMReferenceSource.objects.exists())
         code.refresh_from_db()
-        self.assertEqual(code.oem_reference, self.ref())
-        code.code = '17801-30080'
-        code.save()
-        code.refresh_from_db()
-        self.assertEqual(code.oem_reference, self.ref('1780130080'))
-        code.ref_type = 'company'
-        code.save()
-        code.refresh_from_db()
-        self.assertIsNone(code.oem_reference)
-        sister = oem(self.other, '17801-30070', source='LISTA TOYOTA')
-        upsert_reference('TOYOTA', '1780130070', source_kind='price_list', citation='LISTA 2026')
-        references.retire(sister)  # the reference keeps its price list and loses the source the alterno backed
-        self.assertEqual([source.kind for source in self.ref().sources.all()], ['price_list'])
-        sister.refresh_from_db()
-        self.assertEqual((sister.estado, sister.oem_reference), ('retirada', self.ref()))  # a retired alterno keeps its number, as history
+        self.assertEqual((code.estado, code.detail['description'], code.detail['part_type'], code.detail['system'], code.detail['family']),
+                         ('inferido', 'FILTRO AIRE TOY HILUX 2.7', 'FILTRO AIRE', 'TOYOTA', '17801'))
+        self.assertEqual(code.sources.get().kind, 'buscador')
+        approved, _ = references.add(Part.objects.create(sku='MR-968365', description='BASE MIT MONTERO'), 'MR-968365', 'MITSUBISHI',
+                                     ref_type='oem', source='https://parts.example/MR968365')
+        self.assertEqual(approved.estado, 'verificado')  # an AI lookup approved into the catalog, as the library ruled it
 
-    def test_a_source_backed_by_two_alternos_stays_until_the_last_one_goes(self):
-        first, second = oem(self.part, '17801-30070'), oem(self.other, '1780130070', **SHARED)
-        ref = self.ref()
-        source = ref.sources.get()
-        self.assertEqual(([e['id'] for e in source.detail['part_codes']], ref.printed_forms), ([first.pk, second.pk], ['17801-30070']))
-        references.retire(first)
-        self.assertEqual([e['id'] for e in self.ref().sources.get().detail['part_codes']], [second.pk])
-        references.retire(Reference.objects.filter(pk=second.pk))  # a queryset retires one row at a time: the same signal
-        self.assertEqual((self.ref().sources.count(), self.ref().status), (0, 'inferred'))  # the number stays, with no source
-
-    def test_a_reference_with_other_sources_or_human_input_outlives_the_alterno(self):
-        code = oem(self.part, '17801-30070')
-        upsert_reference('TOYOTA', '17801-30070', source_kind='manual', citation='LISTA DISTRIBUIDOR 2026 P. 4', detail={'verified': False})
-        self.assertEqual(self.ref().status, 'declared')
-        references.retire(code)
-        ref = self.ref()
-        self.assertEqual(([s.kind for s in ref.sources.all()], ref.status), (['manual'], 'declared'))
-        other = oem(self.other, '17801-30080')
-        disputed = self.ref('1780130080')
-        disputed.status, disputed.dispute_note = 'disputed', 'ES UN FILTRO DE CABINA'
-        disputed.save()
-        references.retire(other)
-        disputed = self.ref('1780130080')
-        self.assertEqual((disputed.status, disputed.sources.count()), ('disputed', 0))
-
-    def test_refresh_status_keeps_a_dispute_and_saves_only_on_change(self):
-        ref, created = upsert_reference('TOYOTA', '17801-30070', source_kind='oem_finder', citation=ALGO)
-        self.assertEqual((created, ref.status, ref.version), (True, 'inferred', 1))
-        self.assertEqual((refresh_status(ref), OEMReference.objects.get(pk=ref.pk).version), ('inferred', 1))
-        OEMReferenceSource.objects.create(reference=ref, kind='price_list', citation='LISTA 2026')
-        self.assertEqual((refresh_status(ref), OEMReference.objects.get(pk=ref.pk).version), ('verified', 2))
-        ref.status, ref.dispute_note = 'disputed', 'NO CORRESPONDE'
-        ref.save()
-        OEMReferenceSource.objects.create(reference=ref, kind='manufacturer_catalog', citation='EPC')
-        self.assertEqual(refresh_status(ref, changed=True), 'disputed')
-        self.assertEqual(upsert_reference('TOYOTA', '1780130070', source_kind='price_list', citation='LISTA 2026'), (OEMReference.objects.get(pk=ref.pk), False))
-
-    def test_other_reference_types_and_brandless_oem_alternos_are_not_mirrored(self):
+    def test_other_reference_types_and_brandless_oem_alternos_are_no_library_rows(self):
         with CaptureQueriesContext(connection) as queries:
             company = oem(self.part, 'ALT-17801', 'ACME', '', ref_type='company')
             company.code = 'ALT-17802'
             company.save()
             references.retire(company)
         self.assertFalse(any('oemreference' in q['sql'].lower() for q in queries.captured_queries))
-        oem(self.part, '17801-30070', brand='')
-        self.assertFalse(OEMReference.objects.exists())
-
-    def test_alternos_saved_through_the_catalog_api(self):
-        root = User.objects.create_superuser('oem-ref-api', 'oem-ref-api@example.invalid', 'Example938!')
-        self.client.force_login(root)
-        response = self.client.post('/api/v1/management/alternates/', {'part': str(self.part.pk), 'code': '17801-30070', 'brand': 'toyota',
-                                                                      'ref_type': 'oem', 'reference_source': 'https://parts.example/17801-30070'},
-                                    content_type='application/json')
-        self.assertEqual(response.status_code, 201, response.content)
-        self.assertEqual((self.ref().status, self.ref().sources.get().kind), ('verified', 'ai_lookup'))
-        self.assertEqual(self.client.delete(f'/api/v1/management/alternates/{response.json()["id"]}/').status_code, 204)
-        self.assertEqual(Reference.all_objects.get(pk=response.json()['id']).estado, 'retirada')  # retired, not deleted
-        self.assertEqual((OEMReference.objects.count(), OEMReferenceSource.objects.count()), (1, 0))  # the number stays without its source
+        references.add(self.part, '1780130070X', '', ref_type='oem')
+        self.assertFalse(Reference.objects.filter(references.library_q()).exists())
 
 
 class ApplyRevertSyncTests(Catalog, TestCase):
     def test_the_finder_apply_and_its_undo_reach_the_library(self):
         run = self.canary(FLAG)['run']
-        refs = OEMReference.objects.prefetch_related('sources')
-        self.assertEqual((refs.count(), {r.status for r in refs}), (11, {'inferred'}))
-        ref = refs.get(manufacturer='TOYOTA', code='4865430030')
-        self.assertEqual((ref.printed_forms, ref.system, ref.family, ref.part_type), (['48654-30030'], 'TOYOTA', '48654', 'BASE AMORT'))
-        self.assertEqual((ref.sources.get().citation, ref.sources.get().detail['run']), (f'algo:oem-finder:v3:current:{run.pk}', run.pk))
-        self.assertEqual(oa.revert_run(run.pk)['reverted'], 11)
-        self.assertEqual((OEMReference.objects.count(), OEMReferenceSource.objects.count()), (11, 0))  # the numbers stay (S2a), unbacked
-
-    def test_a_rename_and_the_restore_of_a_retyped_alterno(self):
-        part = self.part('54830-2H000-MOBIS')
-        PartCode.objects.create(part=part, code='54830-2H000', brand='HYUNDAI', ref_type='unknown')  # retyped by the apply, restored by the undo
-        run = self.canary(RENAME)['run']
-        ref = OEMReference.objects.get()
-        self.assertEqual((ref.manufacturer, ref.code, ref.status, ref.sources.get().citation),
-                         ('HYUNDAI', '548302H000', 'inferred', f'algo:oem-finder:v3:strong-MOBIS:{run.pk}'))
-        self.assertEqual(len(self.link('54830-2H000-MOBIS').undo['updated_codes']), 1)
-        self.assertEqual(oa.revert_run(run.pk)['reverted'], 1)
-        self.assertEqual(PartCode.objects.get(code='54830-2H000').ref_type, 'unknown')
-        self.assertFalse(OEMReference.objects.get().sources.exists())
+        rows = Reference.objects.filter(references.library_q())
+        self.assertEqual({row.estado for row in rows}, {'inferido'})  # S4: the finder's OEM numbers are library rows, inferred
+        number = rows.get(brand='TOYOTA', clave='4865430030')
+        self.assertEqual((number.detail['system'], number.detail['family']), ('TOYOTA', '48654'))
+        self.assertEqual(number.sources.get(kind='buscador').detail['run'], run.pk)
+        self.assertGreater(oa.revert_run(run.pk)['reverted'], 0)
+        self.assertFalse(Reference.objects.filter(references.library_q(), pk=number.pk).exists())  # only the finder backed it: retired
 
     def test_a_disputed_number_is_never_applied_again(self):
-        from .catalog_identity import unmark_disputed
-        from . import oem_auto
-        self.canary(FLAG)
-        ref = OEMReference.objects.get(manufacturer='TOYOTA', code='4865430030')
-        ref.status, ref.dispute_note = 'disputed', 'Es de otro modelo'
-        ref.save()
-        self.assertEqual(unmark_disputed(ref), ['48654-30030'])
+        number = references.add_library_number('TOYOTA', '48654-30030', source_kind='aftermarket_catalog', citation='ASVA · pág. 2')[0]
+        self.assertEqual(number.part_id, self.parts['48654-30030'].pk)  # the line whose codigo it is carries it
+        references.update(number, estado='disputa', dispute_note='Es de otro modelo')  # S4: a dispute is the number's estado
         preview = oa.apply_auto(tier=FLAG, read_only=True)
         self.assertEqual(preview['excluded'].get('disputed'), 1)
-        outcome = oa.apply_auto(tier=FLAG)
+        outcome = self.canary(FLAG)
         self.assertEqual(outcome['summary']['excluded'].get('disputed'), 1)
         self.assertFalse(Part.objects.get(sku='48654-30030').is_OEM)  # the person's 'no' is not overridden by a bulk apply
         from .oem_finder_models import OEMAutoCandidate
         self.assertEqual(OEMAutoCandidate.objects.filter(part__sku='48654-30030').values_list('status', 'reason').first(), ('excluded', 'disputed'))
 
-    def test_undoing_a_flag_keeps_oem_when_the_code_is_a_declared_number(self):
-        run = self.canary(FLAG)['run']
-        ref = OEMReference.objects.get(manufacturer='TOYOTA', code='4865430030')
-        OEMReferenceSource.objects.create(reference=ref, kind='aftermarket_catalog', citation='ASVA · pág. 2')
-        refresh_status(ref, changed=True)
-        oa.revert_run(run.pk)
-        part = Part.objects.get(sku='48654-30030')
-        self.assertTrue(part.is_OEM)  # its code is a declared number of the OEM list
-        self.assertEqual(part.identity_changes.latest('pk').reference['kept_oem'], ['TOYOTA 4865430030'])
-        self.assertTrue(OEMReference.objects.filter(pk=ref.pk).exists())
-        self.assertFalse(Part.objects.get(sku='48654-0K010').is_OEM)  # only inferred: the undo takes the flag off
-
 
 class MissingTablesTests(Fresh, TestCase):
-    def test_partcode_writes_and_the_api_work_before_the_migration(self):
-        part = Part.objects.create(sku='17801-30070', description='FILTRO AIRE')
+    def test_the_api_answers_503_before_the_migration(self):
         root = User.objects.create_superuser('oem-ref-503', 'oem-ref-503@example.invalid', 'Example938!')
         self.client.force_login(root)
-        orf._state['warned'] = False
-        with patch.object(OEMReference._meta, 'db_table', 'mall_oemreference_not_migrated'), \
-                patch.object(OEMReferenceSource._meta, 'db_table', 'mall_oemreferencesource_not_migrated'):
-            with self.assertLogs('mall.oem_reference', level='WARNING') as logs:
-                code = oem(part, '17801-30070')
-            self.assertEqual(len(logs.records), 1)
-            with self.assertNoLogs('mall.oem_reference', level='WARNING'):
-                code.reference_source = 'OTRA FUENTE'
-                code.save()
-                references.retire(code)
-            self.assertEqual(Part.objects.count(), 1)  # the failed sync ran in a savepoint: the transaction is still usable
-            self.assertEqual((Reference.objects.filter(is_main=False).count(), Reference.all_objects.get(is_main=False).estado), (0, 'retirada'))
+        from .oem_reference_models import OEMCrossReference
+        with patch.object(OEMCrossReference._meta, 'db_table', 'mall_oemcrossreference_not_migrated'):
             for response in (self.client.get(URL), self.client.post(URL, {'manufacturer': 'TOYOTA', 'code': '1'}, content_type='application/json'),
                              self.client.get(f'{URL}00000000-0000-4000-8000-000000000001/')):
                 self.assertEqual(response.status_code, 503)
                 self.assertIn('migraciones', response.json()['detail'])
-        references.add(part, '17801-30070', 'TOYOTA', ref_type='oem', source=ALGO)  # added again: the retired alterno comes back
-        self.assertEqual(OEMReference.objects.count(), 1)
-
-    def test_an_unexpected_sync_error_is_logged_and_never_breaks_the_save(self):
-        part = Part.objects.create(sku='17801-30070', description='FILTRO AIRE')
-        with patch('mall.oem_reference.upsert_reference', side_effect=RuntimeError('fallo')), self.assertLogs('mall.oem_reference', level='ERROR'):
-            oem(part, '17801-30070')
-        self.assertTrue(PartCode.objects.filter(code='17801-30070').exists())
 
 
 class SeedTests(Fresh, TestCase):
     """Migrations 0039 and 0040 seed and link the library from the catalog's OEM alternos, with frozen copies of the service on their
-    historical models: the result must equal what the live signal handlers mirror."""
+    historical models: the result must equal what the signal handlers mirrored before S4 (mall.test_factories.legacy_mirror)."""
     SEED, LINK = '0039_oem_reference', '0040_partcode_oem_reference'
 
     def setUp(self):
@@ -372,10 +217,10 @@ class SeedTests(Fresh, TestCase):
         parts = [Part.objects.create(sku=sku, description=description) for sku, description in (
             ('17801-30070', 'FILTRO AIRE TOY HILUX'), ('0110-17801-FEB', 'FILTRO AIRE TOY'), ('28113-F2000', 'FILTRO AIRE HYU ELANTRA'),
             ('MR-968365', 'BASE MIT MONTERO'))]
-        oem(parts[0], '17801-30070')
-        oem(parts[1], '1780130070', **SHARED)
-        oem(parts[2], '28113-F2000', 'HYUNDAI', 'algo:oem-finder:v2:current:3')
-        oem(parts[3], 'MR-968365', 'MITSUBISHI', 'https://parts.example/MR968365')
+        for alterno in (oem(parts[0], '17801-30070'), oem(parts[1], '1780130070', **SHARED),
+                        oem(parts[2], '28113-F2000', 'HYUNDAI', 'algo:oem-finder:v2:current:3'),
+                        oem(parts[3], 'MR-968365', 'MITSUBISHI', 'https://parts.example/MR968365')):
+            legacy_mirror(alterno)
         oem(parts[3], 'MR968365', '', '')  # brandless: not a fact
         oem(parts[0], 'ALT-1', 'ACME', ref_type='company')
         self.mirrored = state()
@@ -401,7 +246,7 @@ class SeedTests(Fresh, TestCase):
     def test_the_seed_merges_into_existing_references(self):
         ref = OEMReference.objects.get(code='1780130070')
         ref.sources.all().delete()
-        upsert_reference('TOYOTA', '1780130070', source_kind='price_list', citation='LISTA 2026')
+        OEMReferenceSource.objects.create(reference=ref, kind='price_list', citation='LISTA 2026')
         self.assertEqual(self.seed(), {'references': 0, 'sources': 1})
         ref = OEMReference.objects.get(code='1780130070')
         self.assertEqual((sorted(ref.sources.values_list('kind', flat=True)), ref.status), (['oem_finder', 'price_list'], 'verified'))
@@ -424,24 +269,26 @@ class SeedTests(Fresh, TestCase):
 
 
 class APITests(Fresh, APITestCase):
+    """Biblioteca OEM on the library's References (S4): ids are uids, codes claves, status and source kinds the legacy values."""
+
     def setUp(self):
         super().setUp()
         self.root = User.objects.create_superuser('oem-ref-root', 'oem-ref-root@example.invalid', 'Example938!')
         self.client.force_authenticate(self.root)
         self.part = Part.objects.create(sku='17801-30070', description='FILTRO AIRE TOY HILUX')
-        self.code = oem(self.part, '17801-30070')
-        self.ref = OEMReference.objects.get()
+        self.code, _ = references.add(self.part, '17801-30070', 'TOYOTA', ref_type='oem', source=ALGO)
+        self.ref = self.code
 
     def url(self, ref=None):
-        return f'{URL}{(ref or self.ref).pk}/'
+        return f'{URL}{(ref or self.ref).uid}/'
 
     def patch(self, payload, ref=None):
-        ref = OEMReference.objects.get(pk=(ref or self.ref).pk)
+        ref = Reference.all_objects.get(pk=(ref or self.ref).pk)
         return self.client.patch(self.url(ref), {'expected_version': ref.version, **payload}, format='json')
 
     def test_the_list_sorts_on_whitelisted_columns(self):
-        upsert_reference('HYUNDAI', '28113-F2000', source_kind='manual', citation='LISTA')
-        upsert_reference('TOYOTA', '90915-YZZD2', source_kind='price_list', citation='LISTA 2026')
+        references.add_library_number('HYUNDAI', '28113-F2000', source_kind='manual', citation='LISTA')
+        references.add_library_number('TOYOTA', '90915-YZZD2', source_kind='price_list', citation='LISTA 2026')
         codes = lambda ordering: [row['code'] for row in self.client.get(URL, {'ordering': ordering}).data['results']]
         self.assertEqual(codes(''), ['28113F2000', '1780130070', '90915YZZD2'])  # manufacturer, code
         self.assertEqual(codes('-code'), ['90915YZZD2', '28113F2000', '1780130070'])
@@ -455,12 +302,13 @@ class APITests(Fresh, APITestCase):
             for response in (self.client.get(URL), self.client.post(URL, {'manufacturer': 'TOYOTA', 'code': '17801-30080'}, format='json'),
                              self.client.get(self.url()), self.client.patch(self.url(), {'expected_version': 1, 'action': 'dispute', 'note': 'X'}, format='json')):
                 self.assertIn(response.status_code, (401, 403))
-        self.assertEqual((OEMReference.objects.count(), OEMReference.objects.get().status), (1, 'inferred'))
+        library = Reference.objects.filter(references.library_q())
+        self.assertEqual((library.count(), library.get().estado), (1, 'inferido'))
 
     def test_list_search_filters_counts_and_pagination(self):
         hyundai = Part.objects.create(sku='0K2N1-13-Z40', description='EMP TAPA VALV KIA')
-        oem(hyundai, '28113-F2000', 'HYUNDAI', 'https://parts.example/28113F2000')
-        upsert_reference('MITSUBISHI', 'MR-968365', source_kind='aftermarket_catalog', citation='FEBEST 2025 P. 81', defaults={'part_type': 'BASE AMORT'})
+        references.add(hyundai, '28113-F2000', 'HYUNDAI', ref_type='oem', source='https://parts.example/28113F2000')
+        references.add_library_number('MITSUBISHI', 'MR-968365', source_kind='aftermarket_catalog', citation='FEBEST 2025 P. 81', part_type='BASE AMORT')
         data = self.client.get(URL).data
         self.assertEqual((data['count'], [r['code'] for r in data['results']]), (3, ['28113F2000', 'MR968365', '1780130070']))
         self.assertEqual(data['counts'], {'status': {'inferred': 1, 'verified': 1, 'declared': 1}, 'manufacturer': {'TOYOTA': 1, 'HYUNDAI': 1, 'MITSUBISHI': 1},
@@ -468,7 +316,7 @@ class APITests(Fresh, APITestCase):
         row = next(r for r in data['results'] if r['code'] == '1780130070')
         self.assertEqual((row['source_count'], row['source_kinds'], row['status_label'], row['family'], row['part_type']),
                          (1, {'oem_finder': 1}, 'Inferido', '17801', 'FILTRO AIRE'))
-        self.assertEqual(row['linked_skus'], [{'id': str(self.part.pk), 'sku': '17801-30070', 'is_OEM': False, 'active': True, 'via': 'sku', 'code': '17801-30070'}])
+        self.assertEqual(row['linked_skus'], [{'id': str(self.part.pk), 'sku': '17801-30070', 'is_OEM': False, 'active': True, 'via': 'linea', 'code': '17801-30070'}])
         codes = lambda **params: [r['code'] for r in self.client.get(URL, params).data['results']]
         self.assertEqual(codes(q='17801-3'), ['1780130070'])
         self.assertEqual(codes(q='mr-968'), ['MR968365'])
@@ -476,13 +324,15 @@ class APITests(Fresh, APITestCase):
         self.assertEqual(codes(q='base amort'), ['MR968365'])
         self.assertEqual(codes(manufacturer='hyundai'), ['28113F2000'])
         self.assertEqual(codes(status='verified'), ['28113F2000'])
+        self.assertEqual(codes(status='verificado'), ['28113F2000'])
         self.assertEqual(codes(source_kind='aftermarket_catalog'), ['MR968365'])
-        self.assertEqual(codes(linked='true'), ['28113F2000', '1780130070'])  # the HYUNDAI number is an alterno of another SKU
-        self.assertEqual(codes(linked='false'), ['MR968365'])
+        self.assertEqual(codes(source_kind='buscador'), ['1780130070'])
+        self.assertEqual(codes(linked='true'), ['28113F2000', '1780130070'])  # each one of a catalog line's codes
+        self.assertEqual(codes(linked='false'), ['MR968365'])  # on its own line in referencia
         for bad in ({'status': 'x'}, {'source_kind': 'x'}, {'linked': 'si'}):
             self.assertEqual(self.client.get(URL, bad).status_code, 400)
         for n in range(55):
-            upsert_reference('NISSAN', f'16546-ED{n:03d}', source_kind='manual', citation='LISTA NISSAN')
+            references.add_library_number('NISSAN', f'16546-ED{n:03d}', source_kind='manual', citation='LISTA NISSAN')
         page = self.client.get(URL, {'manufacturer': 'NISSAN', 'page': 2}).data
         self.assertEqual((page['count'], len(page['results']), page['next']), (55, 5, None))
 
@@ -494,17 +344,15 @@ class APITests(Fresh, APITestCase):
         few, _ = listing()
         for n in range(20):
             part = Part.objects.create(sku=f'90385-T{n:04d}', description='BUJE BARRA ESTAB')
-            oem(part, f'90385-T{n:04d}')
-            PartCode.objects.create(part=Part.objects.create(sku=f'ALT-{n}'), code=f'90385T{n:04d}', brand='', ref_type='unknown')
+            references.add(part, f'90385-T{n:04d}', 'TOYOTA', ref_type='oem', source=ALGO)
         many, data = listing()
         self.assertEqual(few, many)
-        self.assertLessEqual(many, 11)  # page-level only: linked SKUs (3 queries) and aftermarket codes (1) for the whole page
+        self.assertLessEqual(many, 16)  # page-level only: sources, lines, links and aftermarket codes once each for the whole page
         row = next(r for r in data['results'] if r['code'] == '90385T0007')
-        self.assertEqual(sorted((s['sku'], s['via'], s['code']) for s in row['linked_skus']), [('90385-T0007', 'sku', '90385-T0007'), ('ALT-7', 'unknown', '90385T0007')])
+        self.assertEqual([(s['sku'], s['via'], s['code']) for s in row['linked_skus']], [('90385-T0007', 'linea', '90385-T0007')])
         other = Part.objects.create(sku='OTRO-1')
-        oem(other, '17801 30070', brand='LEXUS')  # an OEM alterno of another manufacturer does not carry the TOYOTA number
-        self.assertEqual([s['sku'] for s in linked_parts([self.ref])[self.ref.pk]], ['17801-30070'])
         Part.objects.filter(pk=self.part.pk).update(merged_into=other, active=False, estado='unificada')
+        self.ref.refresh_from_db()
         self.assertEqual(linked_parts([self.ref])[self.ref.pk], [])
 
     def test_create_is_idempotent_on_the_compact_number(self):
@@ -514,7 +362,7 @@ class APITests(Fresh, APITestCase):
         self.assertEqual((first.data['manufacturer'], first.data['code'], first.data['printed_forms'], first.data['status'], first.data['description'],
                           first.data['family'], first.data['created_by']), ('TOYOTA', '1780130080', ['17801-30080'], 'verified', 'FILTRO AIRE', '17801', 'oem-ref-root'))
         again = self.client.post(URL, payload, format='json')
-        self.assertEqual((again.status_code, again.data['id'], again.data['version'], len(again.data['sources'])), (200, first.data['id'], 1, 1))
+        self.assertEqual((again.status_code, again.data['id'], again.data['version'], len(again.data['sources'])), (200, first.data['id'], first.data['version'], 1))
         merged = self.client.post(URL, {'manufacturer': 'TOYOTA', 'code': '17801 30080'}, format='json')
         self.assertEqual((merged.status_code, merged.data['printed_forms'], [(s['kind'], s['citation']) for s in merged.data['sources']]),
                          (200, ['17801-30080', '17801 30080'], [('price_list', 'LISTA TOYOTA 2026 P. 4'), ('manual', 'Registro manual de oem-ref-root')]))
@@ -528,7 +376,7 @@ class APITests(Fresh, APITestCase):
             self.assertEqual(self.client.post(URL, bad, format='json').status_code, 400, bad)
 
     def test_edits_check_the_version_and_repeats_change_nothing(self):
-        stale = self.ref.version
+        stale = Reference.objects.get(pk=self.ref.pk).version
         response = self.patch({'description': 'filtro aire motor 2tr', 'notes': 'Confirmar con el EPC.'})
         self.assertEqual((response.status_code, response.data['description'], response.data['notes'], response.data['version'], response.data['updated_by']),
                          (200, 'FILTRO AIRE MOTOR 2TR', 'Confirmar con el EPC.', stale + 1, 'oem-ref-root'))
@@ -539,6 +387,8 @@ class APITests(Fresh, APITestCase):
         self.assertEqual((repeat.status_code, repeat.data['version']), (200, stale + 1))
         self.assertEqual(self.patch({}).status_code, 400)
         self.assertEqual(self.client.patch(f'{URL}00000000-0000-4000-8000-000000000001/', {'expected_version': 1, 'notes': 'X'}, format='json').status_code, 404)
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.description, 'FILTRO AIRE TOY HILUX')  # a published line keeps its own texts
 
     def test_sources_dispute_and_status(self):
         added = self.patch({'action': 'add_source', 'source': {'kind': 'manual', 'citation': 'EPC TOYOTA 2026', 'verified': True}})
@@ -554,24 +404,24 @@ class APITests(Fresh, APITestCase):
         cleared = self.patch({'action': 'clear_dispute'})
         self.assertEqual((cleared.data['status'], cleared.data['dispute_note']), ('inferred', ''))
         self.assertEqual(self.patch({'action': 'clear_dispute'}).data['version'], cleared.data['version'])
-        references.retire(self.code)  # the last automatic source goes with its alterno; the number stays
-        self.assertEqual(OEMReference.objects.get().sources.count(), 0)
-        ref, _ = upsert_reference('TOYOTA', '17801-30070', source_kind='price_list', citation='LISTA 2026')
-        only = ref.sources.get()
-        self.assertEqual(self.patch({'action': 'remove_source', 'source_id': only.pk}, ref).status_code, 400)  # never the last one
-        self.assertEqual(self.patch({'action': 'remove_source', 'source_id': 999999}, ref).status_code, 200)  # already gone
-        self.assertEqual(self.patch({'action': 'add_source'}, ref).status_code, 400)
+        self.assertEqual(len(cleared.data['sources']), 1)  # the manual source was retired, never deleted
+        self.assertTrue(ReferenceSource.objects.filter(pk=manual, retirada=True).exists())
+        self.assertEqual(self.patch({'action': 'remove_source', 'source_id': finder}).status_code, 400)  # never the last one
+        self.assertEqual(self.patch({'action': 'remove_source', 'source_id': 999999}).status_code, 200)  # already gone
+        self.assertEqual(self.patch({'action': 'add_source'}).status_code, 400)
 
     def test_supersession_creates_the_target_and_rejects_cycles(self):
         response = self.patch({'action': 'set_superseded_by', 'code': '17801-30080'})
         self.assertEqual(response.status_code, 200, response.data)
-        target = OEMReference.objects.get(code='1780130080')
-        self.assertEqual(response.data['superseded_by'], {'id': str(target.pk), 'manufacturer': 'TOYOTA', 'code': '1780130080', 'status': 'declared'})
-        self.assertEqual((target.part_type, target.sources.get().kind, target.sources.get().citation), ('FILTRO AIRE', 'manual', 'Reemplaza a TOYOTA 1780130070'))
+        target = Reference.objects.get(references.library_q(), clave='1780130080')
+        self.assertEqual(response.data['superseded_by'], {'id': str(target.uid), 'manufacturer': 'TOYOTA', 'code': '1780130080', 'status': 'declared'})
+        source = target.sources.get()
+        self.assertEqual((target.detail['part_type'], source.kind, source.detail['legacy_kind'], source.citation),
+                         ('FILTRO AIRE', 'biblioteca', 'manual', 'Reemplaza a TOYOTA 1780130070'))
         detail = self.client.get(self.url(target)).data
         self.assertEqual([r['code'] for r in detail['supersedes']], ['1780130070'])
         self.assertEqual(self.patch({'action': 'set_superseded_by', 'manufacturer': 'TOYOTA', 'code': '1780130080'}).data['version'], response.data['version'])
-        third, _ = upsert_reference('TOYOTA', '17801-30090', source_kind='manual', citation='LISTA')
+        third, _ = references.add_library_number('TOYOTA', '17801-30090', source_kind='manual', citation='LISTA')
         self.assertEqual(self.patch({'action': 'set_superseded_by', 'code': '17801-30090'}, target).status_code, 200)
         cycle = self.patch({'action': 'set_superseded_by', 'code': '1780130070'}, third)
         self.assertEqual(cycle.status_code, 400)

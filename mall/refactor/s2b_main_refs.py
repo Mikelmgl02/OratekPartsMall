@@ -455,7 +455,9 @@ def shared_numbers(lines, mains, live_refs, groups, absorbed):
         for ref_id, manufacturer in numbers.get(compact(row['code']), ()):
             if row['tipo'] != 'oem' or row['brand'] == manufacturer:
                 carriers[ref_id].add(carrier(row['part_id']))
-    for ref_id, part_id in PartOEMLink.objects.filter(source__in=['catalog', 'sku_name']).values_list('reference_id', 'part_id').iterator(chunk_size=CHUNK):
+    # The OEMReference a link hung from before S4 (legacy_reference: the column reference_id, there before and after 0079).
+    for ref_id, part_id in (PartOEMLink.objects.filter(source__in=['catalog', 'sku_name']).order_by('pk')
+                            .values_list('legacy_reference_id', 'part_id').iterator(chunk_size=CHUNK)):
         if part_id in catalog:
             carriers[ref_id].add(carrier(part_id))
     code_of = {ref_id: code for code, refs in numbers.items() for ref_id, _ in refs}

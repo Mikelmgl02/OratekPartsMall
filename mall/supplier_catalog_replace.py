@@ -12,9 +12,12 @@ alone would leave it:
 - Aftermarket codes under an OEM number (OEMCrossReference): a code FILE does not file under the number loses the catalog's citations;
   with none left it is retired the way Biblioteca OEM's Retirar does (OEMCrossReferenceRetired, by --user), so no import files it
   again. A code FILE files too keeps its other citations and takes FILE's pages.
-- OEM numbers: a number FILE does not print loses the catalog's source. With no source left it is deleted, its codes included, when
-  nothing else holds it: no alterno points at it, no tie of another source or of a retired SKU, and nobody disputed, annotated,
-  chained or edited it. A number FILE prints takes FILE's source detail (its items and pages; the import keeps the first sighting's).
+- OEM numbers (from S4 the library's References): a number FILE does not print loses the catalog's source (retired, never deleted).
+  With no source left, when nothing else holds it (it sits on its own line in referencia, no tie of another source or of a retired
+  SKU, and nobody disputed, annotated, chained or edited it) it is retired the way S4 retires a number: its line in referencia is
+  rejected (rechazada, bad_data) and the number waits there in disputa (it holds no key; a referencia line's main is never retired,
+  I1), and its codes are retired with it. A number FILE prints takes FILE's source detail (its items and pages; the import keeps the
+  first sighting's).
   When FILE turns it into a drive-shaft number listed for a CV component, or back, its description and part type follow (SEMIEJE
   (EJE COMPLETO) / SEMIEJES, or the component's), each only while it still holds what the catalog gave it.
 - Catalog ties of active SKUs (PartOEMLink, source catalog): a tie FILE does not make loses the catalog's citations, and goes with none
@@ -68,18 +71,33 @@ def filed_codes(job):
 
 
 def held(ref, prefix):
-    """Something besides the catalog keeps the number once the catalog's source goes."""
+    """Something besides the catalog keeps the number (a library Reference) once the catalog's source goes: a catalog line holds it
+    (it is one of that line's codes), a person disputed, annotated, chained or edited it, another number names it as its replacement,
+    or a tie of another source or of a retired SKU points at it."""
     from .lines import on_storefront
-    if ref.status == 'disputed' or ref.notes.strip() or ref.superseded_by_id or ref.created_by_id or ref.updated_by_id:
+    if ref.part.estado != 'referencia' or ref.estado == 'disputa' or ref.notes.strip() or ref.reemplazado_por_id or ref.created_by_id \
+            or (ref.detail or {}).get('updated_by'):
         return True
-    from .models import Reference
-    # Every alterno filed under it, retired ones too: a retired alterno keeps pointing at its number as history (S2a), so it holds it.
-    if ref.supersedes.exists() or Reference.all_objects.filter(oem_reference=ref).exists():
+    if ref.reemplaza.exists():
         return True
     for link in ref.part_links.exclude(source='sku_name').select_related('part'):
         if split(link.citations, prefix)[1] or not on_storefront(link.part):
             return True
     return False
+
+
+def catalog_sources(citation_text):
+    """The live library sources of one supplier catalog (ReferenceSource kind catalogo, the library's aftermarket_catalog)."""
+    from django.db.models import Q
+    from .models import ReferenceSource
+    return (ReferenceSource.objects.filter(kind='catalogo', citation=citation_text, retirada=False)
+            .filter(Q(detail__legacy_kind='aftermarket_catalog') | ~Q(detail__has_key='legacy_kind')))
+
+
+def number_key(ref):
+    """(manufacturer, compact number) of a library Reference: how the import keys the numbers it files."""
+    from .oem_reference_models import compact
+    return ref.brand, compact(ref.code)
 
 
 def extract_keys(data):
@@ -90,10 +108,8 @@ def extract_keys(data):
 def missing_extracts(data):
     """The extract keys the catalog's sources name that none of the extracts given has: replacing without them would take every
     number only they print."""
-    from .oem_reference_models import OEMReferenceSource
     from .supplier_catalog_import import citation
-    named = {(detail or {}).get('catalog') for detail in OEMReferenceSource.objects.filter(kind='aftermarket_catalog', citation=citation(data['catalog']))
-             .values_list('detail', flat=True)}
+    named = {(detail or {}).get('catalog') for detail in catalog_sources(citation(data['catalog'])).values_list('detail', flat=True)}
     return sorted(key for key in named - extract_keys(data) if key)
 
 
@@ -106,7 +122,8 @@ def retype(ref, source, row):
         return {}
     before = ASSEMBLY_TEXT if was else (row['component'][0][:300], row['component'][1])
     after = (row['description'][:300], row['part_type'])
-    return {field: new for field, old, new in zip(('description', 'part_type'), before, after) if getattr(ref, field) == old and old != new}
+    detail = ref.detail or {}
+    return {field: new for field, old, new in zip(('description', 'part_type'), before, after) if detail.get(field, '') == old and old != new}
 
 
 def plan(data):
@@ -115,7 +132,7 @@ def plan(data):
     from .lines import catalog_q, storefront_q
     from .models import PartCode
     from .oem_finder import OEMFinder, load_snapshot
-    from .oem_reference_models import OEMCrossReference, OEMReferenceSource, PartOEMLink, citation_list, compact, manufacturer_name
+    from .oem_reference_models import OEMCrossReference, PartOEMLink, citation_list, compact, manufacturer_name
     from .supplier_catalog_import import CatalogImport, build_indexes, catalog_citations, citation
     finder = OEMFinder(load_snapshot(), suffix_table())
     job = CatalogImport(data, finder, build_indexes(finder, catalog_citations([data])))
@@ -129,9 +146,9 @@ def plan(data):
     extracts = extract_keys(data)
 
     gone = set()
-    for source in OEMReferenceSource.objects.filter(kind='aftermarket_catalog', citation=prefix).select_related('reference').order_by('reference__manufacturer', 'reference__code'):
+    for source in catalog_sources(prefix).select_related('reference', 'reference__part').order_by('reference__brand', 'reference__clave'):
         ref = source.reference
-        row = numbers.get((ref.manufacturer, ref.code))
+        row = numbers.get(number_key(ref))
         if row is not None:
             detail = {**{k: v for k, v in (source.detail or {}).items() if k not in IMPORTER_DETAIL}, **source_detail(job, row)}
             if (source.detail or {}).get('catalog') in extracts:  # the extract that filed it first, whatever order they come in
@@ -141,19 +158,20 @@ def plan(data):
             fields = retype(ref, source, row)
             if fields:
                 changes['numbers'].append({'action': 'retype', 'ref': ref, 'source': source, 'fields': fields,
-                                           'before': {field: getattr(ref, field) for field in fields}})
-        elif ref.sources.exclude(pk=source.pk).exists() or held(ref, prefix):
+                                           'before': {field: (ref.detail or {}).get(field, '') for field in fields}})
+        elif ref.sources.filter(retirada=False).exclude(pk=source.pk).exists() or held(ref, prefix):
             changes['numbers'].append({'action': 'drop_source', 'ref': ref, 'source': source})
         else:
             gone.add(ref.pk)
-            changes['numbers'].append({'action': 'delete', 'ref': ref, 'source': source,
+            changes['numbers'].append({'action': 'delete', 'ref': ref, 'source': source,  # retired: its line in referencia is rejected
                                        'name_links': ref.part_links.filter(source='sku_name').count()})
 
-    for row in OEMCrossReference.objects.filter(citations__icontains=prefix).select_related('reference').order_by('reference__manufacturer', 'reference__code', 'brand', 'number'):
+    for row in (OEMCrossReference.objects.filter(citations__icontains=prefix, reference__isnull=False).select_related('reference')
+                .order_by('reference__brand', 'reference__clave', 'brand', 'number')):
         mine, others = split(row.citations, prefix)
         if not mine:
             continue
-        key = ((row.reference.manufacturer, row.reference.code), row.brand, row.number)
+        key = (number_key(row.reference), row.brand, row.number)
         if key in filed:
             new = citation_list(others, *filed[key]['citations'])
             if sorted(new) != sorted(row.citations):
@@ -165,12 +183,12 @@ def plan(data):
         else:
             changes['codes'].append({'action': 'retire', 'row': row, 'citations': []})
 
-    for link in (PartOEMLink.objects.filter(storefront_q('part__'), source='catalog', citations__icontains=prefix)
-                 .select_related('reference', 'part').order_by('part__sku', 'reference__manufacturer', 'reference__code')):
+    for link in (PartOEMLink.objects.filter(storefront_q('part__'), source='catalog', citations__icontains=prefix, reference__isnull=False)
+                 .select_related('reference', 'part').order_by('part__sku', 'reference__brand', 'reference__clave')):
         mine, others = split(link.citations, prefix)
         if not mine:
             continue
-        key = (str(link.part_id), (link.reference.manufacturer, link.reference.code))
+        key = (str(link.part_id), number_key(link.reference))
         if link.reference_id in gone:
             changes['ties'].append({'action': 'with_number', 'link': link, 'citations': []})
         elif key in ties:
@@ -202,21 +220,28 @@ def plan(data):
 
 
 def apply_changes(job, changes, actor):
+    from django.utils import timezone
+    from . import references
+    from .lines import stage_estado
+    from .models import Part, ReferenceSource
     from .oem_links import chunks
-    from .oem_reference import refresh_status
-    from .oem_reference_models import OEMCrossReference, OEMCrossReferenceRetired, OEMReference, PartOEMLink
+    from .oem_reference_models import OEMCrossReference, OEMCrossReferenceRetired, PartOEMLink
+    now = timezone.now()
     for change in changes['numbers']:
+        ref = change['ref']
         if change['action'] == 'detail':
             change['source'].detail = change['detail']
             change['source'].save(update_fields=['detail'])
-        elif change['action'] == 'retype':
-            for field, value in change['fields'].items():
-                setattr(change['ref'], field, value)
-            refresh_status(change['ref'], change['ref'].updated_by, changed=True)  # what the import writes: no one's edit
-        elif change['action'] == 'drop_source':
-            change['source'].delete()
-            refresh_status(change['ref'], actor, changed=True)
-    retired = [change['row'] for change in changes['codes'] if change['action'] == 'retire']
+        elif change['action'] == 'retype':  # what the import writes: no one's edit
+            ref = references.update(ref, detail={**(ref.detail or {}), **change['fields']})
+            if ref.is_main and ref.part.estado == 'referencia':
+                references.fill_line_from_library(ref.part, ref)
+        elif change['action'] in ('drop_source', 'delete'):
+            ReferenceSource.objects.filter(pk=change['source'].pk).update(retirada=True, retired_by=actor, retired_at=now)
+            if change['action'] == 'drop_source':
+                references.refresh_library_estado(ref, actor)
+    gone = [change['ref'] for change in changes['numbers'] if change['action'] == 'delete']
+    retired = [change['row'] for change in changes['codes'] if change['action'] in ('retire', 'with_number')]
     OEMCrossReferenceRetired.objects.bulk_create([OEMCrossReferenceRetired(reference_id=row.reference_id, brand=row.brand, number=row.number, code=row.code,
                                                                            citations=row.citations, retired_by=actor) for row in retired],
                                                  batch_size=1000, ignore_conflicts=True)
@@ -226,14 +251,23 @@ def apply_changes(job, changes, actor):
         if change['action'] in ('recite', 'drop_citation'):
             change['row'].citations = change['citations']
             change['row'].save(update_fields=['citations', 'updated_at'])
-    for chunk in chunks([change['link'].pk for change in changes['ties'] if change['action'] == 'remove']):
+    removed = [change['link'].pk for change in changes['ties'] if change['action'] in ('remove', 'with_number')]
+    removed += list(PartOEMLink.objects.filter(source='sku_name', reference__in=[ref.pk for ref in gone]).values_list('pk', flat=True))
+    for chunk in chunks(removed):
         PartOEMLink.objects.filter(pk__in=chunk).delete()
     for change in changes['ties']:
         if change['action'] in ('recite', 'drop_citation'):
             change['link'].citations = change['citations']
             change['link'].save(update_fields=['citations'])
-    for chunk in chunks([change['ref'].pk for change in changes['numbers'] if change['action'] == 'delete']):
-        OEMReference.objects.filter(pk__in=chunk).delete()  # its codes, tombstones and name links go with it
+    note = f'El catálogo {job.report["title"]} ya no lo imprime (extracto corregido).'[:500]
+    for ref in gone:  # S4: retired, never deleted; a line in referencia keeps its main, in disputa, and is rejected
+        if ref.is_main:
+            references.update(ref, estado='disputa', dispute_note=note, actor=actor)
+            line = Part.objects.select_for_update().get(pk=ref.part_id)
+            if line.estado == 'referencia':
+                line.save(update_fields=stage_estado(line, 'rechazada', user=actor, reason='bad_data', note=note))
+        else:
+            references.retire(ref, actor=actor, reason=note, keep_library=False)
 
 
 def write_report(directory, changes):
@@ -246,13 +280,13 @@ def write_report(directory, changes):
             writer.writerows(rows)
 
     table('numbers.csv', ['accion', 'fabricante', 'numero', 'id_numero', 'detalle_antes', 'detalle_despues'],
-          [[c['action'], c['ref'].manufacturer, c['ref'].code, c['ref'].pk, json.dumps(c.get('before', c['source'].detail), ensure_ascii=False),
+          [[c['action'], c['ref'].brand, c['ref'].clave, c['ref'].uid, json.dumps(c.get('before', c['source'].detail), ensure_ascii=False),
             json.dumps(c.get('detail', c.get('fields', {})), ensure_ascii=False)] for c in changes['numbers']])
     table('codes.csv', ['accion', 'fabricante', 'numero', 'marca', 'codigo', 'id_equivalencia', 'citas_antes', 'citas_despues'],
-          [[c['action'], c['row'].reference.manufacturer, c['row'].reference.code, c['row'].brand, c['row'].code, c['row'].pk,
+          [[c['action'], c['row'].reference.brand, c['row'].reference.clave, c['row'].brand, c['row'].code, c['row'].pk,
             ' | '.join(c['row'].citations), ' | '.join(c['citations'])] for c in changes['codes']])
     table('ties.csv', ['accion', 'sku', 'fabricante', 'numero', 'id_vinculo', 'citas_antes', 'citas_despues'],
-          [[c['action'], c['link'].part.sku, c['link'].reference.manufacturer, c['link'].reference.code, c['link'].pk,
+          [[c['action'], c['link'].part.sku, c['link'].reference.brand, c['link'].reference.clave, c['link'].pk,
             ' | '.join(c['link'].citations), ' | '.join(c['citations'])] for c in changes['ties']])
     table('alternos-review.csv', ['sku', 'descripcion', 'marca', 'codigo', 'fuente', 'articulos_del_sku', 'articulos_que_lo_imprimen', 'id_alterno', 'id_sku'],
           [[c['code'].part.sku, c['code'].part.description, c['code'].brand, c['code'].code, c['code'].reference_source,

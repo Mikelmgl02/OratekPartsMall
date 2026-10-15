@@ -108,9 +108,11 @@ class PreferOEMNormalizedTests(TestCase):
         self.assertEqual((part.sku, part.is_OEM), ('MR968365', True))
         self.assertTrue(part.codes.filter(code='0110-MR968365-FEB').exists() and part.codes.filter(code='MR-968365').exists())
 
-    def test_a_merged_sku_equal_to_the_oem_still_blocks(self):
+    def test_a_merged_sku_equal_to_the_oem_no_longer_blocks(self):
+        # S4: a unificada line's codigo is frozen and outside the codigo's uniqueness (line_codigo_unique_catalog), so the line it went
+        # into may take that codigo as its main (a library number's line in referencia absorbed by its code is such a line).
         Part.objects.create(sku='MR968365', description='BASE MIT MONTERO', active=False, merged_into=self.part)
-        self.assert_refused()
+        self.assertEqual(prefer_oem(self.part, selected=self.selected).sku, 'MR968365')
 
     def test_a_free_reference_still_renames(self):
         Part.objects.create(sku='MR-968366', description='BASE MIT MONTERO')

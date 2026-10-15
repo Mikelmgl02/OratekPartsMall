@@ -3,8 +3,9 @@
     python -m mall.supplier_catalog_import --dry-run|--apply FILE [FILE ...] [--report PATH]
 
 FILE follows the normalized extract schema (catalog + items with brand_code, product_type, oem, cross_refs, applications, specs).
-Every OEM number a catalog prints becomes, or joins, an OEMReference with one aftermarket_catalog source per catalog (status
-declared), whether or not a SKU carries it. A catalog item is linked to a SKU only when one of its numbers equals a code of that SKU
+Every OEM number a catalog prints becomes, or joins, a number of the library (from inventory refactor S4 a Reference: tipo oem, the
+manufacturer as brand, mall.references.add_library_number, on the line that carries it or on a line of its own in referencia) with one
+aftermarket_catalog source per catalog (status declared), whether or not a SKU carries it. A catalog item is linked to a SKU only when one of its numbers equals a code of that SKU
 (the SKU, its OEM base, alternos or supplier codes), the SKU description classifies to the item's product type with the deterministic
 category rules, and the makes agree. A linked SKU receives the catalog's own code and its competitor codes as company alternos only
 when no OEM number carries them to it (see below) and, when the item prints measurements, its subgrupo template gains those fields
@@ -28,8 +29,8 @@ holds (16100-87795-000 and 16100-87795: mall.refactor.s0_normalize_numbers) is f
 make's own canonical spelling when another make of the family holds it; re-run that tool's dry run after an import all the same.
 Whether a number is printed for other parts too is decided per printed spelling, as before the twins became one, so the kept number
 holds what each spelling files and a replace after the merge changes nothing.
-After an apply
-the name links of every SKU are refreshed (mall.oem_links), since new numbers may name existing SKUs. Codes an OEM number carries to the
+The name links
+of S2a's time are retired with S4 (a number a SKU's codigo names sits on that SKU, or rule 3 proposes it in S6). Codes an OEM number carries to the
 SKU are not copied onto it as company alternos (alternos step 2c); a SKU matched only through shared numbers gets none either, so
 only an item whose codes no number can carry (no OEM number printed, or only shared or assembly ones) still writes them on the SKU.
 These rows are derived from the
@@ -360,8 +361,10 @@ class CatalogImport:
         16100-28030). Only another make of the GM family holds one: the make's own canonical spelling (VAUXHALL 636160 is filed as
         0636160 beside OPEL 0636160), the spelling the normalization would rename it to."""
         if self._twins is None:
+            from . import references
+            from .models import Reference
             from .oem_links import chunks
-            from .oem_reference_models import OEMReference, manufacturer_name
+            from .oem_reference_models import manufacturer_name
             printed, candidates = set(), set()
             for item in self.items:
                 for o in item.get('oem', []):
@@ -371,7 +374,8 @@ class CatalogImport:
                     candidates |= {key[1], canonical, canonical + '000', '0' + canonical, canonical[1:] if canonical.startswith('0') else canonical}
             groups = defaultdict(set)  # (scope, canonical): {(manufacturer, code) held}
             for chunk in chunks(sorted(candidates - {''})):
-                for manufacturer, code in OEMReference.objects.filter(code__in=chunk).values_list('manufacturer', 'code'):
+                for manufacturer, spelling in Reference.objects.filter(references.library_q(), clave__in=chunk).values_list('brand', 'code'):
+                    code = compact(spelling)
                     groups[(twin_scope(manufacturer), canonical_number(manufacturer, code))].add((manufacturer, code))
             self._twins = {}
             for make, number in printed:
@@ -464,10 +468,11 @@ class CatalogImport:
         return rows
 
     def write_oem_table(self, apply):
-        from .oem_reference import upsert_reference
-        from .oem_reference_models import OEMReference
+        """Every number the catalog prints into the library (mall.references.add_library_number): merged into the number it has, or put
+        on the line that carries it, or on a new line in referencia."""
+        from . import references
         rows, rc = self.oem_rows(), self.report['counts']
-        existing = set(OEMReference.objects.filter(code__in=[k for _, k in rows]).values_list('manufacturer', 'code'))
+        existing = set(self.library_ids(set(rows)))
         rc['oem_numbers'] = len(rows)
         rc['oem_new'] = sum(1 for key in rows if key not in existing)
         if not apply:
@@ -475,24 +480,30 @@ class CatalogImport:
         cite = citation(self.catalog)
         for (manufacturer, number), row in sorted(rows.items()):
             try:
-                upsert_reference(manufacturer, number, printed=sorted(row['printed']), source_kind='aftermarket_catalog', citation=cite,
-                                 detail={'catalog': row['catalog'], 'brand': self.brand, 'brand_codes': sorted(row['brand_codes']),
-                                         'pages': sorted(p for p in row['pages'] if p), 'product_types': sorted(row['product_types']),
-                                         **({'assembly_number_listed_for_component': True} if row['assembly'] else {})},
-                                 defaults={'description': row['description'][:300], 'part_type': row['part_type'],
-                                           'applications': '; '.join(row['apps'])})
-            except ValueError as error:
-                self.report['reasons'][f'oem_invalid:{error}'] += 1
+                references.add_library_number(
+                    manufacturer, number, printed=sorted(row['printed']), source_kind='aftermarket_catalog', citation=cite,
+                    source_detail={'catalog': row['catalog'], 'brand': self.brand, 'brand_codes': sorted(row['brand_codes']),
+                                   'pages': sorted(p for p in row['pages'] if p), 'product_types': sorted(row['product_types']),
+                                   **({'assembly_number_listed_for_component': True} if row['assembly'] else {})},
+                    description=row['description'][:300], part_type=row['part_type'], applications='; '.join(row['apps']))
+            except references.ReferenceConflict as error:
+                self.report['reasons'][f'oem_invalid:{error.message}'] += 1
 
     def library_ids(self, keys):
-        """{(manufacturer, compact code): reference id} of the numbers already in the library (manufacturers compared as stored)."""
-        from .oem_reference_models import OEMReference, manufacturer_name
+        """{(manufacturer, compact code): number id} of the numbers already in the library (its References' ids; manufacturers compared
+        as stored)."""
+        from . import references
+        from .models import Reference
+        from .oem_reference_models import manufacturer_name
         from .oem_links import chunks
         wanted, found = {(manufacturer_name(manufacturer), number): (manufacturer, number) for manufacturer, number in keys}, {}
-        for chunk in chunks(sorted({number for _, number in keys})):
-            for pk, manufacturer, number in OEMReference.objects.filter(code__in=chunk).values_list('pk', 'manufacturer', 'code'):
-                if (manufacturer, number) in wanted:
-                    found[wanted[(manufacturer, number)]] = pk
+        claves = {key for _, number in keys for key in references.library_claves(number)}
+        for chunk in chunks(sorted(claves)):
+            for pk, manufacturer, printed in (Reference.objects.filter(references.library_q(), clave__in=chunk).order_by(references.exclusive_first(), 'pk')
+                                              .values_list('pk', 'brand', 'code')):
+                key = (manufacturer, compact(printed))
+                if key in wanted and wanted[key] not in found:
+                    found[wanted[key]] = pk
         return found
 
     def write_cross_references(self, apply):
@@ -711,8 +722,10 @@ def catalog_citations(datasets=()):
     """Citations of every supplier catalog, imported before or in this run. The alternos a catalog wrote cite it, and they never act
     as matching keys: otherwise a re-run, or the next catalog, would chain one catalog's competitor codes into links of its own (SNR
     R177.27, printed for two different ASVA bearings, would hand the second bearing's measurements to the first one's SKU)."""
-    from .oem_reference_models import OEMReferenceSource
-    cited = set(OEMReferenceSource.objects.filter(kind='aftermarket_catalog').values_list('citation', flat=True).distinct())
+    from django.db.models import Q
+    from .models import ReferenceSource
+    cited = set(ReferenceSource.objects.filter(kind='catalogo').filter(Q(detail__legacy_kind='aftermarket_catalog') | ~Q(detail__has_key='legacy_kind'))
+                .values_list('citation', flat=True).distinct())
     return tuple(sorted({c for c in cited | {citation(d['catalog']) for d in datasets} if c}))
 
 
@@ -741,10 +754,11 @@ def build_indexes(finder, imported=()):
                 continue
             if it['source'] in ('sku', 'sku_prefixed', 'sku_segment', 'alterno', 'codigo', 'supplier_reference') and it.get('key'):
                 oem[it['key']].add(str(pid))
-    # Finder snapshot ids and ORM ids differ in type (str vs UUID): every index keys parts by str(id).
-    for pid, code in Reference.objects.values_list('part_id', 'code'):
+    # Finder snapshot ids and ORM ids differ in type (str vs UUID): every index keys parts by str(id). A line in referencia (a library
+    # number no product carries, S4) owns nothing: a code of it a SKU takes absorbs that line (rule 3f).
+    for pid, code in Reference.objects.exclude(part__estado='referencia').values_list('part_id', 'code'):
         codes[compact(code)].add(str(pid))
-    for pid, sku in all_lines().values_list('pk', 'sku'):  # estado: a line in any estado holds its codigo (UNIQUE(sku) until S4)
+    for pid, sku in all_lines().exclude(estado='referencia').values_list('pk', 'sku'):  # a line in any other estado holds its codigo
         skus[compact(sku)].add(str(pid))
     return {'raw': raw, 'oem': oem, 'codes': codes, 'skus': skus, 'claims': {}, 'shafts': shaft_numbers(finder.table)}
 
@@ -763,7 +777,7 @@ def shaft_numbers(table=None):
             shafts.append(pk)
             numbers.add(name_key(sku, table))
     for chunk in chunks(shafts):
-        numbers.update(PartOEMLink.objects.filter(part_id__in=chunk).values_list('reference__code', flat=True))
+        numbers.update(compact(code) for code in PartOEMLink.objects.filter(part_id__in=chunk, reference__isnull=False).values_list('reference__code', flat=True))
         numbers.update(compact(code) for code in Reference.objects.filter(part_id__in=chunk, ref_type='oem').values_list('code', flat=True))
     return numbers - {''}
 
@@ -800,11 +814,8 @@ def run(paths, *, apply=False, report_path=None, stdout=None):
                          f"subgrupos asignados {c.get('subgroups_assigned', 0)} · medidas {c.get('specs_new', 0)} "
                          f"({c.get('specs_conflict', 0)} en conflicto) · equivalencias de posventa {c.get('cross_reference_new', 0)} nuevas · "
                          f"vínculos de SKU por catálogo {c.get('catalog_link_new', 0)} nuevos\n")
-        # New numbers may name SKUs that no catalog item matched (16100-79445-NPW -> TOYOTA 1610079445).
-        names = refresh_name_links(apply=apply)
-        stdout.write(f"{'Aplicado' if apply else 'Simulación'} · vínculos por nombre del SKU: {names['links']} "
-                     f"({names['new']} nuevos, {names['removed']} retirados)\n")
-        return reports, names
+        # The name links are retired with S4: a number a SKU's codigo names sits on that SKU, or rule 3 proposes it (S6).
+        return reports, refresh_name_links(apply=apply)
 
     if apply:
         with matching_lock() as acquired:

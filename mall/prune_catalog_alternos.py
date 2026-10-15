@@ -16,10 +16,9 @@ from collections import defaultdict
 
 
 def catalog_citations():
-    """The bare citations of the catalogs mall.supplier_catalog_import loaded (their OEM table sources name the catalog key)."""
-    from .oem_reference_models import OEMReferenceSource
-    return sorted(set(OEMReferenceSource.objects.filter(kind='aftermarket_catalog', detail__has_key='catalog')
-                      .values_list('citation', flat=True)) - {''})
+    """The bare citations of the catalogs mall.supplier_catalog_import loaded (their library sources name the catalog key)."""
+    from .references import catalog_citations as cited
+    return cited()
 
 
 def written_by_catalog(source, citations):

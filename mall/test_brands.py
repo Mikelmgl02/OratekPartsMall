@@ -131,13 +131,15 @@ class BrandRenameMergeTests(TestCase):
         self.assertIsNone(member.familia)
         self.assertEqual(other.familia, member)
 
-    def test_an_oem_alterno_keeps_the_oem_library_in_step(self):
+    def test_an_oem_alterno_is_the_library_number_and_follows_the_rename(self):
+        from . import references
         toyota = Brand.objects.create(nombre='TOYOTA MOTOR', tipo='vehiculo')
         code = make_reference(self.pump, '16100-39315', brand='TOYOTA MOTOR', tipo='oem', source='Declarado por GMB')
-        self.assertEqual(PartCode.objects.get(pk=code.pk).oem_reference.manufacturer, 'TOYOTA MOTOR')
+        library = PartCode.objects.filter(references.library_q())  # S4: the library's rows are these References
+        self.assertEqual(list(library.values_list('brand', flat=True)), ['TOYOTA MOTOR'])
         brands.rename(toyota, 'TOYOTA')
         code.refresh_from_db()
-        self.assertEqual((code.brand, code.oem_reference.manufacturer), ('TOYOTA', 'TOYOTA'))
+        self.assertEqual((code.brand, list(library.values_list('pk', 'brand'))), ('TOYOTA', [(code.pk, 'TOYOTA')]))
 
 
 class BrandAdminTests(TestCase):

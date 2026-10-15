@@ -20,18 +20,8 @@ class MallConfig(AppConfig):
             post_save.connect(enqueue_matching, sender=model, dispatch_uid=f'matching_save_{name}')
             post_delete.connect(enqueue_matching, sender=model, dispatch_uid=f'matching_delete_{name}')
 
-        # The OEM reference library mirrors every OEM alterno (a Reference of tipo oem with a brand) until S4 makes the References the
-        # library; the handlers never break the Reference write. A retire drops the source the alterno backed, never the number.
-        from django.db.models.signals import pre_save
-        from .oem_reference import partcode_deleted, partcode_pre_save, partcode_saved
-        pre_save.connect(partcode_pre_save, sender=Reference, dispatch_uid='oem_reference_pre_save')
-        post_save.connect(partcode_saved, sender=Reference, dispatch_uid='oem_reference_save')
-        post_delete.connect(partcode_deleted, sender=Reference, dispatch_uid='oem_reference_delete')
-
-        # A renamed, created or grouped SKU refreshes the link to the OEM number its own code names; never breaks the Part write.
-        from .oem_links import part_pre_save, part_saved
-        pre_save.connect(part_pre_save, sender=Part, dispatch_uid='oem_links_pre_save')
-        post_save.connect(part_saved, sender=Part, dispatch_uid='oem_links_save')
+        # From inventory refactor S4 the OEM library's numbers are References (mall.references.add_library_number): the signals that
+        # mirrored every OEM alterno into the OEM table and refreshed a SKU's name links are gone with it.
 
         # A message or a deal event notifies the other party: a browser push (off without VAPID keys) and an email (off without Resend).
         from .models import DealEvent, DealMessage

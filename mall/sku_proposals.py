@@ -102,11 +102,12 @@ def vehicle_makes():
 def library_oem(code, brand):
     """(OEM number, manufacturer, citation) the OEM library files this aftermarket code under, when it names exactly one."""
     from .oem_reference_models import OEMCrossReference
-    rows = list(OEMCrossReference.objects.filter(number=normalized_reference(code), brand__iexact=brand).select_related('reference')[:2])
+    rows = list(OEMCrossReference.objects.filter(number=normalized_reference(code), brand__iexact=brand, reference__isnull=False)
+                .select_related('reference')[:2])
     if len(rows) != 1:
         return '', '', ''
-    reference, citations = rows[0].reference, rows[0].citations or []
-    return ((reference.printed_forms or [reference.code])[0])[:120], reference.manufacturer[:120], str(citations[0])[:300] if citations else ''
+    reference, citations = rows[0].reference, rows[0].citations or []  # the number's Reference (S4): its code is the first printed form
+    return reference.code[:120], reference.brand[:120], str(citations[0])[:300] if citations else ''
 
 
 def merge_references(declared):

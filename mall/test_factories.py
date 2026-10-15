@@ -6,7 +6,9 @@ the app itself uses. Each stage of the refactor changes these functions, not the
 - make_line: an OEM line, today a catalog Part.
 - make_reference: one of the line's codes, a Reference (PartCode until S2a); tipo oem, aftermarket, interno or otro, ref_type in step.
 - make_variant: a supplier's item, today a SupplierItem loaded through ingest_inventory like an upload.
-- make_library_number: a number of the OEM library, today an OEMReference with one source.
+- make_library_number: a number of the OEM library: from S4 a Reference (tipo oem, its manufacturer as brand) on the line that carries
+  it or on a line of its own in referencia, with one source (mall.references.add_library_number).
+- make_legacy_number: a number of the OEM table as it was before S4 (OEMReference), for S4's backfill and the tools before it.
 - make_account, make_supplier, make_client: accounts with one role and their members.
 
 historical_apps() is the app registry as of one migration, for tests that run a data migration's functions: the live registry carries
@@ -20,8 +22,8 @@ from django.db import connection
 from django.db.migrations.loader import MigrationLoader
 
 from . import catalog_suffixes
+from . import references
 from .models import Account, Membership, Part, Reference, Role, User
-from .oem_reference import upsert_reference
 from .services import ingest_inventory
 
 PASSWORD = 'Example938!'
@@ -79,9 +81,46 @@ def make_variant(supplier, invent_id, code, quantity=0, *, actor=None, brand='',
     return item
 
 
-def make_library_number(manufacturer, code, *, source_kind='manual', citation='', **fields):
-    """A number of the OEM library with one source (upsert_reference: printed, detail, actor, defaults pass through)."""
-    return upsert_reference(manufacturer, code, source_kind=source_kind, citation=citation, **fields)[0]
+def make_library_number(manufacturer, code, *, source_kind='manual', citation='', detail=None, defaults=None, **fields):
+    """A number of the OEM library with one source, its Reference (mall.references.add_library_number: printed, actor, description,
+    part_type and applications pass through; detail is the source's detail, defaults the texts as the OEM table's upsert took them)."""
+    texts = {key: value for key, value in (defaults or {}).items() if key in ('description', 'part_type', 'applications') and value}
+    return references.add_library_number(manufacturer, code, source_kind=source_kind, citation=citation, source_detail=detail,
+                                         **texts, **fields)[0]
+
+
+def make_legacy_number(manufacturer, code, *, source_kind='manual', citation='', detail=None, status=None, **fields):
+    """A number of the OEM table as it was before S4 (OEMReference with one OEMReferenceSource), which S4's backfill turns into a
+    Reference and the tools that ran before it (S0, S2b) still read. fields: printed_forms, description, part_type, applications..."""
+    from .oem_reference import derived_status
+    from .oem_reference_models import OEMReference, OEMReferenceSource
+    ref = OEMReference.objects.create(manufacturer=manufacturer, code=code, printed_forms=fields.pop('printed_forms', [code]),
+                                      status=status or derived_status([(source_kind, detail or {})]), **fields)
+    OEMReferenceSource.objects.create(reference=ref, kind=source_kind, citation=citation, detail=detail or {})
+    return ref
+
+
+def legacy_mirror(ref):
+    """What the OEM table's mirror (the signal handlers before S4) made of an OEM alterno: the OEMReference (manufacturer = its brand,
+    the compact code) with the source its reference_source names, the alterno listed in that source's part_codes, and the alterno's
+    oem_reference pointing at it. For the tests of the tools that run on the library as it was before S4 (S2a, S2b, S0)."""
+    from .oem_reference import classify_number, derived_status, part_defaults, source_of
+    from .oem_reference_models import OEMReference, OEMReferenceSource, compact
+    kind, citation, detail = source_of(ref.reference_source)
+    texts = {key: value for key, value in part_defaults(Part.objects.filter(pk=ref.part_id).values_list('description', flat=True).first()).items() if value}
+    system, family = classify_number(ref.brand, compact(ref.code), [ref.code])
+    number, _ = OEMReference.objects.get_or_create(manufacturer=ref.brand, code=compact(ref.code), defaults={
+        'printed_forms': [ref.code], 'system': system, 'family': family, **texts})
+    source, created = OEMReferenceSource.objects.get_or_create(reference=number, kind=kind, citation=citation, defaults={'detail': detail})
+    entries = {entry['id']: entry for entry in source.detail.get('part_codes') or []}
+    entries[ref.pk] = {'id': ref.pk, 'part': str(ref.part_id), 'code': ref.code}
+    source.detail = {**source.detail, 'part_codes': sorted(entries.values(), key=lambda entry: entry['id'])}
+    source.save(update_fields=['detail'])
+    if number.status != 'disputed':
+        number.status = derived_status(number.sources.values_list('kind', 'detail'))
+        number.save()
+    Reference.all_objects.filter(pk=ref.pk).update(oem_reference=number)
+    return number
 
 
 class Fresh:

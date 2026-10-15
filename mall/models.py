@@ -67,7 +67,10 @@ class Part(models.Model):
     # UNKNOWN; mall.references.set_main writes both). Until S10 is_OEM is kept equal to tipo == 'OEM' (save() below; a CHECK from 0076).
     TIPOS = [('OEM', 'OEM'), ('AFTERMARKET', 'Posventa'), ('UNKNOWN', 'Sin clasificar')]
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False, verbose_name='ID')
-    sku = models.CharField(max_length=200, unique=True, verbose_name='SKU interno')
+    # The codigo is unique among the catalog's lines (publicada and retirada: line_codigo_unique_catalog, from 0079, inventory refactor
+    # S4). Lines in referencia (library numbers with no product) and in preparación may share one across makes (44310-STX-305 for
+    # ACURA and HONDA); a unificada line's codigo is frozen and left out, since the References' uniqueness already stops its reuse.
+    sku = models.CharField(max_length=200, db_index=True, verbose_name='SKU interno')
     is_OEM = models.BooleanField(default=False, db_index=True, verbose_name='El SKU principal es OEM')
     name = models.CharField(max_length=200, blank=True, default='', verbose_name='nombre')
     description = models.TextField(blank=True, verbose_name='descripción')
@@ -155,7 +158,7 @@ class Part(models.Model):
     class Meta:
         verbose_name = 'repuesto'
         verbose_name_plural = 'repuestos'
-        constraints = [models.UniqueConstraint(Lower('sku'), name='unique_sku_case_insensitive'),
+        constraints = [models.UniqueConstraint(Lower('sku'), condition=Q(estado__in=['publicada', 'retirada']), name='line_codigo_unique_catalog'),
                        models.CheckConstraint(condition=~Q(id=models.F('merged_into')), name='different_merged_part'),
                        models.CheckConstraint(condition=Q(estado__in=['referencia', 'preparacion', 'publicada', 'rechazada', 'retirada', 'unificada']),
                                               name='line_valid_estado'),
@@ -170,6 +173,8 @@ class Part(models.Model):
                        # From 0076 (S2b's tighten): tipo mirrors the main Reference; is_OEM mirrors tipo until S10.
                        models.CheckConstraint(condition=Q(tipo__in=['OEM', 'AFTERMARKET', 'UNKNOWN']), name='line_valid_tipo'),
                        models.CheckConstraint(condition=Q(is_OEM=True, tipo='OEM') | Q(is_OEM=False) & ~Q(tipo='OEM'), name='line_oem_iff_tipo')]
+        # The lookups of a codigo in every estado (mall.lines.lines_by_codigos), which unique_sku_case_insensitive served until S4.
+        indexes = [models.Index(Lower('sku'), name='line_codigo_lower_idx')]
 
 
 class PartImage(models.Model):
@@ -275,11 +280,12 @@ class Reference(models.Model):
     REF_TYPES = [('unknown', 'SIN CLASIFICAR'), ('oem', 'OEM'), ('company', 'EMPRESA / FABRICANTE')]
     ref_type = models.CharField(max_length=20, choices=REF_TYPES, default='unknown', db_index=True)
     reference_source = models.CharField(max_length=500, blank=True, default='', verbose_name='fuente de la equivalencia')
-    # The OEM table row an OEM alterno files under (brand as manufacturer, compact code); kept by the oem_reference signal handlers.
+    # The OEM table row an OEM alterno filed under before S4 (brand as manufacturer, compact code), kept as the signal handlers left it:
+    # from S4 the Reference is the library number itself (uid = that OEMReference's id) and nothing writes this column; S10 drops it.
     oem_reference = models.ForeignKey('mall.OEMReference', on_delete=models.SET_NULL, null=True, blank=True, related_name='alternos',
                                       verbose_name='referencia OEM')
-    # The public id: PostgreSQL fills it for every row, old code's inserts included. No API exposes it before S4, which sets it to the
-    # OEMReference id of each library number.
+    # The public id: PostgreSQL fills it for every row, old code's inserts included. From S4 it is the Biblioteca's id of a library
+    # number (tipo oem with a brand): the OEMReference id for the numbers the library had before S4, a new uuid after.
     uid = models.UUIDField(db_default=RandomUUID(), unique=True, editable=False, verbose_name='identificador público')
     printed_forms = models.JSONField(default=list, db_default=[], blank=True, verbose_name='otras formas impresas',
                                      help_text='Grafías del mismo código vistas en otras fuentes (13780-61J00-NP-).')

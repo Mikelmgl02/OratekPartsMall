@@ -311,13 +311,13 @@ def current_values(line):
 def build_plan(groups, errors, row_count, *, lock=False, warnings=None, error_sink=None):
     errors = list(errors)
     candidates = set(groups) | {code for group in groups.values() for _, code in group['codes']}
-    parts, codes = {}, {}
+    parts, codes, same_codigo = {}, {}, {}
     # Bound SQL parameter lists even when a workbook contains tens of thousands
     # of rows. An individual SKU may itself have many alterno codes.
     ordered_candidates = sorted(candidates)
     for offset in range(0, len(ordered_candidates), 2000):
         chunk = ordered_candidates[offset:offset + 2000]
-        # Every estado, as UNIQUE(sku) until S4; with its subgrupo, which CATEGORIA / SUBCATEGORIA compare against (S5).
+        # Every estado: several may share a codigo (S4); with its subgrupo, which CATEGORIA / SUBCATEGORIA compare against (S5).
         parts_query = all_lines().filter(sku__in=chunk).select_related('merged_into', 'part_type__grupo').order_by('pk')
         # A line's live References, by the printed code or by its key (clave: 17801-30070 is 1780130070, mall.references).
         codes_query = (Reference.objects.filter(Q(code__in=chunk) | Q(clave__in=sorted({references.clave(code) for code in chunk})))
@@ -325,12 +325,25 @@ def build_plan(groups, errors, row_count, *, lock=False, warnings=None, error_si
         if lock:
             parts_query = parts_query.select_for_update(of=('self',))
             codes_query = codes_query.select_for_update(of=('self',))
-        parts.update((part.sku, part) for part in parts_query)
+        for part in parts_query:
+            same_codigo.setdefault(part.sku, []).append(part)
         codes.update((entry.pk, entry) for entry in codes_query)
+    # The line a SKU of the file names: the catalog line with that codigo (unique among publicada and retirada, S4), else a unificada
+    # line, else one in preparación or rechazada, else a line in referencia (a library number no product carried: the import promotes
+    # it), which several makes may share (then the file cannot say which).
+    rank = {'publicada': 0, 'retirada': 0, 'unificada': 1, 'referencia': 3}
+    shared = {}
+    for sku, found in same_codigo.items():
+        found.sort(key=lambda part: (rank.get('unificada' if part.merged_into_id else part.estado, 2), str(part.pk)))
+        parts[sku] = found[0]
+        if found[0].estado == 'referencia' and len(found) > 1:
+            shared[sku] = found
     codes = list(codes.values())
     owners = {sku: [('', part.merged_into.sku if part.merged_into_id else sku)] for sku, part in parts.items()}
     key_owners = {}  # clave -> [(brand, SKU)]: a code is held by its key, and a brandless one for every brand (the brandless reservation)
     for entry in codes:
+        if entry.part.estado == 'referencia':
+            continue  # a library number no product carries holds nothing against the file: adding it absorbs its line (rule 3f, S4)
         owners.setdefault(entry.code, []).append((entry.brand, entry.part.sku))
         key_owners.setdefault(entry.clave, []).append((entry.brand, entry.part.sku))
     for group in groups.values():
@@ -352,9 +365,13 @@ def build_plan(groups, errors, row_count, *, lock=False, warnings=None, error_si
             if conflicts:
                 errors.append({'row': number, 'column': 'CODIGO_ALTERNO', 'message': f'El código {code} identifica otro SKU. Revisa su asignación.'})
         existing = parts.get(sku)
-        if existing and existing.merged_into_id:
+        if sku in shared:  # several makes' library numbers share the codigo: Crear SKU with the brand picks one
+            makers = ' y '.join(sorted({main.brand for main in references.mains_of(shared[sku]).values() if main.brand})) or 'varias marcas'
+            errors.append({'row': group['row'], 'column': 'SKU', 'message': f'El código {sku} está en la Biblioteca para {makers}: indica la marca '
+                                                                          'creando el SKU en el inventario.'})
+        elif existing and existing.merged_into_id:
             errors.append({'row': group['row'], 'column': 'SKU', 'message': f'El SKU {sku} ya se agrupó bajo {existing.merged_into.sku}. Usa el SKU interno de destino y conserva este código como alterno.'})
-        elif existing and existing.estado not in CATALOG:  # referencia, preparación, rechazada: only a person moves it (mall.lines.set_estado)
+        elif existing and existing.estado not in CATALOG and existing.estado != 'referencia':  # preparación, rechazada: only a person moves it (mall.lines.set_estado)
             errors.append({'row': group['row'], 'column': 'SKU', 'message': f'El SKU {sku} está {phrase(existing.estado)} y no forma parte del catálogo: la importación no lo cambia.'})
         keys, added = set(existing_keys) | {(sku, '', references.clave(sku))}, []  # the codigo is the line's main: a spelling of it adds nothing
         for brand, code in group['codes']:  # one Reference per key: a spelling of a code the line holds adds nothing
@@ -364,7 +381,8 @@ def build_plan(groups, errors, row_count, *, lock=False, warnings=None, error_si
         group['existing'] = existing
         group['added'] = added
         current = current_values(existing)
-        changed = existing and any(current[field] != value for field, value in group['fields'].items())
+        group['promote'] = bool(existing and existing.estado == 'referencia')  # S4: the library's line becomes this SKU (same id)
+        changed = existing and (group['promote'] or any(current[field] != value for field, value in group['fields'].items()))
         action = 'create' if not existing else 'update' if changed or added else 'unchanged'
         group['action'] = action
         summary[{'create': 'created_skus', 'update': 'updated_skus', 'unchanged': 'unchanged_skus'}[action]] += 1
@@ -439,6 +457,7 @@ def save_plan(groups, user=None):
     0074); every other new key is built and inserted in bulk."""
     actor = user if getattr(user, 'is_authenticated', False) else None
     new_parts, changed_parts, planned = [], [], []
+    promoted = []
     for sku, group in groups.items():
         part = group['existing'] or Part(sku=sku)
         if group['existing'] is not None and {'category', 'subcategory'} & set(group['fields']):
@@ -447,15 +466,23 @@ def save_plan(groups, user=None):
             setattr(part, field, value)
         if group['existing'] is None:
             new_parts.append(part)
+        elif group.get('promote') and part.estado == 'referencia':
+            promoted.append((part, group))
         elif group['action'] == 'update':
             changed_parts.append(part)
         planned.append((part, group))
-    from .lines import bulk_create_lines, bulk_update_lines
+    from .lines import bulk_create_lines, bulk_update_lines, stage_estado
     from .technical_data import bind_part_types
-    bind_part_types(new_parts + changed_parts)
+    bind_part_types(new_parts + changed_parts + [part for part, _ in promoted])
     # ACTIVO=NO retires a line and ACTIVO=SI publishes it: the lines' writers keep estado in step with active.
     bulk_create_lines(new_parts, batch_size=500)
     bulk_update_lines(changed_parts, ['name', 'description', 'active', 'category', 'subcategory', 'part_type'], batch_size=500)
+    promote_fields = set()
+    for part, group in promoted:  # a library number's line in referencia becomes the file's SKU: published (or retired with ACTIVO=NO)
+        promote_fields.update(stage_estado(part, 'retirada' if group['fields'].get('active') is False else 'publicada', user=actor))
+    if promoted:
+        bulk_update_lines([part for part, _ in promoted], ['name', 'description', 'category', 'subcategory', 'part_type', *sorted(promote_fields)],
+                          batch_size=500)
     line_ids = [part.pk for part, group in planned if group['existing'] is not None]
     printed = sorted({code for _, group in planned for _, code in group.get('codes', group.get('added', []))})
     held, retired_here, retired_printed = {}, set(), set()
@@ -466,8 +493,11 @@ def save_plan(groups, user=None):
                 retired_here.add((row.part_id, row.brand, row.clave))
             else:
                 held.setdefault((row.part_id, row.brand, row.clave), row)
+    library_held = set()  # claves a line in referencia holds: added one by one, so add() absorbs that line (rule 3f, S4)
     for start in range(0, len(printed), 2000):
         retired_printed.update(Reference.all_objects.filter(estado='retirada', code__in=printed[start:start + 2000]).values_list('brand', 'code'))
+        library_held.update(Reference.objects.filter(part__estado='referencia', clave__in=sorted({references.clave(code) for code in printed[start:start + 2000]}))
+                            .values_list('clave', flat=True))
     new_codes, built, one_by_one, queued, spellings = [], {}, [], set(), []
     for part, group in planned:
         for brand, code in group.get('codes', group.get('added', [])):  # every code of the file's rows (a plan without them: its added)
@@ -479,7 +509,7 @@ def save_plan(groups, user=None):
                     built[key].printed_forms.append(code)
             elif key in queued:
                 spellings.append((key, code))  # joins the Reference add() returns below
-            elif key in retired_here or (brand, code) in retired_printed:
+            elif key in retired_here or (brand, code) in retired_printed or key[2] in library_held:
                 queued.add(key)
                 one_by_one.append((key, part, code, brand))
             else:

@@ -3,14 +3,16 @@ from rest_framework.test import APITestCase
 from .matching_engine import MatchIndex, reconcile_items
 from .models import Account, Membership, MatchingCase, Part, PartCode, Role, SupplierItem, User
 from .oem_links import store_catalog_links, store_cross_references
-from .oem_reference import upsert_reference
+from .oem_reference_models import PartOEMLink
+from .references import add_library_number
 from .test_oem_finder import Fresh
 
 PUMP = 'BOMBA AGUA TOY 22R HILUX'
 
 
 def number(manufacturer, code):
-    return upsert_reference(manufacturer, code, source_kind='aftermarket_catalog', citation='GMB 2016')[0]
+    """A library number (S4: a Reference, on a line of its own in referencia when no line carries it)."""
+    return add_library_number(manufacturer, code, source_kind='aftermarket_catalog', citation='GMB 2016')[0]
 
 
 class OEMLibraryTests(Fresh, APITestCase):
@@ -21,7 +23,8 @@ class OEMLibraryTests(Fresh, APITestCase):
         self.main, self.sister = number('TOYOTA', '16100-39315'), number('TOYOTA', '16100-39317')
         store_cross_references({(self.main.pk, 'GMB', 'GWT-41A'): ['GMB 2016 · pág. 212'], (self.main.pk, 'NPW', 'T-16'): ['GMB 2016 · pág. 557'],
                                 (self.main.pk, 'AISIN', 'WPT-111'): ['GMB 2016 · pág. 212'], (self.sister.pk, 'GMB', 'GWT-41A'): ['GMB 2016 · pág. 212']})
-        self.pump = Part.objects.create(sku='16100-39315-RAZ', description=PUMP)  # name link to the main number
+        self.pump = Part.objects.create(sku='16100-39315-RAZ', description=PUMP)
+        PartOEMLink.objects.create(part=self.pump, reference=self.main, source='sku_name')  # its name link, as S4 re-pointed it
         store_catalog_links({(self.pump.pk, self.sister.pk): ['GMB 2016 · pág. 212 · GWT-41A']})
         self.supplier = Account.objects.create(name='PROVEEDOR NUEVO')
 
@@ -57,6 +60,7 @@ class LibraryMatchingTests(OEMLibraryTests):
 
     def test_duplicate_skus_of_a_number_go_to_review_with_both(self):
         twin = Part.objects.create(sku='16100-39315-GMB', description=PUMP)
+        PartOEMLink.objects.create(part=twin, reference=self.main, source='sku_name')
         skus, method, strong, reason = self.resolve(self.item('GWT-41A', 'GMB'))
         self.assertEqual((sorted(skus[:2]), method, strong), (['16100-39315-GMB', '16100-39315-RAZ'], 'needs_review', False))
         self.assertIn('posibles duplicados', reason)

@@ -27,8 +27,8 @@ from .oem_reference_models import PartOEMLink
 from .refactor import s2b_main_refs
 from .supplier_import_models import SupplierInventoryImportJob
 from .technical_models import PartType, PartSpecification, TechnicalField, TechnicalTemplate
-from .test_factories import (Fresh, make_library_number, make_line, make_reference, make_supplier, make_user, make_variant,
-                             unhook_variants)
+from .test_factories import (Fresh, make_legacy_number, make_library_number, make_line, make_reference, make_supplier, make_user,
+                             make_variant, unhook_variants)
 from .test_main_references import broken_invariants
 
 
@@ -372,9 +372,9 @@ class CompactDuplicateTests(Fresh, TestCase):
         self.assertEqual(line_merge.compact_check(group, rows, {'2'}, {})[0], 'ficha')
 
     def test_a_number_an_absorbed_line_carries_is_its_keepers_in_the_shared_number_cases(self):
-        number = make_library_number('TOYOTA', '16100-39315', citation='LISTA')
+        number = make_legacy_number('TOYOTA', '1610039315', printed_forms=['16100-39315'], citation='LISTA')  # S2b reads the OEM table
         other = make_line('BOMBA-X', description='BOMBA AGUA')
-        PartOEMLink.objects.create(part=other, reference=number, source='catalog')
+        PartOEMLink.objects.create(part=other, legacy_reference=number, source='catalog')
         result = s2b_main_refs.plan(hook=line_merge.s2b_compact_duplicates)
         shared = [group for group in result['shared'] if '1610039315' in group['numbers']]
         self.assertEqual([sorted(group['lines']) for group in shared], [sorted([str(self.keeper.pk), str(other.pk)])])

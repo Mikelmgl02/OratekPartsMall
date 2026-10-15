@@ -21,7 +21,9 @@ from .management import IsSuperuser
 from . import references
 from .models import Part
 from .oem_links import part_equivalents
-from .oem_reference_models import OEMCrossReference, OEMReferenceSource, compact, manufacturer_name
+from .models import ReferenceSource
+from .oem_reference import LibraryNumber
+from .oem_reference_models import OEMCrossReference, compact, manufacturer_name
 from .oem_reference_views import OEMReferenceLink, require_tables
 
 ACTIONS = ['keep', 'remove', 'remove_copies']
@@ -112,17 +114,18 @@ def detail(part):
     undecided, copies = catalog_alternos(part, equivalents)
     numbers = []
     for entry in equivalents['numbers']:
-        ref = entry['reference']
+        ref = entry['reference']  # a LibraryNumber (S4): the number's Reference is ref.ref
         printed = [{'catalog': source.citation, 'brand_codes': source.detail.get('brand_codes') or []}
-                   for source in OEMReferenceSource.objects.filter(reference=ref, kind='aftermarket_catalog', detail__has_key='catalog').order_by('citation')]
+                   for source in ReferenceSource.objects.filter(reference=ref.ref, kind='catalogo', retirada=False, detail__has_key='catalog').order_by('citation')]
         numbers.append({**evidence(ref), 'via': entry['via'], 'printed_for': printed})
-    reached = {entry['reference'].pk for entry in equivalents['numbers']}
+    reached = {entry['reference'].ref.pk for entry in equivalents['numbers']}
 
     def row(code, *, filed=True):
         elsewhere = []
         if filed:
-            elsewhere = [cross.reference for cross in (OEMCrossReference.objects.filter(brand=manufacturer_name(code.brand), number=compact(code.code))
-                                                       .exclude(reference_id__in=reached).select_related('reference').order_by('reference__manufacturer', 'reference__code'))]
+            elsewhere = [LibraryNumber(cross.reference) for cross in (
+                OEMCrossReference.objects.filter(brand=manufacturer_name(code.brand), number=compact(code.code), reference__isnull=False)
+                .exclude(reference_id__in=reached).select_related('reference', 'reference__reemplazado_por').order_by('reference__brand', 'reference__clave'))]
         return {'id': code.pk, 'brand': code.brand, 'code': code.code, 'reference_source': code.reference_source,
                 'filed_under': [evidence(ref) for ref in elsewhere[:FILED_LIMIT]], 'filed_count': len(elsewhere)}
     return AlternateReviewDetail({'part': part, 'numbers': numbers, 'undecided': [row(code) for code in undecided],

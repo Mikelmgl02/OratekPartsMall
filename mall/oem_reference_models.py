@@ -9,6 +9,12 @@ row version. Rows never hold prices, stock or SKUs: the catalog SKUs that carry 
 OEMCrossReference is an aftermarket code printed as an equivalent of one number (AISIN WPT-111 = TOYOTA 1610029155): it belongs to
 the number, not to a SKU. PartOEMLink ties a SKU to a number besides its OEM alternos (the number its own code names, or one a
 supplier catalog printed for the item matched to it), so the SKU reaches the number's aftermarket codes (mall.oem_links).
+
+Inventory refactor S4: every library number is a Reference (tipo oem, its manufacturer as brand, uid = the OEMReference id), on the
+line that carries it or on a line of its own in referencia (mall.references.add_library_number). OEMReference and OEMReferenceSource
+are frozen from then on (the Biblioteca reads and writes References; S10 archives them). The aftermarket codes, their tombstones and
+the SKU links hang from the Reference: `reference` (column ref_id, from 0079; NOT NULL from 0080), while `legacy_reference` keeps
+the OEMReference they hung from before (column reference_id, the column the code before S4 reads) until S10.
 """
 import uuid
 
@@ -143,7 +149,11 @@ class OEMCrossReference(models.Model):
     """An aftermarket code printed as an equivalent of one OEM number (AISIN WPT-111 = TOYOTA 1610029155). It belongs to the number:
     every SKU linked to the number shows it, duplicate SKUs share it and grouping SKUs moves nothing. One row per (number, brand,
     compact code); citations lists every source that prints it."""
-    reference = models.ForeignKey(OEMReference, on_delete=models.CASCADE, related_name='cross_references', verbose_name='referencia OEM')
+    # Until S10 (S4's transition): the OEMReference it hung from before S4, in the column the code before S4 reads.
+    legacy_reference = models.ForeignKey(OEMReference, on_delete=models.CASCADE, null=True, blank=True, db_column='reference_id',
+                                         related_name='legacy_cross_references', verbose_name='referencia OEM (antes de S4)')
+    reference = models.ForeignKey('mall.Reference', on_delete=models.PROTECT, null=True, blank=True, db_column='ref_id',
+                                  related_name='cross_references', verbose_name='referencia OEM')
     brand = models.CharField(max_length=120, verbose_name='marca')
     code = models.CharField(max_length=120, verbose_name='código')
     number = models.CharField(max_length=120, verbose_name='código compacto')  # letters and digits only: the lookup key
@@ -156,7 +166,7 @@ class OEMCrossReference(models.Model):
         verbose_name_plural = 'equivalencias de posventa'
         ordering = ['brand', 'number', 'id']
         constraints = [
-            models.UniqueConstraint(fields=['reference', 'brand', 'number'], name='oem_cross_reference_unique'),
+            models.UniqueConstraint(fields=['legacy_reference', 'brand', 'number'], name='oem_cross_reference_unique'),  # 0080 moves it to reference
             models.CheckConstraint(condition=Q(number__regex=r'^[0-9A-Z]+$'), name='oem_cross_reference_number_compact'),
             models.CheckConstraint(condition=Q(brand=Upper('brand')) & ~Q(brand=''), name='oem_cross_reference_brand_upper'),
         ]
@@ -174,7 +184,10 @@ class OEMCrossReference(models.Model):
 class OEMCrossReferenceRetired(models.Model):
     """An aftermarket code a superuser retired from a number (Biblioteca OEM): the supplier catalog import never files it again, and
     adding it by hand brings it back. It keeps what the code had (spelling and citations) for the record."""
-    reference = models.ForeignKey(OEMReference, on_delete=models.CASCADE, related_name='retired_cross_references', verbose_name='referencia OEM')
+    legacy_reference = models.ForeignKey(OEMReference, on_delete=models.CASCADE, null=True, blank=True, db_column='reference_id',
+                                         related_name='legacy_retired_cross_references', verbose_name='referencia OEM (antes de S4)')
+    reference = models.ForeignKey('mall.Reference', on_delete=models.PROTECT, null=True, blank=True, db_column='ref_id',
+                                  related_name='retired_cross_references', verbose_name='referencia OEM')
     brand = models.CharField(max_length=120, verbose_name='marca')
     number = models.CharField(max_length=120, verbose_name='código compacto')
     code = models.CharField(max_length=120, verbose_name='código')
@@ -185,7 +198,7 @@ class OEMCrossReferenceRetired(models.Model):
     class Meta:
         verbose_name = 'equivalencia de posventa retirada'
         verbose_name_plural = 'equivalencias de posventa retiradas'
-        constraints = [models.UniqueConstraint(fields=['reference', 'brand', 'number'], name='oem_cross_reference_retired_unique')]
+        constraints = [models.UniqueConstraint(fields=['legacy_reference', 'brand', 'number'], name='oem_cross_reference_retired_unique')]
 
 
 class PartOEMLink(models.Model):
@@ -194,7 +207,10 @@ class PartOEMLink(models.Model):
     the number the SKU's MAIN: only a verified OEM alterno does (prefer_oem: Editar SKU, Agrupar SKU, the matching pass, the OEM
     finder's commands)."""
     part = models.ForeignKey('mall.Part', on_delete=models.CASCADE, related_name='oem_links', verbose_name='repuesto del catálogo')
-    reference = models.ForeignKey(OEMReference, on_delete=models.CASCADE, related_name='part_links', verbose_name='referencia OEM')
+    legacy_reference = models.ForeignKey(OEMReference, on_delete=models.CASCADE, null=True, blank=True, db_column='reference_id',
+                                         related_name='legacy_part_links', verbose_name='referencia OEM (antes de S4)')
+    reference = models.ForeignKey('mall.Reference', on_delete=models.PROTECT, null=True, blank=True, db_column='ref_id',
+                                  related_name='part_links', verbose_name='referencia OEM')
     source = models.CharField(max_length=12, choices=LINK_SOURCES, verbose_name='origen')
     citations = models.JSONField(default=list, blank=True, verbose_name='citas')  # catalog links: page and catalog item
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='fecha de registro')
@@ -204,7 +220,7 @@ class PartOEMLink(models.Model):
         verbose_name_plural = 'vínculos de SKU con números OEM'
         ordering = ['part', 'reference', 'source']
         constraints = [
-            models.UniqueConstraint(fields=['part', 'reference', 'source'], name='part_oem_link_unique'),
+            models.UniqueConstraint(fields=['part', 'legacy_reference', 'source'], name='part_oem_link_unique'),  # 0080 moves it to reference
             models.CheckConstraint(condition=Q(source__in=values(LINK_SOURCES)), name='part_oem_link_valid_source'),
         ]
 

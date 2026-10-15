@@ -1,20 +1,19 @@
 """Marcar como OEM and Crear OEM desde SKU: endpoints without a screen since the owner retired OEM linking on 2026-10-14 (the
-Inventario grid's right click offered them).
+Inventario grid's right click offered them). From inventory refactor S4 the OEM list is the library's References (tipo oem with a
+brand, mall.references.library_q); the endpoints keep their plan shapes.
 
-A SKU is OEM when its code is the OEM number: an exact match to an item of the OEM list (Biblioteca OEM), the catalog's source table
-of OEM numbers. The two actions are different things:
+A SKU is OEM when its code is the OEM number: an exact match to a number of the OEM list (Biblioteca OEM). The two actions are
+different things:
 
-- Marcar como OEM ties a SKU to the item already in the list with its code (when the number is filed under several makes, the
-  administrator picks one). The code is filed as that make's OEM alterno, with a citation naming who marked it, and the SKU is OEM.
-- Crear OEM desde SKU adds the item to the list first, from the SKU's code, make, description and part type, as a manual entry naming
-  who created it, and then ties the SKU the same way.
-
-A declared or verified number of the list marks its exact SKUs on every matching pass when OEM_EXACT_MARK=1 (off by default since the
-owner retired OEM linking on 2026-10-14; catalog_identity.mark_exact_matches); these actions are for the rest: a number only the OEM
-finder inferred, a short number, or one the list does not have yet.
+- Marcar como OEM ties a SKU to the number already in the list with its code (when the number is filed under several makes, the
+  administrator picks one). A number no product carried has a line of its own in referencia: Marcar absorbs that line (rule 3f, a
+  merge Separar undoes), so the number becomes one of the SKU's References, and the SKU's main takes tipo oem.
+- Crear OEM desde SKU adds the number to the list first (mall.references.add_library_number), from the SKU's code, make, description
+  and part type, as a manual entry naming who created it: the SKU carries it, so the number goes on the SKU; then the main takes tipo
+  oem under that maker when its key is free.
 
 Quitar marca OEM takes the mark off a SKU whose code is not in the list (and can retire its OEM alterno). A SKU whose code is in the
-list is OEM by definition: when that number is wrong, it is put in dispute in Biblioteca OEM, which unmarks its SKUs.
+list is OEM by definition: when that number is wrong, it is put in dispute in Biblioteca OEM.
 """
 import uuid
 
@@ -32,7 +31,8 @@ from .lines import catalog_lines
 from . import references
 from .models import Part, Reference
 from .oem_finder import OEMFinder
-from .oem_reference_models import OEMReference, compact, manufacturer_name
+from .oem_reference import LibraryNumber, STATUS_LABELS
+from .oem_reference_models import compact, manufacturer_name
 
 MAX_ROWS = 200
 MARKED = 'Marcado como OEM por'  # how a marking's citation starts (Quitar marca OEM offers to retire what it filed)
@@ -46,15 +46,22 @@ def number_problem(sku):
     return ''
 
 
+def library():
+    """The OEM list: the library's References (S4)."""
+    return Reference.objects.filter(references.library_q())
+
+
 def holder(part, make):
-    """Another SKU that already files this make's number as its OEM alterno: the two are the same part (Agrupar SKU)."""
-    return (Reference.objects.filter(ref_type='oem', oem_reference__manufacturer=make, oem_reference__code=compact(part.sku))
-            .exclude(part=part).select_related('part').first())
+    """Another catalog line that already holds this make's number: the two are the same part (Agrupar SKU). A line in referencia is
+    the number's own line, which Marcar absorbs."""
+    return (library().filter(brand=make, clave=compact(part.sku)).exclude(part=part).exclude(part__estado='referencia')
+            .select_related('part').first())
 
 
 def listed(part):
-    """The items of the OEM list with this SKU's code, in dispute ones left out."""
-    return list(OEMReference.objects.filter(code=compact(part.sku)).exclude(status='disputed').order_by('manufacturer'))
+    """The numbers of the OEM list with this SKU's code (LibraryNumbers), in dispute ones left out."""
+    return [LibraryNumber(ref) for ref in library().filter(clave=compact(part.sku)).exclude(estado='disputa').select_related('reemplazado_por')
+            .order_by('brand')]
 
 
 def listed_refusal(part):
@@ -150,7 +157,7 @@ class MarkOEMResult(serializers.Serializer):
 def plan_rows(ids, mode='mark'):
     from .oem_reference import part_defaults
     parts = list(catalog_lines().filter(pk__in=ids).prefetch_related('codes').order_by('sku'))
-    labels = dict(OEMReference._meta.get_field('status').choices)
+    labels = STATUS_LABELS
     rows = []
     for part in parts:
         makes, items = description_makes(part), listed(part)
@@ -161,7 +168,7 @@ def plan_rows(ids, mode='mark'):
             warnings.append(f'El código termina en un sufijo de marca o proveedor ({part.sku[len(supplier_base(part.sku)) + 1:]}): '
                             'confirma que es el número OEM tal cual.')
         best = preferred(items, makes)
-        disputed = [] if items else list(OEMReference.objects.filter(code=compact(part.sku), status='disputed').values_list('manufacturer', flat=True))
+        disputed = [] if items else list(library().filter(clave=compact(part.sku), estado='disputa').values_list('brand', flat=True))
         if disputed:
             warnings.append(f'{" / ".join(disputed)} {compact(part.sku)} está en disputa en la Biblioteca OEM: resuelve la disputa antes de marcarlo.')
         if mode == 'mark':
@@ -173,7 +180,7 @@ def plan_rows(ids, mode='mark'):
                                 'elige el del SKU.')
             suggested = best.manufacturer if best else ''
         else:
-            taken = set(OEMReference.objects.filter(code=compact(part.sku)).values_list('manufacturer', flat=True))
+            taken = set(library().filter(clave=compact(part.sku)).values_list('brand', flat=True))
             free = [make for make in makes if manufacturer_name(make) not in taken]
             suggested = free[0] if free else ''  # a make the list already has is refused by create_oem: Marcar ties to it
             if len(makes) > 1:
@@ -207,17 +214,21 @@ def updated_rows(ids):
 
 
 def tie(part, make, cite, actor=None):
-    """File the SKU code as the make's OEM alterno, which ties it to that item of the list, and mark the SKU OEM. Returns a problem or ''."""
+    """File the SKU code as the make's OEM number on the SKU (a line in referencia holding it is absorbed first, rule 3f), and give the
+    SKU's main tipo oem. Returns a problem or ''."""
     other = holder(part, make)
     if other:
         return f'{make} {compact(part.sku)} ya es el OEM de {other.part.sku}. Si son el mismo repuesto, agrúpalos con Agrupar SKU.'
     try:
-        validate_code_mapping(part=part, brand=make, code=part.sku)
+        with transaction.atomic():
+            references.absorb_library_lines(part, part.sku, make, actor=actor)
+            validate_code_mapping(part=part, brand=make, code=part.sku)
     except ValidationError as error:
         return ' '.join(str(item) for item in (error.detail if isinstance(error.detail, list) else [error.detail]))
-    codes = list(Reference.objects.select_for_update().filter(part=part, code=part.sku).order_by('pk'))
-    # The make's code already on the SKU, or its neutral alias, becomes the OEM alterno; otherwise a new alterno is filed.
-    code = next((item for item in codes if item.brand == make), None) or next((item for item in codes if not item.brand and item.ref_type == 'unknown'), None)
+    codes = list(Reference.objects.select_for_update().filter(part=part, clave=references.clave(part.sku), supplier__isnull=True).order_by('pk'))
+    # The make's code already on the SKU, or its neutral alias, becomes the OEM number; otherwise a new one is filed.
+    code = (next((item for item in codes if item.brand == make), None)
+            or next((item for item in codes if not item.brand and item.ref_type == 'unknown' and not item.is_main), None))
     try:
         with transaction.atomic():
             if code is None:
@@ -228,9 +239,8 @@ def tie(part, make, cite, actor=None):
                 references.update(code, actor=actor, brand=make, tipo='oem', reference_source=code.reference_source.strip() or cite)
     except (IntegrityError, references.ReferenceConflict):
         return f'{make} {part.sku} ya es alterno de otro SKU. Revisa esa asignación o agrupa los SKU.'
-    if not part.is_OEM:
-        part.is_OEM = True
-        part.save(update_fields=['is_OEM'])
+    references.retype_main(part, 'oem', actor=actor, reason=MARKED)
+    part.refresh_from_db(fields=['tipo', 'is_OEM'])
     return ''
 
 
@@ -256,7 +266,7 @@ def mark_oem(*, actor, rows):
     for row in rows:
         part, make = parts.get(row['id']), manufacturer_name(row['manufacturer'])
         problem = checked(part, make)
-        if not problem and not OEMReference.objects.filter(manufacturer=make, code=compact(part.sku)).exclude(status='disputed').exists():
+        if not problem and not library().filter(brand=make, clave=compact(part.sku)).exclude(estado='disputa').exists():
             problem = f'{make} {compact(part.sku)} no está en la lista OEM: usa «Crear OEM desde SKU».'
         problem = problem or tie(part, make, citation(MARKED, actor, row.get('citation')), actor)
         if problem:
@@ -270,27 +280,32 @@ def mark_oem(*, actor, rows):
 @transaction.atomic
 def create_oem(*, actor, rows):
     """Add each SKU's code to the OEM list under the chosen make (a manual entry naming who created it, with the description and part
-    type given), then tie the SKU to it. A number the list already has under that make is refused: Marcar como OEM ties to it. All or
-    none."""
-    from .oem_reference import upsert_reference
+    type given: mall.references.add_library_number puts it on the SKU, which carries it), then tie the SKU to it and give its main the
+    maker when that key is free. A number the list already has under that make is refused: Marcar como OEM ties to it. All or none."""
     parts, errors = locked_parts(rows), []
     for row in rows:
         part, make = parts.get(row['id']), manufacturer_name(row['manufacturer'])
         problem = checked(part, make)
-        existing = None if problem else OEMReference.objects.filter(manufacturer=make, code=compact(part.sku)).first()
+        existing = None if problem else library().filter(brand=make, clave=compact(part.sku)).first()
         if existing:
-            problem = (f'{make} {compact(part.sku)} está en disputa en la Biblioteca OEM: resuelve la disputa primero.' if existing.status == 'disputed'
+            problem = (f'{make} {compact(part.sku)} está en disputa en la Biblioteca OEM: resuelve la disputa primero.' if existing.estado == 'disputa'
                        else f'{make} {compact(part.sku)} ya está en la lista OEM: usa «Marcar como OEM».')
         if problem:
             errors.append(problem)
             continue
-        upsert_reference(make, part.sku, printed=[part.sku], source_kind='manual', citation=citation(CREATED, actor, row.get('citation'))[:500],
-                         detail={'verified': False, 'part': str(part.pk), 'sku': part.sku}, actor=actor,
-                         defaults={'description': ' '.join((row.get('description') or part.description or '').upper().split())[:300],
-                                   'part_type': ' '.join((row.get('part_type') or '').upper().split())[:60]})
+        try:
+            references.add_library_number(make, part.sku, printed=[part.sku], source_kind='manual', citation=citation(CREATED, actor, row.get('citation'))[:500],
+                                          source_detail={'verified': False, 'part': str(part.pk), 'sku': part.sku}, actor=actor,
+                                          description=' '.join((row.get('description') or part.description or '').upper().split())[:300],
+                                          part_type=' '.join((row.get('part_type') or '').upper().split())[:60])
+        except references.ReferenceConflict as error:
+            errors.append(error.message)
+            continue
         problem = tie(part, make, citation(MARKED, actor, row.get('citation')), actor)
         if problem:
             errors.append(problem)
+            continue
+        references.retype_main(part, 'oem', brand=make, actor=actor, reason=CREATED)
     if errors:
         transaction.set_rollback(True)
         raise ValidationError({'detail': 'No se creó ningún OEM: ' + ' '.join(errors)})
@@ -318,7 +333,7 @@ def unmark_oem(*, rows, actor=None):
 
 
 def manufacturers():
-    return sorted(set(OEMReference.objects.values_list('manufacturer', flat=True).distinct()))
+    return sorted(set(library().values_list('brand', flat=True).distinct()))
 
 
 class CatalogMarkOEM(APIView):

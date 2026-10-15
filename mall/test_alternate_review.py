@@ -5,7 +5,8 @@ from rest_framework.test import APITestCase
 from . import prune_catalog_alternos as prune
 from .models import Part, PartCode, User
 from .oem_links import store_cross_references
-from .oem_reference import upsert_reference
+from .oem_reference_models import PartOEMLink
+from .references import add_library_number
 from .test_oem_finder import Fresh
 
 URL = '/api/v1/management/alternate-review/'
@@ -13,9 +14,9 @@ CATALOG = 'GMB Water Pump Catalog 2016'
 
 
 def number(code, brand_codes, applications=''):
-    ref = upsert_reference('TOYOTA', code, source_kind='aftermarket_catalog', citation=CATALOG,
-                           detail={'catalog': 'gmb_wp_2016', 'brand_codes': brand_codes}, defaults={'applications': applications})[0]
-    return ref
+    """A library number (S4: a Reference, on a line of its own in referencia) a supplier catalog printed."""
+    return add_library_number('TOYOTA', code, source_kind='aftermarket_catalog', citation=CATALOG,
+                              source_detail={'catalog': 'gmb_wp_2016', 'brand_codes': brand_codes}, applications=applications)[0]
 
 
 class AlternateReviewTests(Fresh, APITestCase):
@@ -30,6 +31,7 @@ class AlternateReviewTests(Fresh, APITestCase):
         store_cross_references({(self.camry.pk, 'GMB', 'GWT-71A'): [f'{CATALOG} · pág. 216'],
                                 (self.shared.pk, 'AISIN', 'WPT-080'): [f'{CATALOG} · pág. 218']})
         self.part = Part.objects.create(sku='16100-69205-RAZ', description='BOMBA AGUA TOY HIACE 2RZ')
+        PartOEMLink.objects.create(part=self.part, reference=self.shared, source='sku_name')  # a name link S4 re-pointed (they are retired)
         self.wrong = self.code('GMB', 'GWT-71A', 216)
         self.unfiled = self.code('ASAHI', 'A1773', 216)
         self.copy = self.code('AISIN', 'WPT-080', 218)

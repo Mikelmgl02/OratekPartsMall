@@ -1,46 +1,98 @@
-"""OEM reference library service: compact numbers, idempotent upserts with provenance, the status rule, the Reference mirror and the
-catalog SKUs that carry a number.
+"""OEM reference library service (inventory refactor S4): the library's numbers are References (tipo oem with their manufacturer as
+brand, mall.references.add_library_number), and this module reads and describes them the way the Biblioteca OEM showed the OEM table:
+compact numbers, the status rule, the source kinds, the subgrupo a library part type maps to, and the catalog lines that carry a
+number.
 
-The Reference (PartCode until S10) signal handlers mirror every OEM alterno (tipo/ref_type oem with a brand) wherever it is saved (OEM
-finder apply, Revisión OEM approval, catalog editor, AI lookup approval): an 'algo:' reference_source is the OEM finder (inferred), an
-http(s) one an AI lookup approved into the catalog (verified) and any other, blank included, a catalog approval (declared). Each
-automatic source lists the alternos that back it (detail.part_codes); retiring or retyping one (an undo, an edit; inventory refactor
-S2a: nothing deletes a Reference) removes exactly that, and the source when no alterno backs it any more. The number itself stays:
-from S2a the mirror never deletes an OEMReference (OEM numbers are durable; S4 makes them References). The handlers run in a savepoint
-and never break the Reference write; before migration 0039 they skip quietly. Nothing here renames a SKU, writes a Reference or calls
-an AI provider.
+Until S8 the Biblioteca's JSON keeps the OEM table's legacy values: a number's id is its Reference's uid (the OEMReference id for the
+numbers the library had before S4), its code is its clave (the compact number), status is verified, declared, inferred or disputed
+(Reference estado verificado, declarado, inferido, disputa) and a source's kind is one of the 8 old kinds (ReferenceSource keeps it in
+detail.legacy_kind; a source written before S4 from a code's reference_source text maps back by its kind). LibraryNumber and
+LibrarySource wrap the rows with those names. Nothing here renames a line, writes a Reference or calls an AI provider: the writers are
+mall.references (add_library_number, update, cite_library, refresh_library_estado) and the Biblioteca's views.
 """
-import logging
 import re
 from collections import defaultdict
+from datetime import datetime
 from functools import reduce
+from types import SimpleNamespace
+import unicodedata
 
-from django.db import IntegrityError, OperationalError, ProgrammingError, connection, transaction
-from django.db.models import CharField, Func, Q, Value
-from django.db.models.functions import Concat, Replace, Upper
+from django.db import connection
+from django.db.models import CharField, Func, Prefetch, Q, Value
+from django.db.models.functions import Replace, Upper
 
-from .oem_reference_models import AUTOMATIC_KINDS, OEMReference, OEMReferenceSource, compact, manufacturer_name, spellings
+from .oem_reference_models import (MANUAL_KINDS, OEMCrossReference, OEMReference, OEMReferenceSource, PartOEMLink, REFERENCE_STATUSES,
+                                   SOURCE_KINDS, compact, manufacturer_name, spellings)  # noqa: F401 (compact and spellings: mall.references uses them)
 
-log = logging.getLogger(__name__)
 VERIFIED_KINDS = {'price_list', 'manufacturer_catalog'}
 DECLARED_KINDS = {'aftermarket_catalog', 'supplier_declaration', 'catalog_approval', 'manual'}
 FILLABLE = ('description', 'part_type', 'applications')
-TRACKED = ('code', 'brand', 'ref_type', 'reference_source', 'estado')
 ALGO_RE = re.compile(r'^algo:(?P<finder>[^:]+):(?P<version>[^:]+):(?P<rule>.+):(?P<run>\d+)$', re.I)
 # Characters the database strips where it has no REGEXP_REPLACE (SQLite): every separator the catalog's SKUs and codes use.
 SEPARATORS = ' -/_.+()#,:;*&\'"[]{}|\\°!?@$%=<>~`^\t'
 LINKED_LIMIT = 20
-_state = {'warned': False}
+
+# The library's status and the Reference's estado (plan §3 S4: legacy values in the JSON and the filters until S8).
+LIBRARY_ESTADO = {'verified': 'verificado', 'declared': 'declarado', 'inferred': 'inferido', 'disputed': 'disputa'}
+LEGACY_STATUS = {estado: status for status, estado in LIBRARY_ESTADO.items()}
+STATUS_LABELS = dict(REFERENCE_STATUSES)
+KIND_LABELS = dict(SOURCE_KINDS)
+# Plan A4: the library's source kinds and the ReferenceSource kind each becomes (catalog_approval citing "Declarado por" a supplier).
+SOURCE_KIND_OF = {'price_list': 'catalogo', 'manufacturer_catalog': 'catalogo', 'aftermarket_catalog': 'catalogo', 'manual': 'biblioteca',
+                  'supplier_declaration': 'proveedor', 'catalog_approval': 'admin', 'ai_lookup': 'ia', 'oem_finder': 'buscador'}
+# A source with no legacy kind (one S2a wrote from a code's reference_source) reads back as the kind the library gave such a text.
+LEGACY_KIND_OF = {'catalogo': 'aftermarket_catalog', 'biblioteca': 'manual', 'proveedor': 'supplier_declaration', 'admin': 'catalog_approval',
+                  'ia': 'ai_lookup', 'buscador': 'oem_finder'}
+LEGACY_DETAIL = ('legacy_kind', 'legacy_id', 'legacy_created_at')  # what a source's detail keeps for the legacy JSON, not shown
+
+# A6 (OD9): the library's part types and the subgrupo (grupo, nombre) a line in referencia takes; the existing subgrupos keep their
+# names (CV JOINT for the joints, DISCOS DE FRENO). Any other text (blank, about 80 short ERP labels) gives no subgrupo: it stays in
+# the number's detail.part_type and the line's field_sources['subgrupo'] for Revisión IA.
+LIBRARY_SUBGRUPOS = {
+    'BOMBAS DE AGUA': ('REFRIGERACIÓN', 'BOMBAS DE AGUA'),
+    'DISCOS DE FRENO': ('FRENOS', 'DISCOS DE FRENO'), 'DISCO FRENO': ('FRENOS', 'DISCOS DE FRENO'),
+    'JUNTAS HOMOCINÉTICAS': ('TRANSMISIÓN', 'CV JOINT'),
+    'SEMIEJES': ('TRANSMISIÓN', 'SEMIEJES'),
+    'CUBOS DE RUEDA': ('RODAMIENTOS', 'CUBOS DE RUEDA'), 'HUB': ('RODAMIENTOS', 'CUBOS DE RUEDA'),
+    'TENSORES DE CORREA': ('MOTOR', 'TENSORES DE CORREA'),
+    'ACCESORIOS DE PASTILLAS': ('FRENOS', 'ACCESORIOS DE PASTILLAS'),
+    'EMBRAGUES DE VENTILADOR': ('REFRIGERACIÓN', 'EMBRAGUES DE VENTILADOR'),
+    'RODAMIENTOS DE RUEDA': ('RODAMIENTOS', 'RODAMIENTOS DE RUEDA'),
+    'FILTRO AIRE': ('FILTROS', 'FILTROS DE AIRE'), 'FILTRO ATM': ('FILTROS', 'FILTROS DE AIRE'),
+    'FILTRO CABINA': ('FILTROS', 'FILTROS DE CABINA'),
+    'FILTRO GAS': ('FILTROS', 'FILTROS DE COMBUSTIBLE'), 'FILTRO DIESEL': ('FILTROS', 'FILTROS DE COMBUSTIBLE'),
+    'COIL': ('ENCENDIDO', 'BOBINAS DE ENCENDIDO'),
+}
+
+
+def fold(text):
+    """Upper case, single spaces, no accents: how a library part type is compared with the map."""
+    text = unicodedata.normalize('NFKD', ' '.join(str(text or '').upper().split()))
+    return ''.join(char for char in text if not unicodedata.combining(char))
+
+
+SUBGRUPO_BY_FOLD = {fold(text): pair for text, pair in LIBRARY_SUBGRUPOS.items()}
+
+
+def subgrupo_for(part_type):
+    """(grupo, subgrupo) a library part type maps to (A6), or None."""
+    return SUBGRUPO_BY_FOLD.get(fold(part_type))
 
 
 def tables_ready():
-    """False until migration 0039 runs: the live app serves this code before the orchestrator migrates."""
-    return {OEMReference._meta.db_table, OEMReferenceSource._meta.db_table} <= set(connection.introspection.table_names())
+    """False until migration 0079 runs: the library's tables, and the column (ref_id) that hangs their rows from References."""
+    tables = set(connection.introspection.table_names())
+    if not {OEMReference._meta.db_table, OEMReferenceSource._meta.db_table, OEMCrossReference._meta.db_table} <= tables:
+        return False
+    with connection.cursor() as cursor:
+        columns = {column.name for column in connection.introspection.get_table_description(cursor, OEMCrossReference._meta.db_table)}
+    return 'ref_id' in columns
 
 
 def derived_status(sources):
     """verified: a distributor price list, the manufacturer's catalog, a manual entry checked against one, or an AI lookup approved
-    into the catalog; declared: an aftermarket catalog, a supplier, a catalog approval or a manual entry; inferred: only the finder."""
+    into the catalog; declared: an aftermarket catalog, a supplier, a catalog approval or a manual entry; inferred: only the finder.
+    sources: (legacy kind, detail) pairs."""
     status = 'inferred'
     for kind, detail in sources:
         detail = detail or {}
@@ -51,9 +103,39 @@ def derived_status(sources):
     return status
 
 
+def source_kind_of(legacy_kind, citation=''):
+    """The ReferenceSource kind of a library source kind (A4): a catalog approval citing "Declarado por" is a supplier's."""
+    if legacy_kind == 'catalog_approval' and (citation or '').startswith('Declarado por'):
+        return 'proveedor'
+    if legacy_kind in SOURCE_KIND_OF:
+        return SOURCE_KIND_OF[legacy_kind]
+    if legacy_kind in LEGACY_KIND_OF:  # already a ReferenceSource kind
+        return legacy_kind
+    raise ValueError(f'Tipo de fuente desconocido: {legacy_kind}.')
+
+
+def legacy_kind_of(source):
+    """The library's kind of a ReferenceSource (the Biblioteca's JSON until S8): the one it kept, else the one its kind stands for."""
+    kept = (source.detail or {}).get('legacy_kind')
+    if kept in SOURCE_KIND_OF:
+        return kept
+    if source.kind == 'proveedor' and (source.citation or '').startswith('Declarado por'):
+        return 'catalog_approval'
+    return LEGACY_KIND_OF.get(source.kind, 'manual')
+
+
+def kinds_for(value):
+    """The (legacy kinds, ReferenceSource kinds) a source_kind filter names: an old kind or a new one (both are accepted until S8)."""
+    if value in SOURCE_KIND_OF:
+        return {value}, set()
+    if value in LEGACY_KIND_OF:
+        return {old for old, new in SOURCE_KIND_OF.items() if new == value}, {value}
+    return set(), set()
+
+
 def source_of(text):
-    """(kind, citation, detail) of a Reference.reference_source: 'algo:oem-finder:v2:current:7' is the OEM finder (run 7), an http(s)
-    URL an AI lookup approved into the catalog, anything else (blank included) a catalog approval."""
+    """(kind, citation, detail) of a Reference.reference_source as the library read it: 'algo:oem-finder:v2:current:7' is the OEM
+    finder (run 7), an http(s) URL an AI lookup approved into the catalog, anything else (blank included) a catalog approval."""
     text = (text or '').strip()[:500]
     if text.lower().startswith('algo:'):
         match = ALGO_RE.match(text)
@@ -61,22 +143,6 @@ def source_of(text):
     if text.lower().startswith(('http://', 'https://')):
         return 'ai_lookup', text, {'approved': True}
     return 'catalog_approval', text, {}
-
-
-def values_of(partcode):
-    return {field: getattr(partcode, field) for field in TRACKED}
-
-
-def partcode_key(row):
-    """(manufacturer, compact code, kind, citation) of an OEM alterno, or None: other reference types are not OEM facts, a brandless
-    OEM alterno names no manufacturer to file it under, and a retired one backs nothing any more."""
-    if not row or row.get('ref_type') != 'oem' or row.get('estado') == 'retirada':
-        return None
-    manufacturer, number = manufacturer_name(row.get('brand')), compact(row.get('code'))
-    if not manufacturer or not number or len(manufacturer) > 120 or len(number) > 60:
-        return None
-    kind, citation, _ = source_of(row.get('reference_source'))
-    return manufacturer, number, kind, citation
 
 
 def classify_number(manufacturer, code, forms=(), table=None):
@@ -124,176 +190,6 @@ def merge_detail(old, new):
     return merged
 
 
-def resolve(defaults):
-    return (defaults() if callable(defaults) else defaults) or {}
-
-
-def refresh_status(ref, actor=None, *, changed=False):
-    """Re-derive the status from the sources (a disputed number stays disputed until clear_dispute) and save the reference, taking the
-    next version, when it changed or the caller changed something else (changed=True). Returns the status."""
-    before = ref.status
-    if ref.status != 'disputed':
-        ref.status = derived_status(ref.sources.values_list('kind', 'detail'))
-    if changed or ref.status != before:
-        ref.updated_by = actor
-        ref.save()
-    return ref.status
-
-
-def upsert_reference(manufacturer, code, *, printed=None, source_kind, citation='', detail=None, actor=None, defaults=None):
-    """The reference for (manufacturer, compact code) with this source, created or merged in place: new spellings join printed_forms,
-    the source detail merges, blank descriptive fields are filled (never overwritten) and the status is re-derived. Idempotent: a
-    repeat changes nothing. defaults: {description, part_type, applications} or a callable returning it, read only when needed.
-    Returns (reference, created)."""
-    manufacturer, number = manufacturer_name(manufacturer), compact(code)
-    if not manufacturer or len(manufacturer) > 120:
-        raise ValueError('Indica el fabricante (hasta 120 caracteres).')
-    if not number or len(number) > 60:
-        raise ValueError('El número OEM debe tener entre 1 y 60 letras o dígitos.')
-    forms = spellings([*([printed] if isinstance(printed, str) else printed or []), code], number)
-    citation, detail = (citation or '').strip()[:500], dict(detail or {})
-    with transaction.atomic():
-        ref = OEMReference.objects.select_for_update().filter(manufacturer=manufacturer, code=number).first()
-        if ref is None:
-            system, family = classify_number(manufacturer, number, forms)
-            fields = {key: value for key, value in resolve(defaults).items() if key in FILLABLE and value}
-            try:
-                with transaction.atomic():
-                    ref = OEMReference.objects.create(manufacturer=manufacturer, code=number, printed_forms=forms, system=system, family=family,
-                                                      status=derived_status([(source_kind, detail)]), created_by=actor, updated_by=actor,
-                                                      **fields)
-                    OEMReferenceSource.objects.create(reference=ref, kind=source_kind, citation=citation, detail=detail, created_by=actor)
-                return ref, True
-            except IntegrityError:  # another writer created it first: merge into theirs
-                ref = OEMReference.objects.select_for_update().get(manufacturer=manufacturer, code=number)
-        changed = False
-        merged = spellings([*ref.printed_forms, *forms], ref.code)
-        if merged != ref.printed_forms:
-            ref.printed_forms, changed = merged, True
-            if not ref.system:
-                ref.system, ref.family = classify_number(ref.manufacturer, ref.code, merged)
-        blank = [field for field in FILLABLE if not getattr(ref, field)]
-        if blank:
-            values = resolve(defaults)
-            for field in blank:
-                if values.get(field):
-                    setattr(ref, field, values[field])
-                    changed = True
-        source = ref.sources.filter(kind=source_kind, citation=citation).first()
-        if source is None:
-            OEMReferenceSource.objects.create(reference=ref, kind=source_kind, citation=citation, detail=detail, created_by=actor)
-            changed = True
-        elif merge_detail(source.detail, detail) != source.detail:
-            source.detail = merge_detail(source.detail, detail)
-            source.save(update_fields=['detail'])
-            changed = True
-        refresh_status(ref, actor if changed else ref.updated_by, changed=changed)
-    return ref, False
-
-
-def remove_partcode_source(partcode, number=None, keep=None):
-    """Drop one Reference from the automatic sources of a number (its own by default) that list it, except keep (the source it backs
-    now, whose reference the caller settles): a source goes when no alterno backs it any more, and the number's status is re-derived.
-    The number stays even with no source left (from S2a the mirror never deletes an OEMReference). Returns the references that
-    changed."""
-    number = compact(partcode.code if number is None else number)
-    touched = {}
-    for source_id, ref_id, kind, citation, detail in (OEMReferenceSource.objects.filter(reference__code=number, kind__in=AUTOMATIC_KINDS)
-                                                      .order_by('pk').values_list('pk', 'reference_id', 'kind', 'citation', 'detail')):
-        if not any(entry.get('id') == partcode.pk for entry in (detail or {}).get('part_codes') or []):
-            continue
-        ref = touched.get(ref_id) or OEMReference.objects.select_for_update().filter(pk=ref_id).first()
-        source = OEMReferenceSource.objects.select_for_update().filter(pk=source_id).first()  # re-read under the reference lock
-        if ref is None or source is None or keep == (ref.manufacturer, ref.code, kind, citation):
-            continue
-        rest = [entry for entry in source.detail.get('part_codes') or [] if entry.get('id') != partcode.pk]
-        if rest:
-            source.detail = {**source.detail, 'part_codes': rest}
-            source.save(update_fields=['detail'])
-        else:
-            source.delete()
-        touched[ref_id] = ref
-    for ref in touched.values():
-        if keep and (ref.manufacturer, ref.code) == keep[:2]:
-            continue  # the caller adds the new source next and re-derives the status then
-        refresh_status(ref, changed=True)
-    return list(touched.values())
-
-
-def sync_from_partcode(partcode, before=None, created=False):
-    """Mirror one saved Reference: an OEM alterno upserts its reference with the source its reference_source names, listing itself in
-    that source's part_codes; whatever it backed before (another type, number, brand or source, or all of it once retired) loses it.
-    A retired alterno keeps pointing at its number, as history."""
-    from .models import Part
-    now, then = partcode_key(values_of(partcode)), partcode_key(before)
-    if not created:
-        for number in {key[1] for key in (now, then) if key}:
-            remove_partcode_source(partcode, number=number, keep=now)
-    if now is None:
-        if partcode.estado != 'retirada':
-            link(partcode, None)
-        return None
-    manufacturer, number, kind, citation = now
-    detail = {**source_of(partcode.reference_source)[2], 'part_codes': [{'id': partcode.pk, 'part': str(partcode.part_id), 'code': partcode.code}]}
-
-    def described():
-        return part_defaults(Part.objects.filter(pk=partcode.part_id).values_list('description', flat=True).first())
-    ref = upsert_reference(manufacturer, partcode.code, printed=[partcode.code], source_kind=kind, citation=citation, detail=detail,
-                           defaults=described)[0]
-    link(partcode, ref)
-    return ref
-
-
-def link(partcode, ref):
-    """Point the alterno at its reference (or at none) with a queryset update, so the save signals do not run a second time."""
-    from .models import Reference
-    ref_id = ref.pk if ref is not None else None
-    if partcode.oem_reference_id != ref_id:
-        Reference.all_objects.filter(pk=partcode.pk).update(oem_reference=ref_id)
-        partcode.oem_reference_id = ref_id
-
-
-def guarded(sync, *args):
-    """Run a library sync in a savepoint so it never breaks the Reference write that triggered it; while the tables are not migrated
-    it is skipped quietly (one warning per process)."""
-    try:
-        with transaction.atomic():
-            return sync(*args)
-    except (ProgrammingError, OperationalError):
-        try:
-            ready = tables_ready()
-        except Exception:
-            ready = True
-        if ready:
-            log.exception('La biblioteca OEM no pudo reflejar un alterno OEM.')
-        elif not _state['warned']:
-            _state['warned'] = True
-            log.warning('La biblioteca OEM aún no está migrada (0039): se omite la sincronización de alternos OEM.')
-    except Exception:
-        log.exception('La biblioteca OEM no pudo reflejar un alterno OEM.')
-    return None
-
-
-def partcode_pre_save(sender, instance, raw=False, update_fields=None, **kwargs):
-    """What an existing Reference was before this save (retired or not), so a retyped, renamed or retired OEM alterno leaves the
-    source it backed."""
-    if raw or instance._state.adding or instance.pk is None or (update_fields is not None and not set(update_fields) & set(TRACKED)):
-        return
-    instance._oem_reference_before = sender._base_manager.filter(pk=instance.pk).values(*TRACKED).first()
-
-
-def partcode_saved(sender, instance, created=False, raw=False, **kwargs):
-    before = instance.__dict__.pop('_oem_reference_before', None)
-    if raw or (instance.ref_type != 'oem' and (before or {}).get('ref_type') != 'oem'):
-        return
-    guarded(sync_from_partcode, instance, before, created)
-
-
-def partcode_deleted(sender, instance, **kwargs):
-    if instance.ref_type == 'oem':
-        guarded(remove_partcode_source, instance)
-
-
 def compact_sql(field):
     """The compact form computed by the database: REGEXP_REPLACE on PostgreSQL, the catalog's separators stripped elsewhere."""
     if connection.vendor == 'postgresql':
@@ -301,57 +197,135 @@ def compact_sql(field):
     return reduce(lambda expression, char: Replace(expression, Value(char), Value('')), SEPARATORS, Upper(field))
 
 
-def linked_parts(refs):
-    """{reference id: [{id, sku, is_OEM, active, via, code}]}: the canonical catalog SKUs that carry each number, in three queries for
-    any page: a SKU whose compact form is the number (via 'sku'), an alterno with that compact form (via its ref_type; an OEM alterno
-    only under the same manufacturer), or a link to the number (via its source: sku_name, catalog). Merged SKUs are left out: their
-    codes moved to the SKU they were grouped into, and so are lines off the catalog (mall.lines.catalog_lines: a library number's
-    own referencia line, a line in preparación)."""
-    from .lines import catalog_lines, catalog_q
-    from .models import PartOEMLink, Reference
-    refs = list(refs)
-    out, seen, by_number = {ref.pk: [] for ref in refs}, defaultdict(set), defaultdict(list)
+# --- the library's rows -------------------------------------------------------------------------------------------------------------
+
+def library_rows():
+    """The Biblioteca's rows (mall.references.library_q) with what a page shows: sources (and who registered them), the number that
+    replaces each, who created it and its line."""
+    from . import references
+    from .models import Reference, ReferenceSource
+    return (Reference.objects.filter(references.library_q()).select_related('reemplazado_por', 'created_by', 'part')
+            .prefetch_related(Prefetch('sources', queryset=ReferenceSource.objects.filter(retirada=False).select_related('created_by')
+                                       .order_by('created_at', 'id'))))
+
+
+def by_uid(uid, queryset=None):
+    """The library's Reference with this Biblioteca id (its uid), or None."""
+    try:
+        return (queryset if queryset is not None else library_rows()).filter(uid=uid).first()
+    except (ValueError, TypeError):
+        return None
+
+
+def parse_time(value):
+    try:
+        return datetime.fromisoformat(value) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
+class LibrarySource:
+    """A ReferenceSource as the Biblioteca shows a library source: its old kind and label, citation, detail, who and when."""
+
+    def __init__(self, source):
+        self.source = source
+        self.id, self.citation, self.created_by = source.pk, source.citation, source.created_by
+        self.kind = legacy_kind_of(source)
+        self.detail = {key: value for key, value in (source.detail or {}).items() if key not in LEGACY_DETAIL}
+        self.created_at = parse_time((source.detail or {}).get('legacy_created_at')) or source.created_at
+
+    def get_kind_display(self):
+        return KIND_LABELS.get(self.kind, self.kind)
+
+    @property
+    def removable(self):
+        return self.kind in MANUAL_KINDS
+
+
+class LibraryNumber:
+    """A library Reference with the OEM table's names (the Biblioteca's JSON until S8): id is its uid, manufacturer its brand, code its
+    clave, status its estado's legacy value; description, part_type, applications, system and family come from its detail."""
+
+    def __init__(self, ref, sources=None):
+        detail = ref.detail or {}
+        self.ref = ref
+        self.pk = self.id = ref.uid
+        self.manufacturer, self.code = ref.brand, ref.clave
+        self.printed_forms = [form for form in [ref.code, *(ref.printed_forms or [])] if form and form != ref.clave]
+        self.system, self.family = detail.get('system', ''), detail.get('family', '')
+        self.part_type, self.description, self.applications = detail.get('part_type', ''), detail.get('description', ''), detail.get('applications', '')
+        self.status = LEGACY_STATUS.get(ref.estado, 'inferred')
+        self.dispute_note, self.notes = ref.dispute_note, ref.notes
+        self.created_by, self.created_at, self.updated_at, self.version = ref.created_by, ref.created_at, ref.updated_at, ref.version
+        updated_by = detail.get('updated_by')
+        self.updated_by = SimpleNamespace(username=updated_by) if updated_by else None
+        replaced = ref.reemplazado_por if ref.reemplazado_por_id else None
+        self.superseded_by = LibraryNumber(replaced) if replaced is not None and replaced.pk != ref.pk else None
+        self.superseded_by_id = self.superseded_by.pk if self.superseded_by else None
+        self._sources = sources
+
+    @property
+    def sources(self):
+        rows = self._sources if self._sources is not None else self.ref.sources.filter(retirada=False).order_by('created_at', 'id')
+        return SourceList([LibrarySource(source) for source in rows])
+
+    def __str__(self):
+        return f'{self.manufacturer} {self.code}'
+
+    def get_status_display(self):
+        return STATUS_LABELS.get(self.status, self.status)
+
+    @property
+    def supersedes(self):
+        from . import references
+        return [LibraryNumber(row) for row in self.ref.reemplaza.filter(references.library_q()).order_by('brand', 'clave')]
+
+
+class SourceList(list):
+    """The sources of a LibraryNumber, which a serializer reads with .all()."""
+
+    def all(self):
+        return self
+
+
+def wrap(refs):
+    """LibraryNumbers for library References (their prefetched sources reused)."""
+    out = []
     for ref in refs:
-        by_number[ref.code].append(ref)
-    if not by_number:
+        cache = getattr(ref, '_prefetched_objects_cache', {})
+        out.append(LibraryNumber(ref, sources=list(cache['sources']) if 'sources' in cache else None))
+    return out
+
+
+def linked_parts(refs):
+    """{reference id: [{id, sku, is_OEM, active, via, code}]}: the catalog lines that carry each library number (refs: References):
+    its own line when it is a catalog line (via 'linea'; a line in referencia is the number's own and is left out), and until S9 the
+    lines a supplier catalog or a codigo tied to it (PartOEMLink: via 'catalog' or 'sku_name'). Merged lines are left out: their codes
+    moved to the line they went into."""
+    from .lines import catalog_q
+    from .models import Part
+    refs = list(refs)
+    out, seen = {ref.pk: [] for ref in refs}, defaultdict(set)
+    if not refs:
         return out
 
-    def add(ref, part_id, sku, is_oem, active, via, code):
-        if part_id not in seen[ref.pk]:
-            seen[ref.pk].add(part_id)
-            out[ref.pk].append({'id': part_id, 'sku': sku, 'is_OEM': is_oem, 'active': active, 'via': via, 'code': code})
+    def add(ref_id, part_id, sku, is_oem, active, via, code):
+        if part_id not in seen[ref_id]:
+            seen[ref_id].add(part_id)
+            out[ref_id].append({'id': part_id, 'sku': sku, 'is_OEM': is_oem, 'active': active, 'via': via, 'code': code})
 
-    numbers = list(by_number)
-    for row in (catalog_lines().annotate(number=compact_sql('sku')).filter(number__in=numbers)
-                .order_by('sku').values_list('id', 'sku', 'is_OEM', 'active', 'number')):
-        for ref in by_number[row[4]]:
-            add(ref, *row[:4], 'sku', row[1])
-    for row in (Reference.objects.filter(catalog_q(prefix='part__')).annotate(number=compact_sql('code')).filter(number__in=numbers)
-                .order_by('part__sku', 'code', 'pk').values_list('part_id', 'part__sku', 'part__is_OEM', 'part__active', 'ref_type', 'code',
-                                                                  'brand', 'number')):
-        for ref in by_number[row[7]]:
-            if row[4] != 'oem' or row[6] == ref.manufacturer:
-                add(ref, *row[:6])
-    by_id = {ref.pk: ref for ref in refs}
-    for row in (PartOEMLink.objects.filter(catalog_q(prefix='part__'), reference_id__in=list(by_id)).order_by('part__sku', '-source', 'pk')  # sku_name first
+    lines = {line.pk: line for line in Part.objects.filter(catalog_q(), pk__in={ref.part_id for ref in refs})}
+    for ref in refs:
+        line = lines.get(ref.part_id)
+        if line is not None:
+            add(ref.pk, line.pk, line.sku, line.is_OEM, line.active, 'linea', ref.code)
+    for row in (PartOEMLink.objects.filter(catalog_q(prefix='part__'), reference_id__in=list(out)).order_by('part__sku', 'source', 'pk')
                 .values_list('reference_id', 'part_id', 'part__sku', 'part__is_OEM', 'part__active', 'source')):
-        add(by_id[row[0]], *row[1:], row[2])
+        add(row[0], *row[1:], row[2])
     return out
 
 
 def linked_q():
-    """Q for references some canonical catalog SKU carries (the linked_parts rule) on a queryset annotated with pair (manufacturer:code),
-    as uncorrelated IN subqueries the database evaluates once."""
+    """Q for library References some catalog line carries (the linked_parts rule), as uncorrelated subqueries."""
     from .lines import catalog_lines, catalog_q
-    from .models import PartOEMLink, Reference
-    alternos = Reference.objects.filter(catalog_q(prefix='part__'))
-    return (Q(code__in=catalog_lines().annotate(number=compact_sql('sku')).values('number'))
-            | Q(code__in=alternos.exclude(ref_type='oem').annotate(number=compact_sql('code')).values('number'))
-            | Q(pair__in=alternos.filter(ref_type='oem').annotate(pair=Concat('brand', Value(':'), compact_sql('code'), output_field=CharField()))
-                .values('pair'))
-            | Q(pk__in=PartOEMLink.objects.filter(catalog_q(prefix='part__')).values('reference_id')))
-
-
-def reference_pair():
-    return Concat('manufacturer', Value(':'), 'code', output_field=CharField())
-
+    return Q(part__in=catalog_lines().values('pk')) | Q(pk__in=PartOEMLink.objects.filter(catalog_q(prefix='part__')).values('reference_id'))

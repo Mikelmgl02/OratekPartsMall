@@ -14,9 +14,8 @@ pair_lifecycle), queryset writers set both, and migration 0072 adds the CHECK. O
 line it retires becomes retirada, one it reactivates publicada.
 
 Readers: storefront_lines() for what customers see, catalog_lines() for the admin grid (publicada and retirada by default),
-lines_by_codigo() for a SKU string, all_lines() where every estado counts (a codigo or code another line holds, retired, merged or
-not yet published: UNIQUE(sku) sees them all until S4), detail_line() for a detail endpoint (any estado; a write refuses a unificada
-line), and same_line()/canonical() wherever two lines are compared (order lines, cesta, quote drafts): a merged line is the line it was
+lines_by_codigo() for a SKU string, all_lines() where every estado counts (a writer addressing the exact row, a code another line
+holds), detail_line() for a detail endpoint (any estado; a write refuses a unificada line), and same_line()/canonical() wherever two lines are compared (order lines, cesta, quote drafts): a merged line is the line it was
 merged into. mall.test_refactor_guards keeps every Part.objects filter on active, merged_into or sku outside this module going through
 them, unless its line says why not (# estado: <reason>).
 """
@@ -97,8 +96,9 @@ def catalog_q(estados=CATALOG, prefix=''):
 
 
 def all_lines(queryset=None):
-    """Every line, in every estado, unificada included: where any line counts, such as a codigo or code another line already holds
-    (UNIQUE(sku) covers every row until S4) or a writer that addresses the exact row a SKU string names. A reader that wants the line
+    """Every line, in every estado, unificada included: where any line counts, such as a code another line already holds or a writer
+    that addresses the exact row it loaded. From S4 a codigo is unique among the catalog's lines only (line_codigo_unique_catalog):
+    lines in referencia may share one across makes, so a SKU string goes through lines_by_codigo(s). A reader that wants the line
     a SKU names uses lines_by_codigos; one that lists lines uses storefront_lines or catalog_lines."""
     return _lines(queryset).all()
 
@@ -300,18 +300,28 @@ def validate_codes(estado, origen):
 
 
 def create_line(sku, *, estado='publicada', origen='catalogo', decided_by=None, decided_at=None, main_brand='', main_tipo=None,
-                main_source='', actor=None, strict=False, **fields):
+                main_source='', actor=None, strict=False, promote=True, library_brand='', **fields):
     """A new line (Part.objects.create) in this estado and from this origen, with its main Reference (S2b): the codigo as code,
     main_brand ('' any brand), main_tipo (the line's when None: oem for is_OEM=True, otro otherwise) and main_source
     (mall.references.ensure_main). A key another line holds refuses the line with strict (ReferenceConflict, so its transaction
     rolls back), else the main waits in disputa for a merge case. Other Part fields pass through. A unificada line is only ever made
-    by merging an existing one. Every writer that creates lines goes through here or bulk_create_lines."""
+    by merging an existing one. Every writer that creates lines goes through here or bulk_create_lines.
+    From S4 a catalog line (publicada or retirada) whose codigo a line in referencia has (a library number no product carried yet)
+    promotes that line instead (promotable, promote): the same id, its References and origen kept, the texts given written over the
+    library's. When several makes share the codigo, library_brand (or main_brand) names the one (LineStateError otherwise)."""
     from django.db import transaction
     from . import references
     from .models import Part
     validate_codes(estado, origen)
     if estado == 'unificada' or fields.get('merged_into') or fields.get('merged_into_id'):
         raise LineStateError('Una línea nueva no nace unificada: agrupa una existente.')
+    if promote and estado in CATALOG:
+        target = promotable(sku, library_brand or main_brand)
+        if target is not None:
+            given = {name: value for name, value in fields.items() if name in PROMOTED_FIELDS and value not in (None, '')}
+            with transaction.atomic():
+                target = Part.objects.select_for_update().get(pk=target.pk)
+                return promote_line(target, estado=estado, user=decided_by or (actor if getattr(actor, 'pk', None) else None), **given)
     line = Part(sku=sku, estado=estado, origen=origen, decided_by=decided_by, decided_at=decided_at, **fields)
     line._main_followed = True  # the main is made below, with what the caller asked for
     with transaction.atomic():
@@ -320,10 +330,11 @@ def create_line(sku, *, estado='publicada', origen='catalogo', decided_by=None, 
     return line
 
 
-def bulk_create_lines(lines, *, batch_size=500, actor=None):
+def bulk_create_lines(lines, *, batch_size=500, actor=None, mains=True):
     """Insert unsaved Parts in bulk (no signals, as Part.objects.bulk_create): each codigo trimmed and upper case like Part.save,
     estado and active in step, tipo and is_OEM in step, origen and estado checked, created_at stamped; then each live line's main
-    Reference in bulk (mall.references.bulk_mains: brandless, its tipo from the line, disputa when another line holds the key).
+    Reference in bulk (mall.references.bulk_mains: brandless, its tipo from the line, disputa when another line holds the key), unless
+    mains=False: a caller that inserts each line's main itself right after (S4's referencia lines, whose main is their library number).
     Returns the lines."""
     from . import references
     from .models import Part
@@ -335,7 +346,8 @@ def bulk_create_lines(lines, *, batch_size=500, actor=None):
         references.pair_line_tipo(line)
         line.created_at = line.created_at or now
     Part.objects.bulk_create(lines, batch_size=batch_size)
-    references.bulk_create(references.bulk_mains(lines, actor=actor), batch_size=batch_size, actor=actor)
+    if mains:
+        references.bulk_create(references.bulk_mains(lines, actor=actor), batch_size=batch_size, actor=actor)
     for line in lines:
         line._lifecycle = loaded_pair(line)
         line._identity = {name: line.__dict__.get(name) for name in Part.IDENTITY}
@@ -368,6 +380,53 @@ def bulk_update_lines(lines, fields, *, batch_size=500):
             references.ensure_main(line, line_wins='sku' not in fields and bool({'tipo', 'is_OEM'} & set(fields)))
         line._identity = {name: line.__dict__.get(name) for name in Part.IDENTITY}
     return count
+
+
+PROMOTED_FIELDS = ('name', 'description', 'category', 'subcategory', 'part_type', 'part_type_id', 'aplicaciones_texto')
+
+
+def referencia_lines(codigo):
+    """The lines in referencia with this codigo (library numbers no product carries yet: one per make, so several may share it)."""
+    key = codigo_key(codigo)
+    if not key:
+        return []
+    return list(_lines().filter(estado='referencia', merged_into__isnull=True).annotate(codigo_lower=Lower('sku'))
+                .filter(codigo_lower=key.lower()).order_by('pk'))
+
+
+def promotable(codigo, brand=''):
+    """The line in referencia that a new catalog line with this codigo becomes (S4: promote instead of refusing), or None when no line
+    in referencia has it. When several makes share the codigo (44310-STX-305 for ACURA and HONDA), the one whose main is under `brand`
+    (that brand first, then its familia); LineStateError naming the makes when no brand picks one."""
+    found = referencia_lines(codigo)
+    if len(found) <= 1:
+        return found[0] if found else None
+    from . import brands, references
+    mains = references.mains_of(found)
+    makers = {line.pk: (mains[line.pk].brand if line.pk in mains else '') for line in found}
+    if brand:
+        wanted = brands.normalize(brand)
+        exact = [line for line in found if makers[line.pk] == wanted]
+        familia = exact or [line for line in found if makers[line.pk] and brands.same_familia(makers[line.pk], wanted)]
+        if len(familia) == 1:
+            return familia[0]
+    names = ' y '.join(sorted({maker for maker in makers.values() if maker})) or 'varias marcas'
+    raise LineStateError(f'El código {codigo_key(codigo)} está en la Biblioteca para {names}: indica la marca.')
+
+
+def promote_line(line, *, estado='publicada', user=None, **fields):
+    """A line in referencia (already locked by the caller) becomes a catalog line: the same id and References, origen kept, estado
+    publicada (or retirada), the fields given written over the texts it had from the library, changed_at stamped. Returns the line."""
+    if line.estado != 'referencia':
+        raise LineStateError(f'Esta línea está {phrase(line.estado)}: solo una línea en referencia se publica así.')
+    if estado not in CATALOG:
+        raise LineStateError('Una línea de la Biblioteca se publica o se retira.')
+    for name, value in fields.items():
+        setattr(line, name, value)
+    names = [name.removesuffix('_id') for name in fields]
+    names += stage_estado(line, estado, user=user)
+    line.save(update_fields=list(dict.fromkeys(names)))
+    return line
 
 
 def stage_estado(line, estado, *, user=None, reason='', note='', at=None):

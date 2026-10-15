@@ -519,20 +519,26 @@ def load_snapshot():
     """ORM .values() reads only, in a stable order so lexicon tie-breaks (and fingerprints) repeat run to run. On PostgreSQL the
     three reads share one REPEATABLE READ READ ONLY transaction: an upload committed meanwhile never splits Parts from codes."""
     from django.db import connection, transaction
-    from .lines import all_lines
+    from .lines import catalog_lines, catalog_q
     from .models import PartCode, SupplierItem
+    from .references import LIBRARY_ORIGIN
     outermost = not connection.in_atomic_block
+    # The catalog's lines (publicada and retirada) and the unificada ones (for their merges and frozen codigos), as before S4: a line in
+    # referencia is a library number no product carries, which counts as library data, never as a claimant (plan §3 S4).
+    estados = ('publicada', 'retirada', 'unificada')
     with transaction.atomic():
         if outermost and connection.vendor == 'postgresql':
             with connection.cursor() as cursor:
                 cursor.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
         # sorted here by code point, not by the database collation (en_US.utf8 ignores punctuation and changes with glibc)
         parts = sorted((dict(p, id=str(p['id']), merged_into_id=str(p['merged_into_id']) if p['merged_into_id'] else None)
-                        for p in all_lines().values('id', 'sku', 'name', 'description', 'category', 'subcategory', 'active',  # estado: OEMFinder sorts them
-                                                    'merged_into_id', 'is_OEM', 'estado').iterator(chunk_size=5000)), key=lambda p: p['sku'])
-        # A line's main (S2b) is its SKU, already in parts: left out, so the snapshots and the cases' fingerprints stay as they were.
-        codes = [dict(c, part_id=str(c['part_id'])) for c in PartCode.objects.filter(is_main=False).order_by('pk').values(
-            'part_id', 'code', 'brand', 'ref_type', 'reference_source').iterator(chunk_size=5000)]
+                        for p in catalog_lines(estados).values('id', 'sku', 'name', 'description', 'category', 'subcategory', 'active',
+                                                               'merged_into_id', 'is_OEM', 'estado').iterator(chunk_size=5000)), key=lambda p: p['sku'])
+        # A line's main (S2b) is its SKU, already in parts: left out, so the snapshots and the cases' fingerprints stay as they were; so
+        # are the numbers S4 put on catalog lines as library numbers (detail.origen biblioteca), which are library data too.
+        codes = [dict(c, part_id=str(c['part_id'])) for c in PartCode.objects.filter(catalog_q(estados, prefix='part__'), is_main=False)
+                 .exclude(detail__contains={'origen': LIBRARY_ORIGIN}).order_by('pk').values('part_id', 'code', 'brand', 'ref_type', 'reference_source')
+                 .iterator(chunk_size=5000)]
         items = [dict(s, part_id=str(s['part_id']), supplier_id=str(s['supplier_id'])) for s in SupplierItem.objects.filter(
             part__isnull=False).order_by('pk').values('supplier_id', 'part_id', 'codigo', 'brand', 'references', 'reported_quantity',
                                                       'reserved_quantity').iterator(chunk_size=5000)]

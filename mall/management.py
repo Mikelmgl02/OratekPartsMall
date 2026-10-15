@@ -230,10 +230,11 @@ def validate_code_mapping(*, part, brand, code):
     """Refuse a code another line holds: one of its live References under the same key (mall.references.validate: the clave, and a
     brandless code reserves it for every brand), or its codigo."""
     message = f'El código {code} ya pertenece a otro SKU. Si son equivalentes, usa Agrupar SKU para unificarlos primero.'
-    held = references.conflicts(code, brand, line=part)
+    # A line in referencia (a library number no product carries, S4) holds nothing against a code: adding it absorbs that line.
+    held = references.conflicts(code, brand, line=part).exclude(part__estado='referencia')
     if (held.exclude(part=part) if part else held).exists():
         raise serializers.ValidationError(message)
-    skus = all_lines().filter(sku=code)  # a line in any estado holds its codigo: retired, merged elsewhere or not yet published
+    skus = all_lines().filter(sku=code).exclude(estado='referencia')  # a line in any other estado holds its codigo: retired, merged elsewhere, in preparación
     if part:
         skus = skus.exclude(Q(pk=part.pk) | Q(merged_into=part))
     if skus.exists():
@@ -277,9 +278,11 @@ class ManagedPartSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('El SKU es el código principal de la línea: no puede superar 120 caracteres.')
         if self.instance is not None and sku == self.instance.sku:
             return sku  # unchanged (Editar always sends it): a main waiting in disputa for a merge case still saves its other edits
-        parts = all_lines().filter(sku__iexact=sku)  # every estado: UNIQUE(sku) holds every line, merged ones too, until S4
-        codes = Reference.objects.filter(code=sku)  # live References: a retired code no longer names its line
-        held = references.conflicts(sku, '', line=self.instance)  # its key, brandless: the main reserves it for every brand (S2b)
+        # Every estado but referencia (a library number no product carries, S4): a new SKU with its codigo promotes that line, a renamed
+        # one absorbs it (mall.lines.create_line, mall.references.add).
+        parts = all_lines().filter(sku__iexact=sku).exclude(estado='referencia')
+        codes = Reference.objects.filter(code=sku).exclude(part__estado='referencia')  # live References: a retired code no longer names its line
+        held = references.conflicts(sku, '', line=self.instance).exclude(part__estado='referencia')  # its key, brandless (S2b)
         if self.instance:
             parts = parts.exclude(pk=self.instance.pk)
             codes = codes.exclude(part=self.instance)
@@ -337,17 +340,21 @@ class ManagedPartSerializer(serializers.ModelSerializer):
         codes = validated_data.pop('codes', [])
         main = validated_data.pop('main_reference', None)
         validated_data.setdefault('estado', 'publicada' if validated_data.get('active', True) else 'retirada')  # unless a caller chose one
-        from .lines import create_line
+        from .lines import LineStateError, create_line
         try:
             with transaction.atomic():
                 # Its codigo is its main Reference (S2b): brandless, OEM when is_OEM; a key another line holds refuses the SKU.
-                part = create_line(validated_data.pop('sku'), actor=self.actor(), strict=True, **validated_data)
+                # A codigo a line in referencia has promotes that line (S4); main_reference's brand names the make when several share it.
+                part = create_line(validated_data.pop('sku'), actor=self.actor(), strict=True, library_brand=(main or {}).get('brand', ''),
+                                   **validated_data)
                 self.save_codes(part, codes)
                 from .catalog_identity import classify_company_main, company_reference, prefer_oem
                 if not part.is_OEM and company_reference(part.sku):
                     classify_company_main(part, self.actor())
                 return prefer_oem(part, actor=getattr(self.context.get('request'), 'user', None), selected=main,
                                   confirm_current='is_OEM' not in validated_data)
+        except LineStateError as error:  # several makes share the codigo in the Biblioteca: the brand picks one
+            raise serializers.ValidationError({'sku': str(error)})
         except IntegrityError:
             raise serializers.ValidationError('El SKU o uno de sus códigos ya está registrado.')
 

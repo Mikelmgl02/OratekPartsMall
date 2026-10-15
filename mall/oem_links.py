@@ -1,23 +1,24 @@
-"""OEM cross-references and SKU links (alternos, step 2a). Aftermarket codes hang off the OEM number they replace (OEMCrossReference),
-and a SKU reaches them through its OEM numbers: its OEM alternos, the number its own code names and the numbers a supplier catalog
-printed for the item matched to it (PartOEMLink). Catalog search (search_q) and supplier matching (reach_index, read by
-mall.matching_engine.MatchIndex) find SKUs through those numbers and codes (step 2b).
+"""OEM cross-references and the lines that reach them (alternos, step 2a; inventory refactor S4). Aftermarket codes hang off the OEM
+number they replace (OEMCrossReference), and from S4 every number of the library is a Reference (tipo oem with its manufacturer as
+brand, mall.references.add_library_number): a line reaches the codes of the numbers it holds, and until S9 of the numbers a supplier
+catalog or its codigo tied it to (PartOEMLink, sources catalog and sku_name). Catalog search (search_q) and supplier matching
+(reach_index, read by mall.matching_engine.MatchIndex) find lines through those numbers and codes (step 2b). A line in referencia (a
+library number no product carries yet) is never a target: the readers take catalog lines only.
 
-    python -m mall.link_oem_numbers --dry-run|--apply
-
-brings the name links of every canonical SKU in line with its code (16100-79445-NPW -> TOYOTA 1610079445). The supplier catalog
-import writes the cross-references and the catalog links and refreshes the name links after an apply; saving a SKU refreshes its own.
-Nothing here writes a PartCode, renames a SKU or changes a MAIN, and the company alternos already on the SKUs stay where they are.
+The supplier catalog import writes the cross-references and the catalog links (store_cross_references, store_catalog_links, keyed by
+the number's Reference). The name links of S2a's time are retired with S4: a number whose codigo a line carries was moved onto that
+line as one of its References (mall.refactor.s4_library), and rule 3 (S6) proposes the rest. Nothing here writes a Reference, renames
+a line or changes a main, and the company alternos already on the lines stay where they are.
 """
 import logging
 import re
 from collections import defaultdict
 
-from django.db import OperationalError, ProgrammingError, connection, transaction
+from django.db import connection, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from .oem_reference_models import OEMCrossReference, OEMCrossReferenceRetired, OEMReference, PartOEMLink, citation_list, compact, manufacturer_name
+from .oem_reference_models import OEMCrossReference, OEMCrossReferenceRetired, PartOEMLink, citation_list, compact, manufacturer_name
 
 log = logging.getLogger(__name__)
 CHUNK = 5000
@@ -26,12 +27,12 @@ MIN_SEARCH = 4  # letters and digits a search needs before it looks through OEM 
 VIA_ORDER = ['oem', 'sku_name', 'catalog']  # how a SKU reaches a number, strongest first
 # Catalog manufacturers the OEM finder's make tokens do not name, mapped to the finder's canonical make.
 EXTRA_MAKES = {'SEAT': 'VAG', 'CUPRA': 'VAG', 'MINI': 'BMW', 'MERCURY': 'FORD', 'GM': 'CHEVROLET'}
-_state = {'warned': False}
 
 
 def tables_ready():
-    """False until migration 0041 runs: the live app serves this code before the orchestrator migrates."""
-    return {OEMCrossReference._meta.db_table, PartOEMLink._meta.db_table} <= set(connection.introspection.table_names())
+    """False until migration 0079 runs: the live app serves this code before the orchestrator migrates."""
+    from .oem_reference import tables_ready as library_ready
+    return {OEMCrossReference._meta.db_table, PartOEMLink._meta.db_table} <= set(connection.introspection.table_names()) and library_ready()
 
 
 def chunks(values, size=CHUNK):
@@ -71,10 +72,11 @@ def name_key(sku, table=None):
     return key if len(key) >= MIN_KEY and re.search(r'\d', key) else ''
 
 
-def name_targets(parts, table=None):
-    """{part id (str): {reference id (str)}} for SKUs whose own code names a number in the library. parts: (id, sku, description,
-    name) rows. A number filed under several manufacturers (CHRYSLER and DODGE) links under each, except those of a make the SKU's
-    description rules out when it names one."""
+def name_targets(parts, table=None, library=None):
+    """{part id (str): {number id (str)}} for lines whose own code names a number of the library. parts: (id, sku, description, name)
+    rows. A number filed under several manufacturers (CHRYSLER and DODGE) counts under each, except those of a make the line's
+    description rules out when it names one. library: {compact number: [(id, manufacturer)]}; by default the library's References
+    (their ids). Read-only since S4: the name links are retired (refresh_name_links), and S4's backfill lists what they would add."""
     from .catalog_suffixes import suffix_table
     table = table or suffix_table()
     keys = {}
@@ -83,9 +85,15 @@ def name_targets(parts, table=None):
         if key:
             keys[str(pk)] = (key, make_groups(description, name if name and name != sku else ''))
     found = defaultdict(list)
-    for chunk in chunks({key for key, _ in keys.values()}):
-        for pk, manufacturer, code in OEMReference.objects.filter(code__in=chunk).values_list('pk', 'manufacturer', 'code'):
-            found[code].append((str(pk), make_group(manufacturer)))
+    if library is not None:
+        for key, _ in keys.values():
+            found[key] = [(str(pk), make_group(manufacturer)) for pk, manufacturer in library.get(key, ())]
+    else:
+        from . import references
+        from .models import Reference
+        for chunk in chunks({key for key, _ in keys.values()}):
+            for pk, manufacturer, code in Reference.objects.filter(references.library_q(), clave__in=chunk).values_list('pk', 'brand', 'clave'):
+                found[code].append((str(pk), make_group(manufacturer)))
     out = {}
     for part_id, (key, makes) in keys.items():
         refs = {ref for ref, group in found.get(key, []) if not makes or not group or group in makes}
@@ -95,27 +103,9 @@ def name_targets(parts, table=None):
 
 
 def refresh_name_links(part_ids=None, *, apply=True):
-    """Bring the name links of these SKUs (every canonical SKU by default) in line with their codes: the missing ones are added and the
-    stale ones dropped, a grouped (merged) SKU's included. Returns {'skus', 'links', 'new', 'removed'}."""
-    from .lines import catalog_lines
-    ids = None if part_ids is None else [str(pk) for pk in part_ids]
-    parts = catalog_lines()  # publicada and retirada: a library number is its own referencia line, a line in preparación has no name yet
-    links = PartOEMLink.objects.filter(source='sku_name')
-    rows, have = [], {}
-    for chunk in ([None] if ids is None else chunks(ids)):
-        scope = parts if chunk is None else parts.filter(pk__in=chunk)
-        rows += list(scope.values_list('pk', 'sku', 'description', 'name'))
-        for pk, part_id, ref_id in (links if chunk is None else links.filter(part_id__in=chunk)).values_list('pk', 'part_id', 'reference_id'):
-            have[(str(part_id), str(ref_id))] = pk
-    wanted = {(part_id, ref) for part_id, refs in name_targets(rows).items() for ref in refs}
-    new, stale = sorted(wanted - set(have)), [have[pair] for pair in set(have) - wanted]
-    if apply and (new or stale):
-        with transaction.atomic():
-            PartOEMLink.objects.bulk_create([PartOEMLink(part_id=part_id, reference_id=ref, source='sku_name') for part_id, ref in new],
-                                            batch_size=1000, ignore_conflicts=True)
-            for chunk in chunks(stale):
-                PartOEMLink.objects.filter(pk__in=chunk).delete()
-    return {'skus': len({part_id for part_id, _ in wanted}), 'links': len(wanted), 'new': len(new), 'removed': len(stale)}
+    """Retired with S4 (plan §3 S4): a library number a line's codigo names is one of that line's References, and rule 3 (S6) proposes
+    the rest, so no name link is added or dropped any more. Kept until S10 for the callers that report its counts."""
+    return {'skus': 0, 'links': 0, 'new': 0, 'removed': 0, 'retired': True}
 
 
 def store_cross_references(entries, *, apply=True, bare=()):
@@ -179,93 +169,111 @@ def store_catalog_links(entries, *, apply=True):
     return {'new': len(new), 'cited': len(cited), 'present': len(plan) - len(new) - len(cited)}
 
 
+def library_of(part_ids):
+    """[(number id, line id)] of the library's References on these lines and of the numbers their PartOEMLinks tie them to (catalog
+    and sku_name, until S9)."""
+    from . import references
+    from .models import Reference
+    ids = [str(pk) for pk in part_ids]
+    rows = []
+    for chunk in chunks(ids):  # one query a chunk
+        held = Reference.objects.filter(references.library_q(), part_id__in=chunk).values_list('pk', 'part_id')
+        rows += list(held.union(PartOEMLink.objects.filter(part_id__in=chunk, reference__isnull=False).values_list('reference_id', 'part_id'), all=True))
+    return rows
+
+
 def part_equivalents(part):
-    """What a SKU reaches through its OEM numbers: {'numbers': [{reference, via, citations}], 'cross_references': [{brand, code,
-    citations, numbers, on_sku}]}. via lists how the SKU reaches the number: oem (an OEM alterno), sku_name or catalog. Each code
-    appears once with the numbers it is filed under; on_sku marks the codes the SKU also keeps as its own alterno. A SKU grouped into
-    another reaches nothing: its codes moved to that SKU."""
-    from .models import PartCode
+    """What a line reaches through its OEM numbers: {'numbers': [{reference, via, citations}], 'cross_references': [{brand, code,
+    citations, numbers, on_sku}]}. reference is the number as the Biblioteca shows it (mall.oem_reference.LibraryNumber); via lists
+    how the line reaches it: oem (one of its References), sku_name or catalog (a link, until S9). Each code appears once with the
+    numbers (ids) it is filed under; on_sku marks the codes the line also keeps as its own alterno. A line grouped into another
+    reaches nothing: its codes moved to that line."""
+    from . import references
+    from .models import Reference
+    from .oem_reference import LibraryNumber
     if part.merged_into_id:
         return {'numbers': [], 'cross_references': []}
     reached = defaultdict(lambda: {'via': [], 'citations': []})
-    for ref_id in PartCode.objects.filter(part=part, ref_type='oem', oem_reference__isnull=False).values_list('oem_reference_id', flat=True):
-        if 'oem' not in reached[ref_id]['via']:
-            reached[ref_id]['via'].append('oem')
-    for ref_id, source, citations in PartOEMLink.objects.filter(part=part).order_by('source', 'pk').values_list('reference_id', 'source', 'citations'):
+    for ref_id in Reference.objects.filter(references.library_q(), part=part).values_list('pk', flat=True):
+        reached[ref_id]['via'].append('oem')
+    for ref_id, source, citations in (PartOEMLink.objects.filter(part=part, reference__isnull=False).order_by('source', 'pk')
+                                      .values_list('reference_id', 'source', 'citations')):
         entry = reached[ref_id]
         if source not in entry['via']:
             entry['via'].append(source)
         entry['citations'] = citation_list(entry['citations'], *citations)
     for entry in reached.values():
         entry['via'].sort(key=VIA_ORDER.index)
-    refs = OEMReference.objects.in_bulk(list(reached))
-    numbers = [{'reference': refs[ref_id], **reached[ref_id]} for ref_id in sorted(refs, key=lambda pk: (refs[pk].manufacturer, refs[pk].code))]
-    own = {(manufacturer_name(brand), compact(code)) for brand, code in PartCode.objects.filter(part=part).values_list('brand', 'code')}
+    refs = Reference.all_objects.select_related('reemplazado_por').in_bulk(list(reached))
+    order = sorted(refs, key=lambda pk: (refs[pk].brand, refs[pk].clave))
+    numbers = [{'reference': LibraryNumber(refs[pk]), **reached[pk]} for pk in order]
+    own = {(manufacturer_name(brand), compact(code)) for brand, code in Reference.objects.filter(part=part).values_list('brand', 'code')}
     codes = {}
     for row in OEMCrossReference.objects.filter(reference_id__in=list(refs)).order_by('brand', 'number', 'pk'):
         entry = codes.setdefault((row.brand, row.number), {'brand': row.brand, 'code': row.code, 'citations': [], 'numbers': [],
                                                            'on_sku': (row.brand, row.number) in own})
         entry['citations'] = citation_list(entry['citations'], *row.citations)
-        if row.reference_id not in entry['numbers']:
-            entry['numbers'].append(row.reference_id)
-    order = {entry['reference'].pk: index for index, entry in enumerate(numbers)}
+        uid = refs[row.reference_id].uid
+        if uid not in entry['numbers']:
+            entry['numbers'].append(uid)
+    position = {refs[pk].uid: index for index, pk in enumerate(order)}
     for entry in codes.values():
-        entry['numbers'].sort(key=order.get)  # in the order the numbers are listed
+        entry['numbers'].sort(key=position.get)  # in the order the numbers are listed
     return {'numbers': numbers, 'cross_references': list(codes.values())}
 
 
 def equivalents_for(part_ids):
-    """{part id: [{'brand', 'code'}]}: the aftermarket codes each SKU reaches through its OEM numbers (OEM alternos and links), each
-    code once, by brand and code, in two queries for a whole page (one when no SKU reaches a number). What customers see next to the
-    SKU's own alternos."""
-    from .models import PartCode
-    ids = [str(pk) for pk in part_ids]
+    """{part id: [{'brand', 'code'}]}: the aftermarket codes each line reaches through its OEM numbers (its library References and its
+    links), each code once, by brand and code, in a few queries for a whole page. What customers see next to the line's own
+    alternos."""
     reached = defaultdict(set)
-    for chunk in chunks(ids):
-        alternos = PartCode.objects.filter(part_id__in=chunk, ref_type='oem', oem_reference__isnull=False).values_list('part_id', 'oem_reference_id')
-        for part_id, ref_id in alternos.union(PartOEMLink.objects.filter(part_id__in=chunk).values_list('part_id', 'reference_id'), all=True):
-            reached[str(ref_id)].add(str(part_id))
+    for ref_id, part_id in library_of(part_ids):
+        reached[ref_id].add(str(part_id))
     codes = defaultdict(dict)
     for chunk in chunks(sorted(reached)):
         for ref_id, brand, number, code in (OEMCrossReference.objects.filter(reference_id__in=chunk).order_by('brand', 'number', 'pk')
                                             .values_list('reference_id', 'brand', 'number', 'code')):
-            for part_id in reached[str(ref_id)]:
+            for part_id in reached[ref_id]:
                 codes[part_id].setdefault((brand, number), code)
     return {part_id: [{'brand': brand, 'code': code} for (brand, _), code in sorted(found.items())] for part_id, found in codes.items()}
 
 
 def search_q(text, exact=False):
-    """Q for catalog SKUs that reach an OEM number, or an aftermarket code filed under one, containing the text compared compact
-    (16100 39315, gwt41a), or equal to it when exact; None for text with fewer than MIN_SEARCH letters or digits. Uncorrelated
-    subqueries, no Python lists."""
-    from .models import PartCode
+    """Q for lines that hold an OEM number of the library, or are tied to one, whose compact form contains the text (16100 39315), or
+    to which an aftermarket code filed under such a number belongs (gwt41a); equal to it when exact. None for text with fewer than
+    MIN_SEARCH letters or digits. Uncorrelated subqueries, no Python lists; the caller's queryset decides which lines count (a line in
+    referencia is never a catalog or storefront line)."""
+    from . import references
+    from .models import Reference
     key = compact(text)
     if len(key) < MIN_SEARCH:
         return None
-    numbers = OEMReference.objects.filter(**{'code' if exact else 'code__contains': key}).values('pk')
+    library = Reference.objects.filter(references.library_q())
+    numbers = library.filter(**{'clave' if exact else 'clave__contains': key}).values('pk')
     crossed = OEMCrossReference.objects.filter(**{'number' if exact else 'number__contains': key}).values('reference_id')
     refs = Q(reference__in=numbers) | Q(reference__in=crossed)
-    alternos = Q(oem_reference__in=numbers) | Q(oem_reference__in=crossed)
     return (Q(pk__in=PartOEMLink.objects.filter(refs).values('part_id'))
-            | Q(pk__in=PartCode.objects.filter(alternos, ref_type='oem').values('part_id')))
+            | Q(pk__in=library.filter(Q(pk__in=numbers) | Q(pk__in=crossed)).values('part_id')))
 
 
 def reach_index(part_ids):
-    """The OEM library as supplier matching reads it, for these canonical SKUs (string ids): {reference id: {part id}} through OEM
-    alternos and links; {compact number: {(reference id, manufacturer)}} of the numbers some SKU reaches; {(brand, compact code):
-    ({reference id}, {printed code})} of the aftermarket codes filed under those numbers."""
-    from .models import PartCode
+    """The OEM library as supplier matching reads it, for these canonical lines (string ids): {number id: {part id}} through the
+    library References they hold and their links; {compact number: {(number id, manufacturer)}} of the numbers some line reaches;
+    {(brand, compact code): ({number id}, {printed code})} of the aftermarket codes filed under those numbers. Number ids are the
+    References' ids (text)."""
+    from . import references
+    from .models import Reference
     part_ids = {str(pk) for pk in part_ids}
     reaching = defaultdict(set)
-    rows = [*PartCode.objects.filter(ref_type='oem', oem_reference__isnull=False).values_list('oem_reference_id', 'part_id'),
-            *PartOEMLink.objects.values_list('reference_id', 'part_id')]
+    rows = [*Reference.objects.filter(references.library_q()).values_list('pk', 'part_id'),
+            *PartOEMLink.objects.filter(reference__isnull=False).values_list('reference_id', 'part_id')]
     for ref_id, part_id in rows:
         if str(part_id) in part_ids:
             reaching[str(ref_id)].add(str(part_id))
     numbers, aftermarket = defaultdict(set), {}
     for chunk in chunks(sorted(reaching)):
-        for pk, manufacturer, code in OEMReference.objects.filter(pk__in=chunk).values_list('pk', 'manufacturer', 'code'):
-            numbers[code].add((str(pk), manufacturer))
+        for pk, manufacturer, code in Reference.all_objects.filter(pk__in=chunk).values_list('pk', 'brand', 'code'):
+            numbers[compact(code)].add((str(pk), manufacturer))
         for ref_id, brand, number, code in OEMCrossReference.objects.filter(reference_id__in=chunk).values_list('reference_id', 'brand', 'number', 'code'):
             refs, printed = aftermarket.setdefault((brand, number), (set(), set()))
             refs.add(str(ref_id))
@@ -276,47 +284,3 @@ def reach_index(part_ids):
 def same_make(a, b):
     """Two manufacturer names agree: equal, or in the same OEM finder make group (LEXUS and TOYOTA, JEEP and DODGE)."""
     return manufacturer_name(a) == manufacturer_name(b) or bool(make_group(a)) and make_group(a) == make_group(b)
-
-
-def guarded(sync, *args):
-    """Run a link refresh in a savepoint so it never breaks the SKU write that triggered it; while the tables are not migrated it is
-    skipped quietly (one warning per process)."""
-    try:
-        with transaction.atomic():
-            return sync(*args)
-    except (ProgrammingError, OperationalError):
-        try:
-            ready = tables_ready()
-        except Exception:
-            ready = True
-        if ready:
-            log.exception('No se pudieron actualizar los números OEM del SKU.')
-        elif not _state['warned']:
-            _state['warned'] = True
-            log.warning('Los vínculos de SKU con números OEM aún no están migrados (0041): se omite su actualización.')
-    except Exception:
-        log.exception('No se pudieron actualizar los números OEM del SKU.')
-    return None
-
-
-def part_pre_save(sender, instance, raw=False, update_fields=None, **kwargs):
-    """The SKU, grouping and estado an existing Part had before this save, so a rename, a grouping or a move into or out of the
-    catalog (refresh_name_links keeps links for mall.lines.catalog_lines only) refreshes its name links."""
-    if raw or instance._state.adding or instance.pk is None or (update_fields is not None and not {'sku', 'merged_into', 'estado'} & set(update_fields)):
-        return
-    instance._oem_links_before = sender.objects.filter(pk=instance.pk).values_list('sku', 'merged_into_id', 'estado').first()
-
-
-def name_link_state(sku, merged_into_id, estado):
-    """What a line's name links depend on: its codigo, its grouping and whether it is in the catalog (publicada or retirada)."""
-    from .lines import CATALOG
-    return sku, merged_into_id, estado in CATALOG
-
-
-def part_saved(sender, instance, created=False, raw=False, **kwargs):
-    before = instance.__dict__.pop('_oem_links_before', None)
-    after = before and name_link_state(instance.sku, instance.merged_into_id, instance.__dict__.get('estado', before[2]))
-    if raw or not (created or (before is not None and name_link_state(*before) != after)):
-        return
-    guarded(refresh_name_links, [instance.pk])
-

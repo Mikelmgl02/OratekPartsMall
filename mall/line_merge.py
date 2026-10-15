@@ -204,7 +204,8 @@ def absorb(ref, line, *, actor=None, reason=''):
             raise references.ReferenceConflict(f'{ref.code} no tiene en el SKU de destino una referencia con su clave.')
         record = {'ref': ref.pk, 'into': kept.pk, 'estado': ref.estado, 'dispute_note': ref.dispute_note, 'spelling': None, 'sources': []}
         record['variants'] = rehang([ref.pk], kept)
-        references.retire(ref, actor=actor, replaced_by=kept, reason=reason or 'Absorbida por otra línea', allow_main=True)
+        references.retire(ref, actor=actor, replaced_by=kept, reason=reason or 'Absorbida por otra línea', allow_main=True,
+                          keep_library=False)
         if ref.code != kept.code and ref.code not in kept.printed_forms and len(kept.printed_forms) < references.MAX_PRINTED:
             references.add_spelling(kept, ref.code)
             record['spelling'] = ref.code
@@ -234,9 +235,10 @@ def merge_dispute(ref):
 
 
 def _codigo_holder(code, participants, target):
-    """Another line, outside the merge, whose codigo is this code (every estado: UNIQUE(sku) until S4)."""
-    from .lines import all_lines
-    return (all_lines().filter(sku__iexact=references.code_key(code)).exclude(pk__in=participants).exclude(merged_into=target)
+    """Another catalog line (publicada or retirada), outside the merge, whose codigo is this code: from S4 the codigo is unique among
+    those only, and lines in referencia may share one across makes."""
+    from .lines import catalog_lines
+    return (catalog_lines().filter(sku__iexact=references.code_key(code)).exclude(pk__in=participants).exclude(merged_into=target)
             .order_by('pk').first())
 
 
@@ -733,7 +735,8 @@ def rehome_catalog_links(target, restored):
     from .catalog_families import normalized_reference
     from .oem_reference_models import PartOEMLink
     m = _models()
-    links = list(PartOEMLink.objects.select_for_update().filter(part=target, source='catalog').select_related('reference').order_by('pk'))
+    links = list(PartOEMLink.objects.select_for_update(of=('self',)).filter(part=target, source='catalog', reference__isnull=False)
+                 .select_related('reference').order_by('pk'))
     if not links:
         return {'moved': 0, 'shared': 0}
     keys = {part.pk: {normalized_reference(part.sku), *map(normalized_reference, m.Reference.objects.filter(part=part).values_list('code', flat=True))}

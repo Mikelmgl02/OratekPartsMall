@@ -1,8 +1,8 @@
 """Every reader of the OEM line takes its lines from mall.lines with an explicit estado decision (inventory refactor S1, plan §3 S1
 "Readers"). A line in referencia (a number of the OEM library with no product yet, S4) and one in preparación (a new product being
 prepared, S6), both made by the factories, never reach a reader that lists the catalog or offers it for sale, even with matched stock
-of their own; detail endpoints read a line in any estado and refuse writes to a unificada one; and the checks of who already holds a
-codigo still see every line (UNIQUE(sku) covers them all until S4). One test per reader site."""
+of their own; detail endpoints read a line in any estado and refuse writes to a unificada one; a line in preparación holds its codigo,
+and from S4 a line in referencia is promoted by a new line with its codigo or absorbed by a code it holds. One test per reader site."""
 import uuid
 from types import SimpleNamespace
 
@@ -185,7 +185,8 @@ class AdminReaderTests(APITestCase):
     def test_a_codigo_a_line_off_the_catalog_holds_stays_taken(self):
         for line in self.hidden.values():
             created = self.client.post('/api/v1/management/catalog/', {'sku': line.sku}, format='json')
-            self.assertEqual(created.status_code, 400, line.estado)
+            # S4: a line in referencia (a library number) becomes the new SKU, same id; one in preparación keeps its codigo.
+            self.assertEqual((created.status_code, created.data.get('id')), (201, str(line.pk)) if line.estado == 'referencia' else (400, None), line.estado)
             coded = self.client.patch(f'/api/v1/management/catalog/{self.part.pk}/', {'codes': [{'brand': '', 'code': line.sku}]}, format='json')
             self.assertEqual(coded.status_code, 400, line.estado)
             self.assertIn('ya pertenece a otro SKU', str(coded.data))
@@ -286,20 +287,20 @@ class CatalogToolReaderTests(TestCase):
         from .catalog_import import build_plan
         line = make_line('MR-968365', estado='referencia')
         plan, _ = build_plan({line.sku: {'sku': line.sku, 'row': 2, 'fields': {'description': 'EJE'}, 'codes': {}}}, [], 1)
-        self.assertEqual(plan['summary']['created_skus'], 0)  # UNIQUE(sku) holds it: S4 decides what an import does with one
+        self.assertEqual((plan['summary']['created_skus'], plan['summary']['updated_skus'], plan['errors']), (0, 1, []))  # S4: promoted
+        draft = make_line('MR-968366', estado='preparacion')
+        plan, _ = build_plan({draft.sku: {'sku': draft.sku, 'row': 2, 'fields': {'description': 'EJE'}, 'codes': {}}}, [], 1)
         self.assertEqual([error['message'] for error in plan['errors']],
-                         ['El SKU MR-968365 está en referencia y no forma parte del catálogo: la importación no lo cambia.'])
+                         ['El SKU MR-968366 está en preparación y no forma parte del catálogo: la importación no lo cambia.'])
 
-    def test_identity_marks_lines_on_sale_and_a_dispute_unmarks_every_live_line(self):
-        from .catalog_identity import exact_items, unmark_disputed
-        ref = make_library_number('MITSUBISHI', 'MR453383')
-        part = make_line('MR-453383', description='EJE MIT')
-        draft = make_line('MR453383', description='EJE MIT', estado='preparacion')
-        merged = make_line('MR 453383', description='EJE MIT', merged_into=part)
-        self.assertEqual(set(exact_items()), {part.pk})
-        Part.objects.filter(pk__in=[part.pk, draft.pk, merged.pk]).update(is_OEM=True, tipo='OEM')  # the pair moves together (0076)
-        self.assertEqual(sorted(unmark_disputed(ref)), sorted([part.sku, draft.sku]))  # a line in preparación is not published as OEM
-        self.assertEqual(list(Part.objects.filter(is_OEM=True).values_list('sku', flat=True)), [merged.sku])
+    def test_the_oem_list_is_the_librarys_references_and_a_dispute_unmarks_no_line(self):
+        from . import references
+        from .catalog_identity import disputed_codes, exact_items, exact_listed
+        ref = make_library_number('MITSUBISHI', 'MR453383', source_kind='price_list', citation='LISTA')
+        self.assertEqual((exact_items(), [row.pk for row in exact_listed('MR-453383')], disputed_codes()), ({}, [ref.pk], set()))
+        references.update(ref, estado='disputa', dispute_note='OTRO EJE')
+        self.assertEqual((exact_listed('MR-453383'), disputed_codes()), ([], {'MR453383'}))
+        self.assertEqual(Part.objects.get(pk=ref.part_id).tipo, 'OEM')  # S4: a dispute is the Reference's estado; no line is unmarked
 
     def test_supplier_matching_never_lands_on_a_line_off_sale(self):
         from .matching_engine import MatchIndex, catalog_families, reconcile_items
@@ -334,25 +335,15 @@ class LibraryReaderTests(TestCase):
     """The OEM library links a number to the catalog's lines; the OEM review and Productos nuevos read the lines on sale, and every
     line where it asks who already holds a code."""
 
-    def test_name_links_go_to_catalog_lines(self):
-        from .oem_links import refresh_name_links
-        make_library_number('TOYOTA', '17801-30070')
-        hidden('17801-30070-G', 'FILTRO AIRE TOY HILUX')
-        self.assertEqual(refresh_name_links(apply=False)['skus'], 0)
-        make_line('17801-30070-KSM', description='FILTRO AIRE TOY HILUX')
-        self.assertEqual(refresh_name_links(apply=False)['skus'], 1)
-
-    def test_a_line_leaving_or_joining_the_catalog_refreshes_its_name_links(self):
+    def test_the_name_links_are_retired(self):
         from .lines import set_estado
+        from .oem_links import refresh_name_links
         from .oem_reference_models import PartOEMLink
         make_library_number('TOYOTA', '17801-30071')
         line = make_line('17801-30071-KSM', description='FILTRO AIRE TOY HILUX')
-        links = lambda: PartOEMLink.objects.filter(part=line, source='sku_name').count()
-        self.assertEqual(links(), 1)
         set_estado(line, 'rechazada', reason='not_a_part')
-        self.assertEqual(links(), 0)
         set_estado(line, 'publicada')
-        self.assertEqual(links(), 1)
+        self.assertEqual((refresh_name_links(apply=False)['skus'], PartOEMLink.objects.count()), (0, 0))  # S4: nothing links by name
 
     def test_the_oem_finder_learns_from_lines_on_sale_and_every_codigo_stays_taken(self):
         from .catalog_suffixes import SuffixTable
@@ -361,19 +352,18 @@ class LibraryReaderTests(TestCase):
         lines = hidden('48654-0K059', 'BASE AMORT TOY')
         finder = OEMFinder(load_snapshot(), SuffixTable.from_fixture())
         self.assertEqual([row['id'] for row in finder.learn], [str(part.pk)])
-        for line in lines.values():
-            self.assertIn((str(line.pk), 'retired_sku', line.sku), finder.owners[norm_key(line.sku)], line.estado)
+        for line in lines.values():  # S4: the finder reads the catalog's lines; one in referencia is library data, never a claimant
+            self.assertNotIn(str(line.pk), {owner for owner, _, _ in finder.owners.get(norm_key(line.sku), [])}, line.estado)
 
     def test_a_number_is_linked_by_catalog_lines_only(self):
-        from .oem_reference import linked_parts, linked_q, reference_pair
-        from .oem_reference_models import OEMReference
-        ref = make_library_number('TOYOTA', '17801-30070')
-        lines = hidden('17801-30070', 'FILTRO AIRE TOY')
-        make_reference(lines['preparacion'], '1780130070', tipo='otro')
-        linked = lambda: OEMReference.objects.annotate(pair=reference_pair()).filter(linked_q()).exists()
+        from . import references
+        from .oem_reference import linked_parts, linked_q
+        ref = make_library_number('TOYOTA', '17801-30070')  # on its own line in referencia
+        linked = lambda: PartCode.objects.filter(references.library_q()).filter(linked_q()).exists()
         self.assertEqual((linked_parts([ref])[ref.pk], linked()), ([], False))
-        make_line('17801 30070', description='FILTRO AIRE TOY')
-        self.assertEqual(([row['sku'] for row in linked_parts([ref])[ref.pk]], linked()), (['17801 30070'], True))
+        make_line('17801 30070', description='FILTRO AIRE TOY')  # its main takes the key: the referencia line is absorbed (rule 3f)
+        ref.refresh_from_db()
+        self.assertEqual(([(row['sku'], row['via']) for row in linked_parts([ref])[ref.pk]], linked()), ([('17801 30070', 'linea')], True))
 
     def test_the_oem_review_reads_lines_on_sale_and_every_owner(self):
         from .oem_review import key_owners, merge_family, sku_claimants
@@ -437,9 +427,8 @@ class LibraryReaderTests(TestCase):
 
     def test_the_alternos_prune_reads_catalog_lines(self):
         from . import prune_catalog_alternos as prune
-        from .oem_reference import upsert_reference
         catalog = 'GMB Water Pump Catalog 2016'
-        upsert_reference('TOYOTA', '16100-39315', source_kind='aftermarket_catalog', citation=catalog, detail={'catalog': 'gmb_wp_2016'})
+        make_library_number('TOYOTA', '16100-39315', source_kind='aftermarket_catalog', citation=catalog, detail={'catalog': 'gmb_wp_2016'})
         lines = hidden('16100-39315-RAZ', 'BOMBA AGUA TOY 22R')
         for code, line in zip(('GWT-41A', 'GWT-41B'), lines.values()):
             PartCode.objects.create(part=line, brand='GMB', code=code, ref_type='company', reference_source=f'{catalog} · pág. 212')

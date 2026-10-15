@@ -2,22 +2,22 @@
 
 An OEM reference and its provenance must already be in the reviewed library.
 Manufacturer suffix rules identify a company, not interchangeability or an OEM.
-mark_exact_matches marks OEM (never renames) the SKUs whose compact code is a declared or verified number of the OEM list, 8 or more
-characters with a digit: a SKU is OEM when its code is the OEM number.
+From S4 the OEM list is the library's References (mall.references.library_q): exact_listed and disputed_codes read them, and
+mark_exact_matches (which marked OEM the SKUs whose compact code was a declared or verified number of the list) is retired, since a
+line holding its number as a Reference mirrors its main's tipo.
 
 Since S2b a line's identity is its main Reference (mall.references): prefer_oem makes the chosen OEM Reference the main
 (references.set_main, the codigo following it while the line is live) instead of renaming the line and keeping its old SKU as an
-alterno, which the old main now is anyway; marking OEM retypes the main (references.retype_main) until S4 makes the library numbers
-References.
+alterno, which the old main now is anyway; marking OEM retypes the main (references.retype_main).
 """
 from django.conf import settings
 from django.db import transaction
 from django.db.models import Q
 from rest_framework.exceptions import ValidationError
 from .catalog_families import normalized_reference
-from .lines import LIVE, all_lines, catalog_lines, storefront_lines
+from .lines import all_lines, storefront_lines
 from . import references
-from .models import CatalogIdentityChange, Part, Reference
+from .models import Part, Reference
 
 
 NON_ALNUM = '[^0-9A-Za-z]*'
@@ -37,20 +37,22 @@ def reference_owners(code, part, *, merged_here=True):
     if not key:
         return []
     rx = reference_pattern(key)
-    parts = all_lines().filter(sku__iregex=rx).exclude(pk=part.pk)
+    # A line in referencia (a library number no product carries, S4) owns nothing here: adding its number absorbs it (rule 3f).
+    parts = all_lines().filter(sku__iregex=rx).exclude(pk=part.pk).exclude(estado='referencia')
     if not merged_here:
         parts = parts.exclude(merged_into=part.pk)
     return ([s for s in parts.values_list('sku', flat=True) if normalized_reference(s) == key]
-            + [c for c in Reference.objects.filter(code__iregex=rx, is_main=False).exclude(part=part.pk).values_list('code', flat=True)  # a main is its SKU
-               if normalized_reference(c) == key])
+            + [c for c in Reference.objects.filter(code__iregex=rx, is_main=False).exclude(part=part.pk).exclude(part__estado='referencia')
+               .values_list('code', flat=True) if normalized_reference(c) == key])  # a main is its SKU
 
 
 def rename_conflicts(part, code):
     """Why renaming part to code would make a reference ambiguous: the new MAIN, or the old SKU it keeps as an alterno, already
     identifies another Part (its SKU, retired included, or an alterno) under any punctuation (MR-968365 = MR968365 = MR968365_).
-    A Part merged into this one shares its identity (Agrupar SKU, then the OEM as MAIN); only its exact SKU still blocks the MAIN."""
-    return (reference_owners(code, part, merged_here=False) + reference_owners(part.sku, part, merged_here=False)
-            + list(all_lines().filter(sku__iexact=code, merged_into=part.pk).values_list('sku', flat=True)))
+    A Part merged into this one shares its identity (Agrupar SKU, then the OEM as MAIN): from S4 its codigo is frozen and outside the
+    codigo's uniqueness (line_codigo_unique_catalog), so not even its exact SKU blocks the MAIN (a library number's line in referencia
+    absorbed by its code is one)."""
+    return reference_owners(code, part, merged_here=False) + reference_owners(part.sku, part, merged_here=False)
 
 
 def company_registry():
@@ -202,102 +204,48 @@ def reconcile_identities(actor=None):
     return promoted
 
 
-# --- a SKU whose code is in the OEM list is OEM -------------------------------------------------------------------------------------
+# --- the OEM list (from S4: the library's References) ---------------------------------------------------------------------------------
 
-EXACT_MIN = 8  # a shorter number can coincide with an unrelated code: those SKUs are marked by a person (Editar SKU's OEM box)
+EXACT_MIN = 8  # a shorter number can coincide with an unrelated code
 EXACT_SOURCE = 'Su código está en la lista OEM'
-COUNTING = ('declared', 'verified')  # an item only the OEM finder inferred, or one in dispute, marks nothing on its own
+COUNTING = ('declarado', 'verificado')  # a number only the OEM finder inferred, or one in dispute, says nothing on its own
 
 
 def counts(code):
-    """A compact number long and specific enough to mark a SKU on its own."""
+    """A compact number long and specific enough to name a line on its own."""
     return len(code) >= EXACT_MIN and any(char.isdigit() for char in code)
 
 
 def exact_listed(sku):
-    """The declared or verified items of the OEM list whose number is this SKU code, when the code counts for marking."""
-    from .oem_reference_models import OEMReference
+    """The declared or verified numbers of the library (References, mall.references.library_q) whose clave is this SKU code, when the
+    code counts on its own: such a line is OEM by definition."""
+    from .models import Reference
     code = normalized_reference(sku)
-    return list(OEMReference.objects.filter(code=code, status__in=COUNTING).order_by('manufacturer')) if counts(code) else []
+    if not counts(code):
+        return []
+    return list(Reference.objects.filter(references.library_q(), clave=code, estado__in=COUNTING).order_by('brand'))
 
 
 def disputed_codes(codes=None):
-    """Numbers the OEM list has only in dispute (every manufacturer that files them disputes them): they make no SKU OEM and the OEM
-    finder never applies them."""
-    from .oem_reference_models import OEMReference
-    bad = OEMReference.objects.filter(status='disputed')
+    """Numbers the library has only in dispute (every manufacturer that files them disputes them): the OEM finder never applies them."""
+    from .models import Reference
+    library = Reference.objects.filter(references.library_q())
+    bad = library.filter(estado='disputa')
     if codes is not None:
-        bad = bad.filter(code__in=[normalized_reference(code) for code in codes])
-    bad = set(bad.values_list('code', flat=True))
-    return bad - set(OEMReference.objects.filter(code__in=bad).exclude(status='disputed').values_list('code', flat=True)) if bad else set()
+        bad = bad.filter(clave__in=[normalized_reference(code) for code in codes])
+    bad = set(bad.values_list('clave', flat=True))
+    return bad - set(library.filter(clave__in=bad).exclude(estado='disputa').values_list('clave', flat=True)) if bad else set()
 
 
 def exact_items(part_ids=None, codes=None):
-    """{part id: [OEMReference]} for active SKUs not yet OEM whose compact code is a declared or verified number of the OEM list."""
-    from .oem_reference import compact_sql
-    from .oem_reference_models import OEMReference
-    refs = OEMReference.objects.filter(status__in=COUNTING)
-    if codes is not None:
-        refs = refs.filter(code__in=[normalized_reference(code) for code in codes])
-    parts = (storefront_lines().filter(is_OEM=False).annotate(compact=compact_sql('sku'))
-             .filter(compact__in=refs.values('code')))
-    if part_ids is not None:
-        parts = parts.filter(pk__in=list(part_ids))
-    found = {}
-    by_code = {}
-    for pk, number in parts.values_list('pk', 'compact'):
-        if counts(number):
-            by_code.setdefault(number, []).append(pk)
-    for ref in refs.filter(code__in=list(by_code)).order_by('manufacturer'):
-        for pk in by_code[ref.code]:
-            found.setdefault(pk, []).append(ref)
-    return found
+    """Retired with S4 (with mark_exact_matches): a line whose codigo is a library number holds that number as a Reference, and its
+    tipo mirrors its main (S2b). Returns {}."""
+    return {}
 
 
 def mark_exact_matches(actor=None, *, part_ids=None, codes=None, apply=True):
-    """Mark OEM every SKU whose code is a declared or verified number of the OEM list (MR-453383 = MITSUBISHI MR453383): the SKU uses
-    the OEM number, so it is that OEM item's variant. Each mark leaves a CatalogIdentityChange naming the item. Returns
-    [(part id, sku, [(manufacturer, number)])]."""
-    from .oem_finder import OEMFinder
-    from .oem_links import same_make
-    from .oem_reference_models import OEMReference
-    marked = []
-    for pk, refs in exact_items(part_ids, codes).items():
-        with transaction.atomic():
-            part = storefront_lines(Part.objects.select_for_update()).filter(pk=pk, is_OEM=False).first()
-            if part is None or normalized_reference(part.sku) != refs[0].code:
-                continue
-            # Part, then the item (the order of every writer): a dispute committed since the snapshot marks nothing.
-            refs = list(OEMReference.objects.select_for_update().filter(pk__in=[ref.pk for ref in refs], status__in=COUNTING).order_by('manufacturer'))
-            if not refs:
-                continue
-            makes = OEMFinder.explicit_makes(part.description or '')
-            ref = (next((ref for ref in refs if ref.manufacturer in makes), None)
-                   or next((ref for ref in refs if any(same_make(ref.manufacturer, make) for make in makes)), refs[0]))
-            marked.append((part.pk, part.sku, [(item.manufacturer, item.code) for item in refs]))
-            if not apply:
-                continue
-            # Until S4 a mark is the main's tipo (its brand the maker when its key is free); the line's tipo and is_OEM follow it.
-            references.retype_main(part, 'oem', brand=ref.manufacturer, actor=actor, reason=EXACT_SOURCE)
-            CatalogIdentityChange.objects.create(part=part, previous_sku=part.sku, sku=part.sku, actor=actor, reference={
-                'code': ref.code, 'brand': ref.manufacturer, 'ref_type': 'oem', 'reference_source': EXACT_SOURCE, 'action': 'exact_match'})
-    return marked
+    """Retired with S4 (plan §3 S4): marking OEM the lines whose codigo is a number of the OEM list is moot once the library's numbers
+    are References and a line's tipo mirrors its main; OEM_EXACT_MARK is ignored. Returns []."""
+    return []
 
 
-def unmark_disputed(ref, actor=None):
-    """A number put in dispute stops making its exact SKUs OEM, unless another item of the list not in dispute still has their code.
-    The caller holds the transaction. Returns the SKUs unmarked."""
-    from .oem_reference import compact_sql
-    from .oem_reference_models import OEMReference
-    if OEMReference.objects.filter(code=ref.code).exclude(status='disputed').exclude(pk=ref.pk).exists():
-        return []
-    unmarked = []
-    # Every live line (any estado but unificada): a line in preparación flagged OEM for a disputed number must not be published as OEM.
-    for part in (catalog_lines(LIVE, queryset=Part.objects.select_for_update()).filter(is_OEM=True).annotate(compact=compact_sql('sku'))
-                 .filter(compact=ref.code)):
-        references.retype_main(part, 'otro', actor=actor, reason=f'{ref.manufacturer} {ref.code} en disputa')
-        CatalogIdentityChange.objects.create(part=part, previous_sku=part.sku, sku=part.sku, actor=actor, reference={
-            'code': ref.code, 'brand': ref.manufacturer, 'ref_type': 'oem', 'reference_source': f'{ref.manufacturer} {ref.code} en disputa',
-            'action': 'disputed'})
-        unmarked.append(part.sku)
-    return unmarked

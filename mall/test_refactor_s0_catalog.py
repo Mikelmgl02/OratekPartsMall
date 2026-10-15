@@ -1,4 +1,6 @@
-"""S0.10 tools (target data step 1): the own-code audit and the number twins."""
+"""S0.10 tools (target data step 1): the own-code audit and the number twins. They ran on the OEM table before S4 (OEMReference and
+its legacy columns), which S4 freezes: their tests build that table directly (mall.test_factories.make_legacy_number); the catalog
+import they once ran beside now files the library's References, and its twin mapping is tested on those."""
 import io
 import json
 import os
@@ -11,9 +13,9 @@ from django.contrib.auth import get_user_model
 from django.db import connection
 from django.test import TestCase, override_settings
 
-from . import supplier_catalog_replace as scr
 from .models import Part, PartCode
-from .oem_reference import upsert_reference
+from . import references
+from .test_factories import legacy_mirror, make_legacy_number
 from .oem_reference_models import OEMCrossReference, OEMCrossReferenceRetired, OEMReference, OEMReferenceSource, PartOEMLink
 from .refactor import s0_normalize_numbers as s0n, s0_own_codes
 from .supplier_catalog_import import canonical_number, run as import_catalog
@@ -29,6 +31,14 @@ def write(data):
 
 
 class OwnCodeAuditTests(Fresh, TestCase):
+    """The audit reads the OEM table as the catalog import filed it before S4."""
+
+    def legacy(self, manufacturer, code, *own):
+        ref = make_legacy_number(manufacturer, code, source_kind='aftermarket_catalog', citation='ASVA CV (2016)')
+        for brand, aftermarket in own:
+            OEMCrossReference.objects.create(legacy_reference=ref, brand=brand, code=aftermarket, citations=['ASVA CV (2016) · pág. 7'])
+        return ref
+
     def test_each_item_says_whether_its_code_is_filed_would_be_or_why_not(self):
         joint = lambda code, oem: item(code, 'cv_joint_outer', oem=oem, name_es='JUNTA HOMOCINÉTICA EXTERIOR')
         data = extract([joint('TY-01', [('43460-69115', 'TOYOTA')]),
@@ -38,11 +48,11 @@ class OwnCodeAuditTests(Fresh, TestCase):
                        key='asva_cv', title='ASVA CV', brand='ASVA', product_line='cv_joint')
         path = write(data)
         self.addCleanup(os.unlink, path)
-        import_catalog([path], apply=True, stdout=io.StringIO())
-        OEMCrossReference.objects.filter(code='TY-05').delete()
-        OEMCrossReference.objects.filter(code='TY-02').delete()
-        ref = OEMReference.objects.get(code='4346069145')
-        OEMCrossReferenceRetired.objects.create(reference=ref, brand='ASVA', number='TY05', code='TY-05')
+        self.legacy('TOYOTA', '4346069115', ('ASVA', 'TY-01'))
+        for code in ('4346069125', '4346069135', '4341060010', '4346069155'):
+            self.legacy('TOYOTA', code)
+        ref = self.legacy('TOYOTA', '4346069145')
+        OEMCrossReferenceRetired.objects.create(legacy_reference=ref, brand='ASVA', number='TY05', code='TY-05')
         with tempfile.TemporaryDirectory() as directory:
             result = s0_own_codes.run([path], report_path=os.path.join(directory, 'own.json'), stdout=io.StringIO())
             with open(os.path.join(directory, 'own.json'), encoding='utf-8') as handle:
@@ -52,18 +62,16 @@ class OwnCodeAuditTests(Fresh, TestCase):
         self.assertEqual(result['catalogs'][0]['samples'], {'refile': ['TY-02'], 'shared': ['TY-03'], 'assembly': ['TY-04'], 'no_key': ['X'],
                                                             'retired': ['TY-05']})
 
-    def test_a_code_filed_only_under_numbers_that_no_longer_take_it_is_to_retire_and_a_twin_counts_as_its_number(self):
-        joint = lambda code, oem: item(code, 'cv_joint_outer', oem=oem, name_es='JUNTA HOMOCINÉTICA EXTERIOR')
-        data = extract([joint('MT-08', [('MR222052', 'MITSUBISHI')]), joint('DH-01', [('43460-87Z01-000', 'DAIHATSU')])],
+    def test_a_code_filed_only_under_numbers_that_no_longer_take_it_is_to_retire(self):
+        data = extract([item('MT-08', 'cv_joint_outer', oem=[('MR222052', 'MITSUBISHI')], name_es='JUNTA HOMOCINÉTICA EXTERIOR')],
                        key='asva_cv', title='ASVA CV', brand='ASVA', product_line='cv_joint')
         path = write(data)
         self.addCleanup(os.unlink, path)
-        import_catalog([path], apply=True, stdout=io.StringIO())
+        self.legacy('MITSUBISHI', 'MR222052', ('ASVA', 'MT-08'))
         shaft = Part.objects.create(sku='SEM-MIT-01', description='EJE COMPLETO MIT LANCER')  # MR222052 turns out to be a shaft's
         PartCode.objects.create(part=shaft, brand='MITSUBISHI', code='MR222052', ref_type='oem')
-        OEMReference.objects.filter(code='4346087Z01000').update(code='4346087Z01')  # the library keeps the other spelling
         counts = s0_own_codes.run([path], stdout=io.StringIO())['catalogs'][0]['counts']
-        self.assertEqual((counts['retire'], counts['filed']), (1, 1))  # MT-08 goes with the replace; DH-01 is filed under the twin
+        self.assertEqual((counts['retire'], counts['filed']), (1, 0))  # MT-08 goes with the replace
 
 
 GMB = 'GMB Water Pump Catalog 2016'
@@ -71,10 +79,11 @@ ASVA = 'ASVA Tensioner & Idler Bearings Catalogue 2017-2018'
 
 
 def number(manufacturer, code, citation=GMB, codes=(), **detail):
-    ref = upsert_reference(manufacturer, code, printed=[code], source_kind='aftermarket_catalog', citation=citation, detail=detail,
-                           defaults={'description': 'BOMBA DE AGUA', 'part_type': 'BOMBAS DE AGUA'})[0]
+    """A number of the OEM table as it was before S4, with the aftermarket codes the catalog import filed under it then."""
+    ref = make_legacy_number(manufacturer, code, printed_forms=[code], source_kind='aftermarket_catalog', citation=citation, detail=detail,
+                             description='BOMBA DE AGUA', part_type='BOMBAS DE AGUA')
     for brand, aftermarket, cites in codes:
-        OEMCrossReference.objects.create(reference=ref, brand=brand, code=aftermarket, citations=cites)
+        OEMCrossReference.objects.create(legacy_reference=ref, brand=brand, code=aftermarket, citations=cites)
     return ref
 
 
@@ -90,8 +99,8 @@ class TwinNumberTests(Fresh, TestCase):
                                catalog='gmb_wp_2016')
         self.zeros = number('DAIHATSU', '16100-59145-000', codes=[('GMB', 'GWD-55A', [f'{GMB} · pág. 41']), ('AISIN', 'WPD-001', [f'{GMB} · pág. 550'])],
                             brand_codes=['GWD-55A', 'GWD-55AH'], pages=[41, 550], catalog='gmb_wp_2016')
-        PartOEMLink.objects.create(part=self.pump, reference=self.daihatsu, source='catalog', citations=[f'{GMB} · pág. 40 · GWD-55A'])
-        PartOEMLink.objects.create(part=self.pump, reference=self.zeros, source='catalog', citations=[f'{GMB} · pág. 41 · GWD-55A'])
+        PartOEMLink.objects.create(part=self.pump, legacy_reference=self.daihatsu, source='catalog', citations=[f'{GMB} · pág. 40 · GWD-55A'])
+        PartOEMLink.objects.create(part=self.pump, legacy_reference=self.zeros, source='catalog', citations=[f'{GMB} · pág. 41 · GWD-55A'])
         self.lone = number('DAIHATSU', '16100-28030-000')  # no twin: stays as printed
         self.opel = number('OPEL', '06 36 160', citation=ASVA)
         self.opel_short = number('OPEL', '636160', citation=ASVA, codes=[('INA', '532 0418 10', [f'{ASVA} · pág. 300'])])
@@ -101,8 +110,8 @@ class TwinNumberTests(Fresh, TestCase):
 
     def state(self):
         return (sorted(OEMReference.objects.values_list('manufacturer', 'code', 'version')), sorted(OEMReferenceSource.objects.values_list('reference__manufacturer', 'reference__code', 'citation', 'detail'), key=str),
-                sorted(OEMCrossReference.objects.values_list('reference__manufacturer', 'reference__code', 'brand', 'number', 'citations')),
-                sorted(PartOEMLink.objects.values_list('reference__code', 'source', 'citations')))
+                sorted(OEMCrossReference.objects.values_list('legacy_reference__manufacturer', 'legacy_reference__code', 'brand', 'number', 'citations')),
+                sorted(PartOEMLink.objects.values_list('legacy_reference__code', 'source', 'citations')))
 
     def test_canonical_spellings(self):
         self.assertEqual(canonical_number('DAIHATSU', '16100-59145-000'), '1610059145')
@@ -132,7 +141,7 @@ class TwinNumberTests(Fresh, TestCase):
         self.assertIn({'table': 'mall_oemreference', 'action': 'delete', 'id': str(self.zeros.pk)},
                       [{k: row.get(k) for k in ('table', 'action', 'id')} for row in manifest])
         self.assertFalse(OEMReference.objects.filter(pk__in=[self.zeros.pk, self.opel_short.pk, self.extra.pk]).exists())
-        self.assertEqual(sorted(OEMCrossReference.objects.filter(reference=self.daihatsu).values_list('number', 'citations')),
+        self.assertEqual(sorted(OEMCrossReference.objects.filter(legacy_reference=self.daihatsu).values_list('number', 'citations')),
                          [('GWD55A', [f'{GMB} · pág. 40', f'{GMB} · pág. 41']), ('WPD001', [f'{GMB} · pág. 550'])])
         self.assertEqual(PartOEMLink.objects.get(part=self.pump).citations, [f'{GMB} · pág. 40 · GWD-55A', f'{GMB} · pág. 41 · GWD-55A'])
         source = self.daihatsu.sources.get()
@@ -147,7 +156,7 @@ class TwinNumberTests(Fresh, TestCase):
         self.daihatsu.refresh_from_db()
         self.assertEqual(self.daihatsu.version, 2)  # the merge takes the next version
         self.assertEqual(sorted(self.plain.sources.values_list('citation', flat=True)), [GMB, 'OTRO CATÁLOGO'])  # moved, not joined
-        self.assertTrue(OEMCrossReference.objects.filter(reference=self.opel, number='532041810').exists())
+        self.assertTrue(OEMCrossReference.objects.filter(legacy_reference=self.opel, number='532041810').exists())
         self.vauxhall.refresh_from_db()
         self.assertEqual(self.vauxhall.code, '0636160')  # the same row, now spelled like its Opel twin
         self.assertTrue(OEMReference.objects.filter(pk=self.lone.pk).exists())
@@ -156,11 +165,11 @@ class TwinNumberTests(Fresh, TestCase):
         self.assertEqual((again['groups'], self.state()), (0, once))
 
     def test_a_twin_that_needs_a_person_is_left_and_listed(self):
-        PartCode.objects.create(part=self.pump, brand='DAIHATSU', code='16100-59145-000', ref_type='oem')  # an OEM alterno files under it
+        legacy_mirror(PartCode.objects.create(part=self.pump, brand='DAIHATSU', code='16100-59145-000', ref_type='oem'))  # an OEM alterno files under it
         self.opel_short.status, self.opel_short.dispute_note = 'disputed', 'otra pieza'
         self.opel_short.save()
-        OEMCrossReferenceRetired.objects.create(reference=self.plain, brand='GMB', number='GWO1A', code='GWO-1A')
-        OEMCrossReference.objects.create(reference=self.extra, brand='GMB', code='GWO-1A', citations=[GMB])
+        OEMCrossReferenceRetired.objects.create(legacy_reference=self.plain, brand='GMB', number='GWO1A', code='GWO-1A')
+        OEMCrossReference.objects.create(legacy_reference=self.extra, brand='GMB', code='GWO-1A', citations=[GMB])
         result = s0n.run(apply=True, manifest_dir=os.path.join(self.tmp, 'refused'), stdout=io.StringIO())
         refused = {(a['manufacturer'], a['code']): a['refused'] for g in result['plan'] for a in g['actions'] if a['refused']}
         self.assertEqual(refused, {('DAIHATSU', '1610059145000'): 'alterno', ('OPEL', '636160'): 'curated', ('OPEL', '02898355'): 'retired_conflict'})
@@ -170,7 +179,7 @@ class TwinNumberTests(Fresh, TestCase):
 
     def test_a_twin_merged_into_a_keeper_that_could_not_be_renamed_or_chaining_a_supersession_is_left(self):
         doubled = number('VAUXHALL', '00636160', citation=ASVA)  # VAUXHALL holds two other spellings: 00636160 is renamed, 636160 joins it
-        PartCode.objects.create(part=self.pump, brand='VAUXHALL', code='00636160', ref_type='oem')  # ...but an alterno files under it
+        legacy_mirror(PartCode.objects.create(part=self.pump, brand='VAUXHALL', code='00636160', ref_type='oem'))  # ...but an alterno files under it
         self.extra.superseded_by = number('OPEL', '9128451')
         self.extra.save()
         result = s0n.run(apply=True, manifest_dir=os.path.join(self.tmp, 'refused'), stdout=io.StringIO())
@@ -216,75 +225,23 @@ class TwinNumberTests(Fresh, TestCase):
         self.assertEqual(self.state(), before)
         self.assertEqual(os.listdir(os.path.join(self.tmp, 'full')), [])  # no half-written manifest or temporary copy
 
-    def test_after_the_merge_the_import_files_a_printed_twin_under_the_kept_number(self):
-        data = extract([item('GWD-55A', 'water_pump', oem=[('16100-59145-000', 'DAIHATSU'), ('16100-59145', 'DAIHATSU')], cross_refs=[('AISIN', 'WPD-001')])],
-                       title='GMB Water Pump Catalog', brand='GMB')
-        path = write(data)
-        self.addCleanup(os.unlink, path)
-        before = import_catalog([path], stdout=io.StringIO())['catalogs'][0]['counts']
-        self.assertEqual(before['oem_numbers'], 2)  # both spellings are in the library: each is filed as printed
-        s0n.run(apply=True, manifest_dir=os.path.join(self.tmp, 'import'), stdout=io.StringIO())
-        after = import_catalog([path], apply=True, stdout=io.StringIO())['catalogs'][0]['counts']
-        self.assertEqual((after['oem_numbers'], after['oem_new']), (1, 0))
-        self.assertFalse(OEMReference.objects.filter(code='1610059145000').exists())
-
-    def test_after_a_gm_rename_an_import_files_the_printed_spelling_under_the_make_s_canonical_one(self):
-        data = extract([item('VKBA-1', 'tensioner', oem=[('636160', 'VAUXHALL'), ('16100-28030', 'DAIHATSU')], name_es='TENSOR')],
-                       title='ASVA Tensioner & Idler Bearings Catalogue', brand='ASVA', product_line='tensioner')
-        path = write(data)
-        self.addCleanup(os.unlink, path)
-        s0n.run(apply=True, manifest_dir=os.path.join(self.tmp, 'gm'), stdout=io.StringIO())
-        self.vauxhall.delete()  # only OPEL holds 0636160 now
-        import_catalog([path], apply=True, stdout=io.StringIO())
-        self.assertEqual(sorted(OEMReference.objects.filter(manufacturer='VAUXHALL').values_list('code', flat=True)), ['0636160'])
-        # a lone 16100-28030-000 takes the printed 16100-28030: no pair comes back
-        self.assertEqual(sorted(OEMReference.objects.filter(code__startswith='1610028030').values_list('code', flat=True)), ['1610028030000'])
-        self.assertEqual(s0n.run(stdout=io.StringIO())['groups'], 0)
-
-    def test_after_the_merge_a_replace_of_the_catalog_that_printed_both_spellings_changes_nothing(self):
-        Part.objects.create(sku='17400-77E00', description='BOMBA AGUA SUZ VITARA')
-        data = extract([item('GWS-10A', 'water_pump', oem=[('17400-77E00', 'SUZUKI')], cross_refs=[('AISIN', 'WPS-010')]),
-                        item('GWS-10AH', 'water_pump', oem=[('17400-77E00-000', 'SUZUKI')], cross_refs=[('AISIN', 'WPS-011')])],
-                       title='GMB Water Pump Catalog', brand='GMB')
-        data['items'][1]['oem'][0]['page'] = 6
-        path = write(data)
-        self.addCleanup(os.unlink, path)
-        import_catalog([path], apply=True, stdout=io.StringIO())
-        self.assertEqual(OEMReference.objects.filter(code__startswith='1740077E00').count(), 2)
-        s0n.run(apply=True, manifest_dir=os.path.join(self.tmp, 'replace'), stdout=io.StringIO())
-        kept = OEMReference.objects.get(code__startswith='1740077E00')
-        self.assertEqual((kept.code, kept.sources.get().detail['pages'], kept.sources.get().detail['brand_codes']), ('1740077E00', [5, 6], ['GWS-10A', 'GWS-10AH']))
-        self.assertEqual(scr.run(path, stdout=io.StringIO())['changes'], {'numbers': {}, 'codes': {}, 'ties': {}})
-
-    def test_after_the_merge_a_replace_keeps_what_a_spelling_printed_for_one_part_filed_though_the_other_is_shared(self):
-        # GMB v3: GWT-100A prints 16100-B9010 and 16100-B9010-000, GWT-136A only 16100-B9010. Before the merge the -000 spelling,
-        # printed for one part, filed GWT-100A's codes and tied its SKU; the merge moved them onto 16100-B9010, which a replace keeps.
-        pump = Part.objects.create(sku='16100-29115-GMB', description='BOMBA AGUA TOY HIACE')
-        data = extract([item('GWT-100A', 'water_pump', oem=[('16100-29115', 'TOYOTA'), ('16100-B9010', 'TOYOTA'), ('16100-B9010-000', 'TOYOTA')],
-                             cross_refs=[('AISIN', 'WPT-117')]),
-                        item('GWT-136A', 'water_pump', oem=[('16100-B9010', 'TOYOTA'), ('16100-29117', 'TOYOTA')], cross_refs=[('AISIN', 'WPT-136')])],
-                       title='GMB Water Pump Catalog', brand='GMB')
-        path = write(data)
-        self.addCleanup(os.unlink, path)
-        import_catalog([path], apply=True, stdout=io.StringIO())
-        self.assertFalse(OEMCrossReference.objects.filter(reference__code='16100B9010').exists())  # printed for two parts
-        self.assertTrue(PartOEMLink.objects.filter(part=pump, reference__code='16100B9010000', source='catalog').exists())
-        s0n.run(apply=True, manifest_dir=os.path.join(self.tmp, 'shared'), stdout=io.StringIO())
-        kept = OEMReference.objects.get(manufacturer='TOYOTA', code__startswith='16100B9010')
-        self.assertEqual(kept.code, '16100B9010')
-        self.assertEqual(sorted(kept.cross_references.values_list('brand', 'code')), [('AISIN', 'WPT-117'), ('GMB', 'GWT-100A')])
-        self.assertTrue(PartOEMLink.objects.filter(part=pump, reference=kept, source='catalog').exists())
-        before = self.state()
-        result = scr.run(path, stdout=io.StringIO())
-        self.assertEqual(result['changes'], {'numbers': {}, 'codes': {}, 'ties': {}})
-        self.assertEqual((result['import']['cross_reference_new'], result['import']['catalog_link_new']), (0, 0))
-        scr.run(path, apply=True, stdout=io.StringIO())
-        self.assertEqual(self.state(), before)
-        counts = s0_own_codes.run([path], stdout=io.StringIO())['catalogs'][0]['counts']
-        self.assertEqual((counts['filed'], counts['retire']), (2, 0))  # GWT-100A through the kept number, GWT-136A through 16100-29117
-
     def test_one_spelling_under_several_makes_is_no_twin(self):
         number('OPEL', '569000', citation=ASVA)
         number('VAUXHALL', '569000', citation=ASVA)
         result = s0n.run(stdout=io.StringIO())
         self.assertNotIn('GM 0569000', [g['group'] for g in result['plan']])
+
+
+class TwinImportTests(Fresh, TestCase):
+    """After S4 the catalog import files a printed twin under the spelling the library's References hold (canonical_number)."""
+
+    def test_the_import_files_a_printed_twin_under_the_number_the_library_holds(self):
+        kept = references.add_library_number('DAIHATSU', '16100-59145', source_kind='aftermarket_catalog', citation=GMB)[0]
+        data = extract([item('GWD-55A', 'water_pump', oem=[('16100-59145-000', 'DAIHATSU')], cross_refs=[('AISIN', 'WPD-001')])],
+                       title='GMB Water Pump Catalog', brand='GMB')
+        path = write(data)
+        self.addCleanup(os.unlink, path)
+        counts = import_catalog([path], apply=True, stdout=io.StringIO())['catalogs'][0]['counts']
+        self.assertEqual((counts['oem_numbers'], counts['oem_new']), (1, 0))
+        self.assertEqual(sorted(OEMCrossReference.objects.filter(reference=kept).values_list('brand', 'code')), [('AISIN', 'WPD-001'), ('GMB', 'GWD-55A')])
+        self.assertFalse(PartCode.objects.filter(references.library_q(), clave='1610059145000').exists())

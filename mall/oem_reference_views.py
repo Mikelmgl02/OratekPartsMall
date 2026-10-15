@@ -1,13 +1,22 @@
-"""Superuser API of the OEM reference library: list with search, filters and counts; create or merge a number written in any form
-with its first source; one reference with its sources, linked SKUs, aftermarket codes and supersession; edits and actions under the
-version the reviewer saw (409 with the current reference otherwise). Repeating an action that is already in place returns the
-reference unchanged. A catalog SKU's OEM numbers and the aftermarket codes it reaches through them are read-only here.
+"""Superuser API of the OEM reference library (Biblioteca OEM). From inventory refactor S4 its rows are the library's References (tipo
+oem with a brand, mall.references.library_q): list with search, filters and counts; create or merge a number written in any form with
+its first source (mall.references.add_library_number); one number with its sources, the lines that carry it, its aftermarket codes and
+its supersession; edits and actions under the version the reviewer saw (409 with the current number otherwise). Repeating an action
+that is already in place returns the number unchanged.
+
+Ids, URLs and keys stay as they were: a number's id is its Reference's uid (the OEMReference id for the numbers the library had before
+S4), its code the compact number (its clave), and until S8 status and source kinds keep their legacy values in the JSON, the filters
+accepting the new ones too (mall.oem_reference.LibraryNumber). Edits write the number's detail and touch the fields of its line only
+when that line is in referencia (the number's own line), never a published one. A dispute puts the Reference in disputa (it stops
+holding its key), and no line is unmarked any more. After S4's window the Biblioteca stays read-only for 24 hours (mall.maintenance,
+.maintenance/biblioteca, OD22).
 """
 import uuid
 from collections import Counter
 
 from django.db import connection, transaction
-from django.db.models import Count, Exists, OuterRef, Prefetch, Q
+from django.db.models import Count, Exists, OuterRef, Q
+from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import serializers
@@ -17,11 +26,10 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import oem_reference as orf
-from .catalog_identity import mark_exact_matches, unmark_disputed
+from . import references
 from .catalog_suffix_models import values
 from .management import IsSuperuser, UppercaseCharField
-from .lines import LIVE, catalog_lines
-from .models import Part
+from .models import Part, PartType, Reference, ReferenceSource
 from .oem_links import MIN_SEARCH, part_equivalents
 from .oem_links import tables_ready as oem_links_ready
 from .oem_reference_models import (LINK_SOURCES, MANUAL_KINDS, REFERENCE_STATUSES, SOURCE_KINDS, OEMCrossReference, OEMCrossReferenceRetired,
@@ -31,9 +39,10 @@ REFERENCE_LOCK = 724631112  # pg advisory lock key of supersession edits (matchi
 ACTIONS = ['edit', 'add_source', 'remove_source', 'dispute', 'clear_dispute', 'set_superseded_by', 'clear_superseded_by']
 EDITABLE = ('description', 'part_type', 'applications', 'notes')
 MANUAL_CHOICES = [(kind, label) for kind, label in SOURCE_KINDS if kind in MANUAL_KINDS]
-VIA = ['sku', 'oem', 'company', 'unknown', *values(LINK_SOURCES)]
+VIA = ['linea', 'sku', 'oem', 'company', 'unknown', *values(LINK_SOURCES)]
 CROSS_PREVIEW = 3
 CONFLICT = 'La referencia cambió desde que la revisaste. Revisa sus valores actuales antes de continuar.'
+MISSING = 'Ese número no está en la biblioteca OEM.'
 MAX_CHAIN = 50
 MAX_ROW_IDS = 100
 MAX_BULK_ROWS = 500
@@ -61,8 +70,9 @@ class OEMLinkedSKU(serializers.Serializer):
     sku = serializers.CharField()
     is_OEM = serializers.BooleanField()
     active = serializers.BooleanField()
-    via = serializers.ChoiceField(choices=VIA, help_text='sku: el SKU principal es el número; oem, company o unknown: un alterno de ese tipo; '
-                                                       'sku_name: el código del SKU nombra el número; catalog: un catálogo de marca de repuesto lo vinculó.')
+    via = serializers.ChoiceField(choices=VIA, help_text='linea: el número está en esa línea (su SKU o un código suyo); sku_name: el código del SKU '
+                                                       'nombra el número; catalog: un catálogo de marca de repuesto lo vinculó. sku, oem, company y '
+                                                       'unknown quedan de antes de S4.')
     code = serializers.CharField(help_text='Como lo escribe el catálogo.')
 
 
@@ -201,39 +211,82 @@ class OEMReferenceConflict(serializers.Serializer):
     reference = OEMReferenceDetail()
 
 
-def rows_query():
-    return (OEMReference.objects.select_related('superseded_by', 'created_by', 'updated_by')
-            .prefetch_related(Prefetch('sources', queryset=OEMReferenceSource.objects.select_related('created_by').order_by('created_at', 'id'))))
-
-
-def decorate(refs, *, all_cross_references=False):
-    """Source summary, linked SKUs and aftermarket codes for a page of references: four queries for the whole page, none per row."""
-    linked = orf.linked_parts(refs)
-    codes = {ref.pk: [] for ref in refs}
+def decorate(numbers, *, all_cross_references=False):
+    """Source summary, lines that carry it and aftermarket codes for a page of numbers (LibraryNumbers): a few queries for the whole
+    page, none per row."""
+    linked = orf.linked_parts([number.ref for number in numbers])
+    codes = {number.ref.pk: [] for number in numbers}
     for row in OEMCrossReference.objects.filter(reference_id__in=list(codes)).order_by('brand', 'number', 'pk'):
         codes[row.reference_id].append(row)
-    for ref in refs:
-        sources = list(ref.sources.all())
-        ref.source_count, ref.source_kinds = len(sources), dict(Counter(source.kind for source in sources))
-        ref.linked_skus, ref.linked_count = linked[ref.pk][:orf.LINKED_LIMIT], len(linked[ref.pk])
-        ref.cross_reference_count, ref.cross_reference_preview = len(codes[ref.pk]), codes[ref.pk][:CROSS_PREVIEW]
+    for number in numbers:
+        sources = list(number.sources)
+        number.source_count, number.source_kinds = len(sources), dict(Counter(source.kind for source in sources))
+        found = linked[number.ref.pk]
+        number.linked_skus, number.linked_count = found[:orf.LINKED_LIMIT], len(found)
+        number.cross_reference_count, number.cross_reference_preview = len(codes[number.ref.pk]), codes[number.ref.pk][:CROSS_PREVIEW]
         if all_cross_references:
-            ref.cross_reference_rows = codes[ref.pk]
-    return refs
+            number.cross_reference_rows = codes[number.ref.pk]
+    return numbers
+
+
+def locate(pk, *, lock=False):
+    """The library's Reference with this id (uid); NotFound otherwise. lock: for update."""
+    rows = Reference.objects.filter(references.library_q())
+    try:
+        ref = (rows.select_for_update(of=('self',)) if lock else rows).filter(uid=pk).first()
+    except (ValueError, ValidationError):
+        ref = None
+    if ref is None:
+        raise NotFound(MISSING)
+    return ref
 
 
 def detail(pk):
-    ref = rows_query().prefetch_related('supersedes').filter(pk=pk).first()
+    ref = orf.by_uid(pk)
     if ref is None:
-        raise NotFound('Ese número no está en la biblioteca OEM.')
-    return OEMReferenceDetail(decorate([ref], all_cross_references=True)[0]).data
+        raise NotFound(MISSING)
+    return OEMReferenceDetail(decorate(orf.wrap([ref]), all_cross_references=True)[0]).data
 
 
-def save(ref, user, **fields):
-    for field, value in fields.items():
-        setattr(ref, field, value)
-    ref.updated_by = user
-    ref.save()
+def stamped(ref, user, detail_changes=None):
+    """The number's detail with the changes and who made them (updated_by: the Biblioteca shows it)."""
+    return {**(ref.detail or {}), **(detail_changes or {}), 'updated_by': getattr(user, 'username', '') or ''}
+
+
+def save(ref, user, *, detail_changes=None, **fields):
+    """Write a number's detail texts and fields (mall.references.update), who changed it, and its line's texts when the number is the
+    main of a line in referencia."""
+    ref = references.update(ref, actor=user, detail=stamped(ref, user, detail_changes), **fields)
+    if detail_changes and ref.is_main:
+        line = Part.objects.select_for_update().get(pk=ref.part_id)
+        if line.estado == 'referencia':
+            sync_line(line, ref, detail_changes)
+    return ref
+
+
+def sync_line(line, ref, changes):
+    """A line in referencia follows its number's texts: description, applications and the subgrupo its part type maps to (A6)."""
+    fields, sources = [], dict(line.field_sources or {})
+    if 'description' in changes and line.description != changes['description']:
+        line.description = changes['description']
+        fields.append('description')
+        sources['description'] = {'source': references.LIBRARY_ORIGIN}
+    if 'applications' in changes and line.aplicaciones_texto != changes['applications']:
+        line.aplicaciones_texto = changes['applications']
+        fields.append('aplicaciones_texto')
+        sources['aplicaciones_texto'] = {'source': references.LIBRARY_ORIGIN}
+    if 'part_type' in changes:
+        mapped = references.library_line_fields(part_type=changes['part_type'])
+        category, subcategory = mapped.get('category', ''), mapped.get('subcategory', '')
+        if (line.category, line.subcategory) != (category, subcategory):
+            line.category, line.subcategory = category, subcategory
+            fields += ['category', 'subcategory', 'part_type']
+        sources.pop('subgrupo', None)
+        if 'subgrupo' in mapped['field_sources']:
+            sources['subgrupo'] = mapped['field_sources']['subgrupo']
+    if fields or sources != (line.field_sources or {}):
+        line.field_sources = sources
+        line.save(update_fields=[*fields, 'field_sources'])
 
 
 def creates_cycle(ref, target):
@@ -243,7 +296,7 @@ def creates_cycle(ref, target):
         if node.pk == ref.pk:
             return True
         seen.add(node.pk)
-        node = OEMReference.objects.only('id', 'superseded_by').filter(pk=node.superseded_by_id).first() if node.superseded_by_id else None
+        node = Reference.all_objects.only('id', 'reemplazado_por').filter(pk=node.reemplazado_por_id).first() if node.reemplazado_por_id else None
     return False
 
 
@@ -255,84 +308,87 @@ def lock_chains():
 
 
 def plan(ref, data, user):
-    """The action as a callable that applies it to the locked reference, or None when it is already in place; invalid requests raise."""
+    """The action as a callable that applies it to the locked number (its Reference), or None when it is already in place; invalid
+    requests raise."""
     action = data['action']
+    current = orf.LibraryNumber(ref)
     if action == 'edit':
         given = {field: data[field] for field in EDITABLE if field in data}
         if not given:
             raise ValidationError('Indica la descripción, el tipo de pieza, las aplicaciones o las notas que cambias.')
-        changes = {field: value for field, value in given.items() if getattr(ref, field) != value}
-        return (lambda: save(ref, user, **changes)) if changes else None
+        changes = {field: value for field, value in given.items() if getattr(current, field) != value}
+        if not changes:
+            return None
+        texts = {field: value for field, value in changes.items() if field != 'notes'}
+        return lambda: save(ref, user, detail_changes=texts, **({'notes': changes['notes']} if 'notes' in changes else {}))
     if action == 'add_source':
         source = data.get('source')
         if not source:
             raise ValidationError({'source': 'Indica el tipo de fuente y su cita.'})
         extra = {'verified': source['verified']} if source['kind'] == 'manual' else {}
-        existing = ref.sources.filter(kind=source['kind'], citation=source['citation']).first()
+        existing = next((row for row in current.sources if row.kind == source['kind'] and row.citation == source['citation']), None)
         if existing and orf.merge_detail(existing.detail, extra) == existing.detail:
             return None
-        return lambda: orf.upsert_reference(ref.manufacturer, ref.code, source_kind=source['kind'], citation=source['citation'], detail=extra,
-                                            actor=user)
+
+        def add_source():
+            references.cite_library(ref, source['kind'], source['citation'], extra, user)
+            references.refresh_library_estado(save(ref, user), user)
+        return add_source
     if action == 'remove_source':
         if data.get('source_id') is None:
             raise ValidationError({'source_id': 'Indica la fuente que quitas.'})
-        source = ref.sources.filter(pk=data['source_id']).first()
+        sources = list(current.sources)
+        source = next((row for row in sources if row.id == data['source_id']), None)
         if source is None:
             return None
         if not source.removable:
             raise ValidationError({'source_id': 'Las fuentes del catálogo, del buscador OEM y de la búsqueda con IA siguen a los alternos del catálogo: '
                                                 'retira el alterno desde el inventario.'})
-        if not ref.sources.exclude(pk=source.pk).exists():
+        if len(sources) <= 1:
             raise ValidationError({'source_id': 'La referencia necesita al menos una fuente. Si el número no es correcto, márcalo en disputa.'})
 
-        def remove():
-            source.delete()
-            orf.refresh_status(ref, user, changed=True)
+        def remove():  # a source is retired, never deleted, and the estado follows the ones left
+            ReferenceSource.objects.filter(pk=source.id).update(retirada=True, retired_by=user if getattr(user, 'pk', None) else None,
+                                                                retired_at=timezone.now())
+            references.refresh_library_estado(save(ref, user), user)
         return remove
     if action == 'dispute':
         note = (data.get('note') or '').strip()
         if not note:
             raise ValidationError({'note': 'Explica por qué el número está en disputa.'})
-        if ref.status == 'disputed' and ref.dispute_note == note:
+        if ref.estado == 'disputa' and ref.dispute_note == note:
             return None
-
-        def dispute():
-            save(ref, user, status='disputed', dispute_note=note)
-            unmark_disputed(ref, user)  # a number in dispute no longer makes its SKUs OEM
-        return dispute
+        return lambda: save(ref, user, estado='disputa', dispute_note=note)  # in dispute it holds no key; no line is unmarked
     if action == 'clear_dispute':
-        if ref.status != 'disputed':
+        if ref.estado != 'disputa':
             return None
-
-        def clear():
-            ref.status, ref.dispute_note = 'inferred', ''  # refresh_status re-derives it from the sources
-            orf.refresh_status(ref, user, changed=True)
-            mark_exact_matches(user, codes=[ref.code])
-        return clear
+        return lambda: save(ref, user, estado=references.library_estado(ref), dispute_note='')  # its key again, as its sources say
     if action == 'clear_superseded_by':
-        return (lambda: save(ref, user, superseded_by=None)) if ref.superseded_by_id else None
-    manufacturer, number = manufacturer_name(data.get('manufacturer') or ref.manufacturer), compact(data.get('code'))
+        return (lambda: save(ref, user, reemplazado_por=None)) if ref.reemplazado_por_id else None
+    manufacturer, number = manufacturer_name(data.get('manufacturer') or ref.brand), compact(data.get('code'))
     if not 0 < len(number) <= 60:
         raise ValidationError({'code': 'Escribe el número que lo reemplaza: entre 1 y 60 letras o dígitos.'})
-    if (manufacturer, number) == (ref.manufacturer, ref.code):
+    if (manufacturer, number) == (ref.brand, compact(ref.clave)):
         raise ValidationError({'code': 'Un número no puede reemplazarse a sí mismo.'})
-    target = OEMReference.objects.filter(manufacturer=manufacturer, code=number).first()
-    if target and ref.superseded_by_id == target.pk:
+    target = (Reference.objects.filter(references.library_q(), brand=manufacturer, clave__in=sorted(references.library_claves(number, [data['code']])))
+              .order_by(references.exclusive_first(), 'pk').first())
+    if target and ref.reemplazado_por_id == target.pk:
         return None
     if target and creates_cycle(ref, target):
-        raise ValidationError({'code': f'{target.manufacturer} {target.code} ya está reemplazado, directa o indirectamente, por {ref.manufacturer} '
-                                       f'{ref.code}: el reemplazo formaría un ciclo.'})
+        raise ValidationError({'code': f'{target.brand} {target.clave} ya está reemplazado, directa o indirectamente, por {ref.brand} '
+                                       f'{ref.clave}: el reemplazo formaría un ciclo.'})
 
     def supersede():
-        new = target or orf.upsert_reference(manufacturer, data['code'], printed=[data['code']], source_kind='manual',
-                                             citation=f'Reemplaza a {ref.manufacturer} {ref.code}', detail={'verified': False, 'supersedes': str(ref.pk)},
-                                             actor=user, defaults={'part_type': ref.part_type, 'description': ref.description})[0]
-        save(ref, user, superseded_by=new)
+        new = target or references.add_library_number(
+            manufacturer, data['code'], printed=[data['code']], source_kind='manual', citation=f'Reemplaza a {ref.brand} {ref.clave}',
+            source_detail={'verified': False, 'supersedes': str(ref.uid)}, actor=user, part_type=current.part_type,
+            description=current.description)[0]
+        save(ref, user, reemplazado_por=new)
     return supersede
 
 
-SORTABLE = {'code': ('code',), 'manufacturer': ('manufacturer', 'code'), 'status': ('status',), 'family': ('family',),
-            'part_type': ('part_type',), 'description': ('description',), 'updated_at': ('updated_at',)}
+SORTABLE = {'code': ('clave',), 'manufacturer': ('brand', 'clave'), 'status': ('estado',), 'family': ('detail__family',),
+            'part_type': ('detail__part_type',), 'description': ('detail__description',), 'updated_at': ('updated_at',)}
 
 
 def ordering(value):
@@ -341,7 +397,33 @@ def ordering(value):
     for item in (value or '').split(','):
         name = item.strip().lstrip('-')
         fields += [('-' if item.strip().startswith('-') else '') + field for field in SORTABLE.get(name, ())]
-    return [*fields, 'manufacturer', 'code', 'id'] if fields else ['manufacturer', 'code']
+    return [*fields, 'brand', 'clave', 'id'] if fields else ['brand', 'clave', 'id']
+
+
+def status_estado(value):
+    """The Reference estado a status filter names: a legacy status or an estado (both accepted until S8); None when it is neither."""
+    if value in orf.LIBRARY_ESTADO:
+        return orf.LIBRARY_ESTADO[value]
+    return value if value in orf.LEGACY_STATUS else None
+
+
+def source_kind_q(value):
+    """Q for the sources of one kind: an old kind (kept in detail.legacy_kind, or read back from the kind of a source without one) or a
+    ReferenceSource kind. None when the value is neither."""
+    legacy, kinds = orf.kinds_for(value)
+    if not legacy and not kinds:
+        return None
+    match = Q(detail__legacy_kind__in=sorted(legacy)) | Q(kind__in=sorted(kinds))
+    for old in legacy:  # sources written before S4 from a code's reference_source text, which keep no legacy kind
+        new = [kind for kind, back in orf.LEGACY_KIND_OF.items() if back == old]
+        if old == 'catalog_approval':
+            match |= ~Q(detail__has_key='legacy_kind') & Q(kind='proveedor', citation__startswith='Declarado por')
+        if new:
+            plain = ~Q(detail__has_key='legacy_kind') & Q(kind__in=new)
+            if old == 'supplier_declaration':
+                plain &= ~Q(citation__startswith='Declarado por')
+            match |= plain
+    return match
 
 
 class OEMReferenceList(APIView):
@@ -351,49 +433,54 @@ class OEMReferenceList(APIView):
         OpenApiParameter('q', OpenApiTypes.STR, description='Inicio del número compacto, una forma impresa, la descripción, el tipo de pieza o un código de '
                                                        'marca de repuesto equivalente (desde 4 letras o dígitos).'),
         OpenApiParameter('manufacturer', OpenApiTypes.STR, description='Fabricante exacto (TOYOTA, HYUNDAI, KIA...).'),
-        OpenApiParameter('status', OpenApiTypes.STR, enum=values(REFERENCE_STATUSES)),
-        OpenApiParameter('source_kind', OpenApiTypes.STR, enum=values(SOURCE_KINDS), description='Con al menos una fuente de ese tipo.'),
-        OpenApiParameter('linked', OpenApiTypes.STR, enum=['true', 'false'], description='true: algún SKU del catálogo lleva el número; false: ninguno.'),
+        OpenApiParameter('status', OpenApiTypes.STR, enum=values(REFERENCE_STATUSES), description='También acepta el estado nuevo (verificado, declarado, inferido, disputa).'),
+        OpenApiParameter('source_kind', OpenApiTypes.STR, enum=values(SOURCE_KINDS), description='Con al menos una fuente de ese tipo (también acepta el tipo nuevo: catalogo, biblioteca, proveedor, admin, ia, buscador).'),
+        OpenApiParameter('linked', OpenApiTypes.STR, enum=['true', 'false'], description='true: alguna línea del catálogo lleva el número; false: ninguna.'),
         OpenApiParameter('ordering', OpenApiTypes.STR, description='Orden del grid, separado por comas, con - para descendente: code, manufacturer, status, family, part_type, description, updated_at.'),
         OpenApiParameter('ids', OpenApiTypes.STR, description=f'Hasta {MAX_ROW_IDS} referencias separadas por comas: las filas que un grid vuelve a leer.'),
         OpenApiParameter('page', OpenApiTypes.INT)],
-        description='Biblioteca de números OEM (forma compacta) con sus fuentes y los SKU del catálogo que los llevan, más conteos por estado y fabricante.')
+        description='Biblioteca de números OEM (forma compacta) con sus fuentes y las líneas del catálogo que los llevan, más conteos por estado y fabricante.')
     def get(self, request):
         require_tables()
-        params, rows = request.query_params, rows_query()
+        params, rows = request.query_params, orf.library_rows()
         if params.get('ids'):  # the rows a grid shows, re-read to patch what changed elsewhere
             try:
-                rows = rows.filter(pk__in=[uuid.UUID(value.strip()) for value in params['ids'].split(',') if value.strip()][:MAX_ROW_IDS])
+                rows = rows.filter(uid__in=[uuid.UUID(value.strip()) for value in params['ids'].split(',') if value.strip()][:MAX_ROW_IDS])
             except ValueError:
                 raise ValidationError({'ids': 'Usa identificadores de referencia separados por comas.'})
         text = ' '.join(params.get('q', '').upper().split())
         if text:
-            match = Q(printed_forms__icontains=text) | Q(description__icontains=text) | Q(part_type__icontains=text)
+            match = (Q(code__icontains=text) | Q(printed_forms__icontains=text) | Q(detail__description__icontains=text)
+                     | Q(detail__part_type__icontains=text))
             if compact(text):
-                match |= Q(code__startswith=compact(text))
+                match |= Q(clave__startswith=compact(text))
             if len(compact(text)) >= MIN_SEARCH:  # an aftermarket code filed under the number (GWT-41A -> TOYOTA 1610039315)
                 match |= Q(pk__in=OEMCrossReference.objects.filter(number__contains=compact(text)).values('reference_id'))
             rows = rows.filter(match)
         if params.get('manufacturer'):
-            rows = rows.filter(manufacturer=manufacturer_name(params['manufacturer']))
-        for key, choices in (('status', REFERENCE_STATUSES), ('source_kind', SOURCE_KINDS)):
-            if params.get(key) and params[key] not in values(choices):
-                raise ValidationError({key: 'El filtro no es válido.'})
+            rows = rows.filter(brand=manufacturer_name(params['manufacturer']))
         if params.get('status'):
-            rows = rows.filter(status=params['status'])
+            estado = status_estado(params['status'])
+            if estado is None:
+                raise ValidationError({'status': 'El filtro no es válido.'})
+            rows = rows.filter(estado=estado)
         if params.get('source_kind'):
-            rows = rows.filter(Exists(OEMReferenceSource.objects.filter(reference=OuterRef('pk'), kind=params['source_kind'])))
+            match = source_kind_q(params['source_kind'])
+            if match is None:
+                raise ValidationError({'source_kind': 'El filtro no es válido.'})
+            rows = rows.filter(Exists(ReferenceSource.objects.filter(match, reference=OuterRef('pk'), retirada=False)))
         linked = params.get('linked', '').lower()
         if linked not in ('', 'true', 'false'):
             raise ValidationError({'linked': 'Usa true o false.'})
         if linked:
-            rows = rows.annotate(pair=orf.reference_pair())
             rows = rows.filter(orf.linked_q()) if linked == 'true' else rows.exclude(orf.linked_q())
         paginator = PageNumberPagination()
-        page = decorate(paginator.paginate_queryset(rows.order_by(*ordering(params.get('ordering', ''))), request, view=self))
-        every = OEMReference.objects.order_by()
-        status = dict(every.values('status').annotate(n=Count('pk')).values_list('status', 'n'))
-        counts = {'status': status, 'manufacturer': dict(every.values('manufacturer').annotate(n=Count('pk')).values_list('manufacturer', 'n')),
+        page = decorate(orf.wrap(paginator.paginate_queryset(rows.order_by(*ordering(params.get('ordering', ''))), request, view=self)))
+        every = Reference.objects.filter(references.library_q()).order_by()
+        status = Counter()
+        for estado, n in every.values('estado').annotate(n=Count('pk')).values_list('estado', 'n'):
+            status[orf.LEGACY_STATUS.get(estado, estado)] += n
+        counts = {'status': dict(status), 'manufacturer': dict(every.values('brand').annotate(n=Count('pk')).values_list('brand', 'n')),
                   'total': sum(status.values())}
         return Response({'count': paginator.page.paginator.count, 'next': paginator.get_next_link(), 'previous': paginator.get_previous_link(),
                          'results': OEMReferenceRow(page, many=True).data, 'counts': counts})
@@ -401,25 +488,29 @@ class OEMReferenceList(APIView):
     @extend_schema(operation_id='v1_management_oem_references_create', request=OEMReferenceCreate, responses={
         201: OEMReferenceDetail, 200: OpenApiResponse(OEMReferenceDetail, description='El número ya estaba en la biblioteca: se unieron la forma escrita y la fuente.')},
         description='Agrega un número OEM escrito en cualquier forma (se guarda compacto) con su primera fuente: registro manual, lista de precios, '
-                    'catálogo del fabricante, catálogo de marca de repuesto o declaración de proveedor. Repetirlo no duplica nada.')
+                    'catálogo del fabricante, catálogo de marca de repuesto o declaración de proveedor. Va a la línea que ya lo lleva, o a una '
+                    'línea propia en referencia. Repetirlo no duplica nada.')
     def post(self, request):
         require_tables()
         data = OEMReferenceCreate(data=request.data)
         data.is_valid(raise_exception=True)
         data = data.validated_data
         source = data.get('source') or {'kind': 'manual', 'citation': f'Registro manual de {request.user.username}', 'verified': False}
-        ref, created = orf.upsert_reference(data['manufacturer'], data['code'], printed=[data['code']], source_kind=source['kind'],
-                                            citation=source['citation'], detail={'verified': source['verified']} if source['kind'] == 'manual' else {},
-                                            actor=request.user, defaults={key: data[key] for key in orf.FILLABLE if data.get(key)})
-        mark_exact_matches(request.user, codes=[ref.code])  # the SKUs with that code are OEM now
-        return Response(detail(ref.pk), status=201 if created else 200)
+        try:
+            ref, created = references.add_library_number(
+                data['manufacturer'], data['code'], printed=[data['code']], source_kind=source['kind'], citation=source['citation'],
+                source_detail={'verified': source['verified']} if source['kind'] == 'manual' else {}, actor=request.user,
+                **{key: data[key] for key in orf.FILLABLE if data.get(key)})
+        except references.ReferenceConflict as error:
+            raise ValidationError({'code': error.message})
+        return Response(detail(ref.uid), status=201 if created else 200)
 
 
 class OEMReferenceItem(APIView):
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_oem_reference_detail', responses=OEMReferenceDetail,
-                   description='Un número OEM con sus formas impresas, todas sus fuentes, los SKU del catálogo que lo llevan y sus reemplazos.')
+                   description='Un número OEM con sus formas impresas, todas sus fuentes, las líneas del catálogo que lo llevan y sus reemplazos.')
     def get(self, request, pk):
         require_tables()
         return Response(detail(pk))
@@ -436,28 +527,35 @@ class OEMReferenceItem(APIView):
         with transaction.atomic():
             if data['action'] == 'set_superseded_by':
                 lock_chains()
-            if data['action'] in ('dispute', 'clear_dispute'):  # it marks or unmarks the SKUs with its code: Parts before the item, like
-                code = OEMReference.objects.filter(pk=pk).values_list('code', flat=True).first()  # every writer (Editar SKU, the alterno signals)
-                if code:
-                    list(catalog_lines(LIVE, queryset=Part.objects.select_for_update()).annotate(compact=orf.compact_sql('sku'))  # the lines unmark_disputed may write
-                         .filter(compact=code).order_by('pk').values_list('pk', flat=True))
-            ref = OEMReference.objects.select_for_update().filter(pk=pk).first()
-            if ref is None:
-                raise NotFound('Ese número no está en la biblioteca OEM.')
+            line_id = Reference.objects.filter(references.library_q(), uid=pk).values_list('part_id', flat=True).first() if is_uuid(pk) else None
+            if line_id is not None:  # the line first, then the number (the lock order of every writer)
+                list(Part.objects.select_for_update().filter(pk=line_id).values_list('pk', flat=True))
+            ref = locate(pk, lock=True)
             apply = plan(ref, data, request.user)
             if apply is not None:
                 if ref.version != data['expected_version']:
-                    return Response({'detail': CONFLICT, 'reference': detail(ref.pk)}, status=409)
-                apply()
-        return Response(detail(ref.pk))
+                    return Response({'detail': CONFLICT, 'reference': detail(ref.uid)}, status=409)
+                try:
+                    apply()
+                except references.ReferenceConflict as error:
+                    raise ValidationError({'detail': error.message})
+        return Response(detail(ref.uid))
+
+
+def is_uuid(value):
+    try:
+        uuid.UUID(str(value))
+    except ValueError:
+        return False
+    return True
 
 
 class PartOEMEquivalents(APIView):
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_catalog_oem_equivalents', responses=PartOEMEquivalentsResponse,
-                   description='Solo lectura: los números OEM de un SKU del catálogo (sus alternos OEM, el número que nombra su código y los que un '
-                               'catálogo de marca de repuesto le vinculó) y los códigos de marcas de repuesto equivalentes a esos números.')
+                   description='Solo lectura: los números OEM de un SKU del catálogo (los suyos, y los que un catálogo de marca de repuesto o '
+                               'su código le vinculó) y los códigos de marcas de repuesto equivalentes a esos números.')
     def get(self, request, pk):
         require_tables()
         part = Part.objects.filter(pk=pk).first()
@@ -467,12 +565,16 @@ class PartOEMEquivalents(APIView):
 
 
 def list_rows(ids):
-    """References as the library grid lists them (sources, linked SKUs, aftermarket codes), for the given ids."""
-    return OEMReferenceRow(decorate(list(rows_query().filter(pk__in=list(ids)).order_by('manufacturer', 'code'))), many=True).data
+    """Numbers as the library grid lists them (sources, lines, aftermarket codes), for the given ids (uids)."""
+    return OEMReferenceRow(decorate(orf.wrap(orf.library_rows().filter(uid__in=list(ids)).order_by('brand', 'clave'))), many=True).data
 
 
 def part_types():
-    return sorted(set(OEMReference.objects.exclude(part_type='').values_list('part_type', flat=True).distinct()))
+    """What Editar celdas offers as a number's part type: the subgrupos' names, and the library's texts no subgrupo maps (A6)."""
+    names = set(PartType.objects.values_list('name', flat=True))
+    texts = Reference.objects.filter(references.library_q()).exclude(detail__part_type='').values_list('detail__part_type', flat=True).distinct()
+    names |= {text for text in texts if text and not orf.subgrupo_for(text)}
+    return sorted(name for name in names if name)
 
 
 class OEMPartTypes(serializers.Serializer):
@@ -483,7 +585,8 @@ class OEMReferencePartTypes(APIView):
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_oem_reference_part_types', responses=OEMPartTypes,
-                   description='Los tipos de pieza de la biblioteca OEM: los que Editar celdas ofrece (un tipo nuevo se escribe en el detalle del número).')
+                   description='Los tipos de pieza de la biblioteca OEM: los subgrupos y los textos de la biblioteca que ningún subgrupo recoge '
+                               '(Editar celdas los ofrece; un tipo nuevo se escribe en el detalle del número).')
     def get(self, request):
         require_tables()
         return Response({'results': part_types()})
@@ -524,14 +627,17 @@ class OEMReferenceBulkEdit(APIView):
         rows = data.validated_data['rows']
         known = set(part_types())
         with transaction.atomic():
-            refs = {ref.pk: ref for ref in OEMReference.objects.select_for_update().filter(pk__in=[row['id'] for row in rows]).order_by('pk')}
-            if len(refs) != len({row['id'] for row in rows}):
+            uids = [row['id'] for row in rows]
+            line_ids = sorted(set(Reference.objects.filter(references.library_q(), uid__in=uids).values_list('part_id', flat=True)), key=str)
+            list(Part.objects.select_for_update().filter(pk__in=line_ids).order_by('pk').values_list('pk', flat=True))
+            refs = {ref.uid: ref for ref in Reference.objects.select_for_update(of=('self',)).filter(references.library_q(), uid__in=uids).order_by('pk')}
+            if len(refs) != len(set(uids)):
                 raise ValidationError({'detail': 'Uno de los números ya no está en la biblioteca OEM. Vuelve a cargar la tabla.'})
             stale = [refs[row['id']] for row in rows if refs[row['id']].version != row['expected_version']]
             if stale:
-                names = ', '.join(f'{ref.manufacturer} {ref.code}' for ref in stale[:5])
+                names = ', '.join(f'{ref.brand} {ref.clave}' for ref in stale[:5])
                 return Response({'detail': f'No se guardó ningún cambio: otra persona cambió {names} mientras editabas. Revisa sus valores actuales.',
-                                 'rows': list_rows(ref.pk for ref in stale)}, status=409)
+                                 'rows': list_rows(ref.uid for ref in stale)}, status=409)
             for row in rows:
                 fields = {field: row[field] for field in ('description', 'part_type') if field in row}
                 if fields.get('part_type') and fields['part_type'] not in known:
@@ -554,7 +660,7 @@ class OEMReferenceCrossReferences(APIView):
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_oem_cross_reference_create', request=OEMCrossReferenceInput, responses={201: OEMCrossReferenceRow},
-                   description='Agrega a mano un alterno de posventa al número; todos los SKU vinculados lo muestran.')
+                   description='Agrega a mano un alterno de posventa al número; todas las líneas que lo llevan lo muestran.')
     def post(self, request, pk):
         require_tables()
         data = OEMCrossReferenceInput(data=request.data)
@@ -566,10 +672,8 @@ class OEMReferenceCrossReferences(APIView):
         if not number or not any(char.isdigit() for char in number):
             raise ValidationError({'code': 'El código necesita al menos un dígito.'})
         with transaction.atomic():
-            ref = OEMReference.objects.select_for_update().filter(pk=pk).first()
-            if ref is None:
-                raise NotFound('Ese número no está en la biblioteca OEM.')
-            if brand == ref.manufacturer:
+            ref = locate(pk, lock=True)
+            if brand == ref.brand:
                 raise ValidationError({'brand': f'Un código de {brand} es un número OEM, no un alterno de posventa: usa «Reemplazado por» en el detalle.'})
             OEMCrossReferenceRetired.objects.filter(reference=ref, brand=brand, number=number).delete()
             cite = f'Registro manual · {request.user.username}'
@@ -583,7 +687,7 @@ class OEMReferenceCrossReferences(APIView):
 
 
 class OEMReferenceCrossReference(APIView):
-    """Retire an aftermarket code from a number: every linked SKU stops showing it, and no catalog import files it again."""
+    """Retire an aftermarket code from a number: every line that carries it stops showing it, and no catalog import files it again."""
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_oem_cross_reference_retire', responses={204: None},
@@ -591,10 +695,11 @@ class OEMReferenceCrossReference(APIView):
     def delete(self, request, pk, code_id):
         require_tables()
         with transaction.atomic():
-            row = OEMCrossReference.objects.select_for_update().filter(pk=code_id, reference_id=pk).first()
+            ref = locate(pk, lock=True)
+            row = OEMCrossReference.objects.select_for_update().filter(pk=code_id, reference=ref).first()
             if row is None:
                 raise NotFound('Ese alterno ya no está en el número.')
-            OEMCrossReferenceRetired.objects.update_or_create(reference_id=pk, brand=row.brand, number=row.number,
+            OEMCrossReferenceRetired.objects.update_or_create(reference=ref, brand=row.brand, number=row.number,
                                                               defaults={'code': row.code, 'citations': row.citations, 'retired_by': request.user})
             row.delete()
         return Response(status=204)

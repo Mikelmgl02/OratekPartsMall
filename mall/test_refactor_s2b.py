@@ -16,7 +16,7 @@ from .matching_models import MatchingCase, SupplierCodeMapping
 from .models import Part, Reference, ReferenceSource
 from .oem_reference_models import PartOEMLink
 from .refactor import s2b_main_refs
-from .test_factories import (Fresh, make_library_number, make_line, make_reference, make_supplier, make_user, make_variant,
+from .test_factories import (Fresh, make_legacy_number, make_line, make_reference, make_supplier, make_user, make_variant,
                              run_migration_function, unhook_variants)
 from .test_main_references import broken_invariants
 
@@ -60,8 +60,9 @@ class BackfillTests(Fresh, TestCase):
                                          status='owner_confirmed', owner_confirmed=True)
         CatalogCodeSuffix.objects.create(token='ZQY', cls='TAG', tag_kind='brand', attribution='brand: ZQY (unverified)',
                                          status='owner_confirmed', owner_confirmed=True)
-        make_library_number('MITSUBISHI', 'MR-968365', source_kind='catalog_approval', citation='CATÁLOGO')
-        number = make_library_number('TOYOTA', '43512-60150', source_kind='catalog_approval', citation='CATÁLOGO')
+        # S2b runs on the OEM table as it was before S4 (OEMReference), which S4 then turns into References.
+        make_legacy_number('MITSUBISHI', 'MR968365', printed_forms=['MR-968365'], source_kind='catalog_approval', citation='CATÁLOGO')
+        number = make_legacy_number('TOYOTA', '4351260150', printed_forms=['43512-60150'], source_kind='catalog_approval', citation='CATÁLOGO')
         self.supplier = make_supplier('S2B PROVEEDOR')
         self.own_oem = make_line('OEM-12345678', is_OEM=True)
         self.branded = make_reference(self.own_oem, 'OEM-12345678', brand='TOYOTA', tipo='oem', source='CATÁLOGO')
@@ -78,7 +79,7 @@ class BackfillTests(Fresh, TestCase):
         self.held = make_reference(self.holder, 'ALIAS-HELD-1')
         self.own = make_line('ALIAS-HELD-1')
         self.carrier, self.linked = make_line('43512-60150'), make_line('DISCO-X')
-        PartOEMLink.objects.create(part=self.linked, reference=number, source='catalog')
+        PartOEMLink.objects.create(part=self.linked, legacy_reference=number, source='catalog')
         self.retired = make_line('RET-1', active=False)
         self.stocked, self.respelled = make_line('28113-F2000'), make_line('28113F2000')
         make_variant(self.supplier, 'INV-2', '28113-F2000', 3, actor=self.root, line=self.stocked)

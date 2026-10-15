@@ -71,7 +71,7 @@ def run(paths, *, report_path=None, stdout=None):
     library = {(manufacturer, code): str(pk) for pk, manufacturer, code in OEMReference.objects.values_list('pk', 'manufacturer', 'code')}
     filed, retired = defaultdict(set), defaultdict(set)
     for table, out in ((OEMCrossReference, filed), (OEMCrossReferenceRetired, retired)):
-        for ref, brand, number in table.objects.values_list('reference_id', 'brand', 'number'):
+        for ref, brand, number in table.objects.values_list('legacy_reference_id', 'brand', 'number'):  # the OEM table's ids (before S4)
             out[(brand, number)].add(str(ref))
     result = {'catalogs': []}
     for data in datasets:

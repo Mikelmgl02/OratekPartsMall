@@ -452,8 +452,9 @@ class SkuReviewTests(APITestCase):
         proposal = self.proposal('PELU-KY')
         approve(proposal.pk, self.root, proposal.version)
         part = self.proposal('PELU-KY').part
-        reference = OEMReference.objects.create(manufacturer='TOYOTA', code='1610039315', printed_forms=['16100-39315'])
         from .oem_reference_models import OEMCrossReference
+        from .test_factories import make_library_number
+        reference = make_library_number('TOYOTA', '16100-39315')  # S4: a library number, on its own line in referencia
         OEMCrossReference.objects.create(reference=reference, brand='GMB', code='GWT-41A', number='GWT41A')
         self.item(self.dealer, '3', 'GWT-41A', 'GMB', 'BOMBA DE AGUA')
         propose()

@@ -10,7 +10,7 @@ from django.test.utils import CaptureQueriesContext
 from .brand_models import Brand
 from .models import Part
 from .refactor import snapshot
-from .test_factories import (Fresh, make_catalog, make_client, make_library_number, make_line, make_reference, make_supplier, make_user,
+from .test_factories import (Fresh, legacy_mirror, make_catalog, make_client, make_legacy_number, make_line, make_reference, make_supplier, make_user,
                              make_variant)
 
 LOCKS = re.compile(r'\bFOR (NO KEY )?UPDATE\b', re.I)
@@ -27,13 +27,13 @@ class CaptureTests(Fresh, TestCase):
         self.lines = make_catalog([('17801-30070', 'FILTRO AIRE TOY HILUX'), ('48654-0K050', 'BASE AMORT TOY HILUX'),
                                    ('28113-F2000', 'FILTRO AIRE HYU ELANTRA')])
         self.line = self.lines['17801-30070']
-        make_reference(self.line, '17801-30070', brand='TOYOTA', tipo='oem', source='CATÁLOGO')
+        legacy_mirror(make_reference(self.line, '17801-30070', brand='TOYOTA', tipo='oem', source='CATÁLOGO'))  # as the base read the library
         Brand.objects.create(nombre='TOYOTA')  # every brand a code carries is a brand (I12: the S1 seed, then S2a's backfill)
         make_variant(self.supplier, 'S-1', '17801-30070', 4, actor=seller, brand='KSM', line=self.line)
         duplicate = make_line('17801-30070-G', description='FILTRO AIRE TOY')
         duplicate.merged_into = self.line
         duplicate.save(update_fields=['merged_into'])  # unificada, and its main retired (I3) as a merge leaves it
-        make_library_number('TOYOTA', '48654-0K050', citation='LISTA 2026')
+        make_legacy_number('TOYOTA', '486540K050', printed_forms=['48654-0K050'], citation='LISTA 2026')  # the library as the base snapshot read it
 
     def test_a_capture_reads_every_screen_and_writes_nothing(self):
         with CaptureQueriesContext(connection) as queries:
@@ -71,9 +71,12 @@ class CaptureTests(Fresh, TestCase):
         self.assertIn(f'admin_grid/sku p1/results[id={self.line.pk}]/description', [path for path, _, _ in allowed['expected']])
 
     def test_checks_run_what_today_has_and_skip_what_no_stage_added_yet(self):
+        from .oem_reference_models import OEMReference
         make_line('17801-30070-OLD', active=False)  # C1 (S1): publicada, unificada and retirada lines, as on the live catalog
+        OEMReference.objects.all().delete()  # C4 (S4): every number of the OEM table has its Reference once S4's backfill ran
         results = {(check_id, outcome) for check_id, _, outcome, _ in snapshot.run_checks()}
-        self.assertIn(('C1', 'OK'), results)
+        self.assertIn(('C1', 'INFO'), results)  # from S4 the lines in referencia make more groups: it only informs
+        self.assertIn(('C4', 'OK'), results)
         self.assertIn(('I6', 'OK'), results)
         self.assertIn(('C0', 'INFO'), results)
         self.assertIn(('I1', 'OK'), results)  # every line has its main since S2b (the Part.save shim makes it)

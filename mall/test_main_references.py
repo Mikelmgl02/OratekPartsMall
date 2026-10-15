@@ -122,9 +122,8 @@ class SetMainTests(TestCase):
 
     def test_a_codigo_another_line_has_is_refused_and_can_open_a_merge_case(self):
         merged = make_line('TAKEN-1')
-        target = make_line('TARGET-1')
-        merged.merged_into = target
-        merged.save(update_fields=['merged_into'])  # its main retires (I3), its codigo stays its own until S4
+        # From S4 a codigo is unique among the catalog's lines: TAKEN-1's main waits in disputa, so its key is free and its codigo is not.
+        references.update(main(merged), estado='disputa', dispute_note='CASO')
         ref, _ = references.add(self.line, 'TAKEN-1', '')
         with self.assertRaises(references.MainConflict) as refused:
             references.set_main(self.line, ref, open_case=True)
@@ -236,13 +235,13 @@ class EnsureMainsTests(TestCase):
 
 
 class MarkTests(Fresh, TestCase):
-    def test_mark_exact_matches_marks_through_the_main(self):
-        make_library_number('TOYOTA', '90915-YZZE1', citation='LISTA 2026')
+    def test_mark_exact_matches_is_retired_and_the_number_goes_on_its_line(self):
         line = make_line('90915-YZZE1', description='FILTRO ACEITE TOY')
-        self.assertEqual(len(mark_exact_matches()), 1)
+        number = make_library_number('TOYOTA', '90915-YZZE1', citation='LISTA 2026')  # S4: the line carries it (its brandless main)
+        self.assertEqual(mark_exact_matches(), [])
         line.refresh_from_db()
-        self.assertEqual((line.is_OEM, line.tipo, main(line).tipo, main(line).brand), (True, 'OEM', 'oem', 'TOYOTA'))
-        self.assertEqual(CatalogIdentityChange.objects.get(part=line).reference['action'], 'exact_match')
+        self.assertEqual((number.part_id, number.is_main, line.tipo, main(line).brand), (line.pk, False, 'UNKNOWN', ''))
+        self.assertFalse(CatalogIdentityChange.objects.filter(part=line).exists())
 
 
 class MergeTests(TestCase):

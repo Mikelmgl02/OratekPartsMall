@@ -8,7 +8,8 @@ from django.test import TestCase
 from . import prune_catalog_alternos as prune
 from .models import Part, PartCode
 from .oem_links import store_cross_references
-from .oem_reference import upsert_reference
+from . import references
+from .oem_reference_models import PartOEMLink
 from .test_oem_finder import Fresh
 
 CATALOG = 'GMB Water Pump Catalog 2016'
@@ -18,12 +19,16 @@ PAGE = f'{CATALOG} · pág. 212'
 class PruneTests(Fresh, TestCase):
     def setUp(self):
         super().setUp()
-        ref = upsert_reference('TOYOTA', '16100-39315', source_kind='aftermarket_catalog', citation=CATALOG, detail={'catalog': 'gmb_wp_2016'})[0]
+        ref = references.add_library_number('TOYOTA', '16100-39315', source_kind='aftermarket_catalog', citation=CATALOG,
+                                            source_detail={'catalog': 'gmb_wp_2016'})[0]
         store_cross_references({(ref.pk, 'GMB', 'GWT-41A'): [PAGE], (ref.pk, 'AISIN', 'WPT-111'): [PAGE]})
         self.copied = Part.objects.create(sku='16100-39315-RAZ', description='BOMBA AGUA TOY 22R')  # its code names the number
+        PartOEMLink.objects.create(part=self.copied, reference=ref, source='sku_name')  # a name link S4 re-pointed (they are retired)
         self.copies = [self.code(self.copied, 'GMB', 'GWT-41A'), self.code(self.copied, 'AISIN', 'WPT 111')]
         self.typed = self.code(self.copied, 'FEBEST', 'TM-1', source='FICHA TÉCNICA')  # typed by a person
-        self.oem = self.code(self.copied, 'TOYOTA', '16100-39315', ref_type='oem', source=PAGE)
+        # The number itself as an OEM alterno: S4 absorbs its line in referencia (rule 3f), so it is the library's Reference.
+        self.oem = references.add(self.copied, '16100-39315', 'TOYOTA', ref_type='oem', source=PAGE)[0]
+        self.assertEqual(self.oem.pk, ref.pk)
         self.lone = Part.objects.create(sku='BOMBA-B', description='BOMBA AGUA')  # reaches no number
         self.unreached = self.code(self.lone, 'GMB', 'GWT-71A')
         self.mixed = Part.objects.create(sku='16100-39315-GMB', description='BOMBA AGUA TOY 22R')

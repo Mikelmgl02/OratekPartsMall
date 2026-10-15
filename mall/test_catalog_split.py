@@ -5,7 +5,7 @@ from .catalog_split_models import CatalogSeparation, CatalogSplit
 from .matching_engine import reconcile_catalog
 from .matching_queue import matching_work
 from .models import Account, CatalogMerge, Part, PartCode, SupplierItem, User
-from .oem_reference import upsert_reference
+from .references import add_library_number
 from .oem_reference_models import PartOEMLink
 from .services import ingest_inventory
 from .test_factories import move_variant
@@ -122,13 +122,13 @@ class CatalogSplitTests(APITestCase):
     def test_catalog_links_follow_the_codes_that_made_them(self):
         parent = self.grouped()
         cite = 'CATÁLOGO KOREA 2024 · pág. 3 · KX-100'  # the catalog item KX-100, matched through the code the K SKU brought
-        printed = upsert_reference('KIA', '58411-07000', source_kind='aftermarket_catalog', citation='CATÁLOGO KOREA 2024')[0]
-        own = upsert_reference('KIA', '58411-08000', source_kind='aftermarket_catalog', citation='CATÁLOGO KOREA 2024')[0]  # the parent's code
+        printed = add_library_number('KIA', '58411-07000', source_kind='aftermarket_catalog', citation='CATÁLOGO KOREA 2024')[0]
+        own = add_library_number('KIA', '58411-08000', source_kind='aftermarket_catalog', citation='CATÁLOGO KOREA 2024')[0]  # the parent's code
         for reference in (printed, own):
             PartOEMLink.objects.create(part=parent, reference=reference, source='catalog', citations=[cite])
         summary = self.split(parent, self.restore(self.plan(parent), '58411-08000-K')).json()['summary']
         self.assertEqual((summary['links_moved'], summary['links_shared']), (1, 1))
-        links = sorted(PartOEMLink.objects.filter(source='catalog').values_list('part__sku', 'reference__code'))
+        links = sorted(PartOEMLink.objects.filter(source='catalog').values_list('part__sku', 'reference__clave'))
         self.assertEqual(links, [('58411-08000', '5841108000'), ('58411-08000-K', '5841107000'), ('58411-08000-K', '5841108000')])
 
     def test_the_worker_never_regroups_skus_a_split_separated_through_references(self):

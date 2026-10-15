@@ -375,7 +375,7 @@ class LineWriterFlowTests(APITestCase):
 
     def test_an_import_issue_for_a_line_off_the_catalog_stays_pending(self):
         from .models import CatalogImportIssue, CatalogImportJob
-        line = make_line('MR-968365', estado='referencia', origen='biblioteca')
+        line = make_line('MR-968365', estado='preparacion', origen='proveedor')  # a line in referencia is promoted instead (S4)
         job = CatalogImportJob.objects.create(owner=self.root, filename='LINEAS.xlsx', status='completed', expires_at=timezone.now())
         issue = CatalogImportIssue.objects.create(job=job, row=7, values={**dict.fromkeys(['sku', 'name', 'description', 'code', 'brand', 'active',
                                                                                              'category', 'subcategory'], ''), 'sku': line.sku},
@@ -384,10 +384,10 @@ class LineWriterFlowTests(APITestCase):
                                     format='json')
         self.assertEqual(response.status_code, 200, response.content)
         self.assertFalse(response.json()['valid'])
-        self.assertIn('en referencia', str(response.json()['errors']))
+        self.assertIn('en preparación', str(response.json()['errors']))
         issue.refresh_from_db()
         self.assertEqual((issue.status, issue.part_id), ('pending', None))
-        self.assertEqual(stored(line), ('referencia', False))
+        self.assertEqual(stored(line), ('preparacion', False))
 
     def test_an_import_with_activo_0_retires_and_activo_1_publishes(self):
         def run(active):
@@ -545,10 +545,10 @@ class BrandSeedTests(TestCase):
 
     def setUp(self):
         from .oem_reference_models import OEMCrossReference
-        from .test_factories import make_library_number
+        from .test_factories import make_legacy_number as make_library_number  # S1's seed read the OEM table before S4
         for make, code in (('TOYOTA', '90915-YZZE1'), ('LEXUS', '90915-YZZE2'), ('KAIYI', 'KY-0001'), ('CHERY', 'CH-0001'), ('NISSAN', '15208-65F0E')):
             make_library_number(make, code)
-        OEMCrossReference.objects.create(reference=make_library_number('TOYOTA', '04465-0K290'), brand='LEX', code='LX-1', number='LX1')
+        OEMCrossReference.objects.create(legacy_reference=make_library_number('TOYOTA', '04465-0K290'), brand='LEX', code='LX-1', number='LX1')
         line = make_line('SEED-1')
         for code, brand in (('S-1', 'TOY'), ('S-2', 'VAG'), ('S-3', 'AISAN'), ('S-4', 'MOTION  MOTORS')):
             make_reference(line, code, brand=brand, tipo='otro')  # not a company code: a company brand keeps its own spelling (LEX)

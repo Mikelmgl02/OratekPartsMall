@@ -7,7 +7,8 @@ from rest_framework.test import APIClient, APITestCase
 from .matching_engine import item_row, save_case
 from .matching_models import MatchingCase, MatchingDecision, MatchingQueue, SupplierCodeMapping
 from .models import Account, Membership, Part, PartCode, PartType, Role, SupplierItem, User
-from .oem_reference_models import OEMCrossReference, OEMReference
+from .oem_reference_models import OEMCrossReference
+from .test_factories import make_library_number
 from .sku_proposal_models import SkuProposal, SkuProposalItem
 from .sku_proposals import ProposalConflict, approve, edit, link_existing, propose, proposals_stage, reject, vehicle_makes
 from .test_factories import move_variant
@@ -59,7 +60,7 @@ class SkuProposalTests(APITestCase):
         self.assertNotIn('WURTH', vehicle_makes())
 
     def test_the_oem_library_gives_an_aftermarket_code_its_oem_number(self):
-        reference = OEMReference.objects.create(manufacturer='TOYOTA', code='1610039315', printed_forms=['16100-39315'])
+        reference = make_library_number('TOYOTA', '16100-39315')  # S4: a library number, on its own line in referencia
         OEMCrossReference.objects.create(reference=reference, brand='GMB', code='GWT-41A', number='GWT41A')
         self.item(self.dealer, '20', 'GWT-41A', 'GMB', 'BOMBA DE AGUA')
         propose()
@@ -86,7 +87,7 @@ class SkuProposalTests(APITestCase):
         self.assertEqual(SupplierCodeMapping.objects.filter(part=part, actor=self.root).count(), 2)
 
     def test_an_aftermarket_item_with_a_library_oem_gets_the_oem_as_its_main(self):
-        reference = OEMReference.objects.create(manufacturer='TOYOTA', code='1610039315', printed_forms=['16100-39315'])
+        reference = make_library_number('TOYOTA', '16100-39315')  # S4: a library number, on its own line in referencia
         OEMCrossReference.objects.create(reference=reference, brand='GMB', code='GWT-41A', number='GWT41A')
         self.item(self.dealer, '20', 'GWT-41A', 'GMB', 'BOMBA DE AGUA TOYOTA HILUX')
         propose()
@@ -212,9 +213,10 @@ class SkuProposalTests(APITestCase):
         self.assertEqual(result['results'][1]['message'], '0446502220 ya está en el catálogo como SKU 04465-02220: usa «Vincular a SKU existente».')
         self.assertEqual(Part.objects.filter(sku__in=['04465-02220', '0446502220']).count(), 1)
         # An OEM number another SKU carries as an alterno: the aftermarket item belongs there.
-        reference = OEMReference.objects.create(manufacturer='TOYOTA', code='1610039315', printed_forms=['16100-39315'])
         holder = Part.objects.create(sku='BOMBA-1', name='BOMBA-1')
         PartCode.objects.create(part=holder, code='16100-39315', brand='TOYOTA', ref_type='oem')
+        reference = make_library_number('TOYOTA', '16100-39315')  # S4: the number is the alterno BOMBA-1 carries
+        self.assertEqual(reference.part_id, holder.pk)
         OEMCrossReference.objects.create(reference=reference, brand='GMB', code='GWT-41A', number='GWT41A')
         self.item(self.dealer, '20', 'GWT-41A', 'GMB', 'BOMBA DE AGUA')
         propose()

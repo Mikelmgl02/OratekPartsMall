@@ -20,7 +20,8 @@ from .models import PartCode, Reference, ReferenceDeleteRefused, ReferenceSource
 from .oem_reference_models import OEMReference, OEMReferenceSource
 from .refactor import s2a_references
 from .services import matching_part
-from .test_factories import make_client, make_line, make_reference, make_supplier, make_user, make_variant, run_migration_function
+from .test_factories import (legacy_mirror, make_client, make_line, make_reference, make_supplier, make_user, make_variant,
+                             run_migration_function)
 
 ALGO = 'algo:oem-finder:v3:current:7'
 CATALOG = 'GMB Water Pump Catalog 2016 · pág. 551'
@@ -304,15 +305,14 @@ class RetireTests(APITestCase):
         self.assertEqual(Reference.all_objects.get(pk=ref.pk).estado, 'retirada')
         self.assertEqual(self.client.get(f'{url}{ref.pk}/').status_code, 404)  # a retired alterno is not listed or edited
 
-    def test_the_oem_mirror_keeps_the_number_when_its_alterno_retires(self):
+    def test_an_oem_alterno_is_the_library_row_itself_and_nothing_mirrors_it(self):
         ref, _ = references.add(self.line, '17801-30070', 'TOYOTA', ref_type='oem', source=ALGO)
-        number = OEMReference.objects.get(manufacturer='TOYOTA', code='1780130070')
-        self.assertEqual(number.sources.get().detail['part_codes'][0]['id'], ref.pk)
-        references.retire(ref)
-        number.refresh_from_db()
-        self.assertEqual((number.sources.count(), OEMReferenceSource.objects.count()), (0, 0))
+        self.assertFalse(OEMReference.objects.exists() or OEMReferenceSource.objects.exists())  # S4: the OEM table is frozen
+        self.assertTrue(Reference.objects.filter(references.library_q(), pk=ref.pk).exists())
+        references.retire(ref)  # only the OEM finder backs it: no library number, so it retires as before
+        self.assertFalse(Reference.objects.filter(references.library_q(), pk=ref.pk).exists())
         back, _ = references.add(self.line, '17801-30070', 'TOYOTA', ref_type='oem', source=ALGO)
-        self.assertEqual((back.pk, number.sources.get().detail['part_codes'][0]['id']), (ref.pk, ref.pk))  # it backs the number again
+        self.assertEqual((back.pk, back.estado), (ref.pk, 'inferido'))
 
     def test_merging_keeps_the_sources_codigo_as_a_reference_and_a_split_moves_it_back(self):
         from .catalog_split import split_catalog_part
@@ -527,13 +527,12 @@ class WriterRuleTests(APITestCase):
         plan, _ = stock_plan(make_supplier('RULE PROVEEDOR'), rows)
         self.assertEqual([(row['matching_status'], row['part_id']) for row in plan['preview']], [('matched', str(self.a.pk))])
 
-    def test_a_catalog_replace_keeps_a_number_a_retired_alterno_points_at(self):
+    def test_a_catalog_replace_keeps_a_number_a_catalog_line_holds(self):
         from .supplier_catalog_replace import held
         ref, _ = references.add(self.a, '17801-30070', 'TOYOTA', ref_type='oem', source=ALGO)
-        references.retire(ref)
-        number = OEMReference.objects.get(manufacturer='TOYOTA', code='1780130070')
-        self.assertEqual(Reference.all_objects.get(pk=ref.pk).oem_reference_id, number.pk)  # history: it still points at its number
-        self.assertTrue(held(number, 'GMB Water Pump Catalog 2016'))
+        self.assertTrue(held(ref, 'GMB Water Pump Catalog 2016'))  # S4: the number is one of a catalog line's codes
+        alone, _ = references.add_library_number('TOYOTA', '17801-30071', source_kind='aftermarket_catalog', citation='GMB Water Pump Catalog 2016')
+        self.assertFalse(held(alone, 'GMB Water Pump Catalog 2016'))  # on its own line in referencia, the catalog's alone
 
     def test_add_moves_a_retired_row_only_for_unique_brand_code(self):
         gone = make_reference(self.b, 'MOVE-1', brand='GMB')
@@ -577,6 +576,8 @@ class BackfillTests(TestCase):
         self.declared = make_reference(self.cv, '44310-STX-305', brand='HONDA', tipo='oem',
                                        source='Declarado por Motion Motors · producto nuevo 1a2b3c4d')
         self.disputed = make_reference(self.cv, '44310-STX-999', brand='HONDA', tipo='oem', source='https://parts.example/44310')
+        for alterno in (self.finder, self.declared, self.disputed):  # S2a ran on the OEM table its signals kept before S4
+            legacy_mirror(alterno)
         number = OEMReference.objects.get(manufacturer='HONDA', code='44310STX999')
         number.status, number.dispute_note = 'disputed', 'ES OTRO MODELO'
         number.save()

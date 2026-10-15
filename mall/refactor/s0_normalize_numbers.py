@@ -139,8 +139,8 @@ def refuse(groups):
 
 def conflicting_retirements(loser, keeper):
     """A code retired from one twin and live on the other: which one is right needs a person."""
-    live = lambda ref: set(ref.cross_references.values_list('brand', 'number'))
-    retired = lambda ref: set(ref.retired_cross_references.values_list('brand', 'number'))
+    live = lambda ref: set(ref.legacy_cross_references.values_list('brand', 'number'))
+    retired = lambda ref: set(ref.legacy_retired_cross_references.values_list('brand', 'number'))
     return bool(retired(loser) & live(keeper) or live(loser) & retired(keeper))
 
 
@@ -150,7 +150,6 @@ def values(obj):
 
 def absorb(loser, keeper, counts, log, apply):
     """The keeper takes the loser's sources, codes, retired codes and links; then the loser goes."""
-    from ..oem_reference import refresh_status
     from ..oem_reference_models import citation_list
     note = {'id': str(loser.pk), 'manufacturer': loser.manufacturer, 'code': loser.code, 'printed_forms': loser.printed_forms}
 
@@ -184,8 +183,8 @@ def absorb(loser, keeper, counts, log, apply):
             delete(source)
         else:
             update(source, reference_id=keeper.pk, detail={**(source.detail or {}), 'absorbed_numbers': absorbed(source.detail)})
-    mine = {(x.brand, x.number): x for x in keeper.cross_references.all()}
-    for row in loser.cross_references.all():
+    mine = {(x.brand, x.number): x for x in keeper.legacy_cross_references.all()}
+    for row in loser.legacy_cross_references.all():
         counts['codes'] += 1
         kept = mine.get((row.brand, row.number))
         if kept is not None:
@@ -194,16 +193,16 @@ def absorb(loser, keeper, counts, log, apply):
                 update(kept, citations=citation_list(kept.citations, *row.citations))
             delete(row)
         else:
-            update(row, reference_id=keeper.pk)
-    mine = {(x.brand, x.number) for x in keeper.retired_cross_references.all()}
-    for row in loser.retired_cross_references.all():
+            update(row, legacy_reference_id=keeper.pk)
+    mine = {(x.brand, x.number) for x in keeper.legacy_retired_cross_references.all()}
+    for row in loser.legacy_retired_cross_references.all():
         counts['retired_codes'] += 1
         if (row.brand, row.number) in mine:
             delete(row)
         else:
-            update(row, reference_id=keeper.pk)
-    mine = {(link.part_id, link.source): link for link in keeper.part_links.all()}
-    for link in loser.part_links.all():
+            update(row, legacy_reference_id=keeper.pk)
+    mine = {(link.part_id, link.source): link for link in keeper.legacy_part_links.all()}
+    for link in loser.legacy_part_links.all():
         counts['links'] += 1
         kept = mine.get((link.part_id, link.source))
         if kept is not None:
@@ -212,7 +211,7 @@ def absorb(loser, keeper, counts, log, apply):
                 update(kept, citations=citation_list(kept.citations, *link.citations))
             delete(link)
         else:
-            update(link, reference_id=keeper.pk)
+            update(link, legacy_reference_id=keeper.pk)
     log.append({'table': keeper._meta.db_table, 'action': 'update', 'id': keeper.pk, 'before': values(keeper)})
     if apply:
         for field in FILLABLE:
@@ -220,6 +219,19 @@ def absorb(loser, keeper, counts, log, apply):
                 setattr(keeper, field, getattr(loser, field))
         refresh_status(keeper, keeper.updated_by, changed=True)  # takes the next version; an automatic merge edits no one's name in
     delete(loser)
+
+
+def refresh_status(ref, actor=None, *, changed=False):
+    """The OEM table's status rule on an OEMReference (this tool runs on the OEM table as it was before S4, which froze it): re-derived
+    from its sources unless disputed, saved with the next version when it changed or the caller changed something else."""
+    from ..oem_reference import derived_status
+    before = ref.status
+    if ref.status != 'disputed':
+        ref.status = derived_status(ref.sources.values_list('kind', 'detail'))
+    if changed or ref.status != before:
+        ref.updated_by = actor
+        ref.save()
+    return ref.status
 
 
 def rename(ref, code, log, apply):
