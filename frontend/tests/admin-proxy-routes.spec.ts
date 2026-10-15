@@ -136,3 +136,42 @@ test('the proxy forwards Agrupación inteligente: the cases by kind and the S6 d
     expect(await response.text()).not.toContain('La ruta solicitada no existe');
   }
 });
+
+test('the proxy forwards the S7 routes: OEM lines, References, cases, merges, Marcas, Grupos and Separar referencia', async ({ page }) => {
+  test.skip(!process.env.E2E_ADMIN_TOKEN, 'A disposable superuser token is required.');
+  await page.context().addCookies([{ name: 'partsmall_session', value: process.env.E2E_ADMIN_TOKEN!, url: origin, httpOnly: true, sameSite: 'Strict' }]);
+  const lines = await page.request.get('/api/management/lines?page=1&estado=publicada,retirada&tipo=OEM&ordering=sku');
+  expect(lines.status(), await lines.text()).toBe(200);
+  const first = (await lines.json()).results[0]?.id;
+  const brands = await page.request.get('/api/management/brands?page=1&search=a&tipo=vehiculo');
+  expect(brands.status(), await brands.text()).toBe(200);
+  const brand = (await brands.json()).results[0]?.id;
+  const grupos = await page.request.get('/api/management/grupos');
+  expect(grupos.status(), await grupos.text()).toBe(200);
+  const paths = ['/api/management/lines?page=1&estado=preparacion&origen=proveedor&grupo=none', '/api/management/cases?status=review&kind=merge&route=lote&page=1',
+    '/api/management/merges?page=1&since=2026-01-01&search=A',
+    ...(first ? [`/api/management/lines/${first}`, `/api/management/lines/${first}/references`, `/api/management/lines/${first}/main`,
+      `/api/management/cases?line=${first}`, `/api/management/lines?ids=${first}`] : []),
+    ...(brand ? [`/api/management/brands/${brand}`, `/api/management/brands?familia=${brand}`] : [])];
+  for (const path of paths) {
+    const response = await page.request.get(path);
+    expect(response.status(), `${path}: ${await response.text()}`).toBe(200);
+  }
+  // Rows that do not exist, and bodies the backend refuses before it reads anything: its own 400s and 404s, so nothing is written.
+  const zero = '00000000-0000-4000-8000-000000000000';
+  const refused: [string, string, object | undefined][] = [
+    ['GET', `/api/management/cases/${zero}`, undefined], ['GET', `/api/management/grupos/${zero}`, undefined],
+    ['GET', '/api/management/cases/batches/no-such-batch', undefined],
+    ['POST', `/api/management/lines/${zero}/transition`, {}], ['POST', `/api/management/lines/${zero}/references`, {}],
+    ['POST', `/api/management/lines/${zero}/main`, {}], ['POST', `/api/management/cases/${zero}`, { action: 'dismiss', fingerprint: '0'.repeat(64) }],
+    ['POST', '/api/management/cases/batches/no-such-batch', { action: 'merge', cases: [] }], ['POST', '/api/management/brands', {}],
+    ['POST', '/api/management/brands/0/aliases', {}], ['POST', '/api/management/grupos', {}], ['POST', `/api/management/inventory/${zero}/separate`, {}],
+    ['PATCH', `/api/management/lines/${zero}`, {}], ['PATCH', '/api/management/references/0', {}], ['PATCH', '/api/management/brands/0', {}],
+    ['PATCH', `/api/management/grupos/${zero}`, {}], ['DELETE', '/api/management/references/0', undefined],
+    ['DELETE', '/api/management/brands/0/aliases/0', undefined]];
+  for (const [method, path, data] of refused) {
+    const response = await page.request.fetch(path, { method, data, headers: { Origin: origin } });
+    expect([400, 404], `${method} ${path}: ${await response.text()}`).toContain(response.status());
+    expect(await response.text()).not.toContain('La ruta solicitada no existe');
+  }
+});

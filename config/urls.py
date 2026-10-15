@@ -9,6 +9,10 @@ from mall import basket, reorder, threads, deal_attachments, email_notifications
 from mall.technical_api import (PartTypeList, PartTypeDetail, TemplateDetail, ApplicationList, ApplicationDetail,
                                ItemTechnicalDetail, CatalogTechnicalDetail)
 from mall.matching_views import MatchingOverview, MatchingReview
+from mall.brand_views import BrandAliasDetail, BrandAliases, BrandDetail, BrandList, GrupoDetail, GrupoList
+from mall.case_views import CaseBatch, CaseDetail, CaseList
+from mall.line_views import (InventorySeparate, LineDetail, LineList, LineMain, LineReferences, LineTransition, MergeDigest,
+                             ReferenceDetail)
 from mall.analytics import AnalyticsDashboard, UsageEvents
 from mall.deal_admin import DealAdminCancel, DealAdminDetail, DealAdminList
 from mall.apiag_connection import ApiagConnectionTest, ApiagConnectionView
@@ -124,6 +128,24 @@ urlpatterns = [
     path('api/v1/management/matching/<uuid:pk>/', MatchingReview.as_view()),
     path('api/v1/management/inventory/', management.InventoryList.as_view()),
     path('api/v1/management/inventory/<uuid:pk>/', management.InventoryDetail.as_view()),
+    path('api/v1/management/inventory/<uuid:pk>/separate/', InventorySeparate.as_view()),
+    # The inventory refactor's S7 routes (OEM lines, References, cases, merges, brands, grupos); S8's screens read them.
+    path('api/v1/management/lines/', LineList.as_view()),
+    path('api/v1/management/lines/<uuid:pk>/', LineDetail.as_view()),
+    path('api/v1/management/lines/<uuid:pk>/transition/', LineTransition.as_view()),
+    path('api/v1/management/lines/<uuid:pk>/references/', LineReferences.as_view()),
+    path('api/v1/management/lines/<uuid:pk>/main/', LineMain.as_view()),
+    path('api/v1/management/references/<int:pk>/', ReferenceDetail.as_view()),
+    path('api/v1/management/cases/', CaseList.as_view()),
+    path('api/v1/management/cases/batches/<str:key>/', CaseBatch.as_view()),
+    path('api/v1/management/cases/<uuid:pk>/', CaseDetail.as_view()),
+    path('api/v1/management/merges/', MergeDigest.as_view()),
+    path('api/v1/management/brands/', BrandList.as_view()),
+    path('api/v1/management/brands/<int:pk>/', BrandDetail.as_view()),
+    path('api/v1/management/brands/<int:pk>/aliases/', BrandAliases.as_view()),
+    path('api/v1/management/brands/<int:pk>/aliases/<int:alias_id>/', BrandAliasDetail.as_view()),
+    path('api/v1/management/grupos/', GrupoList.as_view()),
+    path('api/v1/management/grupos/<uuid:pk>/', GrupoDetail.as_view()),
     path('api/v1/management/alternates/', management.AlternateList.as_view()),
     path('api/v1/management/alternate-review/', AlternateReviewList.as_view()),
     path('api/v1/management/alternate-review/<uuid:pk>/', AlternateReviewItem.as_view()),

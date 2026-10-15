@@ -593,3 +593,107 @@ def touch_visible(lines, at=None):
         if isinstance(line, Part):
             line.changed_at = at
     return at
+
+
+# --- an administrator's line (S7: management/lines/<id>, management/lines/<id>/transition) ----------------------------------------------
+
+class LineVersionConflict(APIException):
+    """The line changed since the person read it (its version moved): 409. version is the one it has now (the S7 views answer both)."""
+    status_code = 409
+    default_detail = 'La línea cambió mientras la editabas: vuelve a cargarla.'
+
+    def __init__(self, line, detail=None):
+        super().__init__(detail or self.default_detail)
+        self.version = line.version
+
+
+EDIT_FIELDS = ('description', 'name', 'aplicaciones_texto', 'part_type')
+# The moves a person makes from management/lines/<id>/transition (the estado now → the estados it may take). preparación's go through
+# Productos nuevos (mall.new_products: publish moves its items, reject keeps them); referencia's promote the library line; merging
+# (unificada) and Separar SKU (leaving it) have their own tools.
+TRANSITIONS = {'referencia': ('publicada', 'retirada'), 'preparacion': ('publicada', 'rechazada'), 'publicada': ('retirada',),
+               'retirada': ('publicada',), 'rechazada': ('preparacion',)}
+
+
+def _locked_line(line_id, expected_version):
+    from .models import Part
+    line = all_lines(Part.objects.select_for_update()).filter(pk=line_id).first()
+    if line is None:
+        from rest_framework.exceptions import NotFound
+        raise NotFound('No existe esa línea.')
+    refuse_unificada(line)
+    if expected_version is None or int(expected_version) != line.version:
+        raise LineVersionConflict(line)
+    return line
+
+
+def edit_line(line_id, *, user, expected_version, **fields):
+    """An administrator's edit of a line (any estado but unificada), checked against the version they read (LineVersionConflict, 409):
+    description, name, aplicaciones_texto (texts, upper case with single spaces) and part_type (the subgrupo, a PartType or None:
+    set_subgrupo; a line with a technical sheet keeps its subgrupo, as Part.save refuses). Each field that changed is theirs from now on
+    (field_sources[field] = admin), the version moves and changed_at is stamped. Returns the line."""
+    from django.db import transaction
+    unknown = set(fields) - set(EDIT_FIELDS)
+    if unknown:
+        raise LineStateError(f'No se puede cambiar {", ".join(sorted(unknown))} de una línea aquí.')
+    with transaction.atomic():
+        line = _locked_line(line_id, expected_version)
+        changed, names = [], []
+        for name in ('description', 'name', 'aplicaciones_texto'):
+            if name in fields:
+                value = ' '.join(str(fields[name] or '').split()).upper()
+                if value != ' '.join((getattr(line, name) or '').split()).upper():
+                    setattr(line, name, value)
+                    changed.append(name)
+                    names.append(name)
+        if 'part_type' in fields and getattr(fields['part_type'], 'pk', fields['part_type']) != line.part_type_id:
+            names += set_subgrupo(line, fields['part_type'])
+            changed.append('part_type')
+        if not changed:
+            return line
+        at = timezone.now()
+        mark = {'source': 'admin', 'by': getattr(user, 'username', '') or '', 'at': at.isoformat()}
+        line.field_sources = {**(line.field_sources or {}), **{name: dict(mark) for name in changed}}
+        line.version, line.changed_at = (line.version or 0) + 1, at
+        line.save(update_fields=list(dict.fromkeys([*names, 'field_sources', 'version', 'changed_at'])))
+    return line
+
+
+def transition(line_id, estado, *, user, expected_version, reason='', note=''):
+    """A person moves a line to another estado (TRANSITIONS), checked against the version they read (LineVersionConflict, 409):
+    preparación → publicada or rechazada through Productos nuevos (mall.new_products.publish, reject); referencia → publicada or retirada
+    promotes the library line (promote_line); publicada ↔ retirada and rechazada → preparación through set_estado, the decision recorded.
+    Refused (LineStateError) when the move is not one of them. Returns the line."""
+    from django.db import IntegrityError, transaction
+    from .models import Part
+    line = all_lines().filter(pk=line_id).first()
+    if line is None:
+        from rest_framework.exceptions import NotFound
+        raise NotFound('No existe esa línea.')
+    refuse_unificada(line)
+    if estado not in ESTADOS:
+        raise LineStateError(f'Estado de línea desconocido: {estado}.')
+    if estado == line.estado:
+        raise LineStateError(f'Esta línea ya está {phrase(estado)}.')
+    if estado not in TRANSITIONS.get(line.estado, ()):
+        raise LineStateError(f'Una línea {phrase(line.estado)} no pasa a {phrase(estado)} desde aquí.')
+    if line.estado == 'preparacion':
+        from . import new_products
+        version = int(expected_version) if expected_version is not None else -1
+        if estado == 'publicada':
+            new_products.publish(line_id, user, version)
+        else:
+            new_products.reject(line_id, user, version, reason, note)
+        return Part.objects.get(pk=line_id)
+    loaded = line.estado
+    try:
+        with transaction.atomic():
+            line = _locked_line(line_id, expected_version)
+            if line.estado != loaded:  # moved meanwhile by a path that keeps its version (a merge's queryset write)
+                raise LineVersionConflict(line)
+            if line.estado == 'referencia':
+                return promote_line(line, estado=estado, user=user)
+            return set_estado(line, estado, user=user, reason=reason, note=note)
+    except IntegrityError:  # the codigo another catalog line has (line_codigo_unique_catalog)
+        holder = catalog_lines().filter(sku__iexact=codigo_key(line.sku)).exclude(pk=line.pk).first()
+        raise LineStateError(f'El código {line.sku} ya es el SKU {holder.sku if holder else "de otra línea"}: agrúpalas en vez de publicarla.')

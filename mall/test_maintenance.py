@@ -109,6 +109,12 @@ class FreezeMiddlewareTests(FreezeFolderMixin, SimpleTestCase):
         ('delete', f'/api/v1/management/applications/{ID}/'),
         ('post', f'{ACCOUNT}/inventory/ingest/'), ('post', f'{ACCOUNT}/inventory/import/'),
         ('post', f'{ACCOUNT}/inventory/import/jobs/{ID}/'),
+        # The S7 routes of the inventory refactor.
+        ('patch', f'/api/v1/management/lines/{ID}/'), ('post', f'/api/v1/management/lines/{ID}/transition/'),
+        ('post', f'/api/v1/management/lines/{ID}/references/'), ('patch', '/api/v1/management/references/7/'),
+        ('delete', '/api/v1/management/references/7/'), ('post', f'/api/v1/management/cases/{ID}/'),
+        ('post', '/api/v1/management/cases/batches/legacy-auto-merge/'), ('patch', '/api/v1/management/brands/7/'),
+        ('post', '/api/v1/management/brands/7/aliases/'), ('post', '/api/v1/management/grupos/'), ('post', f'/api/v1/management/inventory/{ID}/separate/'),
     ]
     ALL_WRITES = [
         ('post', f'{ACCOUNT}/requests/'), ('post', f'{ACCOUNT}/requests/{ID}/review/'), ('post', f'{ACCOUNT}/requests/{ID}/draft/'),
