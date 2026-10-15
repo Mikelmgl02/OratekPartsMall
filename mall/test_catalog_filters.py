@@ -1,7 +1,7 @@
 from django.test import override_settings
 from rest_framework.test import APITestCase
 
-from .models import Account, Membership, Part, PartCode, Role, SupplierItem, User
+from .models import Account, Membership, Part, Reference, Role, SupplierItem, User
 from .test_factories import line_fields, make_line
 
 
@@ -49,8 +49,8 @@ class CatalogFilterTests(APITestCase):
         self.item(parts['LOW'], 2)
         self.item(parts['LOW'], 5, reserved=2)
         for code in ['ALT-ONE', 'ALT-TWO']:
-            PartCode.objects.create(part=parts['LOW'], code=code)
-            PartCode.objects.create(part=parts['MEDIUM-MAX'], code=f'MAX-{code}')
+            Reference.objects.create(part=parts['LOW'], code=code)
+            Reference.objects.create(part=parts['MEDIUM-MAX'], code=f'MAX-{code}')
         self.item(parts['MEDIUM-MIN'], 6)
         self.item(parts['MEDIUM-MAX'], 15)
         self.item(parts['MEDIUM-MAX'], 5, self.other)

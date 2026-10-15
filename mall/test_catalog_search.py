@@ -5,7 +5,7 @@ from rest_framework.test import APITestCase
 from .brand_models import Brand, BrandAlias
 
 from .test_factories import make_line
-from .models import Account, Membership, Part, PartCode, Role, SupplierItem, User
+from .models import Account, Membership, Part, Reference, Role, SupplierItem, User
 from . import references
 from .references import add_library_number
 
@@ -76,7 +76,7 @@ class CatalogSearchTests(APITestCase):
         self.part('0-0-MENCION', 'REEMPLAZA AL 51750-J9000')
         self.part('0-51750-J9000-KIT', 'KIT CUBO')
         self.part('51750-J9000', 'CUBO DE RUEDA')
-        PartCode.objects.create(part=self.part('0-1-ALTERNO', 'CUBO GENERICO'), code='51750 J9000', brand='KIA')
+        Reference.objects.create(part=self.part('0-1-ALTERNO', 'CUBO GENERICO'), code='51750 J9000', brand='KIA')
         self.assertEqual(self.skus('51750-J9000'), ['0-1-ALTERNO', '51750-J9000', '0-51750-J9000-KIT', '0-0-MENCION'])
         self.assertEqual(self.skus('cubo'), ['0-1-ALTERNO', '0-51750-J9000-KIT', '51750-J9000'])  # words only: SKU order
 

@@ -4,7 +4,7 @@ from django.test import override_settings
 from rest_framework.test import APITestCase
 
 from .catalog_grouping import merge_catalog_parts
-from .models import Account, Membership, Part, PartCode, Role, StockEntry, SupplierItem, User, WishlistItem
+from .models import Account, Membership, Part, Reference, Role, StockEntry, SupplierItem, User, WishlistItem
 from .test_factories import make_line
 
 
@@ -88,7 +88,7 @@ class WishlistTests(APITestCase):
     def test_search_alternates_metadata_and_paginate_without_duplicate_rows(self):
         WishlistItem.objects.create(user=self.user, part=self.part)
         for code in ['58411-1R000-G', '58411-1R000-KSM']:
-            PartCode.objects.create(part=self.part, code=code)
+            Reference.objects.create(part=self.part, code=code)
         for term in ['58411-1r000-g', 'ACCENT', 'FRENOS', 'TAMBORES']:
             data = self.client.get(self.url, {'search': term}).data
             self.assertEqual(data['count'], 1)

@@ -13,7 +13,7 @@ from rest_framework.test import APITestCase
 from . import test_requests as request_tests
 from .analytics_models import UsageEvent
 from .basket import requestable
-from .models import Part, PartCode, PartType, WishlistItem
+from .models import Part, Reference, PartType, WishlistItem
 from .test_factories import make_library_number, make_line, make_reference, make_supplier, make_user, make_variant
 
 HIDDEN = ('referencia', 'preparacion')
@@ -315,7 +315,7 @@ class LibraryReaderTests(TestCase):
         from . import references
         from .oem_reference import linked_parts, linked_q
         ref = make_library_number('TOYOTA', '17801-30070')  # on its own line in referencia
-        linked = lambda: PartCode.objects.filter(references.library_q()).filter(linked_q()).exists()
+        linked = lambda: Reference.objects.filter(references.library_q()).filter(linked_q()).exists()
         self.assertEqual((linked_parts([ref])[ref.pk], linked()), ([], False))
         make_line('17801 30070', description='FILTRO AIRE TOY')  # its main takes the key: the referencia line is absorbed (rule 3f)
         ref.refresh_from_db()

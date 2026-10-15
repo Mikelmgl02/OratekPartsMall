@@ -7,10 +7,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from openpyxl import Workbook
 from rest_framework.test import APITestCase
 
-from .models import (
-    Account, CatalogImportIssue, CatalogImportJob, Membership, Part, PartCode,
-    Role, StockEntry, User,
-)
+from .models import (Account, CatalogImportIssue, CatalogImportJob, Membership, Part, Reference, Role, StockEntry, User)
 from .services import ingest_inventory
 from .test_factories import make_line
 
@@ -143,7 +140,7 @@ class CatalogPartialImportTests(APITestCase):
         self.assertEqual(set(CatalogImportIssue.objects.filter(job_id=preview['job_id']).values_list('row', flat=True)), {2, 3})
         self.complete(preview['job_id'])
         self.assertEqual(list(Part.objects.values_list('sku', flat=True)), ['UNRELATED'])
-        self.assertEqual(PartCode.objects.filter(is_main=False).count(), 0)
+        self.assertEqual(Reference.objects.filter(is_main=False).count(), 0)
 
     def test_invalid_row_with_readable_sku_defers_its_other_group_rows(self):
         preview = self.preview([
@@ -169,13 +166,13 @@ class CatalogPartialImportTests(APITestCase):
         self.assertEqual(preview['rejected_row_count'], 2)
         self.complete(preview['job_id'])
         self.assertEqual(list(Part.objects.values_list('sku', flat=True)), ['UNRELATED'])
-        self.assertEqual(list(PartCode.objects.filter(is_main=False).values_list('code', flat=True)), ['UNIQUE'])
+        self.assertEqual(list(Reference.objects.filter(is_main=False).values_list('code', flat=True)), ['UNIQUE'])
 
     def test_repair_revalidates_current_catalog_and_can_be_retried_after_conflict(self):
         preview = self.preview([[datetime(2026, 6, 12), '', 'ABRAZADERA']])
         issue = CatalogImportIssue.objects.get(job_id=preview['job_id'])
         existing = Part.objects.create(sku='EXISTING')
-        PartCode.objects.create(part=existing, code='6-12')
+        Reference.objects.create(part=existing, code='6-12')
         invalid = self.repair(issue, {'sku': '6-12'})
         self.assertFalse(invalid['valid'])
         self.assertTrue(invalid['errors'])
@@ -190,9 +187,9 @@ class CatalogPartialImportTests(APITestCase):
 
     def test_repair_is_idempotent_and_does_not_change_stock_or_internal_ids(self):
         existing = make_line(sku='STOCKED', name='OLD NAME')
-        old_code = PartCode.objects.create(part=existing, code='STOCKED-ALT')
+        old_code = Reference.objects.create(part=existing, code='STOCKED-ALT')
         other = Part.objects.create(sku='OTHER')
-        PartCode.objects.create(part=other, code='OWNED-BY-OTHER')
+        Reference.objects.create(part=other, code='OWNED-BY-OTHER')
         supplier_user = User.objects.create_user('partial-supplier', 'partial-supplier@example.invalid', 'Supplier938!')
         supplier = Account.objects.create(name='Supplier Partial')
         supplier.roles.add(Role.objects.get(code='supplier_retail'))
@@ -226,7 +223,7 @@ class CatalogPartialImportTests(APITestCase):
         self.assertEqual(stock.supplier_invent_id, 'stable-supplier-id')
         self.assertEqual(stock.reported_quantity, 7)
         self.assertEqual(list(StockEntry.objects.values()), ledger_before)
-        self.assertTrue(PartCode.objects.filter(pk=old_code.pk).exists())
+        self.assertTrue(Reference.objects.filter(pk=old_code.pk).exists())
 
     def test_invalid_workbook_headers_remain_file_errors_without_review_jobs(self):
         for raw in [b'not a workbook', self.workbook([['BAD']], headers=['UNKNOWN']), self.workbook([], headers=['SKU'])]:

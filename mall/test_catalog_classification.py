@@ -12,7 +12,7 @@ from rest_framework.test import APITestCase
 from .catalog_classification import ClassificationProviderError, call_provider, response_schema, validate_suggestions
 from .catalog_import import load_job_groups, replace_job_groups
 from .classification_models import CatalogClassificationState, CatalogClassificationSuggestion
-from .models import Account, CatalogImportJob, Membership, Part, PartCode, Role, StockEntry, User
+from .models import Account, CatalogImportJob, Membership, Part, Reference, Role, StockEntry, User
 from .services import ingest_inventory
 from .test_factories import make_line
 
@@ -80,7 +80,7 @@ class CatalogClassificationTests(APITestCase):
             self.assertEqual(last.data['status'], 'completed')
             self.assertEqual(len(self.client.get(self.url(job) + '?offset=50').data['results']), 5)
         self.assertEqual(Part.objects.count(), 0)
-        self.assertEqual(PartCode.objects.count(), 0)
+        self.assertEqual(Reference.objects.count(), 0)
         self.assertEqual(load_job_groups(job)['AI-000000']['fields'], {})
 
     def test_invalid_provider_rows_targets_confidence_and_missing_part_evidence_are_rejected(self):
@@ -130,7 +130,7 @@ class CatalogClassificationTests(APITestCase):
 
     def test_reviewed_grouping_and_categories_preserve_catalog_ids_stock_and_ledger(self):
         existing = make_line(sku='58411-1R000', description='ORIGINAL', category='EXISTENTE', subcategory='VARIOS')
-        old_code = PartCode.objects.create(part=existing, code='OLD-CODE')
+        old_code = Reference.objects.create(part=existing, code='OLD-CODE')
         supplier = Account.objects.create(name='Proveedor IA')
         supplier.roles.add(Role.objects.get(code='supplier_retail'))
         Membership.objects.create(user=self.member, account=supplier)
@@ -159,7 +159,7 @@ class CatalogClassificationTests(APITestCase):
         self.assertEqual(existing.description, 'ORIGINAL')
         self.assertEqual(existing.category, 'FRENOS')
         self.assertEqual(existing.subcategory, 'DISCOS')
-        self.assertTrue(PartCode.objects.filter(pk=old_code.pk).exists())
+        self.assertTrue(Reference.objects.filter(pk=old_code.pk).exists())
         self.assertEqual(set(existing.codes.filter(is_main=False).values_list('code', flat=True)), {'OLD-CODE', '58411-1R000-G', 'SUPPLIER-ALT'})
         stock.refresh_from_db()
         self.assertEqual(stock.part_id, existing.pk)

@@ -9,7 +9,7 @@ from rest_framework.test import APITestCase
 from .catalog_assistant_models import CatalogAssistantJob
 from .catalog_classification import ClassificationProviderError
 from .technical_data import part_type_for
-from .models import Account, CatalogMerge, Part, PartCode, Role, StockEntry, SupplierItem, User
+from .models import Account, CatalogMerge, Part, Reference, Role, StockEntry, SupplierItem, User
 from .services import ingest_inventory
 
 
@@ -121,7 +121,7 @@ class CatalogAssistantTests(APITestCase):
         self.base.refresh_from_db();self.variant.refresh_from_db()
         self.assertEqual(self.base.category,'FRENOS')
         self.assertEqual(self.variant.merged_into_id,self.base.pk)
-        self.assertTrue(PartCode.objects.filter(part=self.base,code=self.variant.sku).exists())
+        self.assertTrue(Reference.objects.filter(part=self.base,code=self.variant.sku).exists())
         self.assertEqual(SupplierItem.objects.values().get(pk=item.pk),{**before,'part_id':self.base.pk})
         self.assertEqual(list(StockEntry.objects.values()),ledger)
         self.assertEqual(self.action(job,mode='apply',decisions=decisions).status_code,200)

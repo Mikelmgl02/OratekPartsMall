@@ -1,6 +1,6 @@
 from rest_framework.test import APITestCase
 
-from .models import Part, PartCode, PartType, User
+from .models import Part, Reference, PartType, User
 from .technical_data import part_type_for
 from .technical_models import PartSpecification, TechnicalField
 from .test_factories import make_code
@@ -78,5 +78,5 @@ class InlineCatalogEditTests(APITestCase):
         rows = self.client.get(URL, {'ids': f'{self.part.pk},{other.pk}'}).json()['results']
         self.assertEqual(sorted(row['sku'] for row in rows), ['BOMBA-1', 'DISCO-1'])
         code = next(row for row in rows if row['sku'] == 'BOMBA-1')['codes'][0]
-        self.assertEqual(code['id'], PartCode.objects.get(code='16100-29155').pk)
+        self.assertEqual(code['id'], Reference.objects.get(code='16100-29155').pk)
         self.assertEqual(self.client.get(URL, {'ids': 'nope'}).status_code, 400)

@@ -3,7 +3,7 @@ from datetime import timedelta
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
-from .models import CatalogImportIssue, CatalogImportJob, Part, PartCode, User
+from .models import CatalogImportIssue, CatalogImportJob, Part, Reference, User
 from .test_factories import make_line
 
 
@@ -125,7 +125,7 @@ class CatalogImportIssueApiTests(APITestCase):
         self.assertEqual(rejected.data['errors'][0]['column'], 'CODIGO_ALTERNO')
         corrected = self.client.post(self.detail(), {'values': {'code': '-ABC'}}, format='json')
         self.assertTrue(corrected.data['valid'])
-        self.assertEqual(PartCode.objects.get(is_main=False).code, '-ABC')
+        self.assertEqual(Reference.objects.get(is_main=False).code, '-ABC')
 
     def test_blank_fields_preserve_existing_metadata_and_correct_copied_date_name(self):
         existing = make_line(sku='6-12', name='NOMBRE EXISTENTE', active=False)

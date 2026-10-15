@@ -213,15 +213,13 @@ get_object_or_404(storefront_lines(), pk=pk)
 
 REFERENCE_NAMES = {'PartCode', 'Reference'}
 REFERENCE_RELATIONS = {'codes', 'alternos', 'reemplaza', 'internal_references', 'all_objects'}
-# The app modules that still name PartCode or join codes through codes__ (a join reaches retired rows, so each one names the live
-# estados: mall.references.live_q), as reviewed in S2a: at most this many uses each. New code writes Reference and goes through
-# Reference.objects or a line's codes, which leave retired rows out; S10 removes the alias and this list. catalog_search.py's fourth is
-# no join: codes__contains on the Search Document's own codes column (S7).
-LEGACY_ALLOWED = {
-    'catalog_assistant.py': 2, 'catalog_classification.py': 4, 'catalog_identity.py': 2,
-    'catalog_search.py': 4, 'management.py': 1, 'matching_engine.py': 4, 'models.py': 1, 'oem_finder.py': 2, 'oem_links.py': 9,
-    'refactor/snapshot.py': 3, 'serializers.py': 2, 'services.py': 6, 'sku_proposals.py': 2, 'supplier_catalog_replace.py': 2, 'wishlist.py': 4,
-}  # S10: catalog_classification's two and management's one more are prefetch_related('codes__sources') (the JSON's reference_source)
+# The app modules that reach a line's codes through codes__ (a join reaches retired rows, so each one names the live estados:
+# mall.references.live_q; a prefetch_related('codes__sources') is no join), as reviewed in S10, which removed the PartCode alias: at
+# most this many uses each. New code goes through Reference.objects or a line's codes, which leave retired rows out. catalog_search.py's
+# is no join: codes__contains on the Search Document's own codes column (S7); catalog_classification's two and management's one are
+# prefetch_related('codes__sources') (the JSON's reference_source, S10).
+LEGACY_ALLOWED = {'catalog_assistant.py': 2, 'catalog_classification.py': 4, 'catalog_search.py': 1, 'management.py': 1, 'services.py': 6,
+                  'wishlist.py': 4}
 BULK_METHODS = {'bulk_create', 'bulk_update'}
 BULK_CHOKE_POINTS = {Path('lines.py'), Path('references.py')}
 # Bulk writes of lines elsewhere, reviewed: none since S5 moved the catalog assistant's taxonomy writes to mall.lines.bulk_update_lines.
@@ -423,3 +421,27 @@ SupplierItem.objects.bulk_update(items, ['matching_status'])
 Part.objects.filter(pk=pk).update(part_type=None)
 """
         self.assertEqual(variant_writes(source), [2, 3, 4])
+
+
+# --- S10: what the contract retired is no model, field or alias -----------------------------------------------------------------------
+
+class ContractGuardTests(SimpleTestCase):
+    def test_the_retired_fields_tables_and_alias_are_gone(self):
+        """S10 (0087): Part's name, category, subcategory and legacy_brand, Reference's ref_type, reference_source and oem_reference,
+        PartType.category, SkuReviewVerdict.proposal and SearchDocument.reach are no fields (name, category, subcategory and ref_type are
+        derived properties), active and is_OEM are generated, the archived tables have no model and PartCode is no name."""
+        from django.apps import apps
+        from . import models
+        from .models import Part, PartType, Reference, SearchDocument, SkuReviewVerdict
+        fields = lambda model: {field.name for field in model._meta.get_fields()}
+        self.assertFalse(fields(Part) & {'name', 'category', 'subcategory', 'legacy_brand', 'legacy_name', 'legacy_category', 'legacy_subcategory'})
+        self.assertFalse(fields(Reference) & {'ref_type', 'reference_source', 'oem_reference', 'legacy_ref_type', 'legacy_reference_source'})
+        self.assertFalse(fields(PartType) & {'category', 'legacy_category'})
+        self.assertNotIn('proposal', fields(SkuReviewVerdict))
+        self.assertNotIn('reach', fields(SearchDocument))
+        self.assertTrue(Part._meta.get_field('active').generated and Part._meta.get_field('is_OEM').generated)
+        for name in ('SkuProposal', 'SkuProposalItem', 'OEMReference', 'OEMReferenceSource', 'OEMCrossReference', 'OEMCrossReferenceRetired',
+                     'PartOEMLink', 'SupplierCodeMapping', 'Alternate'):
+            with self.assertRaises(LookupError, msg=name):
+                apps.get_model('mall', name)
+        self.assertFalse(hasattr(models, 'PartCode'))

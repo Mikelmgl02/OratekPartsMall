@@ -5,7 +5,7 @@ from django.test import TestCase
 from . import brands
 from .brand_models import Brand, BrandAlias
 from .matching_models import MatchingCase
-from .models import PartCode
+from .models import Reference
 from .test_factories import make_line, make_reference, make_user
 
 
@@ -82,7 +82,7 @@ class BrandRenameMergeTests(TestCase):
         make_reference(self.pump, '05678', brand='FEBI', tipo='aftermarket')
 
     def brand_codes(self, brand):
-        return sorted(PartCode.objects.filter(brand=brand).values_list('code', flat=True))
+        return sorted(Reference.objects.filter(brand=brand).values_list('code', flat=True))
 
     def test_rename_rekeys_the_codes_and_keeps_the_old_spelling_as_an_alias(self):
         result = brands.rename(self.febi, 'febi  gmbh')
@@ -135,7 +135,7 @@ class BrandRenameMergeTests(TestCase):
         from . import references
         toyota = Brand.objects.create(nombre='TOYOTA MOTOR', tipo='vehiculo')
         code = make_reference(self.pump, '16100-39315', brand='TOYOTA MOTOR', tipo='oem', source='Declarado por GMB')
-        library = PartCode.objects.filter(references.library_q())  # S4: the library's rows are these References
+        library = Reference.objects.filter(references.library_q())  # S4: the library's rows are these References
         self.assertEqual(list(library.values_list('brand', flat=True)), ['TOYOTA MOTOR'])
         brands.rename(toyota, 'TOYOTA')
         code.refresh_from_db()

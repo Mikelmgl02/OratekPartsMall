@@ -12,7 +12,7 @@ from rest_framework.test import APITestCase
 from .ai_budget import record_usage
 from .analytics import ai_spend, quotation_kpis
 from .analytics_models import UsageEvent, UsageVisit
-from .models import Account, Membership, Part, PartCode, Role, StockEntry, SupplierItem, User
+from .models import Account, Membership, Part, Reference, Role, StockEntry, SupplierItem, User
 from .pricing_models import PricingAuditEvent, record_pricing_event
 from .request_models import ClientRequestSubmission, DealQuotation, DealQuotationLine, SupplierRequest, SupplierRequestLine
 from .test_factories import make_line
@@ -35,7 +35,7 @@ class AnalyticsTests(APITestCase):
         self.supplier = Account.objects.create(name='ANALYTICS SUPPLIER')
         self.supplier.roles.add(*Role.objects.filter(capability='supplier'))
         self.part = make_line(sku='58411-1R000', description='TAMBOR', category='FRENOS', subcategory='TAMBORES')
-        PartCode.objects.create(part=self.part, code='58411-1R000-G')
+        Reference.objects.create(part=self.part, code='58411-1R000-G')
         self.item = SupplierItem.objects.create(supplier=self.supplier, part=self.part, supplier_invent_id='STABLE-1',
                                                 codigo='58411-1R000-G', brand='TEST', source='upload',
                                                 matching_status='matched', reported_quantity=10)
@@ -90,7 +90,7 @@ class AnalyticsTests(APITestCase):
         self.assertEqual(UsageEvent.objects.count(), 1)
 
     def test_real_catalog_results_are_counted_and_invalid_events_leave_no_records(self):
-        PartCode.objects.create(part=self.part, code='58411-1R000-KSM')
+        Reference.objects.create(part=self.part, code='58411-1R000-KSM')
         make_line(sku='INACTIVE', description='58411', active=False)
         self.assertEqual(self.post('search', term='58411', result_count=999).status_code, 202)
         self.assertEqual(UsageEvent.objects.get().result_count, 1)

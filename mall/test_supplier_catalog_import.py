@@ -6,7 +6,7 @@ import tempfile
 from django.test import TestCase
 
 from . import supplier_catalog_import as sci
-from .models import Part, PartCode
+from .models import Part, Reference
 from .oem_links import part_equivalents
 from . import references
 from .models import Reference, ReferenceSource
@@ -90,7 +90,7 @@ class SupplierCatalogImportTests(Fresh, TestCase):
         self.joint = make_line(sku='43460-69115', description='PUNTA FLECHA TOY LAND CRUISER 200', is_OEM=True)
         self.filter = Part.objects.create(sku='16100-80007', description='FILTRO ACEITE TOY HIACE')
         self.owner = Part.objects.create(sku='AW-OWNED-SKU', description='BOMBA AGUA NIS URVAN')
-        PartCode.objects.create(part=self.owner, code='AW9999', brand='AIRTEX')
+        Reference.objects.create(part=self.owner, code='AW9999', brand='AIRTEX')
         self.data = [
             extract([
                 item('GWT-142A', 'water_pump', oem=[('16100-39466', 'TOYOTA'), ('16100-39465', 'TOYOTA')],
@@ -117,7 +117,7 @@ class SupplierCatalogImportTests(Fresh, TestCase):
         return sci.run(self.files, apply=apply, stdout=io.StringIO())
 
     def state(self):
-        return (PartCode.objects.count(), library().count(), ReferenceSource.objects.count(), PartSpecification.objects.count(),
+        return (Reference.objects.count(), library().count(), ReferenceSource.objects.count(), PartSpecification.objects.count(),
                 PartType.objects.count(), TechnicalField.objects.count(), list(Part.objects.order_by('sku').values_list('sku', 'is_OEM', 'part_type_id')))
 
     def test_dry_run_writes_nothing_and_reports_the_plan(self):
@@ -149,7 +149,7 @@ class SupplierCatalogImportTests(Fresh, TestCase):
         # 3e on the merged line: the catalog's own code is declarado; a competitor's needs a catalog checked against its PDF (OD17), and
         # AW9999 is another SKU's alterno (rule 8).
         self.assertEqual(set(self.pump.codes.filter(tipo='aftermarket').values_list('brand', 'code', 'estado')), {('GMB', 'GWT-142A', 'declarado')})
-        self.assertEqual(PartCode.objects.get(code='AW9999').part, self.owner)  # another SKU's alterno is never moved
+        self.assertEqual(Reference.objects.get(code='AW9999').part, self.owner)  # another SKU's alterno is never moved
         self.assertFalse(self.filter.codes.filter(is_main=False, tipo='aftermarket').exists())  # the description is an oil filter, not the catalog's water pump
         self.assertEqual(number('TOYOTA', '1610080007').ref.part_id, self.filter.pk)  # S4: its codigo carries the number, which is library data
         # The joint carries its own number (S4) and, already marked OEM, takes the sister number as an OEM alterno.
@@ -179,13 +179,13 @@ class SupplierCatalogImportTests(Fresh, TestCase):
         twin = Part.objects.create(sku='16100-39465-RAZ', description='BOMBA AGUA TOY HIACE')
         result = self.run_import(apply=True)
         self.assertEqual(result['catalogs'][0]['counts']['duplicate_part_items'], 1)
-        self.assertFalse(PartCode.objects.filter(part__in=[self.pump, twin], brand='AISIN').exists())  # a code has one owner
+        self.assertFalse(Reference.objects.filter(part__in=[self.pump, twin], brand='AISIN').exists())  # a code has one owner
         for part in (self.pump, twin):
             self.assertEqual(linked(result, part), ['1610039465', '1610039466'])
 
     def test_no_oem_alterno_on_a_sku_not_marked_oem(self):
         self.run_import(apply=True)
-        self.assertFalse(PartCode.objects.filter(part=self.pump, tipo='oem').exists())
+        self.assertFalse(Reference.objects.filter(part=self.pump, tipo='oem').exists())
 
     def test_reapplying_changes_nothing(self):
         self.run_import(apply=True)
@@ -219,7 +219,7 @@ class SupplierCatalogImportTests(Fresh, TestCase):
         self.assertIn(('GMB', 'GWT-142A'), reached(self.pump))
 
     def test_a_sku_matching_two_items_of_one_catalog_is_left_alone(self):
-        PartCode.objects.create(part=self.pump, code='16100-80007', brand='TOYOTA')
+        Reference.objects.create(part=self.pump, code='16100-80007', brand='TOYOTA')
         result = self.run_import(apply=True)
         self.assertEqual(result['catalogs'][0]['counts']['ambiguous_parts'], 1)
         self.assertFalse(self.pump.codes.filter(brand='GMB').exclude(detail__has_key='s9').exists())  # no copy (S9's 3e: the number's own)

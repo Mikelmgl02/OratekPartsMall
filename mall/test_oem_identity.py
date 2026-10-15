@@ -1,7 +1,7 @@
 from unittest.mock import patch
 from django.test import override_settings
 from rest_framework.test import APITestCase
-from .models import Account, Part, PartCode, SupplierItem, StockEntry, User, CatalogIdentityChange, OEMLookupCache
+from .models import Account, Part, Reference, SupplierItem, StockEntry, User, CatalogIdentityChange, OEMLookupCache
 from .catalog_identity import classify_company_main, prefer_oem, identity_status
 from .management import ManagedPartSerializer
 from . import reference_matching as rm

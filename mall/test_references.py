@@ -12,7 +12,7 @@ from . import references
 from .brand_models import Brand
 from .catalog_grouping import merge_catalog_parts
 from .catalog_import import build_plan, save_plan
-from .models import PartCode, Reference, ReferenceDeleteRefused, ReferenceSource
+from .models import Reference, ReferenceDeleteRefused, ReferenceSource
 from .services import matching_part
 from .test_factories import (make_client, make_code, make_line, make_reference, make_supplier, make_user, make_variant, run_migration_function)
 
@@ -90,7 +90,7 @@ class ClaveTests(TestCase):
 
 class RenameTests(TestCase):
     def test_partcode_is_reference_on_the_same_table_and_relation(self):
-        self.assertIs(PartCode, Reference)
+        self.assertIs(Reference, Reference)
         self.assertEqual(Reference._meta.db_table, 'mall_partcode')
         line = make_line('REL-1')
         ref = make_reference(line, 'REL-ALT', brand='GMB', tipo='aftermarket')

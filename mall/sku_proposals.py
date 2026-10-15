@@ -18,7 +18,7 @@ from rest_framework.exceptions import APIException, ValidationError
 from .catalog_families import normalized_reference
 from .catalog_identity import reference_pattern
 from .lines import CATALOG, catalog_lines, catalog_q
-from .models import PartCode
+from .models import Reference
 from .part_references import normalize_references
 
 MAX_REFERENCES = 100
@@ -115,7 +115,7 @@ def catalog_owners(code, brands=()):
               catalog_lines(OWNERS).filter(sku__iregex=rx).values_list('pk', 'sku', 'active', 'merged_into_id', 'merged_into__sku', 'merged_into__active')
               if normalized_reference(sku) == key}
     owners |= {(merged_id or pk, merged or sku, merged_active if merged_id else active)
-               for found, brand, pk, sku, active, merged_id, merged, merged_active in PartCode.objects.filter(catalog_q(OWNERS, 'part__'), code__iregex=rx)
+               for found, brand, pk, sku, active, merged_id, merged, merged_active in Reference.objects.filter(catalog_q(OWNERS, 'part__'), code__iregex=rx)
                .values_list('code', 'brand', 'part_id', 'part__sku', 'part__active', 'part__merged_into_id', 'part__merged_into__sku', 'part__merged_into__active')
                if normalized_reference(found) == key and (not brand or not brands or clean(brand) in brands)}
     return sorted(owners, key=lambda owner: owner[1])

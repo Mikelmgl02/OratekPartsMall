@@ -7,7 +7,7 @@ from django.db import IntegrityError
 from openpyxl import Workbook
 from rest_framework.test import APITestCase
 
-from .models import Account, CatalogImportJob, Membership, Part, PartCode, Role, StockEntry, SupplierItem, User
+from .models import Account, CatalogImportJob, Membership, Part, Reference, Role, StockEntry, SupplierItem, User
 from .services import ingest_inventory
 from .test_factories import make_line
 
@@ -48,7 +48,7 @@ class CatalogImportTests(APITestCase):
 
     def test_preview_then_import_groups_alternos_preserves_ids_codes_and_ledger(self):
         existing = make_line(sku='58411-1R000', name='NOMBRE EXISTENTE', description='DESCRIPCIÓN EXISTENTE', active=True)
-        old_code = PartCode.objects.create(part=existing, code='OLD-CODE')
+        old_code = Reference.objects.create(part=existing, code='OLD-CODE')
         supplier = Account.objects.create(name='Proveedor Excel')
         supplier.roles.add(Role.objects.get(code='supplier_retail'))
         Membership.objects.create(user=self.user, account=supplier)
@@ -65,14 +65,14 @@ class CatalogImportTests(APITestCase):
         self.assertTrue(preview.data['valid'])
         self.assertEqual(preview.data['summary'], {'rows': 4, 'created_skus': 1, 'updated_skus': 1, 'unchanged_skus': 0, 'added_codes': 3})
         self.assertEqual(Part.objects.count(), 1)
-        self.assertEqual(PartCode.objects.filter(is_main=False).count(), 1)
+        self.assertEqual(Reference.objects.filter(is_main=False).count(), 1)
         imported = self.upload(raw, mode='import', preview_token=preview.data['preview_token'])
         self.assertEqual(imported.status_code, 200)
         self.assertTrue(imported.data['imported'])
         existing.refresh_from_db()
         self.assertEqual(existing.description, 'DESCRIPCIÓN EXISTENTE')  # S10: name is the description
         self.assertTrue(existing.active)
-        self.assertTrue(PartCode.objects.filter(pk=old_code.pk).exists())
+        self.assertTrue(Reference.objects.filter(pk=old_code.pk).exists())
         self.assertEqual(existing.codes.filter(is_main=False).count(), 3)
         new = Part.objects.get(sku='000123')
         self.assertEqual((new.name, new.description), ('DESCRIPCIÓN', 'DESCRIPCIÓN'))  # NOMBRE fills only a blank DESCRIPCION (S10)
@@ -87,7 +87,7 @@ class CatalogImportTests(APITestCase):
         self.assertEqual(repeated.data['summary']['unchanged_skus'], 2)
         self.assertEqual(repeated.data['summary']['added_codes'], 0)
         self.assertEqual(self.upload(raw, mode='import', preview_token=repeated.data['preview_token']).status_code, 200)
-        self.assertEqual(PartCode.objects.filter(is_main=False).count(), 4)  # and the two lines' mains (S2b)
+        self.assertEqual(Reference.objects.filter(is_main=False).count(), 4)  # and the two lines' mains (S2b)
 
     def test_a_public_alterno_with_a_suppliers_interno_key_becomes_a_public_reference(self):
         """S3: a supplier's interno code is its own name for the line; a catalog file listing the same code makes a public Reference
@@ -100,13 +100,13 @@ class CatalogImportTests(APITestCase):
         preview = self.upload(raw)
         self.assertEqual(preview.data['summary']['added_codes'], 1)
         self.assertEqual(self.upload(raw, mode='import', preview_token=preview.data['preview_token']).status_code, 200)
-        public = PartCode.all_objects.get(part=line, code='LOCAL-58411', supplier__isnull=True)
+        public = Reference.all_objects.get(part=line, code='LOCAL-58411', supplier__isnull=True)
         self.assertNotEqual(public.tipo, 'interno')
-        self.assertEqual(PartCode.all_objects.get(pk=interno.pk).supplier_id, supplier.pk)
+        self.assertEqual(Reference.all_objects.get(pk=interno.pk).supplier_id, supplier.pk)
 
     def test_catalog_and_in_file_code_conflicts_report_exact_rows_without_writes(self):
         first = Part.objects.create(sku='FIRST')
-        PartCode.objects.create(part=first, brand='OEM', code='SHARED')
+        Reference.objects.create(part=first, brand='OEM', code='SHARED')
         raw = self.excel([['SECOND', '', '', 'SHARED'], ['THIRD', '', '', 'FIRST'], ['FOURTH', '', '', 'FIFTH'], ['FIFTH']])
         result = self.upload(raw)
         self.assertEqual(result.status_code, 200)
@@ -114,7 +114,7 @@ class CatalogImportTests(APITestCase):
         self.assertEqual({error['row'] for error in result.data['errors']}, {2, 3, 4, 5})
         self.assertNotIn('preview_token', result.data)
         self.assertEqual(Part.objects.count(), 1)
-        self.assertEqual(PartCode.objects.filter(is_main=False).count(), 1)
+        self.assertEqual(Reference.objects.filter(is_main=False).count(), 1)
 
     def test_repeated_sku_metadata_and_invalid_identifiers_are_rejected(self):
         raw = self.excel([['SKU-A', 'FIRST'], ['SKU-A', 'SECOND'], [datetime(2026, 6, 12)], ['VALID', '', '', '=A2'], ['BRAND-ONLY', '', '', '', 'OEM'], ['BAD-ACTIVE', '', '', '', '', 'MAYBE']])
@@ -212,7 +212,7 @@ class CatalogImportTests(APITestCase):
         with patch('mall.catalog_import.references.bulk_create', side_effect=IntegrityError('Concurrent duplicate')):
             self.assertEqual(self.upload(raw, mode='import', preview_token=preview['preview_token']).status_code, 409)
         self.assertEqual(Part.objects.count(), 0)
-        self.assertEqual(PartCode.objects.count(), 0)
+        self.assertEqual(Reference.objects.count(), 0)
 
     def test_bad_excel_headers_and_empty_file_are_rejected(self):
         for raw in [b'not an excel file', self.excel([], headers=['SKU']), self.excel([['NEW']], headers=['UNKNOWN']), self.excel([['NEW', 'PRICE']], headers=['SKU', 'PRECIO'])]:
@@ -235,7 +235,7 @@ class CatalogImportTests(APITestCase):
             self.assertEqual(imported.status_code, 200)
         self.assertTrue(imported.data['imported'])
         self.assertEqual(Part.objects.count(), 6001)
-        self.assertEqual(PartCode.objects.filter(is_main=False).count(), 6001)
+        self.assertEqual(Reference.objects.filter(is_main=False).count(), 6001)
         existing.refresh_from_db()
         self.assertEqual(existing.description, 'NEW NAME')  # only the fields a row gives change
         self.assertFalse(existing.active)
@@ -256,7 +256,7 @@ class CatalogImportTests(APITestCase):
         with patch('mall.catalog_import.references.bulk_create', side_effect=IntegrityError('Concurrent duplicate')):
             self.assertEqual(self.client.post(url, {'batch_index': 1}).status_code, 409)
         self.assertEqual(Part.objects.count(), 500)
-        self.assertEqual(PartCode.objects.filter(is_main=False).count(), 500)
+        self.assertEqual(Reference.objects.filter(is_main=False).count(), 500)
         self.assertEqual(self.client.get(url).data['progress']['completed_batches'], 1)
         other = User.objects.create_superuser('other-job-root', 'other-job-root@example.invalid', 'AnotherRoot938!')
         self.client.force_authenticate(other)
@@ -283,7 +283,7 @@ class CatalogImportTests(APITestCase):
         url = f"{self.url}jobs/{preview['job_id']}/"
         self.assertEqual(self.client.post(url, {'batch_index': 0}).status_code, 200)
         self.assertEqual(self.client.post(url, {'batch_index': 1}).status_code, 200)
-        self.assertEqual(PartCode.objects.filter(code='SHARED').count(), 2)
+        self.assertEqual(Reference.objects.filter(code='SHARED').count(), 2)
 
     def test_categories_import_and_stale_later_batch_preserves_previous_commits(self):
         columns = self.columns + ['CATEGORIA', 'SUBCATEGORIA']

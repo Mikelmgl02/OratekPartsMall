@@ -274,7 +274,7 @@ class AllReferenceManager(models.Manager.from_queryset(ReferenceQuerySet)):
 
 
 class Reference(models.Model):
-    # One code of an OEM line (inventory refactor S2a; PartCode until then, and PartCode stays an alias of it until S10). It keeps
+    # One code of an OEM line (inventory refactor S2a; the class was PartCode until then, an alias until S10). It keeps
     # PartCode's integer ids, its table (mall_partcode) and the line's `codes` relation, which the API, the split payloads and other
     # code depend on. mall.references is its only writer: it creates (build/add), changes (update) and retires (retire) References,
     # and nothing deletes one. The JSON keeps ref_type/kind, derived from tipo (mall.references.legacy_ref_type), and reference_source,
@@ -395,9 +395,6 @@ class Reference(models.Model):
 
     def delete(self, *args, **kwargs):
         raise ReferenceDeleteRefused(REFERENCE_DELETE_REFUSED)
-
-
-PartCode = Reference  # the class's name until S10 (plan §1.1); mall.test_refactor_guards keeps new code from using it
 
 
 class ReferenceSource(models.Model):

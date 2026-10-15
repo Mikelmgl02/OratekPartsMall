@@ -3,7 +3,7 @@ from unittest.mock import patch
 from django.db import DatabaseError
 from django.utils import timezone
 from rest_framework.test import APITestCase
-from .models import Account, Invitation, Membership, Part, PartCode, Role, StockEntry, SupplierItem, User
+from .models import Account, Invitation, Membership, Part, Reference, Role, StockEntry, SupplierItem, User
 from .services import ingest_inventory
 from .lines import catalog_lines
 from .matching_models import MatchingCase
@@ -35,7 +35,7 @@ class FoundationTests(APITestCase):
         self.account.roles.add(Role.objects.get(code='supplier_retail'))
         Membership.objects.create(user=self.user, account=self.account, permission='owner')
         self.part = make_line(sku='FILTER', name='Filter')
-        PartCode.objects.create(part=self.part, brand='acme', code='abc')
+        Reference.objects.create(part=self.part, brand='acme', code='abc')
         self.client.force_authenticate(self.user)
         self.url = f'/api/v1/accounts/{self.account.pk}/inventory/ingest/'
 
@@ -73,7 +73,7 @@ class FoundationTests(APITestCase):
     def test_changed_code_does_not_silently_remap(self):
         self.ingest()
         different = make_line(sku='OTHER PART', name='Other part')
-        PartCode.objects.create(part=different, brand='ACME', code='DEF')
+        Reference.objects.create(part=different, brand='ACME', code='DEF')
         response = self.ingest(update_id='event-2', codigo='DEF')
         self.assertEqual(response.status_code, 200)
         item = SupplierItem.objects.get()
@@ -84,7 +84,7 @@ class FoundationTests(APITestCase):
     def test_equivalent_codes_from_different_brands_share_one_sku_and_expose_all_items(self):
         sku = Part.objects.create(sku='58411-1R000')
         for code in ['58411-1R000-G', '58-1R0', 'D-HYU-1R']:
-            PartCode.objects.create(part=sku, code=code)
+            Reference.objects.create(part=sku, code=code)
         first = self.ingest(codigo='58411-1R000-G', brand='GENERIC', supplier_invent_id='sku-1', description='Primer artículo').data
         second = self.ingest(update_id='event-2', codigo='58-1R0', brand='OTHER', supplier_invent_id='sku-2').data
         third = self.ingest(update_id='event-3', codigo='D-HYU-1R', brand='OEM', supplier_invent_id='sku-3').data
@@ -113,7 +113,7 @@ class FoundationTests(APITestCase):
 
     def test_code_changes_inside_the_same_sku_keep_the_mapping_and_ledger(self):
         sku = Part.objects.create(sku='58411-1R000')
-        PartCode.objects.create(part=sku, code='58-1R0')
+        Reference.objects.create(part=sku, code='58-1R0')
         first = self.ingest(codigo='58411-1R000', brand='OEM').data
         second = self.ingest(update_id='event-2', codigo='58-1R0', brand='OTHER').data
         self.assertEqual(first['id'], second['id'])
@@ -123,7 +123,7 @@ class FoundationTests(APITestCase):
 
     def test_ambiguous_legacy_code_mappings_require_review(self):
         sku = Part.objects.create(sku='AMBIGUOUS')
-        PartCode.objects.create(part=self.part, brand='ACME', code=sku.sku)
+        Reference.objects.create(part=self.part, brand='ACME', code=sku.sku)
         # S6 (rules 1 and 2): the item's own brand picks the line that holds the code under it (exact before brandless) ...
         response = self.ingest(codigo='AMBIGUOUS').data
         self.assertEqual((response['matching_status'], str(response['part'])), ('matched', str(self.part.pk)))

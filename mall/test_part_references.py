@@ -6,7 +6,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from openpyxl import Workbook, load_workbook
 from rest_framework.test import APITestCase
 from . import references
-from .models import Account, Membership, Part, PartCode, Role, StockEntry, SupplierItem, User, MatchingCase
+from .models import Account, Membership, Part, Reference, Role, StockEntry, SupplierItem, User, MatchingCase
 from .serializers import InventorySerializer
 from .services import ingest_inventory
 from .matching_worker import analyze_ambiguous

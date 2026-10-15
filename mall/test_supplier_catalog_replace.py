@@ -11,7 +11,7 @@ from django.test import TestCase
 from . import supplier_catalog_import as sci
 from . import supplier_catalog_replace as scr
 from . import references
-from .models import Part, PartCode, Reference, ReferenceSource
+from .models import Part, Reference, ReferenceSource
 from .test_oem_finder import Fresh
 from .test_supplier_catalog_import import extract, item
 from .test_factories import make_code
@@ -73,7 +73,7 @@ class SupplierCatalogReplaceTests(Fresh, TestCase):
 
     def state(self):
         return (self.codes(), sorted(library().values_list('brand', 'clave', 'part__estado', 'estado')),
-                sorted(catalog_sources().values_list('reference__clave', 'detail')), PartCode.objects.count())
+                sorted(catalog_sources().values_list('reference__clave', 'detail')), Reference.objects.count())
 
     def test_the_old_extract_imported_its_misreadings(self):
         self.assertEqual(library(clave='1610033333').get().part_id, self.misled.pk)  # S4: its codigo carries the number
@@ -110,7 +110,7 @@ class SupplierCatalogReplaceTests(Fresh, TestCase):
         misfiled = library(clave='1610033333').get()  # only the misreading printed it, but it is the misled SKU's own code
         self.assertEqual((misfiled.part_id, misfiled.sources.filter(retirada=False).count()), (self.misled.pk, 0))
         self.assertEqual(catalog_sources().get(reference__clave='1610011111').detail['pages'], [6])
-        self.assertEqual(set(PartCode.objects.filter(is_main=False, tipo='aftermarket').exclude(detail__has_key='s9').values_list('pk', flat=True)),
+        self.assertEqual(set(Reference.objects.filter(is_main=False, tipo='aftermarket').exclude(detail__has_key='s9').values_list('pk', flat=True)),
                          {self.copied.pk, self.kept.pk})  # alternos are only reported (S9's 3e turns codes on one line into References)
 
         before = self.state()

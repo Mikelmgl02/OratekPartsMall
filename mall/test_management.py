@@ -6,7 +6,7 @@ from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient, APITestCase
 
-from .models import Account, Invitation, Membership, Part, PartCode, Role, StockEntry, SupplierItem, User
+from .models import Account, Invitation, Membership, Part, Reference, Role, StockEntry, SupplierItem, User
 from .lines import catalog_lines
 from .services import ingest_inventory
 from .test_factories import make_line
@@ -24,7 +24,7 @@ class ManagementTests(APITestCase):
 
     def test_non_superusers_are_denied_every_management_operation(self):
         part = make_line(sku='ORIGINAL', name='Original')
-        alternate = PartCode.objects.create(part=part, code='ALTERNO')
+        alternate = Reference.objects.create(part=part, code='ALTERNO')
         item = SupplierItem.objects.create(supplier=self.account, supplier_invent_id='locked', codigo='TEST', brand='TEST', source='upload')
         operations = [
             ('get', 'catalog/', None), ('get', 'inventory/', None), ('get', 'alternates/', None),
@@ -60,7 +60,7 @@ class ManagementTests(APITestCase):
         self.assertTrue(Membership.objects.filter(pk=self.member.pk).exists())
         part.refresh_from_db()
         self.assertTrue(part.active)
-        self.assertTrue(PartCode.objects.filter(pk=alternate.pk).exists())
+        self.assertTrue(Reference.objects.filter(pk=alternate.pk).exists())
 
     def test_catalog_creation_normalizes_codes_and_updates_without_changing_identity(self):
         created = self.client.post('/api/v1/management/catalog/', {'sku': ' filtro-001 ', 'name': 'Filtro de aceite', 'description': 'Aplicación: vehículo diésel', 'codes': [{'brand': ' acme ', 'code': ' abc-123 '}, {'brand': 'ACME', 'code': 'SECOND'}]}, format='json')
@@ -95,7 +95,7 @@ class ManagementTests(APITestCase):
 
     def test_duplicate_catalog_codes_are_rejected_without_partial_writes(self):
         part = make_line(sku='ORIGINAL', name='Original')
-        PartCode.objects.create(part=part, brand='ACME', code='ABC')
+        Reference.objects.create(part=part, brand='ACME', code='ABC')
         payload = {'sku': 'DUPLICADO', 'name': 'Duplicado', 'codes': [{'brand': 'acme', 'code': 'abc'}]}
         self.assertEqual(self.client.post('/api/v1/management/catalog/', payload, format='json').status_code, 400)
         self.assertEqual(Part.objects.count(), 1)
@@ -215,7 +215,7 @@ class ManagementTests(APITestCase):
     def test_alterno_conflicts_cannot_assign_the_same_code_to_two_skus(self):
         first = Part.objects.create(sku='FIRST')
         second = Part.objects.create(sku='SECOND')
-        PartCode.objects.create(part=first, brand='OEM', code='SHARED')
+        Reference.objects.create(part=first, brand='OEM', code='SHARED')
         url = '/api/v1/management/alternates/'
         for payload in [
             {'part': str(second.pk), 'code': 'shared'},
@@ -227,7 +227,7 @@ class ManagementTests(APITestCase):
         distinct = self.client.post(url, {'part': str(second.pk), 'code': 'SHARED', 'brand': 'OTHER'}, format='json')
         self.assertEqual(distinct.status_code, 201)
         self.assertEqual(self.client.patch(f"{url}{distinct.data['id']}/", {'brand': ''}, format='json').status_code, 400)
-        self.assertEqual(PartCode.objects.filter(is_main=False).count(), 2)
+        self.assertEqual(Reference.objects.filter(is_main=False).count(), 2)
 
     def test_an_alterno_is_a_reference_and_the_storefront_lists_it(self):
         part = Part.objects.create(sku='FIRST')
@@ -253,7 +253,7 @@ class ManagementTests(APITestCase):
 
     def test_superuser_can_search_catalog_stock_and_alterno_codes(self):
         part = make_line(sku='FILTRO ORIGINAL', name='Filtro original', active=False)
-        alternate = PartCode.objects.create(part=part, brand='ACME', code='ABC-123')
+        alternate = Reference.objects.create(part=part, brand='ACME', code='ABC-123')
         SupplierItem.objects.create(supplier=self.account, supplier_invent_id='stable-123', part=part, codigo='ABC-123', brand='ACME', source='upload', reported_quantity=7, reserved_quantity=2, matching_status='matched')
         catalog = self.client.get('/api/v1/management/catalog/?search=ABC-123')
         self.assertEqual(catalog.status_code, 200)

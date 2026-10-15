@@ -10,7 +10,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.test import APITestCase
 
 from .catalog_import import load_job_groups, replace_job_groups
-from .models import CatalogImportIssue, CatalogImportJob, Part, PartCode, User
+from .models import CatalogImportIssue, CatalogImportJob, Part, Reference, User
 
 
 class CatalogImportRevisionTests(APITestCase):
@@ -129,7 +129,7 @@ class CatalogImportRevisionTests(APITestCase):
         source_data = list(job.batches.values_list('data', flat=True))
         source_summary = job.summary.copy()
         existing = Part.objects.create(sku='ALIAS-OWNER')
-        PartCode.objects.create(part=existing, code='OWNED-ALIAS')
+        Reference.objects.create(part=existing, code='OWNED-ALIAS')
         proposed = load_job_groups(job)
         proposed['AI-REVISION-GOOD']['fields']['category'] = 'FRENOS'
         proposed['AI-REVISION-GOOD']['codes'][('', 'OWNED-ALIAS')] = 2

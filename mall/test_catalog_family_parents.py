@@ -9,7 +9,7 @@ from rest_framework.test import APITestCase
 from .catalog_families import family_candidates
 from .catalog_import import load_job_groups, replace_job_groups
 from . import references
-from .models import Account, CatalogImportJob, CatalogMerge, Membership, Part, PartCode, PartImage, Reference, Role, StockEntry, SupplierItem, User
+from .models import (Account, CatalogImportJob, CatalogMerge, Membership, Part, Reference, PartImage, Role, StockEntry, SupplierItem, User)
 from .services import ingest_inventory
 from .test_factories import make_line
 
@@ -103,7 +103,7 @@ class MissingCatalogParentTests(APITestCase):
         payload = {'target_sku': self.base, 'source_skus': [part.sku for part in self.parts]}
         self.assertEqual(self.client.post(self.grouping + 'merge/', payload, format='json').status_code, 400)
         unrelated = Part.objects.create(sku='OTHER')
-        PartCode.objects.create(part=unrelated, code=self.base)
+        Reference.objects.create(part=unrelated, code=self.base)
         self.assertEqual(self.client.post(self.grouping + 'merge/', {**payload, 'create_target': True}, format='json').status_code, 400)
         self.assertFalse(Part.objects.filter(sku=self.base).exists())
         references.retire(unrelated.codes.filter(is_main=False))  # a retired code holds nothing

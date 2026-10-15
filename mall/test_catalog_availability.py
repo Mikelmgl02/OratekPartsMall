@@ -8,7 +8,7 @@ from django.test import SimpleTestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils.dateparse import parse_datetime
 from rest_framework.test import APITestCase
-from .models import Account, Membership, Part, PartCode, Role, SupplierItem, User
+from .models import Account, Membership, Part, Reference, Role, SupplierItem, User
 from .test_factories import make_line
 
 
@@ -69,8 +69,8 @@ class CatalogAvailabilityTests(APITestCase):
 
     def test_alternate_search_multiple_items_and_roles_do_not_multiply_stock(self):
         part = make_line(sku='58411-1R000', description='DISCO VENTILADO', category='FRENOS', subcategory='DISCOS')
-        PartCode.objects.create(part=part, code='ALT-ONE')
-        PartCode.objects.create(part=part, code='ALT-TWO')
+        Reference.objects.create(part=part, code='ALT-ONE')
+        Reference.objects.create(part=part, code='ALT-TWO')
         self.item(part, 4, 2)
         self.item(part, 2)
         other = Account.objects.create(name='SEGUNDO PROVEEDOR')

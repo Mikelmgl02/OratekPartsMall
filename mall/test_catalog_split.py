@@ -6,7 +6,7 @@ from .catalog_grouping import merge_catalog_parts
 from .matching_models import MatchingCase
 from . import reference_matching
 from .matching_queue import matching_work
-from .models import Account, CatalogMerge, Part, PartCode, SupplierItem, User
+from .models import Account, CatalogMerge, Part, Reference, SupplierItem, User
 from .references import add_library_number
 from .services import ingest_inventory
 from .test_factories import make_code, move_variant
@@ -127,7 +127,7 @@ class CatalogSplitTests(APITestCase):
         for number in ['60150', '60160']:
             main = Part.objects.create(sku=f'43512-{number}', description='DISCO FRENO DEL TOY LAND CRUISER')
             other = Part.objects.create(sku=f'DF-{number}', description='DISCO FRENO DEL TOY LAND CRUISER')
-            PartCode.objects.create(part=main, code=other.sku)  # the other SKU's code is an alterno of the main one
+            Reference.objects.create(part=main, code=other.sku)  # the other SKU's code is an alterno of the main one
             pairs.append((main, other))
         main, other = pairs[0]
         split = CatalogSplit.objects.create(target=main, actor=self.admin)
@@ -165,9 +165,9 @@ class CatalogSplitTests(APITestCase):
         recorded = CatalogMerge.objects.get().sources
         self.assertEqual([{key: entry[key] for key in ('id', 'sku', 'codes', 'items', 'images')} for entry in recorded],
                          [{'id': str(other.pk), 'sku': 'DF-4512', 'codes': [{'brand': 'GMB', 'code': 'GD-4512'}], 'items': [str(item.pk)], 'images': []}])
-        moved = PartCode.objects.filter(pk__in=recorded[0]['references'])  # since S2b the References themselves, its former main among them
+        moved = Reference.objects.filter(pk__in=recorded[0]['references'])  # since S2b the References themselves, its former main among them
         self.assertEqual(sorted(moved.values_list('code', flat=True)), ['DF-4512', 'GD-4512'])
-        self.assertEqual(PartCode.objects.get(pk=recorded[0]['main']).code, 'DF-4512')
+        self.assertEqual(Reference.objects.get(pk=recorded[0]['main']).code, 'DF-4512')
         plan = self.plan(main)
         self.assertEqual(plan['children'][0]['codes'], [{'brand': 'GMB', 'code': 'GD-4512'}])
         self.assertEqual({code['code']: code['suggested'] for code in plan['codes']}['GD-4512'], str(other.pk))

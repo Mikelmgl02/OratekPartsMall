@@ -8,7 +8,7 @@ from openpyxl import Workbook, load_workbook
 from rest_framework.exceptions import ValidationError
 from rest_framework.test import APITestCase
 
-from .models import Account, InventoryUpdate, Membership, Part, PartCode, Role, StockEntry, SupplierItem, User
+from .models import Account, InventoryUpdate, Membership, Part, Reference, Role, StockEntry, SupplierItem, User
 from .services import ingest_inventory
 from .supplier_import import stock_plan
 from .supplier_import_models import SupplierInventoryImportJob
@@ -30,7 +30,7 @@ class SupplierExcelImportTests(APITestCase):
         Membership.objects.create(user=self.user, account=self.second_account)
         self.client.force_authenticate(self.user)
         self.part = Part.objects.create(sku='58411-1R000')
-        PartCode.objects.create(part=self.part, code='58411-1R000-G')
+        Reference.objects.create(part=self.part, code='58411-1R000-G')
         self.item = self.seed('STABLE-5', quantity=5)
 
     def seed(self, stable_id, *, quantity=5, source='upload', codigo='58411-1R000-G', brand='KSM', description='TAMBOR'):
@@ -247,7 +247,7 @@ class SupplierExcelImportTests(APITestCase):
             self.assertEqual(StockEntry.objects.count(), count)
             self.assertEqual(SupplierInventoryImportJob.objects.get(pk=result.data['job_id']).completed_batches, 0)
         result = self.preview([['NEW-PART', 'NEW-CODE', '', '', 3]])
-        PartCode.objects.create(part=self.part, code='NEW-CODE')
+        Reference.objects.create(part=self.part, code='NEW-CODE')
         self.assertEqual(self.commit(result.data['job_id']).status_code, 409)
         self.assertFalse(SupplierItem.objects.filter(supplier_invent_id='NEW-PART').exists())
 

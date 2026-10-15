@@ -6,7 +6,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from openpyxl import Workbook
 from rest_framework.test import APITestCase
 
-from .models import Account, CatalogImportJob, Membership, Part, PartCode, Role, StockEntry, User
+from .models import Account, CatalogImportJob, Membership, Part, Reference, Role, StockEntry, User
 from .services import ingest_inventory
 from .test_factories import make_line
 
@@ -135,7 +135,7 @@ class CatalogDateRecoveryTests(APITestCase):
         self.assertEqual(result['preview'][0]['codes'], [{'brand': 'OEM', 'code': '000ALT-001'}])
         self.assertEqual(result['recovery_rows'][0]['column'], 'CODIGO_ALTERNO')
         self.client.post(self.job_url(result), {'batch_index': 0})
-        self.assertEqual(PartCode.objects.get(is_main=False).code, '000ALT-001')
+        self.assertEqual(Reference.objects.get(is_main=False).code, '000ALT-001')
 
     def test_explicit_skip_only_excludes_that_row_and_persists_the_audit(self):
         raw = self.excel([
@@ -185,7 +185,7 @@ class CatalogDateRecoveryTests(APITestCase):
 
     def test_corrected_conflicting_alterno_still_requires_a_valid_catalog_plan(self):
         existing = Part.objects.create(sku='OTHER')
-        PartCode.objects.create(part=existing, code='TAKEN')
+        Reference.objects.create(part=existing, code='TAKEN')
         raw = self.excel([['NEW', '', '', datetime(2026, 6, 12)]], {'D2': 'd-mmm'})
         result = self.upload(raw, corrections=[{'row': 2, 'column': 'CODIGO_ALTERNO', 'value': 'taken'}]).data
         self.assertFalse(result['valid'])
@@ -193,7 +193,7 @@ class CatalogDateRecoveryTests(APITestCase):
         self.assertEqual(result['status'], 'review')
         self.assertEqual(result['pending_error_count'], 1)
         self.assertEqual(Part.objects.count(), 1)
-        self.assertEqual(PartCode.objects.filter(is_main=False).count(), 1)
+        self.assertEqual(Reference.objects.filter(is_main=False).count(), 1)
 
     def test_unsupported_date_format_can_be_reviewed_but_is_never_automatically_recovered(self):
         raw = self.excel([[datetime(2026, 6, 12)]], {'A2': 'yyyy/mm/dd'})
@@ -248,7 +248,7 @@ class CatalogDateRecoveryTests(APITestCase):
 
     def test_reviewed_recovery_preserves_existing_catalog_ids_supplier_ids_and_stock_ledger(self):
         existing = make_line(sku='6-12', name='BEFORE')
-        old_code = PartCode.objects.create(part=existing, code='OLD-CODE')
+        old_code = Reference.objects.create(part=existing, code='OLD-CODE')
         supplier = Account.objects.create(name='Proveedor Recovery')
         supplier.roles.add(Role.objects.get(code='supplier_retail'))
         member = User.objects.create_user('recovery-supplier', 'recovery-supplier@example.invalid', 'RecoverySupplier938!')
@@ -271,5 +271,5 @@ class CatalogDateRecoveryTests(APITestCase):
         self.assertEqual(stock.supplier_invent_id, 'stable-recovery-id')
         self.assertEqual(stock.part_id, existing.pk)
         self.assertEqual(stock.reported_quantity, 7)
-        self.assertTrue(PartCode.objects.filter(pk=old_code.pk).exists())
+        self.assertTrue(Reference.objects.filter(pk=old_code.pk).exists())
         self.assertEqual(list(StockEntry.objects.values()), ledger_before)

@@ -1,6 +1,6 @@
 from rest_framework.test import APITestCase
 
-from .models import Account, CatalogMerge, InventoryUpdate, Membership, Part, PartCode, Role, StockEntry, SupplierItem, User
+from .models import Account, CatalogMerge, InventoryUpdate, Membership, Part, Reference, Role, StockEntry, SupplierItem, User
 from .services import ingest_inventory, matching_part
 from .test_factories import make_line
 
@@ -24,7 +24,7 @@ class CatalogGroupingMergeTests(APITestCase):
         supplier = Account.objects.create(name='PROVEEDOR')
         supplier.roles.add(Role.objects.get(code='supplier_retail'))
         Membership.objects.create(user=self.root, account=supplier)
-        alternate = PartCode.objects.create(part=self.first, brand='KSM', code='KSM-BRAKE')
+        alternate = Reference.objects.create(part=self.first, brand='KSM', code='KSM-BRAKE')
         item = ingest_inventory(supplier=supplier, actor=self.root,
                                 data={'update_id': 'first', 'supplier_invent_id': 'SUPPLIER-STABLE-8',
                                       'codigo': self.first.sku, 'brand': 'KSM', 'source': 'apiag', 'quantity': 12})
@@ -77,7 +77,7 @@ class CatalogGroupingMergeTests(APITestCase):
 
     def test_exact_retry_does_not_move_stock_or_add_more_codes_or_audits(self):
         first = self.merge()
-        codes = list(PartCode.objects.values())
+        codes = list(Reference.objects.values())
         again = self.merge()
         self.assertEqual(again.status_code, 200)
         self.assertTrue(again.data['retry'])
@@ -86,7 +86,7 @@ class CatalogGroupingMergeTests(APITestCase):
         self.assertEqual(again.data['summary']['sku_aliases_created'], 0)
         self.assertIsNone(again.data['merge_id'])
         self.assertEqual(first.data['target'], again.data['target'])
-        self.assertEqual(list(PartCode.objects.values()), codes)
+        self.assertEqual(list(Reference.objects.values()), codes)
         self.assertEqual(CatalogMerge.objects.count(), 1)
 
     def test_input_limits_distinctness_and_missing_skus_make_no_changes(self):
@@ -94,7 +94,7 @@ class CatalogGroupingMergeTests(APITestCase):
             with self.subTest(sources=sources):
                 self.assertEqual(self.merge(sources=sources).status_code, 400)
                 self.assertEqual(Part.objects.filter(active=True).count(), 3)
-                self.assertFalse(PartCode.objects.filter(is_main=False).exists())
+                self.assertFalse(Reference.objects.filter(is_main=False).exists())
         self.assertEqual(self.merge(category='A' * 121).status_code, 400)
         self.assertFalse(CatalogMerge.objects.exists())
 
@@ -115,8 +115,8 @@ class CatalogGroupingMergeTests(APITestCase):
 
     def test_neutral_source_alias_conflicting_with_unrelated_branded_alias_rejects_atomically(self):
         unrelated = Part.objects.create(sku='DIFFERENT')
-        conflicting = PartCode.objects.create(part=unrelated, brand='OTHER', code=self.first.sku)
-        source_code = PartCode.objects.create(part=self.second, brand='', code='SECOND-ALIAS')
+        conflicting = Reference.objects.create(part=unrelated, brand='OTHER', code=self.first.sku)
+        source_code = Reference.objects.create(part=self.second, brand='', code='SECOND-ALIAS')
         failed = self.merge(category='UPDATED')
         self.assertEqual(failed.status_code, 400)
         self.assertIn(self.first.sku, str(failed.data))
@@ -131,7 +131,7 @@ class CatalogGroupingMergeTests(APITestCase):
 
     def test_existing_source_code_that_identifies_unrelated_sku_rejects_atomically(self):
         unrelated = Part.objects.create(sku='OTHER-CANONICAL')
-        PartCode.objects.create(part=self.first, code=unrelated.sku)
+        Reference.objects.create(part=self.first, code=unrelated.sku)
         self.assertEqual(self.merge().status_code, 400)
         self.assertEqual(self.first.codes.filter(is_main=False).count(), 1)
         self.assertEqual(self.target.codes.filter(is_main=False).count(), 0)
