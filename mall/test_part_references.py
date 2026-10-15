@@ -1,3 +1,5 @@
+"""Declared references (a supplier's REFERENCIAS, apiag's alternos) from S6: rule 5b. Each declared code that is not already on the item's
+line is one reference case; nothing links the item by them, and nothing is stored on its line until a person approves the case."""
 import io
 from unittest.mock import patch
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -7,7 +9,6 @@ from . import references
 from .models import Account, Membership, Part, PartCode, Role, StockEntry, SupplierItem, User, MatchingCase
 from .serializers import InventorySerializer
 from .services import ingest_inventory
-from .matching_engine import MatchIndex, reconcile_items, reconcile_catalog
 from .matching_worker import analyze_ambiguous
 from .supplier_import import read_supplier_excel, _workbook_response
 
@@ -32,115 +33,65 @@ class PartReferenceTests(APITestCase):
         data.update(kwargs)
         return ingest_inventory(supplier=self.supplier, actor=self.admin, data=data)
 
-    def match(self, item):
-        reconcile_items(MatchIndex())
-        item.refresh_from_db()
+    def cases(self, item):
+        return {case.new_code: case for case in MatchingCase.objects.filter(item=item, kind='reference')}
 
-    def test_unrelated_supplier_code_matches_oem_library_without_creating_stock_or_aliases(self):
-        item = self.ingest(refs=[{'code':'517121R000', 'brand':'HYUNDAI'}, {'code':'51712-0U000'}])
+    def test_declared_codes_never_link_the_item_and_each_opens_a_reference_case(self):
         before = list(StockEntry.objects.values())
-        self.match(item)
-        self.assertEqual(item.part, self.master)
-        self.assertEqual(item.matching_status, 'matched')
-        self.assertEqual(item.supplier_invent_id, 'STABLE-1')
-        self.assertEqual(item.codigo, 'D-HYU-1R')
-        self.assertEqual(SupplierItem.objects.count(), 1)
-        self.assertEqual(list(StockEntry.objects.values()), before)
-        self.assertEqual(self.master.codes.filter(is_main=False).count(), 2)
-        self.assertEqual(MatchingCase.objects.get(item=item).method, 'approved_reference')
+        item = self.ingest(refs=[{'code': '517121R000', 'brand': 'HYUNDAI'}, {'code': '51712-0U000'}])
+        self.assertNotEqual(item.part_id, self.master.pk)  # its own code is no line's: a new product (rule 4), never linked by them
+        self.assertEqual((item.part.estado, item.matching_status, item.supplier_invent_id, item.codigo), ('preparacion', 'pending', 'STABLE-1', 'D-HYU-1R'))
+        self.assertEqual(self.master.codes.filter(is_main=False).count(), 2)  # no alterno made of them
+        self.assertEqual(len(StockEntry.objects.values()) - len(before), 1)
+        cases = self.cases(item)
+        self.assertEqual(set(cases), {'517121R000', '51712-0U000'})
+        for case in cases.values():
+            self.assertIn(self.master.pk, set(case.lines.values_list('pk', flat=True)))
+            self.assertEqual(case.status, 'review')
 
-    def test_oem_own_code_and_suffix_match_master_with_unrelated_name_and_brand(self):
+    def test_an_own_code_with_a_tag_joins_the_master_by_rule_3_and_its_number_by_rule_2(self):
         item = self.ingest(code='51712-1R000-KSM')
-        self.match(item)
-        self.assertEqual(item.part, self.master)
-        other = self.ingest(code='517121R000', supplier_invent_id='STABLE-2')
-        self.match(other)
-        self.assertEqual(other.part, self.master)
+        self.assertEqual((item.part, item.matching_status), (self.master, 'matched'))
+        self.assertEqual(item.reference.code, '51712-1R000-KSM')
+        other = self.ingest(code='517121R000', brand='', supplier_invent_id='STABLE-2')
+        self.assertEqual((other.part, other.reference_id), (self.master, self.ref.pk))
 
-    def test_other_manufacturer_and_unregistered_supplier_references_are_not_published(self):
-        item = self.ingest(refs=[{'code': '51712-1R000', 'brand': 'UNRELATED'}])
-        self.match(item)
-        self.assertIsNone(item.part)
-        item = self.ingest(refs=[{'code': '51712-1R000'}, {'code': 'PRIVATE-123'}], update_id='next')
-        self.match(item)
-        self.assertEqual(item.part, self.master)
-        self.assertFalse(PartCode.objects.filter(code='PRIVATE-123').exists())
-
-    def test_conflicting_references_block_exact_code_and_remembered_match(self):
+    def test_a_declared_code_another_line_holds_is_listed_with_it_and_holds_nothing(self):
         other = Part.objects.create(sku='OTHER-MASTER', description=self.desc)
         PartCode.objects.create(part=other, code='OTHER-OEM', kind='oem')
-        item = self.ingest(code=self.master.sku, refs=[{'code':'OTHER-OEM'}])
-        self.match(item)
-        self.assertIsNone(item.part)
-        self.assertEqual(MatchingCase.objects.get(item=item).method, 'conflicting_references')
-        item = self.ingest(refs=[{'code':'51712-1R000'}], update_id='valid')
-        self.match(item)
-        self.assertEqual(item.part, self.master)
-        item = self.ingest(refs=[{'code':'OTHER-OEM'}], update_id='changed')
-        self.match(item)
-        self.assertEqual(item.part, self.master)
-        self.assertEqual(item.matching_status, 'review')
-        self.assertEqual(StockEntry.objects.count(), 1)
+        item = self.ingest(code=self.master.sku, brand='', refs=[{'code': 'OTHER-OEM'}, {'code': '51712-1R000', 'brand': 'HYUNDAI'}])
+        self.assertEqual((item.part, item.matching_status), (self.master, 'matched'))  # its own code links it; a declared one never holds it
+        cases = self.cases(item)
+        self.assertEqual(list(cases), ['OTHER-OEM'])  # 51712-1R000 is already a code of its line
+        self.assertEqual(set(cases['OTHER-OEM'].lines.values_list('pk', flat=True)), {self.master.pk, other.pk})
 
-    def test_specs_and_kits_do_not_auto_match_even_with_reference(self):
-        for text in ['DISCO TRASERO HYUNDAI ACCENT 256 MM 11-16',
-                     'DISCO DELANTERO HYUNDAI ACCENT 280 MM 11-16',
-                     'KIT DISCO DELANTERO HYUNDAI ACCENT 256 MM 11-16']:
-            item = self.ingest(refs=[{'code':'51712-1R000'}], description=text, update_id=text)
-            self.match(item)
-            self.assertIsNone(item.part)
-            self.assertEqual(MatchingCase.objects.get(item=item).method, 'reference_spec_conflict')
-
-    def test_labelled_oem_in_description_cannot_override_conflicting_library_code(self):
-        other = Part.objects.create(sku='OTHER-MASTER', description=self.desc)
-        PartCode.objects.create(part=other, code='98765-43210', kind='oem')
-        item = self.ingest(refs=[{'code':'51712-1R000'}], description=self.desc+' OEM:98765-43210')
-        self.match(item)
-        self.assertIsNone(item.part)
-        self.assertEqual(MatchingCase.objects.get(item=item).method, 'conflicting_references')
+    def test_specs_and_kits_contradicting_the_line_wait_in_a_variant_case(self):
+        for n, text in enumerate(['DISCO TRASERO HYUNDAI ACCENT 256 MM 11-16',
+                                  'DISCO DELANTERO HYUNDAI ACCENT 280 MM 11-16',
+                                  'KIT DISCO DELANTERO HYUNDAI ACCENT 256 MM 11-16']):
+            item = self.ingest(code='51712-1R000', brand='HYUNDAI', description=text, update_id=text, supplier_invent_id=f'K-{n}')
+            self.assertEqual((item.part, item.matching_status), (self.master, 'review'))
+            self.assertEqual(MatchingCase.objects.get(item=item).kind, 'variant')
 
     def test_omitted_references_preserve_them_and_clear_is_explicit(self):
-        item = self.ingest(refs=[{'code':'51712-1R000'}])
-        self.match(item)
-        item = self.ingest(update_id='stock-only', quantity=10)
-        self.assertEqual(item.references, [{'brand':'', 'code':'51712-1R000'}])
+        item = self.ingest(code=self.master.sku, brand='', refs=[{'code': 'X-PRIVADO-1'}])
+        self.assertEqual(item.matching_status, 'matched')
+        self.assertEqual(set(self.cases(item)), {'X-PRIVADO-1'})
+        item = self.ingest(code=self.master.sku, brand='', update_id='stock-only', quantity=10)
+        self.assertEqual(item.references, [{'brand': '', 'code': 'X-PRIVADO-1'}])
         self.assertEqual(item.matching_status, 'matched')
         self.assertEqual(StockEntry.objects.last().quantity, 5)
-        item = self.ingest(refs=[], update_id='clear', quantity=10)
-        self.assertEqual(item.references, [])
-        self.assertEqual(item.matching_status, 'review')
+        item = self.ingest(code=self.master.sku, brand='', refs=[], update_id='clear', quantity=10)
+        self.assertEqual((item.references, item.matching_status), ([], 'matched'))
+        self.assertEqual(self.cases(item), {})  # the undecided case of a code no longer declared goes
 
-    def test_catalog_variants_use_master_references_and_keep_stock_identity(self):
-        children = [Part.objects.create(sku=code, description=self.desc) for code in ['51712-1R000-KSM', '51712-0U000-NP']]
-        item = self.ingest(code=children[0].sku)
-        before = list(StockEntry.objects.values())
-        self.assertEqual(reconcile_catalog(self.admin), 2)
-        self.assertEqual(self.master.merged_parts.count(), 2)
-        item.refresh_from_db()
-        self.assertEqual(item.part, self.master)
-        self.assertEqual(list(StockEntry.objects.values()), before)
-        self.assertEqual(reconcile_catalog(self.admin), 0)
-
-    def test_catalog_ambiguous_branded_code_requires_review(self):
-        other = Part.objects.create(sku='OTHER-MASTER', description=self.desc)
-        PartCode.objects.create(part=other, code='51712-1R000', brand='OTHER', kind='manufacturer')
-        child = Part.objects.create(sku='51712-1R000-KSM', description=self.desc)
-        self.assertEqual(reconcile_catalog(self.admin), 0)
-        case = MatchingCase.objects.get(kind='catalog_reference')
-        self.assertEqual(case.status, 'review')
-        response = self.client.post(f'/api/v1/management/matching/{case.pk}/', dict(
-            action='approve', fingerprint=case.fingerprint, target_sku=other.sku), format='json')
-        self.assertEqual(response.status_code, 200, response.data)
-        child.refresh_from_db()
-        self.assertEqual(child.merged_into, other)
-
-    def test_library_changes_invalidate_a_review_snapshot(self):
-        item = self.ingest(description='DISCO TRASERO 256 MM', refs=[{'code':'51712-1R000'}])
-        self.match(item)
-        case = MatchingCase.objects.get(item=item)
-        references.retire(self.ref)  # the library changed: the code left the line
-        response = self.client.post(f'/api/v1/management/matching/{case.pk}/', dict(
-            action='approve', fingerprint=case.fingerprint, target_sku=self.master.sku), format='json')
+    def test_a_case_whose_evidence_changed_refuses_the_old_decision(self):
+        item = self.ingest(code=self.master.sku, brand='', refs=[{'code': 'X-PRIVADO-2'}])
+        case = MatchingCase.objects.get(item=item, kind='reference')
+        holder = Part.objects.create(sku='HOLDER-1', description=self.desc)
+        references.add(holder, 'X-PRIVADO-2', '')
+        self.ingest(code=self.master.sku, brand='', refs=[{'code': 'X-PRIVADO-2'}], update_id='again', quantity=6)  # now another line holds it
+        response = self.client.post(f'/api/v1/management/matching/{case.pk}/', dict(action='approve', fingerprint=case.fingerprint), format='json')
         self.assertEqual(response.status_code, 409, response.data)
 
     def test_master_editor_saves_kind_source_and_preserves_existing_metadata(self):
@@ -178,8 +129,7 @@ class PartReferenceTests(APITestCase):
         committed = self.client.post(f'{url}jobs/{result.data["job_id"]}/', {'batch_index':0}, format='json')
         self.assertEqual(committed.status_code, 200, committed.data)
         item = SupplierItem.objects.get(supplier_invent_id='STOCK-123')
-        self.match(item)
-        self.assertEqual(item.part, self.master)
+        self.assertEqual(set(self.cases(item)), {'51712-1R000', '51712-0U000'})  # S6: cases, never a link
         records, _ = read_supplier_excel(raw.getvalue())
         records[0]['errors'] = [{'column':'CODIGO', 'message':'CORREGIR'}]
         response = _workbook_response(records, 'repair.xlsx', errors=True)
@@ -190,13 +140,17 @@ class PartReferenceTests(APITestCase):
 
     @patch('mall.matching_worker.provider_configuration', return_value=('configured', 'test-model'))
     @patch('mall.matching_worker.call_provider')
-    def test_ai_receives_declared_and_master_references_without_applying_them(self, provider, config):
-        item = self.ingest(refs=[{'code':'51712-1R000'}], description='DISCO TRASERO 256 MM')
-        self.match(item)
-        provider.return_value = {'suggestions':[dict(source_sku=item.codigo, target_sku=self.master.sku, confidence=.99, reason='REVISAR POSICIÓN')]}
+    def test_ai_ranks_a_line_case_with_its_declared_references_without_applying_them(self, provider, config):
+        other = Part.objects.create(sku='OTHER-DISC', description=self.desc)
+        PartCode.objects.create(part=other, code='51712-1R000', brand='MANDO', kind='manufacturer')
+        PartCode.objects.create(part=self.master, code='51712-1R000', brand='MANDO-2', kind='manufacturer')
+        item = self.ingest(code='51712-1R000', brand='', refs=[{'code': '51712-0U000'}])  # brandless on two lines: a line case
+        case = MatchingCase.objects.get(item=item, kind='line')
+        provider.return_value = {'suggestions':[dict(source_sku=item.codigo, target_sku=self.master.sku, confidence=.99, reason='REVISAR')]}
         self.assertEqual(analyze_ambiguous(), 1)
         source, candidates, _ = provider.call_args.args
         self.assertEqual(source[0]['codes'], item.references)
-        self.assertEqual(len(candidates[self.master.sku]['codes']), 2)
+        self.assertEqual(set(candidates), {self.master.sku, other.sku})
         item.refresh_from_db()
         self.assertIsNone(item.part)
+        self.assertEqual(MatchingCase.objects.get(pk=case.pk).ai['target_sku'], self.master.sku)

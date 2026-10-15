@@ -1,11 +1,14 @@
 from rest_framework.test import APITestCase
 
-from .matching_engine import MatchIndex, reconcile_items
-from .models import Account, Membership, MatchingCase, Part, PartCode, Role, SupplierItem, User
+from . import reference_matching as rm
+from . import references
+from .lines import create_line
+from .models import Account, Membership, MatchingCase, Part, Role, SupplierItem, User
 from .oem_links import store_catalog_links, store_cross_references
 from .oem_reference_models import PartOEMLink
 from .references import add_library_number
 from .test_oem_finder import Fresh
+from .services import ingest_inventory
 
 PUMP = 'BOMBA AGUA TOY 22R HILUX'
 
@@ -32,66 +35,74 @@ class OEMLibraryTests(Fresh, APITestCase):
         return SupplierItem.objects.create(supplier=self.supplier, supplier_invent_id=f'ID-{codigo}-{brand}', codigo=codigo, brand=brand,
                                            description=description, references=list(references), reported_quantity=3)
 
-    def resolve(self, item):
-        candidates, method, strong, reason = MatchIndex().resolve(item)
-        return [row['sku'] for row in candidates], method, strong, reason
 
 
-class LibraryMatchingTests(OEMLibraryTests):
-    def test_an_aftermarket_code_links_the_one_sku_that_reaches_its_number(self):
-        item = self.item('GWT-41A', 'GMB')
-        self.assertEqual(self.resolve(item)[:3], (['16100-39315-RAZ'], 'aftermarket_code', True))
-        self.assertEqual(reconcile_items(MatchIndex()), 1)
-        item.refresh_from_db()
-        self.assertEqual((item.part_id, item.matching_status), (self.pump.pk, 'matched'))
-        self.assertEqual(MatchingCase.objects.get(item=item).method, 'aftermarket_code')
-        self.assertFalse(PartCode.objects.filter(code='GWT-41A').exists())  # the supplier's code never becomes a universal alterno
+GMB = 'GMB Water Pump Catalog 2016 · pág. 212'
+
+
+class LibraryMatchingTests(Fresh, APITestCase):
+    """S6's 3e-lazy (until S9): a branded aftermarket code a catalog files under OEM numbers joins the one line its numbers' References sit
+    on, as a Reference of that line (declarado for the catalog's own brand, inferido for a competitor's from a PDF-checked catalog);
+    the numbers on two or more lines wait in a line case (and a merge case). The SKU links of the library (PartOEMLink) are S9's."""
+
+    def setUp(self):
+        super().setUp()
+        self.pump = create_line('16100-39315-RAZ', description=PUMP)
+        references.add(self.pump, '16100-39315', 'TOYOTA', tipo='oem')  # the line carries the number: add_library_number files it there
+        self.main = number('TOYOTA', '16100-39315')
+        store_cross_references({(self.main.pk, 'GMB', 'GWT-41A'): [GMB], (self.main.pk, 'NPW', 'T-16'): ['GMB Water Pump Catalog 2016 · pág. 557'],
+                                (self.main.pk, 'AISIN', 'WPT-111'): [GMB], (self.main.pk, 'DENSO', 'DW-9'): ['OTRO CATALOGO 2019 · pág. 1']})
+        self.supplier = Account.objects.create(name='PROVEEDOR NUEVO')
+        self.actor = User.objects.create_user('lib-loader', 'lib-loader@example.invalid', 'Example938!')
+
+    def resolve(self, codigo, brand='', description=PUMP):
+        return rm.resolve(rm.subject_of(None, {'codigo': codigo, 'brand': brand, 'description': description}, self.supplier))
+
+    def test_an_aftermarket_code_joins_the_one_line_of_its_numbers(self):
+        self.assertEqual(self.main.part_id, self.pump.pk)
+        found = self.resolve('GWT-41A', 'GMB')
+        self.assertEqual((found.action, found.rule, found.line, found.new['estado']), ('new_reference_on_line', '3e', self.pump, 'declarado'))
+        competitor = self.resolve('WPT-111', 'AISIN')
+        self.assertEqual((competitor.line, competitor.new['estado']), (self.pump, 'inferido'))  # a PDF-checked catalog (OD17)
+        self.assertEqual(self.resolve('DW-9', 'DENSO').action, 'case')  # an unchecked catalog's competitor code waits for a person
+        item = ingest_inventory(supplier=self.supplier, actor=self.actor, data={'update_id': 'u-1', 'supplier_invent_id': 'GWT', 'codigo': 'GWT-41A',
+                                                                           'brand': 'GMB', 'description': PUMP, 'source': 'upload', 'quantity': 3})
+        self.assertEqual((item.part_id, item.matching_status, item.reference.code, item.reference.tipo), (self.pump.pk, 'matched', 'GWT-41A', 'aftermarket'))
+        self.assertTrue(item.reference.sources.filter(kind='catalogo', citation=GMB).exists())
 
     def test_a_short_code_must_be_printed_the_same_way_and_by_that_brand(self):
-        self.assertEqual(self.resolve(self.item('T-16', 'NPW'))[1:3], ('aftermarket_code', True))
-        skus, method, strong, reason = self.resolve(self.item('T16', 'NPW'))
-        self.assertEqual((skus[:1], strong), (['16100-39315-RAZ'], False))  # a candidate for review, not an automatic link
-        self.assertIn('código corto', reason)
-        self.assertEqual(self.resolve(self.item('GWT-41A', 'AISIN'))[2], False)  # AISIN never printed GWT-41A
+        self.assertEqual(self.resolve('T-16', 'NPW').line, self.pump)
+        self.assertEqual(self.resolve('T16', 'NPW').action, 'no_line')
+        self.assertEqual(self.resolve('GWT-41A', 'AISIN').action, 'no_line')  # AISIN never printed GWT-41A
 
-    def test_an_oem_number_the_catalog_tied_to_the_sku_links_it(self):
-        self.assertEqual(self.resolve(self.item('16100-39317', 'TOYOTA'))[:3], (['16100-39315-RAZ'], 'linked_oem_number', True))
-        self.assertEqual(self.resolve(self.item('1610039315'))[:3], (['16100-39315-RAZ'], 'linked_oem_number', True))
+    def test_numbers_on_two_lines_wait_in_a_line_case_and_a_merge_case(self):
+        sister = number('TOYOTA', '16100-39317')  # a line of its own in referencia
+        store_cross_references({(sister.pk, 'GMB', 'GWT-41A'): [GMB]})
+        found = self.resolve('GWT-41A', 'GMB')
+        self.assertEqual((found.action, [spec['kind'] for spec in found.cases]), ('case', ['line', 'merge']))
+        self.assertEqual(set(found.cases[1]['lines']), {self.pump.pk, sister.part_id})
 
-    def test_duplicate_skus_of_a_number_go_to_review_with_both(self):
-        twin = Part.objects.create(sku='16100-39315-GMB', description=PUMP)
-        PartOEMLink.objects.create(part=twin, reference=self.main, source='sku_name')
-        skus, method, strong, reason = self.resolve(self.item('GWT-41A', 'GMB'))
-        self.assertEqual((sorted(skus[:2]), method, strong), (['16100-39315-GMB', '16100-39315-RAZ'], 'needs_review', False))
-        self.assertIn('posibles duplicados', reason)
-        self.assertTrue(twin.pk)
+    def test_a_reference_of_a_line_wins_over_the_library(self):
+        owner = create_line('BOMBA-GMB-41', description=PUMP)
+        references.add(owner, 'GWT-41A', 'GMB', tipo='aftermarket')
+        self.assertEqual((self.resolve('GWT-41A', 'GMB').action, self.resolve('GWT-41A', 'GMB').line), ('attach', owner))
 
-    def test_an_alterno_or_a_sku_code_still_wins_over_the_library(self):
-        owner = Part.objects.create(sku='BOMBA-GMB-41', description=PUMP)
-        PartCode.objects.create(part=owner, brand='GMB', code='GWT-41A', ref_type='company')
-        self.assertEqual(self.resolve(self.item('GWT-41A', 'GMB'))[:3], (['BOMBA-GMB-41'], 'known_code', True))
-        exact = Part.objects.create(sku='16100-39317', description=PUMP)  # the sister number is a SKU of its own
-        self.assertEqual(self.resolve(self.item('16100-39317', 'TOYOTA'))[:3], (['16100-39317'], 'known_code', True))
-        self.assertTrue(exact.pk)
+    def test_declared_references_are_cases_never_links(self):
+        item = ingest_inventory(supplier=self.supplier, actor=self.actor, data={'update_id': 'u-2', 'supplier_invent_id': 'X-1', 'codigo': 'X-1',
+                                                                           'brand': 'OTRA', 'description': PUMP, 'source': 'upload', 'quantity': 1,
+                                                                           'references': [{'brand': 'AISIN', 'code': 'WPT-111', 'ref_type': 'company'}]})
+        self.assertNotEqual(item.part_id, self.pump.pk)
+        self.assertTrue(MatchingCase.objects.filter(item=item, kind='reference', new_code='WPT-111').exists())
 
-    def test_declared_references_resolve_through_the_library_when_no_alterno_carries_them(self):
-        company = self.item('X-1', 'OTRA', references=[{'brand': 'AISIN', 'code': 'WPT-111', 'ref_type': 'company'}])
-        self.assertEqual(self.resolve(company)[:3], (['16100-39315-RAZ'], 'approved_reference', True))
-        oem = self.item('X-2', 'OTRA', references=[{'brand': 'LEXUS', 'code': '16100-39317', 'ref_type': 'oem'}])
-        self.assertEqual(self.resolve(oem)[:3], (['16100-39315-RAZ'], 'approved_reference', True))  # LEXUS and TOYOTA are one make
-        other_make = self.item('X-3', 'OTRA', references=[{'brand': 'NISSAN', 'code': '16100-39317', 'ref_type': 'oem'}])
-        self.assertNotEqual(self.resolve(other_make)[1], 'approved_reference')
+    def test_a_contradiction_hangs_the_item_in_review(self):
+        found = self.resolve('GWT-41A', 'GMB', description='KIT BOMBA AGUA TOY 22R')
+        self.assertEqual((found.action, found.status, [spec['kind'] for spec in found.cases]), ('new_reference_on_line', 'review', ['variant']))
 
-    def test_a_contradiction_blocks_the_automatic_link(self):
-        skus, method, strong, reason = self.resolve(self.item('GWT-41A', 'GMB', description='KIT BOMBA AGUA TOY 22R'))
-        self.assertEqual((skus[:1], strong), (['16100-39315-RAZ'], False))
-        self.assertIn('especificaciones', reason)
-
-    def test_a_grouped_sku_is_never_a_target(self):
-        target = Part.objects.create(sku='16100-39315', description=PUMP)
-        Part.objects.filter(pk=self.pump.pk).update(merged_into=target, active=False, estado='unificada')
-        skus, method, strong, _ = self.resolve(self.item('GWT-41A', 'GMB'))
-        self.assertNotIn('16100-39315-RAZ', skus)
+    def test_a_grouped_line_is_never_a_target(self):
+        from .line_merge import merge_lines
+        target = create_line('16100-39315-X', description=PUMP)
+        merge_lines(target, [self.pump], actor=User.objects.create_superuser('lib-root', 'lib-root@example.invalid', 'Example938!'))
+        self.assertEqual(self.resolve('GWT-41A', 'GMB').line, target)  # the number went with its line
 
 
 class LibrarySearchTests(OEMLibraryTests):

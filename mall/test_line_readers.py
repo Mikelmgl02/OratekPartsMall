@@ -137,8 +137,10 @@ class StorefrontReaderTests(APITestCase):
         self.assertEqual(matching_part('58411-1R000', ''), self.part)
         for line in self.hidden.values():
             self.assertIsNone(matching_part(line.sku, ''), line.estado)
+            # S6 (rules 1 and 7): the item hangs from the line its code is on, but a line off sale never counts it.
             item = make_variant(self.supplier_b, f'LOAD-{line.estado}', line.sku, 1, actor=self.seller_b)
-            self.assertNotEqual(item.part_id, line.pk)
+            line.refresh_from_db()
+            self.assertEqual((item.part_id, item.matching_status, line.estado), (line.pk, 'pending', 'preparacion'))
 
 
 class AdminReaderTests(APITestCase):
@@ -306,18 +308,18 @@ class CatalogToolReaderTests(TestCase):
         self.assertEqual(Part.objects.get(pk=ref.part_id).tipo, 'OEM')  # S4: a dispute is the Reference's estado; no line is unmarked
 
     def test_supplier_matching_never_lands_on_a_line_off_sale(self):
-        from .matching_engine import MatchIndex, catalog_families, reconcile_items
+        from .matching_engine import MatchIndex
+        from .reference_matching import backlog
         part = make_line('16100-39315', description='BOMBA AGUA TOY 22R')
         lines = hidden('16100-39399', 'BOMBA AGUA TOY 22R')
         index = MatchIndex()
-        self.assertEqual(set(index.parts), {str(part.pk)})
-        self.assertNotIn('16100-39399', str(catalog_families()))
+        self.assertEqual(set(index.parts), {str(part.pk)})  # the description hints read the lines on sale only
         supplier = make_supplier('PROVEEDOR MATCH')
         items = [make_variant(supplier, f'M-{line.estado}', line.sku, 2, actor=self.root) for line in lines.values()]
-        reconcile_items(MatchIndex())
-        for item, line in zip(items, lines.values()):
+        backlog()
+        for item, line in zip(items, lines.values()):  # S6: they hang from those lines, never counted (pending)
             item.refresh_from_db()
-            self.assertNotEqual(item.part_id, line.pk)
+            self.assertEqual((item.part_id, item.matching_status), (line.pk, 'pending'))
 
     def test_a_matching_review_targets_a_line_on_sale(self):
         from rest_framework.test import APIClient
@@ -427,8 +429,9 @@ class LibraryReaderTests(TestCase):
         rows = [{'row': n, 'data': {'supplier_invent_id': f'X-{n}', 'codigo': sku, 'brand': '', 'quantity': 1}}
                 for n, sku in enumerate([part.sku, *[line.sku for line in lines.values()]], 2)]
         plan, _ = stock_plan(supplier, rows)
+        # S6: a code on a line off sale hangs there, pending (never counted until the line is published).
         self.assertEqual([(row['codigo'], row['matching_status'], row['part_id']) for row in plan['preview']],
-                         [(part.sku, 'matched', str(part.pk)), *[(line.sku, 'pending', None) for line in lines.values()]])
+                         [(part.sku, 'matched', str(part.pk)), *[(line.sku, 'pending', str(line.pk)) for line in lines.values()]])
 
     def test_the_alternos_prune_reads_catalog_lines(self):
         from . import prune_catalog_alternos as prune

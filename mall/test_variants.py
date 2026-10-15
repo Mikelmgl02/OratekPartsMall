@@ -52,6 +52,12 @@ class VariantTestCase(Fresh, TestCase):
         self.alias = make_reference(self.plain, '04111-22152-AS')
         self.updates = 0
 
+    def loose(self, invent_id, codigo, supplier=None):
+        """An item with no line and no Reference, written without a load (from S6 a load gives every item a line: one of its own in
+        Productos nuevos when no line has its code)."""
+        return SupplierItem.objects.create(supplier=supplier or self.supplier, supplier_invent_id=invent_id, codigo=codigo, brand='',
+                                           source='upload')
+
     def load(self, invent_id, codigo, brand='', quantity=1, supplier=None, **data):
         self.updates += 1
         return ingest_inventory(supplier=supplier or self.supplier, actor=self.root, data={
@@ -112,7 +118,7 @@ class WhichReferenceTests(VariantTestCase):
 
     def test_an_item_on_a_line_outside_the_catalog_is_pending(self):
         prepared = make_line('PREP-0001', estado='referencia', active=False)
-        item = make_variant(self.supplier, 'E-1', 'PREP-0001', 1, actor=self.root)
+        item = self.loose('E-1', 'PREP-0001')
         self.assertIsNone(item.part_id)
         variants.vincular(item, prepared, status='matched', actor=self.root)
         self.assertEqual((item.part_id, item.matching_status), (prepared.pk, 'pending'))
@@ -124,7 +130,7 @@ class WhichReferenceTests(VariantTestCase):
 
 class ShimTests(VariantTestCase):
     def test_code_that_writes_part_gets_the_reference_and_vincular_follows_a_new_part(self):
-        item = self.load('S-1', 'NO-MATCH-1')
+        item = self.loose('S-1', 'NO-MATCH-1')
         self.assertEqual((item.part_id, item.reference_id, item.matching_status), (None, None, 'pending'))
         item.part, item.matching_status = self.plain, 'matched'
         item.save(update_fields=['part', 'matching_status'])
@@ -186,9 +192,13 @@ class CodeChangeTests(VariantTestCase):
         self.assertEqual((back.codigo_pendiente, back.matching_status), (None, 'matched'))
 
     def test_an_unattached_item_takes_the_new_code(self):
+        # S6: an item without a Reference waits in a line case (its code on two lines); a new code is simply its code, resolved again.
+        for sku, brand in (('UNK-A', 'TOYOTA'), ('UNK-B', 'GMB')):
+            make_reference(make_line(sku), 'UNKNOWN-1', brand=brand)
         item = self.load('U-1', 'UNKNOWN-1')
+        self.assertEqual((item.reference_id, item.matching_status), (None, 'pending'))
         item = self.load('U-1', 'UNKNOWN-2')
-        self.assertEqual((item.codigo, item.codigo_pendiente, item.reference_id), ('UNKNOWN-2', None, None))
+        self.assertEqual((item.codigo, item.codigo_pendiente, item.part.estado, item.part.sku), ('UNKNOWN-2', None, 'preparacion', 'UNKNOWN-2'))
 
     def test_the_excel_preview_shows_the_waiting_code(self):
         from .supplier_import import stock_plan
@@ -221,18 +231,18 @@ class CodeChangeTests(VariantTestCase):
         self.assertEqual(field_changes(before, item), {'codigo_pendiente': [None, 'OTHER-321'], 'brand_pendiente': [None, '']})
 
     def test_the_matching_only_proposes_a_waiting_code_and_its_approval_applies_it(self):
-        from .matching_engine import MatchIndex, apply_item, reconcile_items
+        from . import reference_matching
         from .matching_models import MatchingCase
         other = make_line('OTHER-999', description='BOMBA AGUA')
         item = self.load('W-1', '04111-22152', description='BOMBA AGUA')
         item = self.load('W-1', 'OTHER-999', description='BOMBA AGUA')
-        reconcile_items(MatchIndex())
-        case = MatchingCase.objects.get(item=item)
+        case = MatchingCase.objects.get(item=item)  # S6: a code_change case, opened by the load itself
         item.refresh_from_db()
-        self.assertEqual((case.status, case.candidates[0]['sku'], item.matching_status, item.codigo_pendiente, item.part_id),
-                         ('review', 'OTHER-999', 'review', 'OTHER-999', self.plain.pk))
+        self.assertEqual((case.kind, case.status, case.new_code, item.matching_status, item.codigo_pendiente, item.part_id),
+                         ('code_change', 'review', 'OTHER-999', 'review', 'OTHER-999', self.plain.pk))
         self.assertEqual(case.sources[0]['codigo_pendiente'], 'OTHER-999')
-        apply_item(case, case.candidates[0], actor=self.root)
+        self.assertEqual(set(case.lines.values_list('pk', flat=True)), {self.plain.pk, other.pk})
+        reference_matching.decide(case, 'approve', actor=self.root)
         item.refresh_from_db()
         self.assertEqual((item.codigo, item.codigo_pendiente, item.part_id, item.reference_id, item.matching_status),
                          ('OTHER-999', None, other.pk, references.main_of(other).pk, 'matched'))
@@ -382,7 +392,7 @@ class WaitingCodeTests(VariantTestCase):
         self.assertFalse(Reference.all_objects.filter(code='OTHER-555').exclude(part=self.other).exists())
 
     def test_an_item_with_no_line_is_only_pending(self):
-        loose = self.load('WC-2', 'NADIE-123')
+        loose = self.loose('WC-2', 'NADIE-123')
         url = f'/api/v1/management/inventory/{loose.pk}/'
         for status in ('review', 'matched'):
             response = self.client.patch(url, {'matching_status': status}, format='json')
@@ -483,7 +493,7 @@ class TightenTests(VariantTestCase):
 
     def test_the_constraints_refuse_what_s3_forbids(self):
         item = self.load('T-2', '04111-22152')
-        loose = self.load('T-3', 'NADA-1')
+        loose = self.loose('T-3', 'NADA-1')
         rows = SupplierItem.objects.filter(pk=item.pk)
         self.refused(lambda: rows.update(reference=None))                      # a line without its Reference
         self.refused(lambda: rows.update(part=None))                           # a Reference without its line
@@ -516,7 +526,7 @@ class TightenTests(VariantTestCase):
         drop_variant_constraints()
         moved = self.load('T-4', '04111-22152-AS')
         bare = self.load('T-5', '04111-22152')
-        lost = self.load('T-6', 'NADA-2')
+        lost = self.loose('T-6', 'NADA-2')
         SupplierItem.objects.filter(pk=moved.pk).update(part=self.branded)      # a queryset moved it, its Reference stayed
         SupplierItem.objects.filter(pk=bare.pk).update(reference=None)          # written before S3
         SupplierItem.objects.filter(pk=lost.pk).update(matching_status='review')  # no line, yet in review
@@ -528,7 +538,7 @@ class TightenTests(VariantTestCase):
         self.assertEqual(lost.matching_status, 'pending')
         run_migration_function(self.MIGRATION, 'repair_variants')  # idempotent
         merged = make_line('MERGED-9')
-        stranded = self.load('T-7', 'NADA-3')
+        stranded = self.loose('T-7', 'NADA-3')
         SupplierItem.objects.filter(pk=stranded.pk).update(part=merged)
         Part.objects.filter(pk=merged.pk).update(merged_into=self.plain, estado='unificada', active=False)
         with self.assertRaisesMessage(RuntimeError, 'líneas unificadas'):

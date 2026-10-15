@@ -5,6 +5,8 @@ from django.utils import timezone
 from rest_framework.test import APITestCase
 from .models import Account, Invitation, Membership, Part, PartCode, Role, StockEntry, SupplierItem, User
 from .services import ingest_inventory
+from .lines import catalog_lines
+from .matching_models import MatchingCase
 
 class HealthTests(APITestCase):
     def test_health_is_available_without_authentication(self):
@@ -115,15 +117,22 @@ class FoundationTests(APITestCase):
     def test_ambiguous_legacy_code_mappings_require_review(self):
         sku = Part.objects.create(sku='AMBIGUOUS')
         PartCode.objects.create(part=self.part, brand='ACME', code=sku.sku)
+        # S6 (rules 1 and 2): the item's own brand picks the line that holds the code under it (exact before brandless) ...
         response = self.ingest(codigo='AMBIGUOUS').data
+        self.assertEqual((response['matching_status'], str(response['part'])), ('matched', str(self.part.pk)))
+        # ... while a brandless item with it, which two lines hold, waits in a line case with no Reference.
+        response = self.ingest(update_id='event-2', supplier_invent_id='stable-2', codigo='AMBIGUOUS', brand='').data
         self.assertEqual(response['matching_status'], 'pending')
         self.assertIsNone(response['part'])
+        self.assertTrue(MatchingCase.objects.filter(kind='line', item_id=response['id']).exists())
 
     def test_unknown_code_is_pending_without_catalog_creation(self):
         response = self.ingest(codigo='UNKNOWN')
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(SupplierItem.objects.get().matching_status, 'pending')
-        self.assertEqual(Part.objects.count(), 1)
+        item = SupplierItem.objects.get()
+        # S6 (rule 4): a new product in Productos nuevos (a line in preparación), never in the catalog until a person publishes it.
+        self.assertEqual((item.matching_status, item.part.estado), ('pending', 'preparacion'))
+        self.assertEqual(catalog_lines().count(), 1)
 
     def test_supplier_isolation(self):
         self.ingest()

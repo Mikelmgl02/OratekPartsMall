@@ -298,11 +298,13 @@ class ManagementTests(APITestCase):
 
 
 class AIRankingTests(TestCase):
-    def test_ai_ranking_is_off_until_s6(self):
+    def test_ai_ranking_is_back_from_s6_for_line_and_merge_cases_only(self):
         from . import matching_worker
         stats = {}
-        self.assertEqual((matching_worker.AI_LIMIT, matching_worker.analyze_ambiguous(matching_worker.AI_LIMIT, stats=stats)), (0, 0))
-        self.assertEqual(stats['ai_status'], 'paused')
+        # OD12: off from S2b to S6; from S6 a pass ranks up to 20 line and merge cases (mall.test_reference_matching checks the kinds).
+        self.assertEqual((matching_worker.AI_LIMIT, matching_worker.AI_KINDS), (20, ('line', 'merge')))
+        self.assertEqual(matching_worker.analyze_ambiguous(matching_worker.AI_LIMIT, stats=stats), 0)
+        self.assertEqual(stats['ai_status'], 'no_pending_cases')
         with patch('mall.matching_worker.call_provider') as provider:
             matching_worker.analyze_ambiguous(0)
         provider.assert_not_called()

@@ -18,9 +18,10 @@ from rest_framework.test import APITestCase
 from . import line_merge, references
 from .catalog_identity import prefer_oem
 from .lines import create_line
-from .matching_engine import MatchIndex, create_supplier_families, part_row
+from .matching_engine import part_row
+from . import reference_matching as rm
 from .matching_models import MatchingCase
-from .models import CatalogMerge, Part, Reference, SupplierItem
+from .models import CatalogMerge, Part, Reference
 from .oem_finder_models import OEMReviewCase
 from .oem_reference_models import PartOEMLink
 from .refactor import s2b_main_refs
@@ -56,14 +57,15 @@ class MatchIndexMainTests(TestCase):
         oem, company = make_line('16100-39315', is_OEM=True), make_line('GWT-41A')
         references.retype_main(oem, 'oem', brand='TOYOTA')
         references.retype_main(company, 'aftermarket', brand='GMB')
-        index = MatchIndex()
-        self.assertNotIn(str(oem.pk), index.unbranded_oem_masters.get('1610039315', set()))
-        self.assertEqual(index.reference_targets([{'code': '16100-39315', 'brand': 'HONDA', 'ref_type': 'oem'}]), set())
-        self.assertEqual(index.reference_targets([{'code': '16100-39315', 'brand': 'TOYOTA', 'ref_type': 'oem'}]), {str(oem.pk)})
-        self.assertEqual(index.reference_targets([{'code': 'GWT-41A', 'brand': 'GMB', 'ref_type': 'company'}]), {str(company.pk)})
+        supplier = make_supplier('S2B MAIN')
+        subject = lambda code, brand: rm.subject_of(None, {'codigo': code, 'brand': brand}, supplier)
+        # S6 (rules 1 and 2): a branded main is that brand's code; another brand's item with it finds no line ...
+        self.assertEqual(rm.resolve(subject('16100-39315', 'HONDA')).action, 'no_line')
+        self.assertEqual(rm.resolve(subject('16100-39315', 'TOYOTA')).line, oem)
+        self.assertEqual(rm.resolve(subject('GWT-41A', 'GMB')).line, company)
         self.assertEqual(part_row(Part.objects.prefetch_related('codes').get(pk=oem.pk))['codes'], [])  # fingerprints stay
-        bare = make_line('16100-39316', is_OEM=True)  # a brandless OEM main: still an unbranded master, as before S2b
-        self.assertIn(str(bare.pk), MatchIndex().unbranded_oem_masters['1610039316'])
+        bare = make_line('16100-39316', is_OEM=True)  # ... while a brandless main reserves its code for every brand
+        self.assertEqual(rm.resolve(subject('16100-39316', 'HONDA')).line, bare)
 
     def test_retype_main_makes_its_brand_a_brand(self):
         from .brand_models import Brand
@@ -177,9 +179,8 @@ class SupplierFamilyTests(TestCase):
         make_reference(holder, '23300-79185', brand='TOYOTA', tipo='oem')
         for n, code in enumerate(('23300-79185-A', '23300-79185-B')):
             make_variant(supplier, f'FAM-{n}', code, 1, actor=root, description='FILTRO COMBUSTIBLE TOY')
-        SupplierItem.objects.update(part=None, matching_status='pending', references=[])
-        self.assertEqual(create_supplier_families(), 0)
-        self.assertFalse(Part.objects.filter(sku='23300-79185').exists())
+        # S6: no parent is invented from suffixed codes (create_supplier_families is gone): each code is a new product of its own.
+        self.assertFalse(Part.objects.filter(sku='23300-79185').exists())  # estado: no line in any estado
         self.assertFalse(Reference.objects.filter(estado='disputa').exists())
 
 

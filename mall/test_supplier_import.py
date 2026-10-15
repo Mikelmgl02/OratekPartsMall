@@ -116,8 +116,10 @@ class SupplierExcelImportTests(APITestCase):
         self.item.refresh_from_db()
         self.assertEqual((self.item.part_id, self.item.matching_status, self.item.supplier_invent_id), (self.part.pk, 'review', 'STABLE-5'))
         self.assertEqual(SupplierItem.objects.get(supplier_invent_id='NEW-ALIAS').part_id, self.part.pk)
-        self.assertIsNone(SupplierItem.objects.get(supplier_invent_id='UNKNOWN').part_id)
-        self.assertEqual(Part.objects.count(), 2)
+        unknown = SupplierItem.objects.get(supplier_invent_id='UNKNOWN')
+        # S6 (rule 4): a new product, on a line of its own in preparación; the catalog keeps its two lines.
+        self.assertEqual((unknown.part.estado, unknown.matching_status), ('preparacion', 'pending'))
+        self.assertEqual(Part.objects.filter(estado__in=['publicada', 'retirada']).count(), 2)
 
     def test_apiag_owned_rows_and_every_duplicate_stable_id_are_deferred(self):
         apiag = self.seed('ERP-OWNED', source='apiag', quantity=9)

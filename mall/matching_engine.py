@@ -1,38 +1,31 @@
-"""Shared, indexed matching across the whole catalog and every supplier.
+"""Shared helpers of the matching (inventory refactor S6: the rules themselves are mall.reference_matching).
 
-Deterministic evidence can apply a match. Semantic similarity and AI only rank
-review candidates. Stock ingestion never waits for an AI response.
+Deterministic evidence decides; description words and AI only rank or hint. Stock ingestion never waits for an AI response.
 
-When no SKU, alterno or remembered mapping carries a code, the OEM library is
-read as a fallback: an OEM number linked to a SKU (by its code, a catalog or an
-OEM alterno) or an aftermarket code a catalog files under such a number. It
-applies only when it reaches exactly one SKU; duplicates go to review.
-
-A supplier item that no code ties to any SKU (no exact code, remembered mapping, declared or labelled reference, library hit or
-code family) is a new product: its case is unmatched and Productos nuevos takes it (owner decision D1, on with the setting
-MATCHING_NO_CODE_EVIDENCE). The SKUs its description words find stay on the case only as hints, scored without makes, brands,
-years, units or the supplier's own common words, and kept out of the case's fingerprint.
+What stays here: the description helpers and spec_conflict (rule 5), the JSON rows a case keeps of an item and a line (item_row,
+part_row) and digest; MatchIndex, the description-word index whose hints (possible duplicates, never evidence) Productos nuevos and
+Revisión IA read for an item no code ties to any line (owner decision D1); and the legacy cases of the code before S6 (supplier,
+catalog, catalog_reference, seed) with their decisions (apply_item, apply_family, save_case, remember) until S10. The worker's renames,
+exact marks, automatic family merges and invented parents are gone (S6); catalog references open merge cases
+(mall.reference_matching.open_reference_merge_cases).
 """
 import hashlib
 import json
 import re
 import unicodedata
 from collections import Counter, defaultdict
-from django.conf import settings
 from django.db import transaction
-from django.db.models import Q
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
-from .catalog_families import normalized_reference, supplier_base, application, family_candidates
+from .catalog_families import normalized_reference, application
 from .catalog_suffixes import HEAD_SYN
-from .lines import all_lines, create_line, shared_referencia_codigos, storefront_lines
+from .lines import all_lines, storefront_lines
 from .models import Account, Part, PartCode, SupplierItem, SupplierCodeMapping, MatchingCase, MatchingDecision
-from .matching_queue import matching_work
-from .oem_links import reach_index, same_make
 
-VERSION = 'matching-3-oem-identity'
-# Owner decision D1 (settings.MATCHING_NO_CODE_EVIDENCE): a supplier item no code ties to any SKU is a new product (Productos
-# nuevos). Description words never link it; the SKUs they find stay on its case only as hints (possible duplicates for Revisión IA).
+VERSION = 'matching-4-references'  # S6: the engine on References (plan §3 S6.1)
+# Owner decision D1 (S0.9, kept by S6's rule 4): a supplier item no code ties to any line is a new product (Productos nuevos).
+# Description words never link it; the lines they find are only hints (possible duplicates for Revisión IA). The legacy supplier
+# cases of the code before S6 carry this method.
 NO_CODE_EVIDENCE = 'no_code_evidence'
 NO_CODE_EVIDENCE_REASON = 'Sin evidencia de código: va a Productos nuevos'
 WORD = re.compile(r'[A-Z0-9]{3,}')
@@ -171,77 +164,21 @@ def noise_words():
     return words
 
 
-def main_alias(part):
-    """A line's branded main (S2b) as a code row, or None. part_row leaves the main out (the codigo already is the row's sku, and a
-    case's fingerprint must not move when the line gets its main), but its brand still says whose code the codigo is: a maker's OEM
-    number (an OEM line is no unbranded master then) or a company's own code (GMB GWT-41A, X-FEB under FEBEST), as the branded alterno
-    with the same code said before S2b."""
-    from .references import main_in
-    main = main_in(part.codes.all())
-    if main is None or not main.brand:
-        return None
-    return {'code': main.code, 'brand': main.brand, 'kind': main.kind, 'ref_type': main.ref_type, 'reference_source': main.reference_source}
-
-
 class MatchIndex:
+    """The description words of the storefront's lines, for hints only (owner decision D1): the possible duplicates of an item no code
+    ties to any line, which Productos nuevos and Revisión IA show (mall.reference_matching never links by them)."""
+
     def __init__(self):
-        lines = list(storefront_lines().prefetch_related('codes'))
-        self.parts = {str(p.pk): part_row(p) for p in lines}
-        self.mains = {str(p.pk): alias for p in lines if (alias := main_alias(p)) is not None}
-        self.by_sku = {p['sku']: p for p in self.parts.values()}
-        self.codes = defaultdict(set)
-        self.literal_codes = defaultdict(set)
+        lines = list(storefront_lines())
+        self.parts = {str(p.pk): part_row_light(p) for p in lines}
         self.words = defaultdict(set)
         self.descriptions = defaultdict(set)
-        self.base = defaultdict(set)
-        self.all_codes = defaultdict(set)
-        self.oem_codes = defaultdict(set)
-        self.unbranded_oem_masters = defaultdict(set)
-        self.typed_codes = defaultdict(set)
         for row in self.parts.values():
-            aliases = self.aliases(row)
-            if row.get('is_OEM'):
-                normalized = normalized_reference(row['sku'])
-                self.oem_codes[normalized].add(row['id'])
-                if not any(c['ref_type'] == 'oem' and c['brand'] and normalized_reference(c['code']) == normalized for c in aliases):
-                    self.unbranded_oem_masters[normalized].add(row['id'])
-            self.codes[(normalized_reference(row['sku']), '')].add(row['id'])
-            self.literal_codes[(row['sku'], '')].add(row['id'])
-            self.all_codes[normalized_reference(row['sku'])].add(row['id'])
             self.descriptions[description(row['description'])].add(row['id'])
-            base = row['sku'] if row.get('is_OEM') else supplier_base(row['sku']) or row['sku']
-            self.base[normalized_reference(base)].add(row['id'])
             for word in set(re.findall(r'[A-Z0-9]{3,}', description(row['description']))):
                 self.words[word].add(row['id'])
-            for alias in aliases:
-                normalized = normalized_reference(alias['code'])
-                self.codes[(normalized, alias['brand'])].add(row['id'])
-                self.literal_codes[(alias['code'], alias['brand'])].add(row['id'])
-                self.all_codes[normalized].add(row['id'])
-                self.typed_codes[(normalized, alias['brand'], alias['ref_type'])].add(row['id'])
-                # A full approved reference also identifies its supplier-suffixed
-                # variants, even when the master SKU has a completely different name.
-                self.base[normalized].add(row['id'])
-                if alias['kind'] == 'oem':
-                    self.oem_codes[normalized].add(row['id'])
-        # SKUs reached through the OEM library: numbers linked to them and the aftermarket codes filed under those numbers.
-        self.reaching, self.numbers, self.aftermarket = reach_index(self.parts)
-        # Follow retired parents so reviewed mappings survive future catalog merges.
-        self.mappings = {}
-        self.portable = defaultdict(set)
-        for mapping in SupplierCodeMapping.objects.select_related('part__merged_into'):
-            part = mapping.part.merged_into or mapping.part
-            if str(part.pk) in self.parts:
-                self.mappings[(str(mapping.supplier_id), normalized_reference(mapping.code), mapping.brand)] = (str(part.pk), mapping.description, bool(mapping.actor_id))
-                if mapping.actor_id and mapping.brand and detailed(mapping.description):
-                    self.portable[(normalized_reference(mapping.code), mapping.brand, description(mapping.description))].add(str(part.pk))
         self.noise = None
         self.common = {}
-
-    def aliases(self, row):
-        """A line's codes as matching reads them: its alternos and its branded main (main_alias)."""
-        main = self.mains.get(row['id'])
-        return row['codes'] + [main] if main else row['codes']
 
     def common_words(self, supplier_id):
         """Any word in more than 5% of one supplier's items (and in more than 20 of them): its vehicle models (FX11, GS11, PHEV...),
@@ -266,14 +203,10 @@ class MatchIndex:
                 if word not in self.noise and word not in common and word not in UNIT_WORDS and not YEAR.match(word) and not UNIT.match(word)}
 
     def word_scores(self, item):
-        """SKUs by how many of the item's informative words their description shares. Only words few SKUs use count (rare words
-        retrieve a bounded set; no full-catalog AI prompt), and an item with fewer than two such words finds nothing. Until D1 is
-        switched on (MATCHING_NO_CODE_EVIDENCE) every word of three or more characters counts, as before."""
-        if settings.MATCHING_NO_CODE_EVIDENCE:
-            words = self.informative(item)
-            words = words if len(words) >= HINT_WORDS else set()
-        else:
-            words = set(WORD.findall(description(item.description)))
+        """Lines by how many of the item's informative words their description shares. Only words few lines use count (rare words
+        retrieve a bounded set; no full-catalog AI prompt), and an item with fewer than two such words finds nothing."""
+        words = self.informative(item)
+        words = words if len(words) >= HINT_WORDS else set()
         scores = Counter()
         for word in words:
             bucket = self.words.get(word, set())
@@ -282,163 +215,27 @@ class MatchIndex:
         return scores
 
     def hints(self, item):
-        """Possible duplicates of an item with no code evidence, never evidence themselves: SKUs with the same detailed description,
-        then SKUs sharing at least two informative words with it."""
+        """Possible duplicates of an item with no code evidence, never evidence themselves: lines with the same detailed description,
+        then lines sharing at least two informative words with it."""
         scores = self.word_scores(item)
         order = lambda pk: (-scores[pk], self.parts[pk]['sku'])
         same = sorted(self.descriptions.get(description(item.description), set()), key=order) if detailed(item.description) else []
         ranked = same + sorted((pk for pk, score in scores.items() if score >= HINT_WORDS and pk not in same), key=order)
         return [self.parts[pk] for pk in ranked[:HINTS]]
 
-    def oem_targets(self, refs):
-        return set().union(*(self.reaching.get(ref, set()) for ref in refs))
 
-    def number_targets(self, code, manufacturer=''):
-        """SKUs linked to this OEM number; under the manufacturer's make when one is given."""
-        return self.oem_targets(ref for ref, maker in self.numbers.get(code, ()) if not manufacturer or same_make(maker, manufacturer))
-
-    def aftermarket_targets(self, code, brand):
-        """SKUs reaching an OEM number a catalog prints this brand's code for (GMB GWT-41A -> TOYOTA 1610039315)."""
-        entry = self.aftermarket.get((' '.join(brand.upper().split()), code)) if brand else None
-        return self.oem_targets(entry[0]) if entry else set()
-
-    def printed_aftermarket(self, codigo, brand):
-        entry = self.aftermarket.get((' '.join(brand.upper().split()), normalized_reference(codigo))) if brand else None
-        return bool(entry) and ' '.join(codigo.upper().split()) in entry[1]
-
-    def equivalent_targets(self, code, brand='', ref_type='unknown'):
-        """A reference through the OEM library: an OEM number linked to a SKU, or a brand's aftermarket code filed under one."""
-        if ref_type == 'oem':
-            return self.number_targets(code, brand)
-        found = self.aftermarket_targets(code, brand)
-        if found or ref_type == 'company':
-            return found
-        return self.number_targets(code, brand) if len(code) >= 8 else set()
-
-    def reference_targets(self, rows):
-        targets = set()
-        for row in rows:
-            code, brand = normalized_reference(row['code']), row.get('brand', '')
-            ref_type = row.get('ref_type', 'unknown')
-            if ref_type in ['oem', 'company']:
-                if brand:
-                    found = set(self.typed_codes.get((code, brand, ref_type), set()))
-                    if ref_type == 'oem':
-                        found |= self.unbranded_oem_masters.get(code, set())
-                else:
-                    found = set(self.oem_codes.get(code, set())) if ref_type == 'oem' else set()
-            elif brand:
-                found = self.codes.get((code, brand), set()) | self.codes.get((code, ''), set())
-            else:
-                found = set(self.all_codes.get(code, set()))
-            # The OEM library only answers when no SKU or alterno carries the reference.
-            targets |= found or self.equivalent_targets(code, brand, ref_type)
-        return targets
-
-    def resolve(self, item):
-        """The candidate SKUs, the method, whether the match may apply on its own, and the reason."""
-        return self.resolve_case(item)[:4]
-
-    def resolve_case(self, item):
-        """resolve() plus the candidates a code reached (None when every candidate did, or while D1 is off, so fingerprints stay as
-        they were). The others are description hints, which move with every upload (each supplier's common words, the brands), so
-        they stay out of the case's fingerprint (save_case)."""
-        code = normalized_reference(item.codigo)
-        candidates, reasons = set(), []
-        from .catalog_identity import company_reference
-        company = company_reference(item.codigo)
-        company = company if company and item.brand in ['', company['brand']] else None
-        known_company = self.codes.get((normalized_reference(company['code']), company['brand']), set()) if company else set()
-        exact = known_company | self.codes.get((code, ''), set()) | self.codes.get((code, item.brand), set()) | self.oem_codes.get(code, set())
-        remembered = self.mappings.get((str(item.supplier_id), code, item.brand))
-        declared = self.reference_targets(item.references)
-        text_refs = self.reference_targets([{'code': ref} for ref in references(item.description)])
-        evidenced = exact | declared | text_refs
-        if (declared or text_refs) and remembered:
-            evidenced.add(remembered[0])
-        if len(evidenced) > 1:
-            return [self.parts[pk] for pk in sorted(evidenced)][:8], 'conflicting_references', False, \
-                'El código y las referencias apuntan a varios SKU. Revisa la equivalencia antes de vincular.', None
-        if declared:
-            target = self.parts[next(iter(declared))]
-            if spec_conflict(item.description, target['description']):
-                return [target], 'reference_spec_conflict', False, 'La referencia coincide, pero hay una contradicción de posición, medida o aplicación.', None
-            return [target], 'approved_reference', True, 'Referencia declarada coincidente con la biblioteca de equivalencias del SKU maestro.', None
-        if remembered:
-            target, previous_description, reviewed = remembered
-            if (description(previous_description) == description(item.description)
-                    and (reviewed or not (exact - {target}))
-                    and not spec_conflict(item.description, self.parts[target]['description'])):
-                return [self.parts[target]], 'reviewed', True, 'Coincidencia confirmada anteriormente para este proveedor.', None
-            candidates.add(target)
-            reasons.append('La descripción cambió desde la confirmación anterior.')
-        candidates |= exact
-        if len(exact) == 1 and not remembered:
-            target = self.parts[next(iter(exact))]
-            literal = target['id'] in (self.literal_codes.get((item.codigo, ''), set()) | self.literal_codes.get((item.codigo, item.brand), set()))
-            if (literal or len(code) >= 8) and not spec_conflict(item.description, target['description']):
-                return [target], 'known_code', True, 'Código único del catálogo o alterno aprobado (formato normalizado).', None
-            reasons.append('El código coincide, pero las especificaciones requieren revisión.')
-        learned = self.portable.get((code, item.brand, description(item.description)), set())
-        candidates |= learned
-        if len(learned) == 1 and not exact and not remembered:
-            target = self.parts[next(iter(learned))]
-            if not spec_conflict(item.description, target['description']):
-                return [target], 'reviewed_brand_spec', True, 'Código y marca confirmados en otro proveedor con especificaciones idénticas.', None
-        reached = set()
-        if not exact and not remembered and not learned:
-            # The OEM library: the code is an aftermarket code a catalog files under an OEM number a SKU reaches, or that number itself.
-            aftermarket = self.aftermarket_targets(code, item.brand)
-            if company:
-                aftermarket |= self.aftermarket_targets(normalized_reference(company['code']), company['brand'])
-            linked = self.number_targets(code) if len(code) >= 8 else set()
-            reached = aftermarket | linked
-            candidates |= reached
-            if len(reached) == 1:
-                target = self.parts[next(iter(reached))]
-                literal = target['id'] in aftermarket and (self.printed_aftermarket(item.codigo, item.brand)
-                                                           or bool(company) and self.printed_aftermarket(company['code'], company['brand']))
-                if (literal or len(code) >= 8) and not spec_conflict(item.description, target['description']):
-                    if target['id'] in aftermarket:
-                        return [target], 'aftermarket_code', True, 'Código de marca de repuesto que un catálogo imprime para un número OEM del SKU.', None
-                    return [target], 'linked_oem_number', True, 'El código es un número OEM vinculado al SKU, por su propio código o por un catálogo de repuesto.', None
-                reasons.append('El código equivale por número OEM a un SKU, pero las especificaciones o un código corto requieren revisión.')
-            elif reached:
-                reasons.append('El código equivale por número OEM a varios SKU, posibles duplicados: agrúpalos con Agrupar SKU o elige el correcto.')
-        base = supplier_base(item.codigo)
-        family = self.base.get(normalized_reference(base or item.codigo), set())
-        candidates |= family
-        strong = {pk for pk in family if same_spec(item.description, self.parts[pk]['description'])}
-        # A family containing contradictory records must not be picked arbitrarily.
-        if len(family) == len(strong) == 1 and not exact and not remembered:
-            target = self.parts[next(iter(strong))]
-            if base or target['sku'] == item.codigo:
-                return [target], 'base_and_spec', True, 'Código base completo y aplicación/especificaciones idénticas.', None
-        refs = text_refs
-        candidates |= refs
-        if len(refs) == 1 and not exact and not family and not remembered:
-            target = self.parts[next(iter(refs))]
-            # OEM references are useful, but contradictory specifications block automatic linking.
-            stripped = re.sub(r'(?:OEM|OE|REF(?:ERENCIA)?|REEMPLAZA)\s*[:#=]?\s*[A-Z0-9]+(?:[-./][A-Z0-9]+)+', '', item.description.upper()).strip(' ,;')
-            if same_spec(stripped, target['description']):
-                return [target], 'explicit_oem', True, 'Referencia OEM explícita y sin contradicciones de posición o medida.', None
-        evidence = None
-        if settings.MATCHING_NO_CODE_EVIDENCE:
-            if not (exact or remembered or declared or text_refs or learned or reached or family):
-                return self.hints(item), NO_CODE_EVIDENCE, False, NO_CODE_EVIDENCE_REASON, []
-            evidence = [self.parts[pk] for pk in sorted(candidates)]
-        candidates |= self.descriptions.get(description(item.description), set()) if detailed(item.description) else set()
-        scores = self.word_scores(item)
-        ranked = sorted(candidates, key=lambda pk: (-scores[pk], self.parts[pk]['sku']))
-        ranked.extend(pk for pk, score in scores.most_common(16) if score >= 2 and pk not in candidates)
-        return [self.parts[pk] for pk in ranked[:8]], 'needs_review', False, \
-            ' '.join(reasons) or 'No hay evidencia suficiente para vincular automáticamente.', evidence
+def part_row_light(part):
+    """A line's row for hints (no codes: a hint is never code evidence)."""
+    return {'id': str(part.pk), 'sku': part.sku, 'name': part.name, 'description': part.description,
+            'category': part.category, 'subcategory': part.subcategory}
 
 
 def save_case(*, key, kind, sources, candidates, target='', method='', reason='', item=None, status='review', evidence=None):
-    """A changed fingerprint rewrites the case: new status, AI answer cleared. evidence: the candidates the case rests on when the
-    others are description hints (resolve_case). Only those enter the fingerprint, so hints that move with an upload are refreshed
-    in place, without reopening a case a person kept apart («Mantener separado») or clearing its AI answer."""
+    """A legacy case (supplier, catalog, catalog_reference: the writers before S6 that remain, such as a brand rename's collision, a
+    main whose key another line holds, S2b's compact duplicates). A changed fingerprint rewrites the case: new status, AI answer
+    cleared. evidence: the candidates the case rests on when the others are description hints; only those enter the fingerprint, so
+    hints that move are refreshed in place, without reopening a case a person kept apart («Mantener separado»). The S6 kinds are
+    written by mall.reference_matching.open_case."""
     fingerprint = digest([VERSION, sources, candidates, target, method] if evidence is None else [VERSION, sources, evidence, method])
     case, created = MatchingCase.objects.get_or_create(key=key, defaults={
         'kind': kind, 'item': item, 'sources': sources, 'candidates': candidates, 'target_sku': target,
@@ -506,57 +303,6 @@ def apply_item(case, target, *, actor=None, automatic=False):
         evidence={'sources': case.sources, 'target': target, 'method': case.method, 'fingerprint': case.fingerprint})
 
 
-def reconcile_items(index, *, stats=None):
-    matched = 0
-    # A pending import retains its reviewed snapshot until its last batch commits.
-    from .supplier_import_models import SupplierInventoryImportJob
-    busy = SupplierInventoryImportJob.objects.filter(status='importing', expires_at__gt=timezone.now()).values_list('supplier_id', flat=True)
-    items = SupplierItem.objects.exclude(supplier_id__in=busy).exclude(matching_status='matched').select_related('supplier')
-    from .variants import pending_view
-    for item in items.iterator(chunk_size=500):
-        if stats is not None:
-            stats['supplier_examined'] = stats.get('supplier_examined', 0) + 1
-        # An item whose code change waits is resolved by its new code (codigo_pendiente) and only proposed (S3).
-        subject = pending_view(item)
-        candidates, method, strong, reason, evidence = index.resolve_case(subject)
-        strong = strong and subject is item
-        unmatched = not candidates
-        if method == NO_CODE_EVIDENCE:
-            if item.part_id:
-                # A linked item no code ties to a SKU keeps its SKU until a person reviews it, never a new product: its current
-                # SKU leads, the hints follow.
-                current = index.parts.get(str(item.part_id))
-                evidence = [current] if current else []
-                candidates = (evidence + [row for row in candidates if row['id'] != str(item.part_id)])[:HINTS]
-                method, reason, unmatched = 'needs_review', 'Ningún código lo vincula a un SKU. Se conserva el vínculo actual hasta su revisión.', False
-            else:  # Productos nuevos takes it; its candidates are hints, so none is proposed as the target
-                unmatched = True
-        elif item.part_id and candidates and str(item.part_id) != candidates[0]['id']:
-            strong = False
-            reason = 'El código cambió de familia. Se conserva el vínculo anterior hasta su revisión.'
-        case = save_case(key=f'supplier:{item.pk}', kind='supplier', item=item, sources=[item_row(item)],
-                         candidates=candidates, target=candidates[0]['sku'] if candidates and not unmatched else '', method=method,
-                         reason=reason, status='unmatched' if unmatched else 'review', evidence=evidence)
-        if strong and case.status == 'review':
-            try:
-                apply_item(case, candidates[0], automatic=True)
-                matched += 1
-            except ValidationError:
-                continue
-    return matched
-
-
-def catalog_families():
-    rows = {p.sku: part_row(p) for p in storefront_lines().prefetch_related('codes')}
-    bases = {supplier_base(sku) for sku in rows} - {''}
-    # A base a line off sale holds; a line in referencia (a library number no product carries) is none: creating the parent promotes it
-    # (mall.lines.create_line), unless two makes' lines share the codigo (the parent would have to name the make).
-    blocked = set(all_lines().filter(sku__in=bases).exclude(estado='referencia').values_list('sku', flat=True)) - set(rows)
-    blocked |= set(PartCode.objects.filter(code__in=bases).exclude(part__estado='referencia').values_list('code', flat=True)) - set(rows)
-    blocked |= shared_referencia_codigos(bases)
-    return family_candidates(rows, blocked)
-
-
 @transaction.atomic
 def apply_family(case, *, actor, automatic=False, selected_target=None):
     """Approve a catalog case (a family, a reference, a compact duplicate or a shared OEM number): the merge it proposes, through
@@ -590,154 +336,3 @@ def apply_family(case, *, actor, automatic=False, selected_target=None):
     locked.save(update_fields=['status', 'target_sku', 'updated_at'])
     MatchingDecision.objects.create(case=locked, actor=actor, action='automatic' if automatic else 'approved',
         evidence={'sources': case.sources, 'target': target, 'method': case.method, 'merge_id': result['merge_id']})
-
-
-def reconcile_catalog(actor, *, stats=None):
-    from .catalog_identity import mark_exact_matches, reconcile_identities
-    promoted = reconcile_identities(actor)
-    marked = len(mark_exact_matches(actor)) if settings.OEM_EXACT_MARK else 0  # a SKU whose code is in the OEM list is OEM
-    if stats is not None:
-        stats['promoted_oems'], stats['marked_exact_oems'] = promoted, marked
-    count = reconcile_catalog_references(actor)
-    from .catalog_split import pair, separated_pairs
-    apart = separated_pairs()  # SKUs a split separated (Separar SKU): never merged again here
-    for base, family in catalog_families().items():
-        # Keep long families intact. The merge service itself has no batch boundary.
-        sources, target = family['sources'], family['target']
-        if target.get('id'):
-            sources = [s for s in sources if pair(s['id'], target['id']) not in apart]
-        if not sources:
-            continue
-        together = not any(pair(a['id'], b['id']) in apart for i, a in enumerate(sources) for b in sources[i + 1:])
-        strong = together and not family['warnings'] and all(same_spec(s['description'], target['description']) for s in sources)
-        case = save_case(key=f'catalog:{base}', kind='catalog', sources=sources, candidates=[target], target=base,
-                         method='base_and_spec' if strong else 'family_review',
-                         reason='Código base completo y aplicación/especificaciones idénticas.' if strong else
-                         ' '.join(family['warnings']) or ('Confirma la aplicación de esta familia.' if together else
-                                                          'Incluye SKU que se separaron con Separar SKU. Confirma cuáles son el mismo repuesto.'))
-        if strong and case.status == 'review':
-            try:
-                apply_family(case, actor=actor, automatic=True)
-                count += len(sources)
-            except ValidationError as error:
-                case.reason = str(error.detail)
-                case.save(update_fields=['reason'])
-    return count
-
-
-def reconcile_catalog_references(actor):
-    """Resolve legacy catalog variants through references of unrelated masters.
-
-    Only direct links are considered. Cycles and transitive chains require
-    review, so a bad alias cannot silently collapse a connected component.
-    """
-    from .catalog_split import pair, separated_pairs
-    apart = separated_pairs()  # SKUs a split separated (Separar SKU): never merged again here
-    index = MatchIndex()
-    aliases = defaultdict(set)
-    for target in index.parts.values():
-        for ref in target['codes']:
-            aliases[normalized_reference(ref['code'])].add(target['id'])
-    plans = []
-    for source in index.parts.values():
-        base = '' if source.get('is_OEM') else supplier_base(source['sku'])
-        direct = aliases.get(normalized_reference(source['sku']), set()) - {source['id']}
-        targets = direct | (aliases.get(normalized_reference(base), set()) - {source['id']} if base else set())
-        if targets:
-            plans.append((source, targets, direct))
-    # A legacy company master may own the verified OEM reference while an OEM
-    # SKU already exists. Keep the existing OEM as MAIN, not the inverse.
-    preferred = {}
-    for source, targets, direct in plans:
-        if len(targets) == 1 and targets == direct:
-            owner = index.parts[next(iter(targets))]
-            oem = source.get('is_OEM') or any(ref['ref_type'] == 'oem' and ref['brand'] and ref['reference_source']
-                      and normalized_reference(ref['code']) == normalized_reference(source['sku'])
-                      for ref in index.aliases(owner))
-            if oem:
-                preferred.setdefault(owner['id'], (owner, set(), set()))[1].add(source['id'])
-                preferred[owner['id']][2].add(source['id'])
-                continue
-        entry = preferred.setdefault(source['id'], (source, set(), set()))
-        entry[1].update(targets); entry[2].update(direct)
-    plans = list(preferred.values())
-    source_ids = {source['id'] for source, _, _ in plans}
-    count = 0
-    for source, ids, direct in plans:
-        ids = {pk for pk in ids if pair(source['id'], pk) not in apart}
-        direct = direct & ids
-        if not ids:
-            continue
-        candidates = sorted((index.parts[pk] for pk in ids), key=lambda row: row['sku'])
-        target = candidates[0]
-        strong = (len(candidates) == 1 and target['id'] not in source_ids and
-                  not spec_conflict(source['description'], target['description']) and
-                  (target['id'] in direct or same_spec(source['description'], target['description'])))
-        # Refresh snapshots when a preceding source merged into this target.
-        candidates = [part_row(p) for p in storefront_lines().filter(pk__in=ids).prefetch_related('codes').order_by('sku')]
-        if not candidates:
-            continue
-        case = save_case(key=f'catalog-reference:{source["id"]}', kind='catalog_reference', sources=[source],
-                         candidates=candidates, target=target['sku'], method='catalog_reference',
-                         reason='Código reconocido por una referencia equivalente del SKU maestro.' if strong else
-                         'Las referencias sugieren equivalencia. Revisa los destinos, las especificaciones y posibles cadenas de equivalencias.')
-        if strong and case.status == 'review':
-            try:
-                apply_family(case, actor=actor, automatic=True)
-                count += 1
-            except ValidationError as error:
-                case.reason = str(error.detail)
-                case.save(update_fields=['reason'])
-    return count
-
-
-def create_supplier_families():
-    """Seed missing catalog parents from consistent codes across the entire feed.
-
-    Never manufacture a parent from one unrecognized code, a generic description,
-    or two contradictory applications. Individual supplier IDs remain children.
-    """
-    from . import references as reference_rules
-    groups = defaultdict(list)
-    from .supplier_import_models import SupplierInventoryImportJob
-    busy = set(SupplierInventoryImportJob.objects.filter(
-        status='importing', expires_at__gt=timezone.now()).values_list('supplier_id', flat=True))
-    for item in SupplierItem.objects.filter(part__isnull=True, matching_status='pending').exclude(supplier_id__in=busy):
-        if item.references:
-            continue  # Resolve declared equivalences before considering a new parent.
-        base = supplier_base(item.codigo)
-        if base:
-            groups[base].append(item)
-    created = 0
-    for base, items in groups.items():
-        if len({i.codigo for i in items}) < 2 or not all(same_spec(i.description, items[0].description) for i in items):
-            continue
-        # A key another line holds (S2b: any spelling of it, a brandless one reserving it for every brand) is that line's: no parent.
-        # A line in referencia (a library number no product carries) holds nothing: the parent promotes it (S4), unless two makes' share it.
-        if (all_lines().filter(Q(sku=base) | Q(sku__in=[i.codigo for i in items])).exclude(estado='referencia').exists()
-                or PartCode.objects.filter(code=base).exclude(part__estado='referencia').exists()
-                or reference_rules.conflicts(base, '').exclude(part__estado='referencia').exists() or shared_referencia_codigos([base])):
-            continue
-        try:
-            with transaction.atomic():
-                # Recheck under supplier locks before creating anything; no network calls here.
-                list(Account.objects.select_for_update().filter(pk__in={i.supplier_id for i in items}).order_by('pk'))
-                locked = list(SupplierItem.objects.select_for_update().filter(pk__in=[i.pk for i in items]).order_by('pk'))
-                if sorted([item_row(i) for i in items], key=lambda r:r['id']) != sorted([item_row(i) for i in locked], key=lambda r:r['id']):
-                    continue
-                case_key = f'seed:{base}'
-                sources = sorted([item_row(i) for i in items], key=lambda r:r['id'])
-                case = save_case(key=case_key, kind='seed', sources=sources, candidates=[], target=base, method='base_and_spec',
-                                 reason='Varios códigos de proveedor comparten código base y especificaciones completas.')
-                if case.status == 'dismissed':
-                    continue
-                # strict: a key taken meanwhile refuses the parent (and its case rolls back) instead of a main left in disputa.
-                part = create_line(base, origen='proveedor', name=base, description=items[0].description.upper(), strict=True)
-                # Matching the children is done by the same resolver, with an audit per item.
-                case.status = 'applied'
-                case.save(update_fields=['status'])
-                MatchingDecision.objects.create(case=case, action='created_parent', evidence={'sources': sources, 'target': part_row(part)})
-                created += 1
-        except reference_rules.ReferenceConflict:
-            continue
-    return created

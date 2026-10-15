@@ -4,7 +4,7 @@ from rest_framework.test import APITestCase
 from .models import Account, Part, PartCode, SupplierItem, StockEntry, User, CatalogIdentityChange, OEMLookupCache
 from .catalog_identity import prefer_oem, reconcile_identities, identity_status
 from .management import ManagedPartSerializer
-from .matching_engine import MatchIndex
+from . import reference_matching as rm
 from .oem_lookup import lookup_oem
 from .catalog_classification import ClassificationProviderError
 from .services import ingest_inventory
@@ -51,9 +51,8 @@ class OEMIdentityTests(APITestCase):
         self.assertEqual(item.codigo, '0110-GSU45A48-FEB')
         self.assertEqual(item.supplier_invent_id, 'stable-9')
         self.assertEqual(list(StockEntry.objects.values()), original)
-        target, _, automatic, _ = MatchIndex().resolve(item)
-        self.assertTrue(automatic)
-        self.assertEqual(target[0]['id'], str(self.part.pk))
+        found = rm.resolve(rm.subject_of(item))  # S6: its code is still one of the line's References (rule 1)
+        self.assertEqual((found.action, found.line.pk), ('attach', self.part.pk))
         self.assertEqual(CatalogIdentityChange.objects.get().previous_sku, '0110-GSU45A48-FEB')
         prefer_oem(promoted, actor=self.admin)
         self.assertEqual(CatalogIdentityChange.objects.count(), 1)
@@ -156,22 +155,29 @@ class OEMIdentityTests(APITestCase):
         self.assertFalse(OEMLookupCache.objects.exists())
 
     def test_existing_oem_master_is_kept_when_legacy_company_owns_its_reference(self):
-        from .matching_engine import reconcile_catalog_references
+        from .matching_models import MatchingCase
         target = Part.objects.create(sku='43460-TEST', description=self.part.description)
         self.oem()
-        self.assertEqual(reconcile_catalog_references(self.admin), 1)
+        # S6: the worker only opens the merge case (it merged on its own before); a person merges into the existing OEM line.
+        self.assertEqual(rm.open_reference_merge_cases(), 1)
+        case = MatchingCase.objects.get(kind='merge')
+        self.part.refresh_from_db()
+        self.assertIsNone(self.part.merged_into_id)
+        rm.decide(case, 'merge', actor=self.admin, line=target.pk)
         self.part.refresh_from_db(); target.refresh_from_db()
         self.assertEqual(self.part.merged_into_id, target.pk)
         self.assertIsNone(target.merged_into_id)
         self.assertEqual(target.sku, '43460-TEST')
-        self.assertTrue(target.codes.filter(code='0110-GSU45A48', brand='FEBEST', ref_type='company').exists())
+        self.assertTrue(target.codes.filter(code='0110-GSU45A48-FEB').exists())  # the legacy master's codes came along
 
     def test_typed_supplier_references_use_correct_namespace(self):
         from .part_references import normalize_references, parse_reference_cell, format_references
         PartCode.objects.create(part=self.part, code='ABC123456', brand='FEBEST', ref_type='company')
-        index = MatchIndex()
-        self.assertEqual(index.reference_targets([{'code':'ABC123456','brand':'FEBEST','ref_type':'oem'}]), set())
-        self.assertEqual(index.reference_targets([{'code':'ABC123456','brand':'FEBEST','ref_type':'company'}]), {str(self.part.pk)})
+        # S6: a declared code is a reference case listing the lines that hold its key under its brand (rule 5b), never a link.
+        item = SupplierItem(supplier=Account.objects.create(name='PROVEEDOR'), part=None)
+        holders = rm.declared_holders({'code': 'ABC123456', 'brand': 'FEBEST', 'ref_type': 'company'}, item)
+        self.assertEqual([row.part_id for row in holders], [self.part.pk])
+        self.assertEqual(rm.declared_holders({'code': 'ABC123456', 'brand': 'TOYOTA', 'ref_type': 'oem'}, item), [])
         refs = parse_reference_cell('OEM:TOYOTA:43460-TEST; COMPANY:FEBEST:0110-GSU45A48')
         self.assertEqual(parse_reference_cell(format_references(refs)), refs)
         self.assertEqual({r['ref_type'] for r in refs}, {'oem','company'})
@@ -224,20 +230,19 @@ class OEMIdentityTests(APITestCase):
     def test_oem_main_matches_oem_namespace_but_does_not_become_company_reference(self):
         self.part.is_OEM = True
         self.part.save()
-        index = MatchIndex()
-        reference = {'code':self.part.sku, 'brand':'TOYOTA', 'ref_type':'oem'}
-        self.assertEqual(index.reference_targets([reference]), {str(self.part.pk)})
-        reference['ref_type'] = 'company'
-        self.assertEqual(index.reference_targets([reference]), set())
+        supplier = Account.objects.create(name='PROVEEDOR')
+        subject = lambda brand: rm.subject_of(None, {'codigo': self.part.sku, 'brand': brand}, supplier)
+        # S6 (rules 1 and 2): a brandless main reserves its code for every brand, so any brand's item with it joins the line ...
+        self.assertEqual(rm.resolve(subject('TOYOTA')).line, self.part)
         PartCode.objects.create(part=self.part, code=self.part.sku, ref_type='oem', brand='TOYOTA')
-        reference.update(ref_type='oem', brand='HONDA')
-        self.assertEqual(MatchIndex().reference_targets([reference]), set())
+        self.assertEqual((rm.resolve(subject('TOYOTA')).rule, rm.resolve(subject('HONDA')).rule), ('exacta', 'sin_marca'))
+        # ... and the line stays OEM: no company code is made of it.
+        self.assertFalse(self.part.codes.filter(ref_type='company', code=self.part.sku).exists())
 
     def test_marked_oem_suffix_is_not_stripped_into_an_internal_family(self):
-        from .matching_engine import reconcile_catalog
         base = Part.objects.create(sku='OEM1234567', description='ROTULA TOYOTA RAV4 2019')
         original = Part.objects.create(sku=base.sku+'-ABC', description=base.description, is_OEM=True)
-        self.assertEqual(reconcile_catalog(self.admin), 0)
+        self.assertEqual(rm.open_reference_merge_cases(), 0)  # S6: the worker never merges families, and no clave joins them
         original.refresh_from_db()
         self.assertIsNone(original.merged_into_id)
         self.assertTrue(original.is_OEM)

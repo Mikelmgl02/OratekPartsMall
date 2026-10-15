@@ -149,13 +149,15 @@ class RetiredExactMarkTests(APITestCase):
 
     @override_settings(OEM_EXACT_MARK=True)
     def test_the_matching_pass_marks_nothing_even_with_oem_exact_mark_on(self):
-        from .matching_engine import reconcile_catalog
+        from .matching_queue import matching_work
+        from .matching_worker import process_queue
         part = Part.objects.create(sku='MR-453383', description='EJE MIT')
         listed('MITSUBISHI', 'MR453383')
-        stats = {}
-        reconcile_catalog(self.root, stats=stats)
+        with matching_work():
+            summary = process_queue(force=True, use_ai=False)  # S6: the pass has no exact-mark or rename step at all
         part.refresh_from_db()
-        self.assertEqual((part.is_OEM, stats['marked_exact_oems']), (False, 0))
+        self.assertFalse(part.is_OEM)
+        self.assertNotIn('marked_exact_oems', summary)
 
     def test_the_command_says_it_is_retired(self):
         import io

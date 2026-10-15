@@ -2,7 +2,9 @@ from rest_framework.test import APITestCase
 
 from .catalog_split import pair
 from .catalog_split_models import CatalogSeparation, CatalogSplit
-from .matching_engine import reconcile_catalog
+from .catalog_grouping import merge_catalog_parts
+from .matching_models import MatchingCase
+from . import reference_matching
 from .matching_queue import matching_work
 from .models import Account, CatalogMerge, Part, PartCode, SupplierItem, User
 from .references import add_library_number
@@ -14,7 +16,8 @@ URL = '/api/v1/management/catalog/'
 
 
 class CatalogSplitTests(APITestCase):
-    """Separar SKU undoes a grouping: the retired SKUs come back with the rows they brought, and the worker never groups them again."""
+    """Separar SKU undoes a grouping: the retired SKUs come back with the rows they brought, and the worker never groups them again
+    (from S6 it groups nothing on its own: catalog references open merge cases, never for lines kept apart)."""
     description = 'TAMBOR KIA PICANTO 04-11'
 
     def setUp(self):
@@ -24,14 +27,15 @@ class CatalogSplitTests(APITestCase):
         self.client.force_authenticate(self.admin)
 
     def grouped(self):
-        """Three SKUs of one base code, each with its supplier stock row, grouped by the matching worker under a new parent."""
+        """Three SKUs of one base code, each with its supplier stock row, grouped automatically under a new parent (as the matching
+        worker did before S6: the legacy automatic merges)."""
         children = [Part.objects.create(sku=f'58411-08000-{suffix}', description=self.description) for suffix in ['K', 'NP', 'RAZ']]
         PartCode.objects.create(part=children[0], brand='KOREA', code='KX-100', ref_type='company')
         for index, part in enumerate(children):
             ingest_inventory(supplier=self.supplier, actor=self.admin, data={'update_id': f'ITEM-{index}', 'supplier_invent_id': f'ITEM-{index}',
                              'codigo': part.sku, 'brand': '', 'description': self.description, 'source': 'upload', 'quantity': 5})
-        with matching_work():
-            reconcile_catalog(self.service)
+        merge_catalog_parts(actor=self.service, target_sku='58411-08000', source_skus=[part.sku for part in children], create_target=True,
+                            automatic=True)
         return Part.objects.get(sku='58411-08000')
 
     def plan(self, parent):
@@ -78,8 +82,8 @@ class CatalogSplitTests(APITestCase):
         self.assertEqual(part.codes.get(is_main=True).code, '58411-08000-K')  # as its main again
         self.assertTrue(CatalogSeparation.objects.filter(first_id=pair(part.pk, parent.pk)[0], second_id=pair(part.pk, parent.pk)[1]).exists())
         self.assertEqual(CatalogSplit.objects.get().restored, [{'id': str(part.pk), 'sku': '58411-08000-K'}])
-        with matching_work():
-            reconcile_catalog(self.admin)
+        with matching_work():  # the worker's catalog and supplier stages
+            reference_matching.open_reference_merge_cases(); reference_matching.backlog()
         part.refresh_from_db()
         self.assertIsNone(part.merged_into_id)  # never grouped again on its own
         self.assertEqual(parent.merged_parts.count(), 2)
@@ -95,7 +99,7 @@ class CatalogSplitTests(APITestCase):
         parent.refresh_from_db()
         self.assertFalse(parent.active)
         with matching_work():
-            reconcile_catalog(self.admin)
+            reference_matching.open_reference_merge_cases(); reference_matching.backlog()
         self.assertEqual(Part.objects.filter(sku__startswith='58411-08000-', active=True, merged_into__isnull=True).count(), 3)
         self.assertEqual(CatalogMerge.objects.count(), 1)
 
@@ -142,10 +146,13 @@ class CatalogSplitTests(APITestCase):
         split = CatalogSplit.objects.create(target=main, actor=self.admin)
         CatalogSeparation.objects.create(first_id=pair(main.pk, other.pk)[0], second_id=pair(main.pk, other.pk)[1], split=split)
         with matching_work():
-            reconcile_catalog(self.admin)
+            reference_matching.open_reference_merge_cases(); reference_matching.backlog()
         other.refresh_from_db()
         pairs[1][1].refresh_from_db()
-        self.assertEqual((other.merged_into_id, pairs[1][1].merged_into_id), (None, pairs[1][0].pk))  # only the pair without a split groups
+        self.assertEqual((other.merged_into_id, pairs[1][1].merged_into_id), (None, None))  # S6: the worker merges nothing on its own
+        # Only the pair without a split is proposed, as a merge case.
+        proposed = [set(case.lines.values_list('pk', flat=True)) for case in MatchingCase.objects.filter(kind='merge')]
+        self.assertEqual(proposed, [{pairs[1][0].pk, pairs[1][1].pk}])
 
     def test_the_merged_list_and_the_grid_count_grouped_skus(self):
         parent = self.grouped()
@@ -161,9 +168,11 @@ class CatalogSplitTests(APITestCase):
         main = Part.objects.create(sku='43512-60150', description='DISCO FRENO DEL TOY LAND CRUISER')
         other = Part.objects.create(sku='DF-4512', description='DISCO FRENO DEL TOY LAND CRUISER')
         PartCode.objects.create(part=other, brand='GMB', code='GD-4512', ref_type='company')
-        item = ingest_inventory(supplier=self.supplier, actor=self.admin, data={'update_id': 'X-1', 'supplier_invent_id': 'X-1', 'codigo': 'ZX 77',
-                                'brand': '', 'description': 'DISCO', 'source': 'upload', 'quantity': 3})
-        move_variant(item, other, matching_status='matched')  # a code that names neither SKU (its supplier's interno code, S3)
+        # An item no load placed (from S6 a load would give it a new product's line of its own), moved onto other by a code that names
+        # neither SKU (its supplier's interno code, S3).
+        item = SupplierItem.objects.create(supplier=self.supplier, supplier_invent_id='X-1', codigo='ZX 77', brand='', description='DISCO',
+                                           source='upload', reported_quantity=3)
+        move_variant(item, other, matching_status='matched')
         merged = self.client.post(f'{URL}grouping/merge/', {'target_sku': main.sku, 'source_skus': [other.sku]}, format='json')
         self.assertEqual(merged.status_code, 200, merged.content)
         recorded = CatalogMerge.objects.get().sources

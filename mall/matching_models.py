@@ -2,6 +2,7 @@
 import uuid
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 
 class MatchingQueue(models.Model):
@@ -19,9 +20,23 @@ class MatchingQueue(models.Model):
 
 
 class MatchingCase(models.Model):
+    """A decision the matching leaves to a person (inventory refactor S6, plan §2; mall.reference_matching writes the new kinds).
+
+    kind: reference (a code the supplier declares for its item, rule 5b), code_change (the supplier changed its item's code, rule 5b),
+    variant (an item contradicts the line its code joins, rule 5), line (the item's code is on two or more lines, or on a Reference in
+    disputa: the item waits without a Reference, rule 2), merge (two or more lines may be one part: rule 8, catalog references, OD15,
+    the legacy-auto-merge batch). The legacy kinds stay until S10: supplier, catalog, catalog_reference, seed.
+    status: review, dismissed, applied (legacy: unmatched, resolved). key (unique) makes every writer idempotent:
+    reference:<item>:<clave>|<brand> · code_change:<item> · variant:<item>:<line> · line:<item> · merge:<sorted line ids> ·
+    merge:<batch_key>. A dismissed case whose fingerprint has not changed stays dismissed."""
+    KINDS = ('reference', 'code_change', 'variant', 'line', 'merge')
+    LEGACY_KINDS = ('supplier', 'catalog', 'catalog_reference', 'seed')
+    STATUSES = ('review', 'dismissed', 'applied')
+    LEGACY_STATUSES = ('unmatched', 'resolved')
+    ROUTES = [('lote', 'Lote'), ('caso', 'Caso')]
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     key = models.CharField(max_length=240, unique=True)
-    kind = models.CharField(max_length=20)  # supplier or catalog
+    kind = models.CharField(max_length=20)  # KINDS, or a legacy kind until S10
     item = models.ForeignKey('mall.SupplierItem', null=True, on_delete=models.CASCADE)
     fingerprint = models.CharField(max_length=64)
     sources = models.JSONField(default=list)
@@ -32,9 +47,24 @@ class MatchingCase(models.Model):
     status = models.CharField(max_length=20, default='review', db_index=True)
     ai = models.JSONField(default=dict)
     updated_at = models.DateTimeField(auto_now=True)
+    # S6 (0083): the target's fields.
+    reference = models.ForeignKey('mall.Reference', null=True, blank=True, on_delete=models.SET_NULL, related_name='cases',
+                                  verbose_name='referencia')
+    new_code = models.CharField(max_length=120, blank=True, default='', db_default='', verbose_name='código propuesto')
+    new_brand = models.CharField(max_length=120, blank=True, default='', db_default='', verbose_name='marca propuesta')
+    lines = models.ManyToManyField('mall.Part', blank=True, related_name='matching_cases', verbose_name='líneas')
+    evidence = models.JSONField(default=dict, blank=True, db_default={}, verbose_name='evidencia')
+    guard = models.CharField(max_length=40, blank=True, default='', db_default='', verbose_name='control que lo detuvo')
+    route = models.CharField(max_length=5, blank=True, default='', db_default='', choices=ROUTES, verbose_name='ruta')
+    batch_key = models.CharField(max_length=120, blank=True, default='', db_default='', db_index=True, verbose_name='lote')
+    decided_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
+                                   verbose_name='decidido por')
+    decided_at = models.DateTimeField(null=True, blank=True, verbose_name='decidido el')
+    created_at = models.DateTimeField(null=True, blank=True, default=timezone.now, verbose_name='creado el')
 
     class Meta:
         ordering = ['-updated_at', 'id']
+        indexes = [models.Index(fields=['kind', 'status'], name='matching_case_kind_status')]
 
 
 class SupplierCodeMapping(models.Model):

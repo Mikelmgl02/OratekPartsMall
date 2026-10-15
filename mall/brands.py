@@ -5,7 +5,7 @@ familia_root() and same_familia() read the familia (KAIYI and CHERY are one fami
 the same brand alone); get_or_create() adds a brand for a new spelling. rename() and merge() are the only code that changes a nombre:
 they re-key the codes that carry it (Reference.brand, which stays text until S10) in the same transaction, keep
 the old spelling as an alias, and open a merge case when a code would end up twice under one brand. resolve() (every spelling to its
-canonical brand, everywhere) comes with S6.
+canonical brand, everywhere) came with S6: the matching compares a variant's brand with a Reference's through it.
 """
 from django.db import transaction
 from django.db.models import Q
@@ -38,6 +38,13 @@ def lookup(name):
         alias = BrandAlias.objects.filter(alias__in=forms).select_related('brand__familia').first()
         brand = alias.brand if alias else None
     return brand
+
+
+def resolve(name):
+    """The canonical spelling of a brand (S6, rules 1 and 2): the nombre of the brand a spelling names, by nombre or alias (TOY →
+    TOYOTA, MOTION  MOTORS → MOTION MOTORS), else the spelling normalized; '' for a blank one ('' means any brand)."""
+    brand = lookup(name)
+    return brand.nombre if brand is not None else normalize(name)
 
 
 def familia_map(names):

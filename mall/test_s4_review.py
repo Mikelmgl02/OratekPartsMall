@@ -13,6 +13,7 @@ from datetime import timedelta
 from unittest.mock import patch
 
 from django.core.files.uploadedfile import SimpleUploadedFile
+from rest_framework.exceptions import ValidationError
 from django.test import TestCase
 from django.utils import timezone
 from openpyxl import Workbook
@@ -24,7 +25,6 @@ from . import supplier_catalog_replace as scr
 from .brand_models import Brand
 from .catalog_grouping import merge_catalog_parts
 from .lines import bulk_create_lines, create_line
-from .matching_engine import catalog_families
 from .models import CatalogMerge, Part, Reference
 from .oem_reference_models import OEMCrossReference, OEMCrossReferenceRetired, OEMReference, PartOEMLink
 from .refactor import s0_normalize_numbers, s4_library
@@ -331,7 +331,7 @@ class AutomaticPathTests(Fresh, TestCase):
         number, _ = references.add_library_number('TOYOTA', '16100-79445')
         make_line('16100-79445-AAA', description='BOMBA AGUA TOY HILUX')
         make_line('16100-79445-BBB', description='BOMBA AGUA TOY HILUX')
-        self.assertIn('16100-79445', catalog_families())
+        # S6: the worker proposes no family on its own any more; Agrupar SKU creates the parent and promotes the library's line.
         result = merge_catalog_parts(actor=self.root, target_sku='16100-79445', source_skus=['16100-79445-AAA', '16100-79445-BBB'],
                                      create_target=True)
         target = CatalogMerge.objects.get(pk=result['merge_id']).target
@@ -340,7 +340,9 @@ class AutomaticPathTests(Fresh, TestCase):
         references.add_library_number('ACURA', '44310-STX-305')
         make_line('44310-STX-305-AAA', description='BOMBA AGUA HONDA')
         make_line('44310-STX-305-BBB', description='BOMBA AGUA HONDA')
-        self.assertNotIn('44310-STX-305', catalog_families())  # two makes share it: a person names the make
+        with self.assertRaisesMessage(ValidationError, 'indica la marca'):  # two makes share it: a person names the make
+            merge_catalog_parts(actor=self.root, target_sku='44310-STX-305', source_skus=['44310-STX-305-AAA', '44310-STX-305-BBB'],
+                                create_target=True)
 
     def test_a_bulk_line_with_the_number_in_another_spelling_absorbs_its_line(self):
         number, _ = references.add_library_number('TOYOTA', '16100-39315')

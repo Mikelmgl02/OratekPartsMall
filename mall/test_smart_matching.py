@@ -1,13 +1,16 @@
+"""Agrupación inteligente's matching from S6 (mall.reference_matching): what a load does at once, the worker's pass, the cases and their
+decisions, the AI ranking (line and merge cases only, OD12) and the description hints of D1. The rules themselves are table-driven in
+mall.test_reference_matching."""
 from datetime import timedelta
 from unittest.mock import patch
 from django.test import SimpleTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APITestCase
-from .models import (Account, Part, PartCode, User, SupplierItem, StockEntry, InventoryUpdate,
-                     MatchingCase, MatchingDecision, MatchingQueue, SupplierCodeMapping, CatalogMerge)
+from . import references
+from .lines import create_line
+from .models import Account, Part, User, SupplierItem, StockEntry, InventoryUpdate, MatchingCase, MatchingDecision, MatchingQueue
 from .services import ingest_inventory
-from .matching_engine import (MatchIndex, reconcile_items, reconcile_catalog, create_supplier_families, item_row, part_row,
-                              spec_conflict, digest, NO_CODE_EVIDENCE, NO_CODE_EVIDENCE_REASON, VERSION)
+from .matching_engine import MatchIndex, spec_conflict
 from .matching_worker import process_queue, analyze_ambiguous
 from .matching_queue import enqueue_matching, matching_work
 
@@ -25,211 +28,162 @@ class SmartMatchingTests(APITestCase):
             data={'update_id': update or code, 'supplier_invent_id': stable or code, 'codigo': code, 'brand': brand,
                   'description': self.description if description is None else description, 'source': source, 'quantity': quantity})
 
-    def test_codes_from_different_suppliers_create_one_parent_and_preserve_ledgers(self):
+    def decide(self, case, action, **data):
+        return self.client.post(f'/api/v1/management/matching/{case.pk}/', {'action': action, 'fingerprint': case.fingerprint, **data},
+                                format='json')
+
+    def two_lines(self, code='58411-07000'):
+        """A code on two lines under two brands: a brandless item with it waits in a line case."""
+        first = create_line(code, description=self.description, main_brand='KIA', main_tipo='oem')
+        second = create_line(f'{code}-DUP', description=self.description)
+        references.add(second, code, 'MANDO', tipo='aftermarket')
+        return first, second
+
+    def test_suffixed_codes_no_line_has_become_new_products_and_no_parent_is_invented(self):
         a = self.ingest('58411-07000-K', stable='STABLE-A')
         b = self.ingest('58411-07000-NP', supplier=1, stable='STABLE-B', source='apiag', quantity=10)
         stock = list(StockEntry.objects.order_by('pk').values())
         updates = list(InventoryUpdate.objects.order_by('pk').values())
         with matching_work():
             result = process_queue(force=True, use_ai=False)
-        self.assertEqual(result['created_parents'], 1)
-        self.assertEqual(result['matched_items'], 2)
-        target = Part.objects.get(sku='58411-07000')
-        a.refresh_from_db(); b.refresh_from_db()
-        self.assertEqual((a.part_id, b.part_id), (target.pk, target.pk))
-        self.assertEqual((a.supplier_invent_id, b.supplier_invent_id), ('STABLE-A','STABLE-B'))
-        # Supplier-local codes remain on the children, not in the universal library (the parent holds only its main, S2b).
-        self.assertFalse(target.codes.filter(is_main=False).exists())
-        self.assertEqual(list(StockEntry.objects.order_by('pk').values()),stock)
-        self.assertEqual(list(InventoryUpdate.objects.order_by('pk').values()),updates)
-        process_queue(force=True,use_ai=False)
-        self.assertEqual(Part.objects.filter(active=True).count(),1)
-        self.assertEqual(MatchingDecision.objects.count(),3)
-        # A repeated upload changes only stock, never creates a second parent or child.
-        self.ingest('58411-07000-K',stable='STABLE-A',update='again',quantity=10)
-        self.assertEqual(SupplierItem.objects.count(),2)
-        self.assertEqual(StockEntry.objects.last().quantity,5)
-        self.assertEqual(StockEntry.objects.last().direction,'credit')
+        self.assertFalse(Part.objects.filter(sku='58411-07000').exists())  # estado: no invented parent (S6)
+        for item in (a, b):
+            item.refresh_from_db()
+            self.assertEqual((item.part.estado, item.part.origen, item.matching_status), ('preparacion', 'proveedor', 'pending'))
+        self.assertNotEqual(a.part_id, b.part_id)
+        self.assertEqual(list(StockEntry.objects.order_by('pk').values()), stock)
+        self.assertEqual(list(InventoryUpdate.objects.order_by('pk').values()), updates)
+        self.assertEqual((result['matched_items'], result['placed_items']), (0, 0))  # both were placed when they arrived
+        # A repeated upload changes only stock, never a second line or item.
+        self.ingest('58411-07000-K', stable='STABLE-A', update='again', quantity=10)
+        self.assertEqual(SupplierItem.objects.count(), 2)
+        self.assertEqual((StockEntry.objects.last().quantity, StockEntry.objects.last().direction), (5, 'credit'))
 
-    def test_catalog_groups_all_four_children_and_preserves_media_and_supplier_stock(self):
-        children = [Part.objects.create(sku='58411-08000-'+suffix,description=self.description) for suffix in ['K','KSM-NP','NP','RAZ']]
-        items = [self.ingest(p.sku,stable=f'ITEM-{i}') for i,p in enumerate(children)]
-        ledger = list(StockEntry.objects.values())
-        with matching_work():
-            self.assertEqual(reconcile_catalog(self.admin),4)
-        parent=Part.objects.get(sku='58411-08000')
-        self.assertEqual(parent.merged_parts.count(),4)
-        self.assertEqual(parent.supplier_items.count(),4)
-        self.assertEqual(list(StockEntry.objects.values()),ledger)
-        self.assertEqual(CatalogMerge.objects.count(),1)
-        self.assertEqual(reconcile_catalog(self.admin),0)
+    def test_a_later_catalog_line_takes_the_item_by_rule_3_once_its_base_exists(self):
+        target = create_line('58411-07000', description=self.description)
+        item = self.ingest('58411-07000-K', description='TAMBOR KIA PICANTO TRAS 04-11')
+        self.assertEqual((item.part_id, item.matching_status, item.reference.code), (target.pk, 'matched', '58411-07000-K'))
+        self.assertEqual(StockEntry.objects.count(), 1)
 
-    def test_normalized_reference_preserves_leading_zeros_and_detects_collision(self):
-        target=Part.objects.create(sku='00123-45678',description=self.description)
-        a=self.ingest('0012345678')
-        b=self.ingest('12345678')
-        reconcile_items(MatchIndex())
-        a.refresh_from_db();b.refresh_from_db()
-        self.assertEqual(a.part_id,target.pk)
-        self.assertIsNone(b.part_id)
-        other=Part.objects.create(sku='0012345678',description=self.description)
-        c=self.ingest('00123.45678')
-        reconcile_items(MatchIndex());c.refresh_from_db()
-        self.assertIsNone(c.part_id)
-        self.assertEqual(MatchingCase.objects.get(item=c).status,'review')
+    def test_leading_zeros_and_short_codes_keep_their_identity(self):
+        target = create_line('00123-45678', description=self.description)
+        a = self.ingest('0012345678')
+        b = self.ingest('12345678')
+        self.assertEqual(a.part_id, target.pk)
+        self.assertNotEqual(b.part_id, target.pk)
+        self.assertEqual(b.part.estado, 'preparacion')
 
-    @override_settings(MATCHING_NO_CODE_EVIDENCE=True)
-    def test_numeric_position_dimension_and_year_variants_are_not_automerged(self):
-        Part.objects.create(sku='58411-07000',description='DISCO KIA PICANTO TRAS 200 MM 04-11')
-        inputs=[('58411-07000-L','DISCO KIA PICANTO IZQ 200 MM 04-11'),
-                ('58411-07000-22','DISCO KIA PICANTO TRAS 220 MM 04-11'),
-                ('58411-07000-K','DISCO KIA PICANTO TRAS 220 MM 04-11'),
-                ('58411-07000-NP','DISCO KIA PICANTO TRAS 200 MM 15-20')]
-        for code,desc in inputs:self.ingest(code,description=desc)
-        reconcile_items(MatchIndex())
+    def test_position_size_and_year_variants_never_join_on_their_own(self):
+        create_line('58411-07000', description='DISCO KIA PICANTO TRAS 200 MM 04-11')
+        inputs = [('58411-07000-L', 'DISCO KIA PICANTO IZQ 200 MM 04-11'), ('58411-07000-22', 'DISCO KIA PICANTO TRAS 220 MM 04-11'),
+                  ('58411-07000-K', 'DISCO KIA PICANTO TRAS 220 MM 04-11'), ('58411-07000-NP', 'DISCO KIA PICANTO TRAS 200 MM 15-20')]
+        for code, text in inputs:
+            self.ingest(code, description=text)
         self.assertFalse(SupplierItem.objects.filter(matching_status='matched').exists())
-        # A supplier suffix (-K, -NP) puts the code in the SKU's family, which is code evidence (D1): review, with the SKU. -L and -22
-        # are no supplier suffix, so no SKU has their code: new products, with the SKU as a hint only.
-        cases={c.item.codigo:(c.status,c.method,c.target_sku,[x['sku'] for x in c.candidates])
-               for c in MatchingCase.objects.filter(kind='supplier').select_related('item')}
-        family,hint=('review','needs_review','58411-07000',['58411-07000']),('unmatched',NO_CODE_EVIDENCE,'',['58411-07000'])
-        self.assertEqual(cases,{'58411-07000-K':family,'58411-07000-NP':family,'58411-07000-L':hint,'58411-07000-22':hint})
-        self.assertEqual(create_supplier_families(),0)
+        # -K and -NP strip to the line (rule 3) but contradict it: line cases. -L and -22 strip to nothing: new products.
+        outcome = {item.codigo: (item.part.estado if item.part_id else None, MatchingCase.objects.filter(item=item, kind='line').exists())
+                   for item in SupplierItem.objects.select_related('part')}
+        self.assertEqual(outcome, {'58411-07000-L': ('preparacion', False), '58411-07000-22': ('preparacion', False),
+                                   '58411-07000-K': (None, True), '58411-07000-NP': (None, True)})
 
-    @override_settings(MATCHING_NO_CODE_EVIDENCE=True)
-    def test_same_description_without_code_evidence_only_proposes_match(self):
-        target=Part.objects.create(sku='58411-07000',description=self.description)
-        item=self.ingest('D-HYU-1R')
-        reconcile_items(MatchIndex());item.refresh_from_db()
-        self.assertIsNone(item.part_id)
-        case=MatchingCase.objects.get(item=item)
-        # No code ties it to the SKU (owner decision D1): Productos nuevos takes it, the same description stays a hint.
-        self.assertEqual((case.status,case.method,case.reason,case.target_sku),('unmatched',NO_CODE_EVIDENCE,NO_CODE_EVIDENCE_REASON,''))
-        self.assertEqual(case.candidates[0]['id'],str(target.pk))
-        response=self.client.post(f'/api/v1/management/matching/{case.pk}/',{
-            'action':'approve','target_sku':target.sku,'fingerprint':case.fingerprint},format='json')
-        self.assertEqual(response.status_code,200,response.data)
-        item.refresh_from_db();self.assertEqual(item.part_id,target.pk)
-        self.assertEqual(SupplierCodeMapping.objects.count(),1)
-        next_item=self.ingest('D-HYU-1R',stable='SECOND-ID',update='second')
-        reconcile_items(MatchIndex());next_item.refresh_from_db()
-        self.assertEqual(next_item.part_id,target.pk)
-        # Unbranded local identifiers do not become global aliases.
-        other=self.ingest('D-HYU-1R',supplier=1)
-        reconcile_items(MatchIndex());other.refresh_from_db()
-        self.assertIsNone(other.part_id)
+    def test_a_code_change_never_moves_historical_stock(self):
+        old = create_line('58411-07000', description=self.description)
+        new = create_line('58411-08000', description=self.description)
+        item = self.ingest(old.sku, stable='STABLE')
+        item = self.ingest(new.sku, stable='STABLE', update='rename')
+        self.assertEqual((item.part_id, item.matching_status, item.codigo_pendiente), (old.pk, 'review', new.sku))
+        self.assertEqual(StockEntry.objects.count(), 1)
+        self.assertEqual(MatchingCase.objects.get(item=item).kind, 'code_change')
 
-    def test_supplier_code_change_cannot_move_historical_stock_to_another_parent(self):
-        old=Part.objects.create(sku='58411-07000',description=self.description)
-        new=Part.objects.create(sku='58411-08000',description=self.description)
-        item=self.ingest(old.sku,stable='STABLE')
-        self.ingest(new.sku,stable='STABLE',update='rename')
-        reconcile_items(MatchIndex());item.refresh_from_db()
-        self.assertEqual(item.part_id,old.pk)
-        self.assertEqual(item.matching_status,'review')
-        self.assertEqual(StockEntry.objects.count(),1)
-
-    def test_review_rejects_stale_supplier_data_and_remembers_dismissal(self):
-        Part.objects.create(sku='58411-07000',description=self.description)
-        item=self.ingest('D-HYU-1R')
-        reconcile_items(MatchIndex());case=MatchingCase.objects.get(item=item)
-        payload={'action':'approve','fingerprint':case.fingerprint}
-        self.ingest(item.codigo,update='changed-description',description='TAMBOR KIA PICANTO 15-20')
-        response=self.client.post(f'/api/v1/management/matching/{case.pk}/',payload,format='json')
-        self.assertEqual(response.status_code,409)
-        reconcile_items(MatchIndex());case.refresh_from_db()
-        response=self.client.post(f'/api/v1/management/matching/{case.pk}/',{'action':'dismiss','fingerprint':case.fingerprint},format='json')
-        self.assertEqual(response.status_code,200)
-        reconcile_items(MatchIndex());case.refresh_from_db()
-        self.assertEqual(case.status,'dismissed')
-        self.assertIsNone(SupplierItem.objects.get(pk=item.pk).part_id)
-
-    def test_later_catalog_addition_rematches_unchanged_pending_feed(self):
-        item=self.ingest('58411-07000-K')
-        reconcile_items(MatchIndex())
-        Part.objects.create(sku='58411-07000',description=self.description)
-        reconcile_items(MatchIndex());item.refresh_from_db()
-        self.assertEqual(item.part.sku,'58411-07000')
-        self.assertEqual(StockEntry.objects.count(),1)
+    def test_a_decision_on_stale_data_is_refused_and_a_dismissal_is_remembered(self):
+        self.two_lines()
+        item = self.ingest('58411-07000', update='stale-1')
+        case = MatchingCase.objects.get(item=item, kind='line')
+        stale = case.fingerprint
+        third = create_line('58411-07000-TRI', description=self.description)  # a third line takes the code under a third brand
+        references.add(third, '58411-07000', 'GMB', tipo='aftermarket')
+        self.ingest('58411-07000', update='stale-2', quantity=7)
+        response = self.client.post(f'/api/v1/management/matching/{case.pk}/', {'action': 'approve', 'fingerprint': stale,
+                                                                                 'line': str(Part.objects.get(sku='58411-07000').pk)}, format='json')
+        self.assertEqual(response.status_code, 409)
+        variant = self.ingest('58411-07000', brand='KIA', stable='V-1', update='v-1', description='TAMBOR KIA PICANTO 15-20')  # years contradict
+        case = MatchingCase.objects.get(item=variant, kind='variant')
+        self.assertEqual(self.decide(case, 'dismiss').status_code, 200)
+        self.ingest('58411-07000', brand='KIA', stable='V-1', description='TAMBOR KIA PICANTO 15-20', update='v-again', quantity=9)
+        self.assertEqual(MatchingCase.objects.get(pk=case.pk).status, 'dismissed')  # the same evidence stays dismissed
 
     def code_with_contradiction(self):
-        # The code is the SKU's, the years contradict: a review case with code evidence, the only kind the AI ranks.
-        target=Part.objects.create(sku='58411-07000',description=self.description)
-        return target,self.ingest(target.sku,description='TAMBOR KIA PICANTO 15-20')
+        # The code is on two lines (a line case): the only kind, with merge cases, the AI ranks from S6 (OD12).
+        first, second = self.two_lines()
+        return first, self.ingest(first.sku, description='TAMBOR KIA PICANTO 15-20')
 
     @override_settings(GEMINI_API_KEY='test-key')
     def test_ai_is_cached_bounded_and_cannot_apply_semantic_guess(self):
-        target,item=self.code_with_contradiction()
-        reconcile_items(MatchIndex())
-        self.assertEqual(MatchingCase.objects.get(item=item).status,'review')
-        result={'suggestions':[{'source_sku':item.codigo,'target_sku':target.sku,'confidence':1.0,'reason':'Descripción similar; requiere confirmar aplicación.'}]}
-        with patch('mall.matching_worker.call_provider',return_value=result) as provider:
-            self.assertEqual(analyze_ambiguous(),1)
-            self.assertEqual(analyze_ambiguous(),0)
+        target, item = self.code_with_contradiction()
+        self.assertEqual(MatchingCase.objects.get(item=item).status, 'review')
+        result = {'suggestions': [{'source_sku': item.codigo, 'target_sku': target.sku, 'confidence': 1.0, 'reason': 'Descripción similar; requiere confirmar aplicación.'}]}
+        with patch('mall.matching_worker.call_provider', return_value=result) as provider:
+            self.assertEqual(analyze_ambiguous(), 1)
+            self.assertEqual(analyze_ambiguous(), 0)
             provider.assert_called_once()
-        self.assertEqual(provider.call_args.kwargs['feature'],'matching')
-        item.refresh_from_db();self.assertIsNone(item.part_id)
+        self.assertEqual(provider.call_args.kwargs['feature'], 'matching')
+        item.refresh_from_db()
+        self.assertIsNone(item.part_id)
         self.assertTrue(MatchingCase.objects.get(item=item).ai['needs_review'])
 
     @override_settings(GEMINI_API_KEY='test-key')
     def test_ai_failure_retains_stock_and_review(self):
         from .catalog_classification import ClassificationProviderError
-        _,item=self.code_with_contradiction()
-        with patch('mall.matching_worker.call_provider',side_effect=ClassificationProviderError()), patch('mall.matching_worker.AI_LIMIT', 20):
-            result=process_queue(force=True)  # AI ranking is off from S2b to S6 (OD12): the limit turns it back on for this test
-        self.assertEqual(result['ai_analyzed'],0)
-        self.assertEqual(StockEntry.objects.count(),1)
-        self.assertIn('error',MatchingCase.objects.get(item=item).ai)
+        _, item = self.code_with_contradiction()
+        with patch('mall.matching_worker.call_provider', side_effect=ClassificationProviderError()):
+            result = process_queue(force=True)
+        self.assertEqual(result['ai_analyzed'], 0)
+        self.assertEqual(StockEntry.objects.count(), 1)
+        self.assertIn('error', MatchingCase.objects.get(item=item).ai)
 
     def test_queue_coalesces_transactions_and_worker_claim_prevents_duplicates(self):
         with self.captureOnCommitCallbacks(execute=True) as callbacks:
-            enqueue_matching();enqueue_matching();enqueue_matching()
-        self.assertEqual(len(callbacks),1)
-        queue=MatchingQueue.objects.get(pk=1)
-        self.assertEqual(queue.requested,1)
-        queue.lease_until=timezone.now()+timedelta(minutes=5);queue.save()
-        self.assertIsNone(process_queue(force=True,use_ai=False))
+            enqueue_matching(); enqueue_matching(); enqueue_matching()
+        self.assertEqual(len(callbacks), 1)
+        queue = MatchingQueue.objects.get(pk=1)
+        self.assertEqual(queue.requested, 1)
+        queue.lease_until = timezone.now() + timedelta(minutes=5); queue.save()
+        self.assertIsNone(process_queue(force=True, use_ai=False))
 
     def test_matching_api_is_superuser_only(self):
-        self.client.force_authenticate(User.objects.create_user('ordinary','ordinary@example.invalid','Testing938!'))
-        self.assertEqual(self.client.get('/api/v1/management/matching/').status_code,403)
-        self.assertEqual(self.client.post('/api/v1/management/matching/',{},format='json').status_code,403)
+        self.client.force_authenticate(User.objects.create_user('ordinary', 'ordinary@example.invalid', 'Testing938!'))
+        self.assertEqual(self.client.get('/api/v1/management/matching/').status_code, 403)
+        self.assertEqual(self.client.post('/api/v1/management/matching/', {}, format='json').status_code, 403)
 
-
-    def test_reviewed_branded_codes_transfer_only_with_identical_specifications(self):
-        target=Part.objects.create(sku='58411-07000',description=self.description)
-        item=self.ingest('D-HYU-1R',brand='ACME')
-        reconcile_items(MatchIndex());case=MatchingCase.objects.get(item=item)
-        result=self.client.post(f'/api/v1/management/matching/{case.pk}/',{
-            'action':'approve','fingerprint':case.fingerprint,'target_sku':target.sku},format='json')
-        self.assertEqual(result.status_code,200)
-        same=self.ingest('D-HYU-1R',supplier=1,brand='ACME')
-        different=self.ingest('D-HYU-1R',supplier=1,brand='OTHER',stable='DIFFERENT',update='different')
-        reconcile_items(MatchIndex());same.refresh_from_db();different.refresh_from_db()
-        self.assertEqual(same.part_id,target.pk)
-        self.assertIsNone(different.part_id)
+    def test_an_approved_line_takes_the_item_and_short_brandless_codes_stay_each_suppliers_own(self):
+        first, second = self.two_lines('D-HYU-1R0001')
+        item = self.ingest('D-HYU-1R0001')
+        case = MatchingCase.objects.get(item=item, kind='line')
+        self.assertEqual(self.decide(case, 'approve', line=str(first.pk)).status_code, 200)
+        item.refresh_from_db()
+        self.assertEqual((item.part_id, item.matching_status, item.reference.brand), (first.pk, 'matched', 'KIA'))
+        self.assertEqual(MatchingDecision.objects.get(case=case).action, 'approved')
+        short = self.ingest('ZZ-1', stable='SHORT')  # OD6: a short brandless code is its supplier's own (interno)
+        self.assertEqual(references.main_of(short.part).tipo, 'interno')
+        self.assertNotEqual(self.ingest('ZZ-1', supplier=1).part_id, short.part_id)
+        self.assertEqual(self.ingest('ZZ-1', stable='SHORT-2', update='short-2').part_id, short.part_id)
 
     @override_settings(GEMINI_API_KEY='test-key')
     def test_noop_analysis_reports_scope_without_ai_or_web_research(self):
-        part = Part.objects.create(sku='58411-07000', description=self.description)
+        part = create_line('58411-07000', description=self.description)
         item = self.ingest(part.sku)
-        item.part, item.matching_status = part, 'matched'
-        item.save()
+        self.assertEqual(item.matching_status, 'matched')
         with patch('mall.matching_worker.call_provider') as provider, patch('mall.oem_lookup.lookup_oem') as research:
             result = process_queue(force=True)
         provider.assert_not_called()
         research.assert_not_called()
-        self.assertEqual(result['catalog_count'], 1)
-        self.assertEqual(result['supplier_total'], 1)
-        self.assertEqual(result['supplier_already_matched'], 1)
-        self.assertEqual(result['supplier_examined'], 0)
-        self.assertEqual(result['ai_status'], 'paused')  # AI ranking is off from S2b to S6 (OD12)
+        self.assertEqual((result['catalog_count'], result['supplier_total'], result['supplier_already_matched'], result['supplier_examined']),
+                         (1, 1, 1, 0))
+        self.assertEqual(result['ai_status'], 'no_pending_cases')
         self.assertEqual(result['non_oem_skus'], 1)
-        self.assertEqual(result['promoted_oems'], 0)
+        self.assertNotIn('promoted_oems', result)  # S6: no renames in the pass
         response = self.client.get('/api/v1/management/matching/')
-        self.assertEqual(response.data['state'], 'completed')
-        self.assertFalse(response.data['queued'])
-        self.assertEqual(response.data['stage'], 'completed')
+        self.assertEqual((response.data['state'], response.data['queued'], response.data['stage']), ('completed', False, 'completed'))
         self.assertIsNotNone(response.data['started_at'])
 
     def test_analysis_overview_distinguishes_queued_running_and_retry(self):
@@ -237,7 +191,7 @@ class SmartMatchingTests(APITestCase):
         url = '/api/v1/management/matching/'
         self.assertEqual(self.client.get(url).data['state'], 'queued')
         import uuid
-        queue.lease, queue.lease_until = uuid.uuid4(), timezone.now()+timedelta(minutes=5)
+        queue.lease, queue.lease_until = uuid.uuid4(), timezone.now() + timedelta(minutes=5)
         queue.stage = 'suppliers'
         queue.save()
         self.assertEqual(self.client.get(url).data['state'], 'running')
@@ -250,119 +204,42 @@ class SmartMatchingTests(APITestCase):
     def test_analysis_explains_provider_failure_without_claiming_no_work(self):
         from .catalog_classification import ClassificationProviderError
         self.code_with_contradiction()
-        with patch('mall.matching_worker.call_provider', side_effect=ClassificationProviderError()), patch('mall.matching_worker.AI_LIMIT', 20):
+        with patch('mall.matching_worker.call_provider', side_effect=ClassificationProviderError()):
             result = process_queue(force=True)
-        self.assertEqual(result['supplier_examined'], 1)
-        self.assertEqual(result['ai_eligible'], 1)
-        self.assertEqual(result['ai_status'], 'failed')
-        self.assertEqual(result['ai_analyzed'], 0)
+        self.assertEqual((result['supplier_examined'], result['ai_eligible'], result['ai_status'], result['ai_analyzed']), (1, 1, 'failed', 0))
 
-    @override_settings(MATCHING_NO_CODE_EVIDENCE=False)
-    def test_until_d1_is_switched_on_the_engine_and_its_fingerprints_stay_as_before(self):
-        # MATCHING_NO_CODE_EVIDENCE off: the same description keeps the item in review, and the fingerprint is the one live cases
-        # already have, so landing the code rewrites no case.
-        target = Part.objects.create(sku='58411-07000', description=self.description)
-        item = self.ingest('D-HYU-1R')
-        reconcile_items(MatchIndex())
-        case = MatchingCase.objects.get(item=item)
-        self.assertEqual((case.status, case.method, case.target_sku), ('review', 'needs_review', target.sku))
-        self.assertEqual(case.fingerprint, digest([VERSION, case.sources, case.candidates, case.target_sku, case.method]))
-
-    @override_settings(CATALOG_EXTRA_MAKES=['KAIYI'], MATCHING_NO_CODE_EVIDENCE=True)
+    @override_settings(CATALOG_EXTRA_MAKES=['KAIYI'])
     def test_word_only_items_go_to_new_products_and_keep_only_informative_hints(self):
-        # Before D1 the shared make, model and year (KAIYI FX11 2025) made these SKUs candidates and kept the item in review.
-        Part.objects.create(sku='025CHA-1504110', description='TAPA KAIYI FX11 2025 55W')
-        Part.objects.create(sku='RX1809-RAINX-KIT', description='LIMPIAPARABRISAS RAINX KAIYI 2025')
-        farol = Part.objects.create(sku='58411-07000', description='FAROL DELANTERO MOLDURA CROMADA')
+        # D1: description words never link an item; they are hints (possible duplicates) for Revisión IA.
+        create_line('025CHA-1504110', description='TAPA KAIYI FX11 2025 55W')
+        create_line('RX1809-RAINX-KIT', description='LIMPIAPARABRISAS RAINX KAIYI 2025')
+        farol = create_line('58411-07000', description='FAROL DELANTERO MOLDURA CROMADA')
         for i in range(25):  # FX11 is a model this supplier writes on many items: it says nothing about the product
             SupplierItem.objects.create(supplier=self.suppliers[0], supplier_invent_id=f'FX-{i}', codigo=f'FX11-{i}', brand='KAIYI',
                                         description=f'PIEZA {i} KAIYI FX11', matching_status='matched', part=farol)
         item = self.ingest('F16-4121020-01AA', brand='KAIYI', description='FAROL KAIYI FX11 2025 CROMADA 55W')
         lone = self.ingest('F16-4121020-02AA', brand='KAIYI', description='FAROL KAIYI FX11 2025', stable='LONE')
+        self.assertEqual((item.part.estado, lone.part.estado), ('preparacion', 'preparacion'))
         index = MatchIndex()
-        candidates, method, strong, reason = index.resolve(item)
-        self.assertEqual(([c['sku'] for c in candidates], method, strong, reason), (['58411-07000'], NO_CODE_EVIDENCE, False, NO_CODE_EVIDENCE_REASON))
+        self.assertEqual([row['sku'] for row in index.hints(item)], ['58411-07000'])
         self.assertEqual(index.informative(item), {'FAROL', 'CROMADA'})
-        self.assertEqual(index.resolve(lone)[:2], ([], NO_CODE_EVIDENCE))  # one informative word is no hint
+        self.assertEqual(index.hints(lone), [])  # one informative word is no hint
         with patch('mall.matching_worker.call_provider') as provider:
             result = process_queue(force=True)
         provider.assert_not_called()  # hints are never sent to the matching AI: Revisión IA sees them in Productos nuevos
         self.assertEqual(result['matched_items'], 0)
-        case = MatchingCase.objects.get(item=item)
-        self.assertEqual((case.status, case.method, case.target_sku, [c['sku'] for c in case.candidates]),
-                         ('unmatched', NO_CODE_EVIDENCE, '', ['58411-07000']))
-        self.assertEqual(MatchingCase.objects.get(item=lone).status, 'unmatched')
+        self.assertFalse(MatchingCase.objects.filter(item__in=[item, lone]).exists())
 
-    @override_settings(CATALOG_EXTRA_MAKES=['KAIYI'], MATCHING_NO_CODE_EVIDENCE=True)
-    def test_hints_that_move_with_an_upload_do_not_reopen_a_case_kept_apart(self):
-        farol = Part.objects.create(sku='58411-07000', description='FAROL DELANTERO MOLDURA CROMADA')
-        item = self.ingest('F16-4121020-01AA', brand='KAIYI', description='FAROL KAIYI FX11 2025 CROMADA')
-        reconcile_items(MatchIndex())
-        case = MatchingCase.objects.get(item=item)
-        self.assertEqual((case.status, [c['sku'] for c in case.candidates]), ('unmatched', ['58411-07000']))
-        response = self.client.post(f'/api/v1/management/matching/{case.pk}/', {'action': 'dismiss', 'fingerprint': case.fingerprint}, format='json')
-        self.assertEqual(response.status_code, 200, response.data)
-        dismissed_at = MatchingCase.objects.get(pk=case.pk).updated_at
-        for i in range(25):  # the supplier's next upload writes CROMADA on many items: it hints at nothing any more
-            SupplierItem.objects.create(supplier=self.suppliers[0], supplier_invent_id=f'CR-{i}', codigo=f'CR-{i}', description=f'PIEZA {i} CROMADA',
-                                        matching_status='matched', part=farol)
-        reconcile_items(MatchIndex())
-        moved = MatchingCase.objects.get(pk=case.pk)
-        # The hint is gone from the case, but the case stays kept apart and in its place in the list: hints are not in its fingerprint.
-        self.assertEqual((moved.status, moved.fingerprint, moved.candidates, moved.updated_at), ('dismissed', case.fingerprint, [], dismissed_at))
-
-    @override_settings(MATCHING_NO_CODE_EVIDENCE=True)
-    def test_extra_word_candidates_that_move_keep_a_review_case_and_its_ai(self):
-        target, item = self.code_with_contradiction()
-        Part.objects.create(sku='EXTRA-1', description='TAMBOR PICANTO TRAS')
-        reconcile_items(MatchIndex())
-        case = MatchingCase.objects.get(item=item)
-        self.assertEqual((case.status, [c['sku'] for c in case.candidates]), ('review', ['58411-07000', 'EXTRA-1']))
-        MatchingCase.objects.filter(pk=case.pk).update(ai={'target_sku': target.sku, 'confidence': 0.4, 'reason': 'Revisar los años.'})
-        for i in range(25):  # PICANTO becomes a word this supplier writes on everything: EXTRA-1 no longer shares two words
-            SupplierItem.objects.create(supplier=self.suppliers[0], supplier_invent_id=f'PI-{i}', codigo=f'PI-{i}', description=f'PIEZA {i} PICANTO',
-                                        matching_status='matched', part=target)
-        reconcile_items(MatchIndex())
-        moved = MatchingCase.objects.get(pk=case.pk)
-        self.assertEqual((moved.status, moved.fingerprint, moved.target_sku, [c['sku'] for c in moved.candidates]),
-                         ('review', case.fingerprint, '58411-07000', ['58411-07000']))
-        self.assertEqual(moved.ai['reason'], 'Revisar los años.')
-        # A change to the SKU its code reaches is evidence: the case is rewritten and its AI answer cleared.
-        Part.objects.filter(pk=target.pk).update(description='TAMBOR KIA PICANTO 04-12')
-        reconcile_items(MatchIndex())
-        rewritten = MatchingCase.objects.get(pk=case.pk)
-        self.assertEqual((rewritten.status, rewritten.ai), ('review', {}))
-        self.assertNotEqual(rewritten.fingerprint, case.fingerprint)
-
-    @override_settings(MATCHING_NO_CODE_EVIDENCE=True)
-    def test_a_linked_item_whose_new_code_no_sku_has_stays_in_review_with_its_sku_first(self):
-        current = Part.objects.create(sku='19010-RAD-01', description='RADIADOR HONDA CIVIC')
-        other = Part.objects.create(sku='42431-TAM-01', description='TAMBOR FRENO PICANTO TRAS')
-        bare = SupplierItem.objects.create(supplier=self.suppliers[0], supplier_invent_id='BARE', codigo='ZZ-NUEVO-1', description='TAMBOR',
-                                           matching_status='review', part=current)
-        hinted = SupplierItem.objects.create(supplier=self.suppliers[0], supplier_invent_id='HINTED', codigo='ZZ-NUEVO-2',
-                                             description='TAMBOR FRENO PICANTO', matching_status='review', part=current)
-        reconcile_items(MatchIndex())
-        for item, skus in [(bare, [current.sku]), (hinted, [current.sku, other.sku])]:
-            case = MatchingCase.objects.get(item=item)
-            self.assertEqual((case.status, case.method, case.target_sku, [c['sku'] for c in case.candidates]),
-                             ('review', 'needs_review', current.sku, skus))
-            item.refresh_from_db()
-            self.assertEqual(item.part_id, current.pk)
-
-    def test_code_evidence_still_goes_to_review_and_pads_sold_as_a_set_link_by_code(self):
-        Part.objects.create(sku='0446502220', description='PASTILLA FRENO DEL TOYOTA HILUX')
-        Part.objects.create(sku='04465 02220', description='PASTILLA FRENO DEL TOYOTA HILUX')
-        pads = Part.objects.create(sku='04465-0K290', description='PASTILLA FRENO DEL TOYOTA HILUX')
+    def test_pads_sold_as_a_set_link_by_code_and_a_shared_code_goes_to_a_line_case(self):
+        create_line('0446502220', description='PASTILLA FRENO DEL TOYOTA HILUX', main_brand='TOYOTA', main_tipo='oem')
+        other = create_line('04465 02220-X', description='PASTILLA FRENO DEL TOYOTA HILUX')
+        references.add(other, '04465 02220', 'AISIN', tipo='aftermarket')
+        pads = create_line('04465-0K290', description='PASTILLA FRENO DEL TOYOTA HILUX')
         shared = self.ingest('04465-02220', description='PASTILLA FRENO DEL')
-        reconcile_items(MatchIndex())
-        case = MatchingCase.objects.get(item=shared)
-        self.assertEqual((case.status, case.method), ('review', 'conflicting_references'))  # its code is two SKUs': a person decides
+        self.assertEqual(MatchingCase.objects.get(item=shared).kind, 'line')  # its code is two lines': a person decides
         # «SET 4 PCS» on pads is how they are sold, not a kit: the code links it.
         item = self.ingest('044650K290', description='PASTILLA FRENO SET 4 PCS', stable='SET')
-        reconcile_items(MatchIndex())
-        item.refresh_from_db()
-        self.assertEqual((item.part_id, MatchingCase.objects.get(item=item).method), (pads.pk, 'known_code'))
+        self.assertEqual((item.part_id, item.matching_status), (pads.pk, 'matched'))
 
 
 class SpecConflictTests(SimpleTestCase):

@@ -213,13 +213,21 @@ class TechnicalDataTests(APITestCase):
         self.assertEqual(self.part.item_applications.count(), 1)
 
     def test_merge_does_not_drop_source_technical_sheet(self):
+        # S6: the sheet moves with the merge when the target has no subgrupo (it takes the sheet's) or the same one; a target of another
+        # subgrupo refuses the merge (guard subgrupo), and the sheet stays on its line.
+        from .technical_models import PartType
         other = Part.objects.create(sku='TARGET')
+        Part.objects.filter(pk=other.pk).update(part_type=PartType.objects.create(category='OTRO GRUPO', name='OTRO SUBGRUPO'))
         self.save_sheet(values={'diameter': {'value': 256}})
         with self.assertRaises(ValidationError):
             merge_catalog_parts(actor=self.root, target_sku=other.sku, source_skus=[self.part.sku])
         self.part.refresh_from_db()
         self.assertIsNone(self.part.merged_into_id)
         self.assertEqual(self.part.specifications.count(), 1)
+        blank = Part.objects.create(sku='TARGET-2')
+        merge_catalog_parts(actor=self.root, target_sku=blank.sku, source_skus=[self.part.sku])
+        blank.refresh_from_db()
+        self.assertEqual((blank.part_type_id, blank.specifications.count()), (self.part.part_type_id, 1))
 
     def test_non_superusers_cannot_manage_templates_sheets_or_applications(self):
         for user in [None, self.user]:

@@ -14,10 +14,10 @@ from rest_framework.test import APITestCase, APITransactionTestCase
 
 from . import test_deals as deal_tests
 from . import test_requests as request_tests
-from .matching_engine import MatchIndex, apply_item, part_row, reconcile_items
+from . import reference_matching
 from .matching_worker import process_queue
 from .matching_models import MatchingCase, MatchingQueue
-from .models import InventoryUpdate, Membership, Part, StockEntry, SupplierItem
+from .models import InventoryUpdate, Membership, StockEntry, SupplierItem
 from .price_import import DELETE, PriceImportResult, parse_amount
 from .price_import_models import PriceImportBatch, PriceImportJob
 from .pricing_models import PriceChange, PriceList, PriceListEntry, PricingAuditEvent, SupplierItemPricing, SupplierPricingSettings
@@ -442,27 +442,31 @@ class PriceImportTests(APITestCase):
         self.assertEqual((unchanged.status_code, unchanged.data['errors'][0]['message']), (200, 'Este ID no existe en tu inventario. Carga primero sus existencias.'))
 
     def test_a_running_price_import_never_marks_the_supplier_busy_for_matching(self):
+        from . import references
+        from .lines import create_line
         PriceImportJob.objects.create(owner=self.seller_a, supplier=self.supplier_a, filename='precios.xlsx', status='importing',
                                       expires_at=timezone.now() + timedelta(days=1), total_batches=2)
         description = 'TAMBOR KIA PICANTO 04-11'
+        one = create_line('58411-07000', description=description, main_brand='KIA', main_tipo='oem')
+        two = create_line('DUP-58411', description=description)
+        references.add(two, '58411-07000', 'DENSO', tipo='aftermarket')
         def stock(stable, code, brand=''):
             return ingest_inventory(supplier=self.supplier_a, actor=self.seller_a, data={'update_id': stable, 'supplier_invent_id': stable, 'codigo': code,
                                                                                          'brand': brand, 'description': description, 'source': 'upload', 'quantity': 1})
-        pending, reviewed, blocked = stock('PEND-1', '58411-07000-K'), stock('REV-1', 'D-HYU-1R', 'ACME'), stock('REV-2', 'D-KIA-2R', 'ACME')
-        reconcile_items(MatchIndex())
-        target = Part.objects.create(sku='58411-07000', description=description)
-        # The worker's supplier pass (reconcile_items) still examines this supplier while its prices import.
+        loose = SupplierItem.objects.create(supplier=self.supplier_a, supplier_invent_id='LOOSE-1', codigo='ZZ-LOOSE-77', description=description)
+        reviewed, blocked = stock('REV-1', '58411-07000'), stock('REV-2', '58411-07000')  # its code on two lines: line cases
+        # The worker's supplier pass (S6: the backlog) still examines this supplier while its prices import.
         self.assertIsNotNone(process_queue(force=True, use_ai=False))
-        pending.refresh_from_db()
-        self.assertEqual((pending.part_id, pending.matching_status), (target.pk, 'matched'))
-        apply_item(MatchingCase.objects.get(item=reviewed), part_row(target))
+        loose.refresh_from_db()
+        self.assertEqual((loose.part.estado, loose.matching_status), ('preparacion', 'pending'))
+        reference_matching.decide(MatchingCase.objects.get(item=reviewed, kind='line'), 'approve', actor=self.seller_a, line=one.pk)
         reviewed.refresh_from_db()
-        self.assertEqual((reviewed.part_id, reviewed.matching_status), (target.pk, 'matched'))
+        self.assertEqual((reviewed.part_id, reviewed.matching_status), (one.pk, 'matched'))
         # A stock import of the same supplier does pause matching: the guard is real, a price import just never trips it.
         SupplierInventoryImportJob.objects.create(owner=self.seller_a, supplier=self.supplier_a, filename='stock.xlsx', status='importing',
                                                   expires_at=timezone.now() + timedelta(days=1))
         with self.assertRaisesMessage(ValidationError, 'Espera a que termine la importación de este proveedor.'):
-            apply_item(MatchingCase.objects.get(item=blocked), part_row(target))
+            reference_matching.decide(MatchingCase.objects.get(item=blocked, kind='line'), 'approve', actor=self.seller_a, line=one.pk)
 
 
 @skipUnless(connection.vendor == 'postgresql', 'Row locks are only meaningful on PostgreSQL.')

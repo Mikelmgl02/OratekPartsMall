@@ -242,11 +242,12 @@ class MatchingWorkerStopTests(WorkerStopMixin, TestCase):
         MatchingQueue.objects.create(pk=1, requested=3, completed=2)
 
     def stopped_pass(self, during):
-        with patch('mall.matching_worker.reconcile_catalog', side_effect=during) as reconcile, \
-                patch('mall.matching_worker.create_supplier_families') as families, self.assertRaises(WorkerStopping) as stopped:
+        # The catalog stage (S6: catalog references open merge cases), then the supplier stage (the backlog) after a checkpoint.
+        with patch('mall.reference_matching.open_reference_merge_cases', side_effect=during) as reconcile, \
+                patch('mall.reference_matching.backlog') as backlog, self.assertRaises(WorkerStopping) as stopped:
             process_queue()
         reconcile.assert_called_once()
-        families.assert_not_called()  # the next stage never started
+        backlog.assert_not_called()  # the next stage never started
         queue = MatchingQueue.objects.get(pk=1)
         self.assertEqual((queue.lease, queue.lease_until, queue.stage, queue.completed, queue.error), (None, None, 'stopped', 2, ''))
         return str(stopped.exception)

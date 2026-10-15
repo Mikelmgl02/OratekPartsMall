@@ -246,7 +246,9 @@ class RetireTests(APITestCase):
         self.assertFalse(Reference.objects.filter(pk=ref.pk).exists())
         self.assertTrue(Reference.all_objects.filter(pk=ref.pk).exists())
         self.assertIsNone(matching_part('RET-2', 'GMB'))
-        self.assertEqual(make_variant(supplier, 'RET-V', 'RET-2', 1, actor=self.root, brand='GMB').matching_status, 'pending')
+        # A retired code matches nothing (S6: the item becomes a new product of its own, its short brandless code interno to it).
+        variant = make_variant(supplier, 'RET-V', 'RET-2', 1, actor=self.root)
+        self.assertEqual((variant.matching_status, variant.part_id != self.line.pk, variant.reference.tipo), ('pending', True, 'interno'))
         self.assertEqual(storefront_codes(self.client, 'RET-LINE'), [])
         self.client.logout()
         self.client.force_authenticate(self.root)

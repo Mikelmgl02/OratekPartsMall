@@ -26,7 +26,8 @@ Reference of its clave (a code with no brand is every brand's). With nothing of 
 made, with a proveedor source, interno: scoped to the supplier, hidden from every reader but its own items (a code reviewed onto a
 line is the supplier's own name for it, not a universal alias: B19). The S3 backfill alone (choose's 'nueva', public=True) makes it
 public when the code is the line's own clave under another brand, or its clave once trailing auto-eligible TAGs are stripped is on the
-line (rule 3: 43512-16070-RAZ on 43512-16070), unless that clashes with another line's key; from S6 the engine decides that.
+line (rule 3: 43512-16070-RAZ on 43512-16070), unless that clashes with another line's key; from S6 the engine decides that
+(mall.reference_matching: its loads and a person's decisions on its cases).
 
 Code changes (services.ingest_inventory, the one path of Excel, the API and apiag). An item not attached takes the new code. For an
 attached item whose code or brand changes:
@@ -221,9 +222,29 @@ def reference_for(line, code, brand, supplier, *, create=False, actor=None, sour
             return None, how
         # The supplier's own code for its only item, on the line the item leaves: it goes along (its variants follow it).
         held = Reference.all_objects.get(pk=held.pk)
+        if held.is_main:
+            # S6: the main of the line in preparación made for this item alone (Productos nuevos, rule 4): that line joins `line`
+            # (mall.line_merge.merge_lines, Separar undoes it), its code with it.
+            moved = absorb_own_line(held, line, item, actor)
+            return (moved, 'interna') if moved is not None else (None, how)
         moved = references.update(held, part=line, actor=actor,
                                   detail={**(held.detail or {}), TAG: {**stamp('movida', item), 'desde': str(held.part_id)}})
         return moved, 'interna'
+
+
+def absorb_own_line(main, line, item, actor=None):
+    """The line in preparación whose main is `main` (an interno code of the item's supplier) merged into `line` when it holds nothing but
+    this item (S6: Vincular of a new product's only variant); the main comes along as one of line's References. Returns it, or None
+    when the line holds more than the item or is not in preparación."""
+    Part, Reference, SupplierItem = _models()
+    own = Part._base_manager.filter(pk=main.part_id).first()
+    if own is None or own.estado != 'preparacion' or own.merged_into_id or own.pk == line.pk:
+        return None
+    if SupplierItem.objects.filter(part_id=own.pk).exclude(pk=item.pk).exists():
+        return None
+    from .line_merge import merge_lines, service_actor
+    merge_lines(line, [own], actor=actor if getattr(actor, 'pk', None) else service_actor(), reason='Vincular un producto nuevo')
+    return Reference.all_objects.filter(pk=main.pk, part_id=line.pk).exclude(estado='retirada').first()
 
 
 # What the S3 code makes or brings back (detail['s3']), so python -m mall.refactor.s3_variants --rollback finds it outside its manifest:
@@ -411,7 +432,8 @@ def recompute_status(line):
     _, _, SupplierItem = _models()
     if not in_catalog(line):
         return settle_status([line.pk])
-    open_case = MatchingCase.objects.filter(item_id=OuterRef('pk'), status='review')
+    # A case about the item's placement holds it (a variant or code change, S6; a legacy supplier case); a declared code's does not.
+    open_case = MatchingCase.objects.filter(item_id=OuterRef('pk'), status='review').exclude(kind__in=('reference', 'merge'))
     return (SupplierItem.objects.filter(part_id=line.pk, reference__isnull=False, matching_status='pending', codigo_pendiente__isnull=True,
                                         brand_pendiente__isnull=True).exclude(Exists(open_case))
             .update(matching_status='matched', updated_at=timezone.now()))

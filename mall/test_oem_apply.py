@@ -16,7 +16,7 @@ from . import oem_finder_revert
 from .catalog_grouping import merge_catalog_parts
 from .catalog_identity import prefer_oem, reconcile_identities
 from .catalog_suffixes import suffix_table
-from .matching_engine import MatchIndex
+from .reference_matching import resolve, subject_of
 from . import references
 from .models import Account, CatalogIdentityChange, Part, PartCode, PartImage, StockEntry, SupplierItem, User
 from .oem_finder_models import OEMApplyHalt, OEMFinderChange, OEMFinderRun, OEMReviewCase
@@ -178,8 +178,8 @@ class ApplyRevertTests(Catalog, TestCase):
         self.assertEqual(link.evidence['snapshot']['sku'], sku)
         for code in {sku, new_sku}:  # the old code stays searchable and still matches supplier stock
             self.assertEqual(list(catalog_parts(code)), [part])
-        target, _, automatic, _ = MatchIndex().resolve(item)
-        self.assertEqual((target[0]['id'], automatic), (str(part.pk), True))
+        found = resolve(subject_of(item))  # S6: rule 1 on the line's References
+        self.assertEqual((found.action, found.line.pk), ('attach', part.pk))
         result = oa.revert_run(run.pk, actor=self.root, part=part.pk)
         self.assertEqual((result['reverted'], result['already_reverted'], result['skipped']), (1, 0, []))
         part = self.part(sku)

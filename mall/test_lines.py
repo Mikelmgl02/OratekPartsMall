@@ -16,7 +16,6 @@ from . import lines
 from .brand_models import Brand, BrandAlias
 from .catalog_grouping import merge_catalog_parts
 from .catalog_import import build_plan, save_plan
-from .matching_engine import create_supplier_families
 from .models import Part, SupplierItem
 from .refactor import s1_lifecycle
 from .sku_proposal_models import SkuProposal
@@ -414,14 +413,17 @@ class LineWriterFlowTests(APITestCase):
         line = proposal.part
         self.assertEqual((line.origen, line.estado, line.decided_by, line.decided_at), ('proveedor', 'publicada', self.root, proposal.decided_at))
 
-    def test_a_supplier_family_parent_comes_from_the_supplier(self):
+    def test_a_new_product_line_comes_from_the_supplier(self):
+        # S6: no parent is invented from suffixed codes any more; a code no line has gets a line of its own in preparación.
+        from .reference_matching import backlog
         supplier = make_supplier('PROVEEDOR FAMILIAS')
         for code in ('58411-07500-K', '58411-07500-NP'):
             SupplierItem.objects.create(supplier=supplier, supplier_invent_id=code, codigo=code, brand='', source='upload',
                                         description='DISCO KIA PICANTO TRAS 220 MM 04-11', matching_status='pending')
-        self.assertEqual(create_supplier_families(), 1)
-        line = Part.objects.get(sku='58411-07500')
-        self.assertEqual((line.origen, line.estado), ('proveedor', 'publicada'))
+        backlog()
+        self.assertFalse(Part.objects.filter(sku='58411-07500').exists())  # estado: no invented parent in any estado
+        for line in Part.objects.filter(sku__in=['58411-07500-K', '58411-07500-NP']):  # estado: the new products, in preparación
+            self.assertEqual((line.origen, line.estado), ('proveedor', 'preparacion'))
 
 
 class LifecycleBackfillTests(TestCase):

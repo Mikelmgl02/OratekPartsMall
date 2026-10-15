@@ -79,9 +79,10 @@ class CatalogCodeSuffix(models.Model):
 
     @property
     def auto_eligible(self):
-        """A TAG an auto-applied rename may strip: owner-confirmed, or a confident seed row. Lifecycle tags only hold the Part."""
-        return self.cls == 'TAG' and self.tag_kind != 'lifecycle' and (
-            self.owner_confirmed or (self.status == 'seed_confirmed' and self.confidence in ('high', 'medium')))
+        """A TAG an auto-applied rename may strip: owner-confirmed, or a confident seed row. Lifecycle tags only hold the Part
+        (mall.catalog_suffixes.auto_eligible, the one rule)."""
+        from .catalog_suffixes import auto_eligible
+        return auto_eligible(self)
 
     def save(self, *args, **kwargs):
         self.token = normalized_token(self.token)

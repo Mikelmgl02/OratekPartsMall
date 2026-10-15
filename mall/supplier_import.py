@@ -17,12 +17,9 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .lines import all_lines, on_storefront
 from .models import Account, Part, Reference, SupplierItem
 from .serializers import InventorySerializer
 from .services import ingest_inventory
-from .variants import outcome
-from .references import live_q, own_interno_q
 from .stock_reservations import open_reservations, settle
 from .supplier_import_models import SupplierInventoryImportBatch, SupplierInventoryImportJob
 from .views import account_for
@@ -173,28 +170,25 @@ def read_supplier_excel(raw):
 
 
 def stock_plan(supplier, rows, *, lock=False):
-    """Return the current plan and a snapshot of stock and relevant matching data."""
+    """Return the current plan and a snapshot of stock and relevant matching data. What each row does to its item is what the import
+    will do (mall.reference_matching.plan_load, read-only: the commit runs the same rules), and the snapshot covers those outcomes, so
+    a catalog change between the preview and a batch's commit is caught."""
+    from . import reference_matching
     identifiers = sorted({row['data']['supplier_invent_id'] for row in rows})
     codes = sorted({row['data']['codigo'] for row in rows})
-    items, parts, aliases = {}, {}, []
+    items, parts = {}, {}
     for offset in range(0, len(identifiers), 2000):
-        query = SupplierItem.objects.filter(supplier=supplier, supplier_invent_id__in=identifiers[offset:offset + 2000]).order_by('pk')
+        query = (SupplierItem.objects.filter(supplier=supplier, supplier_invent_id__in=identifiers[offset:offset + 2000])
+                 .select_related('part', 'reference').order_by('pk'))
         items.update((item.supplier_invent_id, item) for item in query)
-    wanted = set(codes)
-    # The live References that keep another spelling (printed_forms: a duplicate spelling S2a retired, 13780-61J00-NP-) match it too.
-    # A supplier's own interno codes (S3) match its items too, as services.matching_part does.
-    shown = Reference.all_objects.filter(live_q() | own_interno_q(supplier))
-    aliases.extend(alias for alias in shown.exclude(printed_forms=[]).order_by('pk') if wanted & set(alias.printed_forms))
-    for offset in range(0, len(codes), 2000):
-        chunk = codes[offset:offset + 2000]
-        query = shown.filter(code__in=chunk).exclude(pk__in=[alias.pk for alias in aliases]).order_by('pk')
-        aliases.extend(query)
-        query = all_lines().filter(sku__in=chunk).order_by('pk')  # every estado: matching below takes only the lines on sale
-        parts.update((part.pk, part) for part in query)
-    alias_part_ids = sorted(({alias.part_id for alias in aliases} | {item.part_id for item in items.values() if item.part_id}) - set(parts))
-    for offset in range(0, len(alias_part_ids), 2000):
-        query = Part.objects.filter(pk__in=alias_part_ids[offset:offset + 2000]).order_by('pk')
-        parts.update((part.pk, part) for part in query)
+    # Every live Reference the rows' codes (and their bases once TAGs are stripped) may join, read at once, and their lines.
+    lookups = reference_matching.Lookups().prefetch(codes)
+    aliases = sorted({ref.pk: ref for rows_ in lookups.claves.values() for ref in rows_}.values(), key=lambda ref: ref.pk)
+    for ref in aliases:
+        parts[ref.part_id] = ref.part
+    for item in items.values():
+        if item.part_id:
+            parts[item.part_id] = item.part
     if lock:
         # Reviewed SKU merging locks catalog parts, codes, then supplier rows.
         # Follow that same order, with globally sorted IDs across SQL chunks.
@@ -203,25 +197,16 @@ def stock_plan(supplier, rows, *, lock=False):
             parts.update((part.pk, part) for part in Part.objects.select_for_update().filter(
                 pk__in=part_ids[offset:offset + 2000]).order_by('pk'))
         alias_ids = sorted(alias.pk for alias in aliases)
-        aliases = []
         for offset in range(0, len(alias_ids), 2000):
-            aliases.extend(Reference.all_objects.select_for_update().filter(pk__in=alias_ids[offset:offset + 2000]).order_by('pk'))
+            list(Reference.all_objects.select_for_update().filter(pk__in=alias_ids[offset:offset + 2000]).order_by('pk'))
         # Supplier rows in global pk order too, the order a deal confirmation locks them in. Callers hold the supplier's account lock,
         # which every item creator takes, so no row can appear between the read above and these locks.
         item_ids = sorted(item.pk for item in items.values())
         for offset in range(0, len(item_ids), 2000):
-            items.update((item.supplier_invent_id, item) for item in SupplierItem.objects.select_for_update().filter(
-                pk__in=item_ids[offset:offset + 2000]).order_by('pk'))
+            items.update((item.supplier_invent_id, item) for item in SupplierItem.objects.select_for_update(of=('self',)).filter(
+                pk__in=item_ids[offset:offset + 2000]).select_related('part', 'reference').order_by('pk'))
     held = open_reservations(item.pk for item in items.values())  # units confirmed deals still hold (mall.stock_reservations)
-    matching = {}
-    for part in parts.values():
-        if on_storefront(part):
-            matching.setdefault(part.sku, []).append(('', part.pk))
-    for alias in aliases:
-        part = parts.get(alias.part_id)
-        if on_storefront(part):
-            for spelling in dict.fromkeys([alias.code, *alias.printed_forms]):
-                matching.setdefault(spelling, []).append((alias.brand, part.pk))
+    outcomes = []
     summary = {'valid_rows': 0, 'created_items': 0, 'updated_items': 0, 'unchanged_items': 0, 'credit_units': 0, 'debit_units': 0, 'reserved_rows': 0}
     preview, errors, warnings, reservations = [], [], [], []
     for row in rows:
@@ -244,12 +229,18 @@ def stock_plan(supplier, rows, *, lock=False):
         current = item.reported_quantity if item else 0
         difference = data['quantity'] - current
         direction = 'credit' if difference > 0 else 'debit' if difference < 0 else 'none'
-        matches = {part_id for brand, part_id in matching.get(data['codigo'], []) if brand in ['', data['brand']]}
-        match_id = next(iter(matches)) if len(matches) == 1 else None
-        # What the import will do (mall.variants.outcome, read-only): a code change that keeps the item on its line applies on its
-        # own; any other waits in codigo_pendiente, out of stock, while the code stays.
-        plan = outcome(item, data, parts.get(match_id))
+        # What the import will do (mall.reference_matching.plan_load, read-only): an item without a Reference joins its line's, gets
+        # one, waits in a line case or becomes a new product; an attached item's code change that keeps it on its line applies on its
+        # own, any other waits in codigo_pendiente, out of stock, while the code stays.
+        if item is not None:
+            item.supplier = supplier
+        load = reference_matching.plan_load(item, data, lookups=lookups, supplier=supplier)
+        plan, resolution = load.plan, load.resolution
         part_id, status = plan.part_id, plan.status
+        action_taken = resolution.action if resolution is not None else plan.rule
+        if resolution is not None and resolution.line is not None:
+            parts.setdefault(resolution.line.pk, resolution.line)
+        outcomes.append((row['row'], action_taken, str(part_id or ''), status, plan.pending[0], plan.pending[1]))
         compared = ['codigo', 'brand', 'description', 'references', *(field for field in OPTIONAL if field in data)]
         action = 'create' if not item else 'update' if any(getattr(item, field) != data[field] for field in compared) or difference else 'unchanged'
         summary['valid_rows'] += 1
@@ -263,7 +254,8 @@ def stock_plan(supplier, rows, *, lock=False):
                         'direction': direction, 'movement_quantity': abs(difference), 'new_quantity': data['quantity'],
                         'matching_status': status, 'part_id': str(part_id) if part_id else None,
                         'part_sku': part.sku if part else None, 'action': action, 'reserved': reserved,
-                        'codigo_pendiente': plan.pending[0], 'brand_pendiente': plan.pending[1]})
+                        'codigo_pendiente': plan.pending[0], 'brand_pendiente': plan.pending[1],
+                        'resolucion': action_taken, 'regla': resolution.rule if resolution is not None else plan.rule})
         if reserved:
             # Confirmed deals hold units of this item: the supplier says whether the new count already discounts them.
             summary['reserved_rows'] += 1
@@ -281,17 +273,26 @@ def stock_plan(supplier, rows, *, lock=False):
             warnings.append({'row': row['row'], 'column': COLUMNS['codigo'], 'message':
                              f'El código cambió de {item.codigo} a {data["codigo"]}: el cambio queda pendiente de revisión y el artículo sale '
                              'del catálogo de clientes hasta que se apruebe.'})
+        elif action_taken == 'no_line':
+            warnings.append({'row': row['row'], 'column': COLUMNS['codigo'], 'message':
+                             'Ningún código lo vincula a un SKU: pasa a Productos nuevos y aparecerá a los clientes cuando se publique.'})
+        elif action_taken == 'case':
+            warnings.append({'row': row['row'], 'column': COLUMNS['codigo'], 'message':
+                             'El código está en varios SKU: queda en revisión hasta que se elija el SKU correcto.'})
+        elif status == 'review':
+            warnings.append({'row': row['row'], 'column': COLUMNS['codigo'], 'message':
+                             'La descripción contradice la del SKU de su código: queda en revisión antes de aparecer en el catálogo de clientes.'})
         elif status != 'matched':
             warnings.append({'row': row['row'], 'column': COLUMNS['codigo'], 'message':
-                             'El código requiere revisión antes de aparecer en el catálogo de clientes.' if status == 'review' else
-                             'Se buscará una coincidencia automáticamente al terminar la carga; las dudas quedarán para revisión.'})
+                             'Su SKU aún no está publicado: aparecerá en el catálogo de clientes cuando se publique.'})
     snapshot = {
         'items': sorted((str(item.pk), item.supplier_invent_id, item.codigo, item.brand, item.description,
                          item.source, item.reported_quantity, item.reserved_quantity, str(item.part_id),
                          item.matching_status, item.updated_at.isoformat(), item.references, item.reference_id,
                          item.codigo_pendiente, item.brand_pendiente) for item in items.values()),
-        'parts': sorted((str(part.pk), part.sku, part.description, part.active, str(part.merged_into_id)) for part in parts.values()),
-        'codes': sorted((alias.pk, str(alias.part_id), alias.brand, alias.code) for alias in aliases),
+        'parts': sorted((str(part.pk), part.sku, part.description, part.active, str(part.merged_into_id), part.estado) for part in parts.values()),
+        'codes': sorted((alias.pk, str(alias.part_id), alias.brand, alias.code, alias.estado) for alias in aliases),
+        'outcomes': sorted(outcomes),
         'reservations': sorted((str(reservation.pk), reservation.quantity) for orders in held.values() for reservation in orders),
     }
     fingerprint = hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode()).hexdigest()
@@ -376,6 +377,15 @@ class SupplierInventoryImport(APIView):
         return Response(job_result(job))
 
 
+def same_outcome(item, expected):
+    """Whether the committed item ended as its preview row said. A new product (no_line) gets its line in Productos nuevos only at the
+    commit, and a second row with the same code joins that line: either is a line in preparación with the item pending (or no line
+    yet, when place() failed and the next matching pass makes it)."""
+    if expected.get('resolucion') == 'no_line':
+        return item.matching_status == 'pending' and (item.part_id is None or item.part.estado == 'preparacion')
+    return (str(item.part_id) if item.part_id else None) == expected['part_id'] and item.matching_status == expected['matching_status']
+
+
 class SupplierInventoryImportJobView(APIView):
     def get_job(self, request, account_id, pk, *, lock=False):
         supplier = account_for(request.user, account_id, 'supplier')
@@ -426,8 +436,7 @@ class SupplierInventoryImportJobView(APIView):
                     item = ingest_inventory(supplier=supplier, actor=request.user, recorder=recorder,
                                             data={**row['data'], 'source': 'upload', 'update_id': f'excel-{job.pk}-{row["row"]}'})
                     expected = expected_matches[row['row']]
-                    if ((str(item.part_id) if item.part_id else None) != expected['part_id']
-                            or item.matching_status != expected['matching_status']):
+                    if not same_outcome(item, expected):
                         # A previously absent SKU/code cannot be row-locked.
                         # If it appeared after validation, matching may have
                         # changed during ingestion; roll back the whole batch.

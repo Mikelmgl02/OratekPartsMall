@@ -104,6 +104,30 @@ def _head(head):
     return (head, '') if isinstance(head, str) else tuple(head)
 
 
+def auto_eligible(entry, confirm=frozenset()):
+    """The one rule for a TAG that may be stripped on its own (inventory refactor S6, rule 3; the suffix table's rows, its Entry and the
+    OEM finder all read it): a TAG that is no lifecycle marker, owner-confirmed or a seed row of high or medium confidence, or named in
+    `confirm` (tokens the owner is assumed to confirm: the OEM finder's STRONG_PENDING scenario, or an Entry's own scenario). A slash
+    compound is eligible when every part is. A position, size or other VARIANT token (-L, -RH, -STD: D4) never is."""
+    if getattr(entry, 'cls', None) != 'TAG':
+        return False
+    kind = getattr(entry, 'tag_kind', None)
+    if kind is None:
+        kind = getattr(entry, 'kind', '')
+    if ROLE_BY_KIND.get(kind or '', 'other') == 'lifecycle':
+        return False
+    components = getattr(entry, 'components', None)
+    if components is not None:
+        return all(auto_eligible(component, confirm) for component in components)
+    if entry.owner_confirmed or (entry.status == 'seed_confirmed' and entry.confidence in ('high', 'medium')):
+        return True
+    if not confirm:
+        return False
+    alias_of = getattr(entry, 'alias_of', None)
+    alias_of = getattr(alias_of, 'token', alias_of)  # a suffix table row's alias_of is a row, an Entry's a token
+    return entry.token in confirm or (alias_of is not None and alias_of in confirm and entry.status != 'needs_owner_label')
+
+
 class Entry:
     __slots__ = ('token', 'cls', 'kind', 'confidence', 'status', 'owner_confirmed', 'attribution', 'alias_of', 'company',
                  'derived', 'meaning', 'components', 'scenario')
@@ -122,13 +146,7 @@ class Entry:
     @property
     def auto_eligible(self):
         """A TAG an AUTO-applied rename may strip: owner-confirmed, or a confident seed row (or confirmed in the scenario)."""
-        if self.cls != 'TAG' or self.role == 'lifecycle':
-            return False
-        if self.components is not None:
-            return all(c.auto_eligible for c in self.components)
-        return (self.owner_confirmed or (self.status == 'seed_confirmed' and self.confidence in ('high', 'medium'))
-                or self.token in self.scenario
-                or (self.alias_of is not None and self.alias_of in self.scenario and self.status != 'needs_owner_label'))
+        return auto_eligible(self, self.scenario)
 
     confirmed = auto_eligible
 

@@ -7,6 +7,7 @@ from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient, APITestCase
 
 from .models import Account, Alternate, Invitation, Membership, Part, PartCode, Role, StockEntry, SupplierItem, User
+from .lines import catalog_lines
 from .services import ingest_inventory
 
 
@@ -125,11 +126,12 @@ class ManagementTests(APITestCase):
 
     def test_unknown_supplier_code_does_not_create_catalog_or_get_approved_automatically(self):
         item = ingest_inventory(supplier=self.account, actor=self.user, data={'update_id': 'pending', 'supplier_invent_id': 'stable', 'codigo': 'UNKNOWN', 'brand': 'ACME', 'source': 'upload', 'quantity': 4})
-        self.assertEqual(Part.objects.count(), 0)
+        # S6 (rule 4): a new product in Productos nuevos, a line in preparación that no catalog list or customer sees until published.
+        self.assertEqual(catalog_lines().count(), 0)
+        self.assertEqual((item.part.estado, item.matching_status), ('preparacion', 'pending'))
         response = self.client.post('/api/v1/management/catalog/', {'sku': 'NUEVO', 'name': 'Nuevo', 'codes': [{'brand': 'ACME', 'code': 'UNKNOWN'}]}, format='json')
-        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.status_code, 400)  # its code is that new product's: publish or link it there
         item.refresh_from_db()
-        self.assertIsNone(item.part)
         self.assertEqual(item.matching_status, 'pending')
 
     def test_stock_matching_approval_preserves_supplier_identity_balances_and_ledger(self):
@@ -139,7 +141,8 @@ class ManagementTests(APITestCase):
         ledger_before = list(StockEntry.objects.values())
         part = Part.objects.create(sku='IDENTIFICADO', name='Identificado')
         url = f'/api/v1/management/inventory/{item.pk}/'
-        self.assertEqual(self.client.patch(url, {'matching_status': 'matched'}, format='json').status_code, 400)
+        # S6: the item hangs from its new product's line (rule 4); a line in preparación never counts it, whatever status is asked.
+        self.assertEqual(self.client.patch(url, {'matching_status': 'matched'}, format='json').data['matching_status'], 'pending')
         for field, value in [('reported_quantity', 100), ('reserved_quantity', 0), ('supplier_invent_id', 'changed'), ('supplier', str(self.account.pk)), ('codigo', 'CHANGED')]:
             self.assertEqual(self.client.patch(url, {field: value}, format='json').status_code, 400)
         response = self.client.patch(url, {'part': str(part.pk), 'matching_status': 'matched'}, format='json')

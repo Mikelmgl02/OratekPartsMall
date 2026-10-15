@@ -21,8 +21,10 @@ A merge (merge_lines), in one transaction:
   refuses the merge.
 - Variants follow their References (S3: mall.variants; from 0078 the composite foreign key moves them with each Reference), and an
   absorbed Reference's variants re-hang from the Reference that replaces it; images and favourites move without duplicates;
-  PartOEMLink (catalog and sku_name) is re-pointed without duplicates, its citations merged; historical Alternates are re-pointed. Specs and applications on a
-  source refuse the merge, as before (S6 relaxes it).
+  PartOEMLink (catalog and sku_name) is re-pointed without duplicates, its citations merged; historical Alternates are re-pointed.
+  Specs and applications (S6) move only when the target's subgrupo is empty or the same as each source's that carries them: a spec of
+  a field the target already has, or an application it already lists, stays on its source; a target without a subgrupo takes the one
+  their sources agree on. Any other merge waits (MergeGuard, guard subgrupo: a merge case keeps it).
 - Dependents: open OEMReviewCase rows of the sources are resolved ("línea unificada"), pending OEMAutoCandidate rows excluded, pending
   CatalogAssistantSuggestion rows dismissed; order lines, cesta lines, identity changes, verdicts, usage and import issues stay as
   history. Scalars: the target wins and its blanks are filled when the sources agree on a value (field_sources says where from).
@@ -32,7 +34,9 @@ A merge (merge_lines), in one transaction:
 - automatic=True (the worker, the S2b pass) refuses lines kept apart (CatalogSeparation, on canonical lines) and records the merge
   under the matching service's account, as the worker's merges are (Unificados, origen automático), with who asked for it.
 - CatalogMerge records, per source, the References it moved or absorbed and their ids, its former main, its codes, variants, images,
-  favourites, links and dependents, so Separar gives back exactly that. Codigos never change here (UNIQUE(sku) until S4): the wrappers
+  favourites, links, specs, applications and dependents, so Separar gives back exactly that.
+- After it (S6): the open matching cases that list a source list the target too (the worker checks them again), and the variants on
+  the target take its status (mall.variants.recompute_status: matched on a catalog line when no case holds them). Codigos never change here (UNIQUE(sku) until S4): the wrappers
   run prefer_oem afterwards when they want to.
 
 A split (split_line) brings back the lines a superuser picks, each with the References, variants and images assigned to it. A
@@ -48,7 +52,7 @@ import json
 import uuid
 
 from django.db import transaction
-from django.db.models import Max, Q
+from django.db.models import F, Max, Q
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
@@ -70,6 +74,15 @@ ESTADO_AFTER = ('retirada', 'rechazada', 'referencia')
 
 def refuse(message):
     return ValidationError({'detail': message})
+
+
+class MergeGuard(ValidationError):
+    """A merge that waits for a person (S6): `guard` says why (subgrupo: the technical sheets of two subgrupos). A ValidationError with
+    the message, so every caller that refuses a merge keeps working; a merge case records the guard."""
+
+    def __init__(self, message, guard):
+        super().__init__({'detail': message})
+        self.guard = guard
 
 
 def jsonable(value):
@@ -353,9 +366,11 @@ def merge_lines(target, sources, *, actor, reason='', automatic=False, assistant
         else:
             requested_by = getattr(actor, 'username', '') or ''
         source_ids = {source.pk for source in sources}
-        if m.PartSpecification.objects.filter(part_id__in=source_ids).exists() or m.ItemApplication.objects.filter(part_id__in=source_ids).exists():
-            raise refuse('Los SKU de origen tienen fichas técnicas o aplicaciones. Revisa y conserva esos datos en el SKU principal antes de '
-                         'vaciar las fichas de origen y unificarlos.')
+        subgrupo = sheet_subgrupo(target, sources)  # MergeGuard when the sheets belong to another subgrupo
+        subgrupo_before = target.part_type_id
+        if subgrupo is not None and target.part_type_id is None:  # the sheets' subgrupo comes first, so they land on its template
+            from .lines import set_subgrupo
+            target.save(update_fields=set_subgrupo(target, subgrupo))
         children = [line for line in locked.values() if line.merged_into_id in source_ids]
         retired_ids = source_ids | {child.pk for child in children}
         participants = retired_ids | {target.pk}
@@ -400,7 +415,7 @@ def merge_lines(target, sources, *, actor, reason='', automatic=False, assistant
 
         brought = {source.pk: {'id': str(source.pk), 'sku': source.sku, 'estado': source.estado, 'codes': [], 'items': [], 'images': [],
                                'references': [], 'main': None, 'absorbed': [], 'undisputed': [], 'favorites': {'moved': [], 'dropped': []},
-                               'links': [], 'children': [], 'dependents': {}} for source in sources}
+                               'links': [], 'children': [], 'dependents': {}, 'specs': [], 'applications': []} for source in sources}
         for child in children:
             brought[child.merged_into_id]['children'].append(str(child.pk))
         mains = {row.part_id: row for row in incoming if row.is_main}
@@ -461,6 +476,7 @@ def merge_lines(target, sources, *, actor, reason='', automatic=False, assistant
         updated, removed = merge_alternates(retired_ids, target)
         summary['historical_alternates_updated'], summary['historical_alternates_removed'] = updated, removed
         settle_dependents(sources, target, brought, actor)
+        summary['specs_moved'], summary['applications_moved'] = move_sheets(retired_ids, target, brought, owner)
 
         # Scalars, estado, the sources.
         before_estado = target.estado
@@ -472,6 +488,8 @@ def merge_lines(target, sources, *, actor, reason='', automatic=False, assistant
         merge = m.CatalogMerge.objects.create(actor=actor, target=target, sources=jsonable([brought[source.pk] for source in sources]),
                                               summary=jsonable(summary))
         fields = []
+        if subgrupo is not None and subgrupo_before is None:
+            summary['subgrupo'] = {'before': None, 'after': str(subgrupo.pk)}
         if filled:
             target.field_sources = {**(target.field_sources or {}), **{field: {'source': 'merge', 'from': sku, 'merge': str(merge.pk)}
                                                                        for field, (_, sku) in filled.items()}}
@@ -488,7 +506,85 @@ def merge_lines(target, sources, *, actor, reason='', automatic=False, assistant
         m.CatalogMerge.objects.filter(pk=merge.pk).update(summary=merge.summary)
         from .lines import touch_visible
         touch_visible(target, stamp)
+        follow_cases(retired_ids, target)
+        if not library:
+            from .variants import recompute_status
+            recompute_status(target)
     return merge
+
+
+def sheet_subgrupo(target, sources):
+    """The subgrupo the sources' technical sheets and applications belong to, when they may move to the target (S6): the target has none,
+    or the same one as every source that carries them. None when no source carries any, or when they all share the target's. Raises
+    MergeGuard (guard subgrupo) otherwise: two subgrupos' sheets wait for a person."""
+    m = _models()
+    ids = {source.pk for source in sources}
+    carrying = (set(m.PartSpecification.objects.filter(part_id__in=ids).values_list('part_id', flat=True))
+                | set(m.ItemApplication.objects.filter(part_id__in=ids).values_list('part_id', flat=True)))
+    if not carrying:
+        return None
+    # A source's subgrupo, and the subgrupo whose template each of its specs fills (TechnicalTemplate's key is its PartType).
+    kinds = {source.part_type_id for source in sources if source.pk in carrying}
+    kinds |= set(m.PartSpecification.objects.filter(part_id__in=ids).values_list('field__template_id', flat=True))
+    if target.part_type_id is not None:
+        if kinds - {target.part_type_id, None}:
+            raise MergeGuard('Los SKU de origen tienen fichas técnicas o aplicaciones de otro subgrupo. Corrige el subgrupo o vacía esas fichas '
+                             'antes de unificarlos.', 'subgrupo')
+        return None
+    kinds.discard(None)
+    if len(kinds) > 1:
+        raise MergeGuard('Los SKU de origen tienen fichas técnicas o aplicaciones de subgrupos distintos. Elige el subgrupo del SKU principal '
+                         'antes de unificarlos.', 'subgrupo')
+    return m.PartType.objects.get(pk=next(iter(kinds))) if kinds else None
+
+
+def move_sheets(retired_ids, target, brought, owner):
+    """The sources' specs and applications onto the target (sheet_subgrupo allowed it): a field the target already has, or an
+    application it already lists in that position, stays on its source. Recorded per source for Separar. Returns (specs, applications)."""
+    m = _models()
+    have = set(m.PartSpecification.objects.filter(part=target).values_list('field_id', flat=True))
+    specs = 0
+    for spec in m.PartSpecification.objects.filter(part_id__in=retired_ids).order_by('pk'):
+        if spec.field_id in have:
+            continue
+        have.add(spec.field_id)
+        m.PartSpecification.objects.filter(pk=spec.pk).update(part=target)
+        brought[owner[spec.part_id].pk]['specs'].append(spec.pk)
+        specs += 1
+    listed = set(m.ItemApplication.objects.filter(part=target).values_list('application_id', 'position'))
+    applications = 0
+    for row in m.ItemApplication.objects.filter(part_id__in=retired_ids).order_by('pk'):
+        if (row.application_id, row.position) in listed:
+            continue
+        listed.add((row.application_id, row.position))
+        m.ItemApplication.objects.filter(pk=row.pk).update(part=target)
+        brought[owner[row.part_id].pk]['applications'].append(row.pk)
+        applications += 1
+    if specs:
+        m.Part.objects.filter(pk=target.pk).update(technical_revision=F('technical_revision') + 1)
+    return specs, applications
+
+
+def return_sheets(part, target, entry):
+    """Separar: the specs and applications a merge moved from this line go back to it, where they still are on the target."""
+    m = _models()
+    if entry.get('specs'):
+        m.PartSpecification.objects.filter(pk__in=entry['specs'], part=target).update(part=part)
+    if entry.get('applications'):
+        m.ItemApplication.objects.filter(pk__in=entry['applications'], part=target).update(part=part)
+
+
+def follow_cases(retired_ids, target):
+    """The open matching cases that list a merged line list the line it went into too: the worker checks them again (a line case whose
+    lines are one line now attaches its item; a merge case whose lines are one is settled)."""
+    from .matching_models import MatchingCase
+    cases = list(MatchingCase.objects.filter(status='review', lines__in=list(retired_ids)).distinct())
+    for case in cases:
+        case.lines.add(target)
+    if cases:
+        from .matching_queue import enqueue_matching
+        enqueue_matching()
+    return len(cases)
 
 
 def settle_variants(retired_ids, target, actor):
@@ -694,6 +790,7 @@ def merge_history(target, children):
                            'main': source.get('main'), 'absorbed': list(source.get('absorbed') or []),
                            'undisputed': list(source.get('undisputed') or []), 'favorites': source.get('favorites') or {},
                            'links': list(source.get('links') or []), 'dependents': source.get('dependents') or {},
+                           'specs': list(source.get('specs') or []), 'applications': list(source.get('applications') or []),
                            'estado': source.get('estado') or 'publicada'}
     return history, merges
 
@@ -957,6 +1054,7 @@ def split_line(target_id, restore, *, actor, reason=''):
             summary['mains_returned'] += settle_returned(part, entry, mains[str(part.pk)], actor)
             summary['favorites_returned'] += return_favorites(part, target, entry)
             restore_dependents(entry, part)
+            return_sheets(part, target, entry)
         links = rehome_catalog_links(target, restored)
         summary['links_moved'], summary['links_shared'] = links['moved'], links['shared']
         place_split_variants(target, restored, items, plan)

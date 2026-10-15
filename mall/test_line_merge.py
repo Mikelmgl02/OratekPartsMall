@@ -186,7 +186,10 @@ class MergeLinesTests(TestCase):
         template = TechnicalTemplate.objects.create(part_type=part_type)
         field = TechnicalField.objects.create(template=template, key='diametro', label='Diámetro', unit='mm', kind='number')
         PartSpecification.objects.create(part=sheet, field=field, number_value=200)
-        with self.assertRaisesMessage(ValidationError, 'fichas técnicas'):
+        # S6: specs move only onto a target with no subgrupo or the same one; another subgrupo's sheet waits (guard subgrupo).
+        Part.objects.filter(pk=self.target.pk).update(part_type=PartType.objects.create(category='FRENOS', name='DISCOS LM'))
+        self.target.refresh_from_db()
+        with self.assertRaisesMessage(line_merge.MergeGuard, 'fichas técnicas'):
             line_merge.merge_lines(self.target, [sheet], actor=self.root)
         make_variant(self.supplier, 'LM-9', 'SRC-3', 1, actor=self.root, line=make_line('SRC-3'))
         SupplierInventoryImportJob.objects.create(supplier=self.supplier, owner=self.root, filename='x.xlsx', status='importing',
@@ -333,6 +336,7 @@ class CompactDuplicateTests(Fresh, TestCase):
         self.duplicate = make_line('16100-39315_', description='BOMBA AGUA TOY HILUX 05-15')
         make_variant(self.supplier, 'CD-1', '16100-39315', 5, actor=self.root, line=self.keeper)
         make_variant(self.supplier, 'CD-2', '16100-39315_', 2, actor=self.root, line=self.duplicate)
+        MatchingCase.objects.filter(kind='line').delete()  # S6 asks which line (the key in disputa); the S2b backfill ran before S6
         self.holder = make_line('BOMBA-GMB', description='BOMBA AGUA GMB')
         self.alias = make_reference(self.holder, 'GWT-78A', brand='', tipo='otro')
         self.named = make_line('GWT-78A', description='BOMBA DE AGUA')

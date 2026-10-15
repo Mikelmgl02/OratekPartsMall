@@ -146,6 +146,21 @@ class ApiagSyncTests(APITestCase):
                          (0, '04111-22152', 'OTHER-777', 'review'))
         self.assert_ledger_reconciles()
 
+    def test_the_codes_every_pull_sends_open_one_reference_case_each(self):
+        """S6 (rule 5b): codigo2 and the alternos apiag-cloud sends with every pull are reference cases of the item, one per code across
+        pulls; they never hold the item out of stock, and a code its line already has opens none."""
+        from .matching_models import MatchingCase
+        from .test_factories import make_line, make_reference
+        line = make_line('PASTILLA-1', description='PASTILLA FRENO')
+        make_reference(line, 'D2219')
+        for units in (4, 3, 2):
+            self.apiag.publish(10, 'pastilla-1', {1: units}, codigo2='GDB3425', alternos=['D2219'], marca='')
+            self.run_pull()
+        item = self.item(10)
+        self.assertEqual((item.part_id, item.matching_status), (line.pk, 'matched'))
+        self.assertEqual(list(MatchingCase.objects.filter(item=item).values_list('kind', 'new_code', 'status')),
+                         [('reference', 'GDB3425', 'review')])
+
     def test_later_pulls_apply_only_what_changed(self):
         self.apiag.publish(10, 'A-1', {1: 4, 2: 1})
         self.apiag.publish(11, 'B-2', {1: 2})

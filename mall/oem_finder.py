@@ -475,13 +475,10 @@ def assembly_or_kit_head(head, lex):
 
 
 def eligible(entry, confirm=frozenset()):
-    """A TAG an auto-applied rename may strip; confirm = tokens the owner is assumed to confirm (STRONG_PENDING scenario)."""
-    if entry.cls != 'TAG' or entry.role == 'lifecycle':
-        return False
-    if entry.components is not None:
-        return all(eligible(c, confirm) for c in entry.components)
-    return (entry.auto_eligible or entry.token in confirm
-            or (entry.alias_of is not None and entry.alias_of in confirm and entry.status != 'needs_owner_label'))
+    """A TAG an auto-applied rename may strip; confirm = tokens the owner is assumed to confirm (STRONG_PENDING scenario). The one rule
+    is mall.catalog_suffixes.auto_eligible; an Entry's own scenario counts too."""
+    from .catalog_suffixes import auto_eligible
+    return auto_eligible(entry, frozenset(confirm) | frozenset(getattr(entry, 'scenario', ()) or ()))
 
 
 # =============================================================== tiers
