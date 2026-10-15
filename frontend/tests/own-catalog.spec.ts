@@ -51,12 +51,12 @@ test('a supplier-only account without articles is pointed to its inventory', asy
   await expect(page.getByRole('button', { name: 'Ir a tu inventario' })).toBeVisible();
 });
 
-test('a client account keeps the whole storefront and the supplier filter', async ({ page }) => {
+test('a client account keeps the whole storefront without a supplier filter', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   const urls = await open(page, clientAccount, [part('part-1', 'SHARED-1', 'high', 2)], [{ value: supplierAccount.id, label: 'PROVEEDOR', count: 1 }]);
   await expect(page.getByRole('article', { name: 'Repuesto SHARED-1', exact: true })).toContainText('2 PROVEEDORES CON STOCK');
   await expect(page.getByRole('heading', { name: /El repuesto indicado/ })).toBeVisible();
-  await expect(page.getByRole('group', { name: 'Proveedor', exact: true })).toBeVisible();
+  await expect(page.getByRole('group', { name: 'Proveedor', exact: true })).toHaveCount(0);
   await expect(page.getByText('Estás viendo tus artículos.')).toHaveCount(0);
   await expect(page.locator('.results-heading')).toContainText('1 repuesto del catálogo');
   expect(urls.some(url => new URL(url).searchParams.get('account') === clientAccount.id)).toBe(true);

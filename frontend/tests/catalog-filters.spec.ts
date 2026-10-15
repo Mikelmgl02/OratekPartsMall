@@ -37,7 +37,7 @@ async function mockCatalog(page: Page) {
   return { queries, events };
 }
 
-test('desktop: combine groups, subgroups, stock and suppliers with removable filters', async ({ page }) => {
+test('desktop: combine groups, subgroups and stock with removable filters', async ({ page }) => {
   const { queries } = await mockCatalog(page);
   await page.goto('/');
   const sidebar = page.getByRole('complementary', { name: 'Filtros del catálogo' });
@@ -54,12 +54,11 @@ test('desktop: combine groups, subgroups, stock and suppliers with removable fil
   await sidebar.getByRole('checkbox', { name: 'PASTILLAS', exact: true }).check();
   await expect(page.locator('.results-heading>p')).toContainText('2 repuestos');
   await sidebar.getByRole('radio', { name: 'Con existencias', exact: true }).check();
-  await sidebar.getByRole('checkbox', { name: 'PROVEEDOR UNO', exact: true }).check();
-  await expect(page.locator('.part-card')).toHaveCount(1);
-  expect(queries.at(-1)?.get('supplier')).toBe(supplierA);
+  await expect(page.locator('.part-card')).toHaveCount(2);
+  expect(queries.at(-1)?.get('supplier')).toBeNull();
   expect(queries.at(-1)?.get('availability')).toBe('in_stock');
   await page.getByRole('button', { name: 'Quitar filtro PASTILLAS', exact: true }).click();
-  await expect(page.locator('.results-heading>p')).toContainText('27 repuestos');
+  await expect(page.locator('.results-heading>p')).toContainText('54 repuestos');
   await sidebar.getByRole('button', { name: 'Limpiar todo', exact: true }).click();
   await expect(page.locator('.results-heading>p')).toContainText('56 repuestos');
   await expect(page.getByLabel('Filtros aplicados')).toHaveCount(0);

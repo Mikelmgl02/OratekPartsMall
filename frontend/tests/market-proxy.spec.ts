@@ -1,9 +1,23 @@
 import { expect, test } from '@playwright/test';
 import { forwardedQuery } from '../lib/market-proxy';
+import { catalogQuery, emptyFilters } from '../lib/catalog-filters';
 
 // What the market proxy passes on to Django. The browser specs mock /api/market before the proxy, so a key the proxy drops (as Mis
 // repuestos' mine once was) passes them all while the backend never sees it: these check the proxy itself.
 const account = '11111111-1111-4111-8111-111111111111';
+
+test('technical conditions reach catalog and suggestions with the account scope', () => {
+  const params = new URLSearchParams(catalogQuery('', 1, { ...emptyFilters, technical: { part_type: account, label: 'DISCOS', rules: [
+    { key: 'diameter', operator: 'between', value: '260', value_to: '280', label: 'DIÁMETRO', unit: 'mm' },
+  ] } }, account));
+  for (const route of ['catalog', 'catalog/suggest']) {
+    const forwarded = forwardedQuery(route, params);
+    expect(JSON.parse(forwarded.get('technical')!)).toEqual({ part_type: account, rules: [{ key: 'diameter', operator: 'between', value: '260', value_to: '280' }] });
+    expect(forwarded.get('account')).toBe(account);
+  }
+  expect(forwardedQuery('catalog/technical-filters', params).get('account')).toBe(account);
+  expect(forwardedQuery('inbox', params).has('technical')).toBe(false);
+});
 
 test('the catalog passes Mis repuestos and the active account on, and nothing it does not read', () => {
   const query = forwardedQuery('catalog', new URLSearchParams(

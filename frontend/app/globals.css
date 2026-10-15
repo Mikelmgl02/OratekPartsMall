@@ -2503,6 +2503,66 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .part-card-cta:disabled { background:#eef1e8; color:#9aa391; }
 .list-view .part-card-body { padding:16px 18px; }
 .list-view .part-card-cta { align-self:flex-start; width:auto; min-width:180px; }
+.parts-grid.list-view { container:catalog-list / inline-size; }
+.list-view .part-card.has-technical { display:grid; grid-template-columns:190px minmax(0,1fr); }
+.part-card-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:auto; }
+.part-card-actions .part-card-cta { margin-top:0; }
+.part-technical-action { min-height:38px; border-radius:20px; padding:8px 14px; font-size:12px; }
+.part-card-technical { display:none; min-width:0; max-height:360px; overflow:auto; padding:18px 22px; border-left:1px solid #e5e9df; background:#fafbf8; }
+.part-technical.part-technical-expanded { margin:0; padding:0; border:0; border-radius:0; }
+.part-technical-expanded .technical-inline-heading { display:flex; align-items:center; gap:8px; margin:0 0 14px; color:var(--ink); font-size:13px; }
+.part-technical-expanded p { color:var(--muted); font-size:12px; line-height:1.6; }
+.part-technical-expanded .technical-spec-list { grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr)); gap:0 24px; }
+.part-technical-expanded .technical-spec-list>div { display:grid; grid-template-columns:minmax(0,1fr) fit-content(45%); align-items:baseline; min-width:0; gap:12px; line-height:1.5; }
+.part-technical-expanded .technical-spec-list dt { overflow-wrap:normal; word-break:normal; }
+.part-technical-expanded .technical-spec-list dd { overflow-wrap:break-word; }
+.part-technical-expanded .technical-spec-list .technical-spec-number { white-space:nowrap; font-variant-numeric:tabular-nums; }
+.technical-filter-form { display:grid; gap:20px; }
+.technical-filter-intro { display:flex; align-items:center; gap:13px; }
+.technical-filter-intro>span { display:grid; place-items:center; width:44px; height:44px; flex-shrink:0; background:#eaf1dc; color:#527131; border-radius:12px; }
+.technical-filter-intro h3,.technical-filter-heading h3 { margin:0; font-size:15px; }
+.technical-filter-intro p,.technical-filter-note,.technical-filter-empty,.technical-template-picker>p { margin:5px 0 0; color:var(--muted); font-size:12px; line-height:1.6; }
+.technical-template-picker { display:grid; gap:12px; }
+.technical-filter-form label { display:block; min-width:0; font-size:11px; font-weight:600; color:#526147; }
+.technical-filter-form input,.technical-filter-form select { display:block; width:100%; min-width:0; margin-top:7px; padding:10px; border:1px solid #dfe5d6; border-radius:8px; background:#fff; color:var(--ink); font:inherit; font-size:12px; font-weight:400; }
+.technical-filter-form input:focus-visible,.technical-filter-form select:focus-visible { outline:2px solid var(--green-dark); outline-offset:2px; }
+.technical-filter-form .technical-template-search { display:flex; align-items:center; gap:8px; }
+.technical-template-search input { margin:0; }
+.technical-filter-conditions { display:grid; gap:12px; }
+.technical-filter-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.technical-filter-heading>span { color:var(--muted); font-size:11px; }
+.technical-filter-rule { display:grid; grid-template-columns:minmax(160px,1.2fr) minmax(120px,.85fr) minmax(150px,1.2fr) 33px; align-items:start; gap:10px; padding:14px; border:1px solid #e0e6d8; border-radius:10px; background:#f3f6ee; }
+.technical-rule-values { display:flex; align-items:start; gap:8px; min-width:0; }
+.technical-rule-values>label { flex:1; }
+.technical-rule-remove { margin-top:22px; color:#7c655d; }
+.technical-unit { font-weight:400; color:var(--muted); }
+.technical-filter-conditions>.button { justify-self:start; }
+.technical-filter-footer,.technical-filter-footer>div { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.technical-filter-footer { justify-content:space-between; border-top:1px solid #e1e7d9; padding-top:18px; }
+.catalog-sticky .technical-filter-trigger { gap:7px; }
+@media(max-width:650px) {
+  .technical-filter-rule { grid-template-columns:minmax(0,1fr) minmax(0,1fr); position:relative; }
+  .technical-rule-field { grid-column:1/-1; padding-right:35px; }
+  .technical-rule-remove { position:absolute; right:12px; top:13px; margin:0; }
+  .technical-filter-footer>div { flex:1; justify-content:flex-end; }
+}
+@media(max-width:420px) {
+  .technical-filter-rule { grid-template-columns:minmax(0,1fr); }
+  .technical-filter-footer>div { width:100%; }
+  .technical-filter-footer>div>.button { flex:1; }
+  .catalog-sticky .technical-filter-trigger { padding-inline:9px; }
+}
+.part-card.is-loading>.part-card-technical { visibility:hidden; }
+@container catalog-list (min-width:1000px) {
+  .list-view .part-card.has-technical { grid-template-columns:190px minmax(0,1fr) minmax(340px,.9fr); }
+  .part-card-technical { display:block; }
+  .part-technical-action { display:none; }
+}
+@media(max-width:760px) {
+  .list-view .part-card.has-technical { grid-template-columns:90px minmax(0,1fr); }
+  .list-view .has-technical>.part-image { width:90px; }
+  .list-view .has-technical .part-card-cta { min-width:0; max-width:100%; }
+}
 
 /* Results bar: an Amazon-style "Resultados" title, then the count, then the view controls */
 .results-heading>h2 { flex-shrink:0; margin:0 12px 0 0; font-size:16px; letter-spacing:-.3px; color:var(--ink); }
@@ -2725,7 +2785,7 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 @media (prefers-reduced-motion: reduce) { .inbox-list.floating { animation:none; } }
 .inbox-placeholder { position:relative; }
 .inbox-placeholder .inbox-list-toggle { position:absolute; top:12px; left:12px; }
-.inbox-list { flex:0 0 var(--inbox-list,300px); }
+.inbox-list { flex:0 0 clamp(220px,var(--inbox-list,300px),440px); min-width:0; }
 .inbox-list { display:flex; flex-direction:column; gap:8px; min-height:0; overflow-y:auto; padding-right:4px; }
 .inbox-list-tools { display:grid; gap:8px; position:sticky; top:0; z-index:1; background:#fbfcf8; padding-bottom:4px; }
 .inbox-search { display:flex; align-items:center; gap:8px; height:38px; padding:0 10px; border:1px solid var(--line); border-radius:8px; background:#fff; color:#8e9885; }
@@ -2797,7 +2857,7 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .inbox-group-form input { height:30px; padding:0 9px; border:1px solid #b9cf9c; border-radius:7px; outline:none; background:#fff; font-size:12px; box-shadow:0 0 0 3px #dcf39e66; }
 .inbox-group-form small { padding:0 4px; font-size:11px; color:#a1442f; }
 @media (hover:none) { .inbox-menu-button { opacity:1; } .inbox-row-open { height:44px; } }
-.inbox-conversation { flex:1 1 auto; display:flex; flex-direction:column; min-height:0; min-width:0; border:1px solid var(--line); border-radius:12px; background:#fff; overflow:hidden; }
+.inbox-conversation { flex:1 1 auto; display:flex; flex-direction:column; min-height:0; min-width:0; border:1px solid var(--line); border-radius:12px; background:#fff; overflow:hidden; container:inbox-conversation / inline-size; }
 .inbox-placeholder { align-items:center; justify-content:center; gap:10px; color:var(--muted); font-size:13px; text-align:center; padding:24px; }
 .inbox-conversation-header { display:flex; align-items:center; gap:10px; padding:10px 12px; border-bottom:1px solid var(--line); }
 .inbox-conversation-title { display:grid; gap:2px; flex:1; min-width:0; }
@@ -2809,8 +2869,9 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
    and the document opened from it in the same column. */
 .inbox-docs-toggle[aria-pressed="true"] { background:#232b26; color:#fff; }
 .inbox-open-order { white-space:nowrap; }
-.inbox-conversation-body { flex:1; min-height:0; display:flex; }
-.inbox-side { flex:0 0 var(--inbox-side,540px); min-width:0; min-height:0; overflow-y:auto; padding:14px 16px; background:#fcfdfa; container-type:inline-size; }
+.inbox-conversation-body { flex:1; min-width:0; min-height:0; display:flex; }
+/* Keep 360px for the chat plus its divider, even when a saved document width no longer fits. */
+.inbox-side { flex:0 0 var(--inbox-side,540px); max-width:calc(100% - 369px); min-width:0; min-height:0; overflow-y:auto; padding:14px 16px; background:#fcfdfa; container-type:inline-size; }
 .inbox-side[hidden],.inbox-docs[hidden],.inbox-doc[hidden] { display:none; }
 .inbox-docs { display:grid; gap:10px; }
 .inbox-docs-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px 10px; }
@@ -2850,11 +2911,14 @@ button.deal-chat-order:hover { background:#d5e9da; color:#1d5a39; }
 .inbox-conversation-body>.inbox-resizer::after { top:0; bottom:0; }
 body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-select:none !important; }
 .inbox-chat { flex:1 1 auto; min-width:0; min-height:0; display:flex; padding:12px; }
-.deal-chat.compact { flex:1; min-height:0; display:flex; flex-direction:column; gap:10px; }
+.deal-chat.compact { flex:1; min-width:0; min-height:0; display:flex; flex-direction:column; gap:10px; }
 .deal-chat.compact .deal-chat-messages { flex:1; min-height:0; max-height:none; }
-.deal-chat.compact textarea { min-height:64px; width:100%; padding:10px 12px; border:1px solid #d6dece; border-radius:9px; background:#fff; color:var(--ink); font:inherit; font-size:13px; resize:vertical; }
-.deal-chat.compact textarea:focus { outline:0; border-color:#7f9f55; box-shadow:0 0 0 3px #dcf39e99; }
-.deal-chat.compact form label { font-size:0; gap:0; }
+.deal-chat.compact .deal-chat-messages article { min-width:0; overflow-wrap:anywhere; }
+/* Below the two panes' minimum widths (360 + 9 + 340), Cotizaciones switches between them. */
+@container inbox-conversation (max-width:708px) {
+ .inbox-conversation-body.side-open .inbox-chat,.inbox-conversation-body>.inbox-resizer { display:none; }
+ .inbox-side { flex:1 1 auto; max-width:none; }
+}
 @media(max-width:900px) {
  .modal.inbox-modal { width:100%; max-width:100%; height:100%; max-height:100%; margin:0; border:0; border-radius:0; padding:12px; }
  .inbox-list { flex:1 1 auto; }
@@ -2864,7 +2928,7 @@ body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-s
  .inbox-conversation-header { flex-wrap:wrap; }
  .inbox-open-order>span { display:none; }
  .inbox-conversation-body.side-open .inbox-chat { display:none; }
- .inbox-side { flex:1 1 auto; }
+ .inbox-side { flex:1 1 auto; max-width:none; }
  .inbox-toasts { right:12px; bottom:12px; }
  .inbox-notifications-menu { position:fixed; top:var(--inbox-menu-top,64px); left:12px; right:12px; width:auto; max-height:calc(100dvh - var(--inbox-menu-top,64px) - 16px); }
 }
@@ -2881,11 +2945,24 @@ body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-s
 .inbox-email legend strong { color:#4c5745; font-weight:600; }
 .inbox-email label { display:flex; align-items:flex-start; gap:8px; font-size:12px; color:#4c5745; line-height:1.4; cursor:pointer; }
 .inbox-email input { margin:2px 0 0; accent-color:#5d8a33; }
-.deal-chat-send { display:flex; align-items:center; justify-content:flex-end; gap:12px; }
-.deal-chat-send>.button { flex:0 0 auto; }
-.deal-chat.compact .deal-chat-send>.button { flex:1; }
-.deal-chat-hint { color:var(--muted); font-size:11px; margin-right:auto; }
-@media (pointer:coarse) { .deal-chat-hint { display:none; } }
+/* A compact composer: attachment, growing message pill with emojis, and a round send action. */
+.deal-chat form.deal-chat-composer { position:relative; min-width:0; flex-shrink:0; gap:8px; }
+.deal-chat-context { display:flex; padding-inline:6px; }
+.deal-chat-input-bar { display:flex; align-items:flex-end; gap:6px; min-width:0; padding:6px; border:1px solid #e7e9e2; border-radius:26px; background:#f1f3ed; }
+.deal-chat-input-bar>.deal-chat-attach,.deal-chat-submit,.deal-chat-emoji-toggle { flex:0 0 auto; display:grid; place-items:center; width:36px; height:38px; padding:0; border:0; border-radius:50%; color:#657168; background:transparent; }
+.deal-chat-input-bar>.deal-chat-attach { color:#37443c; }
+.deal-chat-input-bar>.deal-chat-attach:hover:not(:disabled),.deal-chat-emoji-toggle:hover:not(:disabled) { background:#e4e9e1; }
+.deal-chat-input { display:flex; align-items:flex-end; flex:1; min-width:0; border:1px solid #d5dcd3; border-radius:21px; background:#fff; transition:border-color .15s,box-shadow .15s; }
+.deal-chat-input:focus-within { border-color:#8bb49b; box-shadow:0 0 0 2px #d8eade; }
+.deal-chat .deal-chat-input textarea { display:block; flex:1; min-width:0; width:100%; min-height:38px; max-height:136px; padding:8px 0 8px 12px; border:0; border-radius:21px; outline:none; box-shadow:none; background:transparent; color:var(--ink); font:inherit; font-size:14px; line-height:22px; resize:none; overflow-y:auto; }
+.deal-chat-input textarea::placeholder { color:#8a948d; }
+.deal-chat-emoji { flex:none; padding-right:2px; }
+.deal-chat-submit { width:40px; height:40px; background:#19a76d; color:#fff; }
+.deal-chat-submit:hover:not(:disabled) { background:#138557; }
+.deal-chat-input-bar button:focus-visible,.deal-chat-emojis button:focus-visible { outline:2px solid #367b52; outline-offset:2px; }
+.deal-chat-emojis { position:absolute; right:0; bottom:calc(100% + 8px); z-index:3; display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:4px; width:min(260px,100%); padding:8px; border:1px solid var(--line); border-radius:16px; background:#fff; box-shadow:0 8px 24px #19221b24; }
+.deal-chat-emojis button { display:grid; place-items:center; height:36px; padding:0; border-radius:8px; font-size:22px; }
+.deal-chat-emojis button:hover { background:#eef4e9; }
 /* The deal embedded in the conversations panel: its decisions sit above the tabs. */
 .deal-embedded .deal-detail { gap:12px; }
 .deal-quick-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
@@ -2987,8 +3064,6 @@ body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-s
 .deal-chat-attached span { max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .deal-chat-attached button { display:inline-grid; place-items:center; width:22px; height:22px; border:0; border-radius:50%; background:transparent; cursor:pointer; }
 .deal-chat-attached button:hover { background:#dce6df; }
-.deal-chat-send>.deal-chat-attach { flex:0 0 auto; margin-right:auto; padding-inline:10px; }
-.deal-chat.compact .deal-chat-send>.deal-chat-attach { flex:0 0 auto; }
 
 /* The cesta on the server (basket.tsx): a line WhatsApp added, and one that can no longer go as it is. */
 .basket-page-source { display:inline-flex; align-items:center; gap:4px; width:fit-content; margin-bottom:4px; padding:2px 8px; border-radius:999px; background:#e7f4ec; color:#256b45; font-size:11px; font-weight:600; }
@@ -3017,7 +3092,6 @@ body.inbox-resizing,body.inbox-resizing * { cursor:col-resize !important; user-s
 .deal-chat-filter.on { background:#232b26; border-color:#232b26; color:#fff; }
 .deal-chat-tag { flex:0 0 auto; background:#e1efe5; border-color:#c4dccb; color:#256b45; }
 .deal-chat-tag.general { background:#fff; border-style:dashed; color:#5d6a61; }
-.deal-chat-send>.deal-chat-tag { margin-right:4px; }
 /* Preguntar al proveedor (part-detail.tsx): a quiet link under the supplier's name. */
 .supplier-ask { display:inline-flex; align-items:center; gap:5px; margin-top:4px; padding:0; }
 .own-catalog-notice { margin:20px 0 12px; }

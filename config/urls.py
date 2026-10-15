@@ -8,6 +8,7 @@ from rest_framework.throttling import AnonRateThrottle
 from mall import basket, reorder, threads, deal_attachments, email_notifications, inbox, login_hints, management, push, views, whatsapp, whatsapp_accounts, whatsapp_verification
 from mall.technical_api import (PartTypeList, PartTypeDetail, TemplateDetail, ApplicationList, ApplicationDetail,
                                ItemTechnicalDetail, CatalogTechnicalDetail)
+from mall.catalog_technical_filters import CatalogTechnicalFilters
 from mall.matching_views import MatchingOverview, MatchingReview
 from mall.brand_views import BrandAliasDetail, BrandAliases, BrandDetail, BrandList, GrupoDetail, GrupoList
 from mall.case_views import CaseBatch, CaseBatchIndex, CaseDetail, CaseList
@@ -210,6 +211,7 @@ urlpatterns = [
     path('api/v1/accounts/<uuid:account_id>/pricing/simulate/', PricingSimulate.as_view()),
     path('api/v1/catalog/', views.CatalogList.as_view()),
     path('api/v1/catalog/suggest/', views.CatalogSuggest.as_view()),
+    path('api/v1/catalog/technical-filters/', CatalogTechnicalFilters.as_view()),
     path('api/v1/inbox/', inbox.InboxSummary.as_view()),
     path('api/v1/inbox/conversations/', inbox.InboxConversations.as_view()),
     path('api/v1/inbox/conversations/<uuid:pk>/read/', inbox.InboxConversationRead.as_view()),

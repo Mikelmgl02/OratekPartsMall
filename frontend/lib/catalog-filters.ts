@@ -13,13 +13,15 @@ export const stockFilterLabels: Record<string, string> = {
   sold_out: 'Agotado', unknown: 'Sin existencias reportadas',
 };
 export function filterCount(filters: CatalogFilters) {
-  return filters.category.length + filters.subcategory.length + filters.supplier.length + Number(!!filters.availability) + filters.mine.length;
+  return filters.category.length + filters.subcategory.length + filters.supplier.length + Number(!!filters.availability) + filters.mine.length + (filters.technical ? 1 + filters.technical.rules.length : 0);
 }
 // account: the active account, so a supplier-only account gets only its own SKUs.
 export function catalogQuery(search: string, page: number, filters: CatalogFilters, account = '') {
   const query = new URLSearchParams({ search, page: String(page), include_facets: '1' });
   for (const key of ['category', 'subcategory', 'supplier', 'mine'] as const) for (const value of filters[key]) query.append(key, value);
   if (filters.availability) query.set('availability', filters.availability);
+  if (filters.technical) query.set('technical', JSON.stringify({ part_type: filters.technical.part_type,
+    rules: filters.technical.rules.map(({ key, operator, value, value_to }) => ({ key, operator, value, ...(operator === 'between' ? { value_to } : {}) })) }));
   if (account) query.set('account', account);
   return query.toString();
 }

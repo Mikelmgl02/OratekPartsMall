@@ -45,7 +45,7 @@ export function forwardedQuery(route: string, params: URLSearchParams) {
     if (scope === 'all' || scope === 'client') query.set('scope', scope);
   }
   if (route === 'catalog' || route === 'catalog/suggest') {
-    for (const key of ['category', 'subcategory', 'supplier', 'availability', 'include_facets']) {
+    for (const key of ['category', 'subcategory', 'supplier', 'availability', 'include_facets', 'technical']) {
       for (const value of params.getAll(key)) query.append(key, value);
     }
     // Mis repuestos (mall CatalogList.mine_parts): the SKUs in the cesta, the open orders or the favoritos.
@@ -57,7 +57,7 @@ export function forwardedQuery(route: string, params: URLSearchParams) {
     for (const value of new Set(params.getAll('calidad'))) if (['original', 'oes', 'alternativo'].includes(value)) query.append('calidad', value);
   }
   // The active account (a uuid): a supplier-only account sees only its own SKUs (mall/catalog_scope.py).
-  if (route === 'catalog' || route === 'catalog/suggest') {
+  if (route === 'catalog' || route === 'catalog/suggest' || route === 'catalog/technical-filters') {
     const account = params.get('account');
     if (account && new RegExp(`^${uuid}$`).test(account)) query.set('account', account);
   }

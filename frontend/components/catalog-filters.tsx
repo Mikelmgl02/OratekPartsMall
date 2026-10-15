@@ -4,6 +4,7 @@ import { useId, useState } from 'react';
 import { ChevronDown, Heart, PackageCheck, Search, ShoppingBag, SlidersHorizontal, X } from 'lucide-react';
 import type { CatalogFacet, CatalogFacets, CatalogFilters, MineFilter } from '@/lib/types';
 import { emptyFilters, filterCount, mineFilterHelp, mineFilterLabels, mineFilters, stockFilterLabels } from '@/lib/catalog-filters';
+import { technicalRuleLabel } from '@/lib/technical-types';
 
 // mine: how many of the person's SKUs each Mis repuestos filter has (cesta and órdenes only for a client account); a filter left out is not offered.
 export type MineCounts = Partial<Record<MineFilter, number>>;
@@ -41,10 +42,10 @@ function FacetSection({ title, options, selected, loading, onToggle }: { title: 
   </details>;
 }
 
-// suppliers: false in a supplier-only account's own catalog, which has no supplier filter.
+// suppliers: whether the stock explanation covers all suppliers or only the account's own inventory.
 export default function CatalogFilterPanel({ facets, filters, loading, onChange, suppliers = true, mine }: Props) {
   const radioName = useId();
-  function toggle(field: 'category' | 'subcategory' | 'supplier', value: string) {
+  function toggle(field: 'category' | 'subcategory', value: string) {
     const selected = filters[field];
     onChange({ ...filters, [field]: selected.includes(value) ? selected.filter(item => item !== value) : [...selected, value], ...(field === 'category' ? { subcategory: [] } : {}) });
   }
@@ -63,7 +64,6 @@ export default function CatalogFilterPanel({ facets, filters, loading, onChange,
       <label className="facet-option"><input type="radio" name={radioName} checked={!filters.availability} onChange={() => onChange({ ...filters, availability: '' })}/><span>Todos los estados</span></label>
       {facets.availability.map(option => <label key={option.value} className="facet-option"><input type="radio" aria-label={option.label} name={radioName} checked={filters.availability === option.value} onChange={() => onChange({ ...filters, availability: option.value })} disabled={!loading && !option.count && filters.availability !== option.value}/><span>{option.label}</span><small>{option.count.toLocaleString('es')}</small></label>)}
     </div></details>
-    {suppliers && <FacetSection title="Proveedor" options={facets.supplier} selected={filters.supplier} loading={loading} onToggle={value => toggle('supplier', value)}/>}
     <p className="filter-panel-note">Cada resultado reúne los códigos equivalentes de un mismo SKU. {suppliers ? 'Las existencias corresponden al SKU entre todos sus proveedores.' : 'Las existencias son las de tu inventario.'}</p>
   </div>;
 }
@@ -71,6 +71,8 @@ export default function CatalogFilterPanel({ facets, filters, loading, onChange,
 export function ActiveCatalogFilters({ facets, filters, onChange }: Omit<Props, 'loading'>) {
   if (!filterCount(filters)) return null;
   return <div className="active-catalog-filters" aria-label="Filtros aplicados">
+    {filters.technical && <><button onClick={() => onChange({ ...filters, technical: undefined })} aria-label={`Quitar plantilla ${filters.technical.label}`}><span>Ficha: {filters.technical.label}</span><X size={12}/></button>
+      {filters.technical.rules.map((rule, index) => <button key={`technical:${rule.key}`} onClick={() => onChange({ ...filters, technical: { ...filters.technical!, rules: filters.technical!.rules.filter((_, i) => i !== index) } })} aria-label={`Quitar filtro ${technicalRuleLabel(rule)}`}><span>{technicalRuleLabel(rule)}</span><X size={12}/></button>)}</>}
     {(['category', 'subcategory', 'supplier'] as const).flatMap(field => filters[field].map(value => {
       const label = facets[field].find(option => option.value === value)?.label || value || (field === 'category' ? 'Sin clasificar' : 'Sin subgrupo');
       return <button key={`${field}:${value}`} onClick={() => onChange({ ...filters, [field]: filters[field].filter(item => item !== value), ...(field === 'category' ? { subcategory: [] } : {}) })} aria-label={`Quitar filtro ${label}`}><span>{label}</span><X size={12}/></button>;

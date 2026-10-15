@@ -12,6 +12,7 @@ from django.db.models.functions import Coalesce, Greatest
 from rest_framework.exceptions import ValidationError
 
 from .models import Account, SupplierItem
+from .catalog_technical_filters import apply_technical_filter, technical_filter
 
 
 AVAILABILITY_LABELS = {
@@ -47,6 +48,7 @@ def filter_values(params, own=None):
     if values['availability'] and values['availability'] not in AVAILABILITY_LABELS:
         raise ValidationError('El filtro de existencias no es válido.')
     values['own'] = own
+    values['technical'] = technical_filter(params.get('technical', ''))
     if own is not None:
         values['supplier'] = []
     return values
@@ -74,7 +76,7 @@ def apply_filters(query, values, omit=None):
     band = values['availability'] if omit != 'availability' else ''
     if band:
         query = with_stock_units(query, values.get('own')).filter(stock_band_q(band))
-    return query
+    return apply_technical_filter(query, values.get('technical'))
 
 
 def catalog_facets(base, values):

@@ -1,3 +1,5 @@
+import type { CatalogTechnicalFilter } from './technical-types';
+
 export type Page<T> = { count: number; next: string | null; previous: string | null; results: T[] };
 export type MembershipPermission = 'owner' | 'manager' | 'staff';
 export type Account = { id: string; name: string; roles: string[]; capabilities: string[]; permission?: MembershipPermission; apiag_connected?: boolean };
@@ -25,7 +27,7 @@ export type CatalogFacet = { value: string; label: string; count: number };
 export type CatalogFacets = Record<'category' | 'subcategory' | 'availability' | 'supplier', CatalogFacet[]>;
 // mine: the person's own SKUs: in the cesta, in open orders (both of a client account) or in favoritos; any one matches.
 export type MineFilter = 'cesta' | 'ordenes' | 'favoritos';
-export type CatalogFilters = { category: string[]; subcategory: string[]; availability: string; supplier: string[]; mine: MineFilter[] };
+export type CatalogFilters = { category: string[]; subcategory: string[]; availability: string; supplier: string[]; mine: MineFilter[]; technical?: CatalogTechnicalFilter };
 export type CatalogPage = Page<Part> & { facets?: CatalogFacets };
 export type OfferItem = { id: string; codigo: string; brand: string; description: string };
 // stock (cesta lines): the supplier's band for the article, as the catalog's (no units).

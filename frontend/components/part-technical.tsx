@@ -1,7 +1,7 @@
 'use client';
 
-import { FormEvent, useEffect, useState } from 'react';
-import { Check, LoaderCircle, Plus, Trash2 } from 'lucide-react';
+import { FormEvent, useEffect, useRef, useState } from 'react';
+import { Check, FileText, LoaderCircle, Plus, Trash2 } from 'lucide-react';
 import { ManagedPart, Page, request } from '@/lib/types';
 import { ApplicationLink, SpecificationValue, TechnicalSheet, VehicleApplication, applicationLabel } from '@/lib/technical-types';
 import { UppercaseInput, UppercaseTextarea } from './uppercase-field';
@@ -55,12 +55,26 @@ function ApplicationPicker({ selected, onAdd }: { selected: string[]; onAdd: (ap
   </div>;
 }
 
-export default function PartTechnical({ partId }: { partId: string }) {
+export default function PartTechnical({ partId, inline = false, expanded = false }: { partId: string; inline?: boolean; expanded?: boolean }) {
   const [sheet, setSheet] = useState<TechnicalSheet | null>(null); const [error, setError] = useState(''); const [retry, setRetry] = useState(0);
-  useEffect(() => { let live = true; setSheet(null); setError(''); request<TechnicalSheet>(`/api/market/catalog/${partId}/technical`).then(s => { if (live) setSheet(s); }).catch(e => { if (live) setError(message(e)); }); return () => { live = false; }; }, [partId, retry]);
-  return <details className="part-technical"><summary>Ficha técnica y aplicaciones</summary>{error ? <div className="notice error" role="alert">{error}<button onClick={() => setRetry(v => v + 1)}>Reintentar</button></div> : !sheet ? <p>Cargando ficha…</p> : <>
+  const panel = useRef<HTMLElement>(null);
+  const [ready, setReady] = useState(!inline);
+  // List rows load their sheets as they approach the viewport, rather than requesting the entire page at once.
+  useEffect(() => {
+    if (!inline || ready) return;
+    if (!('IntersectionObserver' in window)) { setReady(true); return; }
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) { setReady(true); observer.disconnect(); }
+    }, { rootMargin: '200px' });
+    if (panel.current) observer.observe(panel.current);
+    return () => observer.disconnect();
+  }, [inline, ready]);
+  useEffect(() => { if (!ready) return; let live = true; setSheet(null); setError(''); request<TechnicalSheet>(`/api/market/catalog/${partId}/technical`).then(s => { if (live) setSheet(s); }).catch(e => { if (live) setError(message(e)); }); return () => { live = false; }; }, [partId, retry, ready]);
+  const content = error ? <div className="notice error" role="alert">{error}<button onClick={() => setRetry(v => v + 1)}>Reintentar</button></div> : !sheet ? <p>Cargando ficha…</p> : <>
     {!Object.keys(sheet.values).length && <p>No hay especificaciones publicadas para este SKU.</p>}
-    {Array.from(new Set(sheet.template?.fields.map(f => f.section))).map(section => { const fields = sheet.template?.fields.filter(f => f.section === section && sheet.values[f.key]); return fields?.length ? <section key={section}><h4>{section}</h4><dl className="technical-spec-list">{fields.map(f => <div key={f.key}><dt>{f.label}</dt><dd>{sheet.values[f.key].value === true ? 'SÍ' : sheet.values[f.key].value === false ? 'NO' : String(sheet.values[f.key].value)}{f.unit && ` ${f.unit}`}</dd></div>)}</dl></section> : null; })}
+    {Array.from(new Set(sheet.template?.fields.map(f => f.section))).map(section => { const fields = sheet.template?.fields.filter(f => f.section === section && sheet.values[f.key]); return fields?.length ? <section key={section}><h4>{section}</h4><dl className="technical-spec-list">{fields.map(f => <div key={f.key}><dt>{f.label}</dt><dd className={f.kind === 'number' || f.kind === 'integer' ? 'technical-spec-number' : undefined}>{sheet.values[f.key].value === true ? 'SÍ' : sheet.values[f.key].value === false ? 'NO' : String(sheet.values[f.key].value)}{f.unit && ` ${f.unit}`}</dd></div>)}</dl></section> : null; })}
     <h4>APLICACIONES VERIFICADAS</h4>{sheet.applications.length ? sheet.applications.map((l, index) => <div className="technical-application-public" key={index}><strong>{applicationLabel(l.application)}</strong>{l.position && <span>{l.position}</span>}{l.notes && <p>{l.notes}</p>}</div>) : <p>Todavía no hay aplicaciones verificadas. Consulta al proveedor para confirmar compatibilidad.</p>}
-  </>}</details>;
+  </>;
+  return inline || expanded ? <section ref={panel} className="part-technical part-technical-expanded" aria-label="Ficha técnica">{inline && <h4 className="technical-inline-heading"><FileText size={16} aria-hidden="true"/>Ficha técnica</h4>}{content}</section>
+    : <details className="part-technical"><summary>Ficha técnica y aplicaciones</summary>{content}</details>;
 }
