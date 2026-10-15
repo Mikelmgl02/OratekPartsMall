@@ -45,7 +45,7 @@ class APISchemaTests(SimpleTestCase):
         self.assertEqual(part['sku']['maxLength'], 120)
         offer_item = schema['components']['schemas']['OfferItem']['properties']
         self.assertTrue({'calidad', 'condicion', 'garantia', 'unidades_por_empaque', 'reference'} <= set(offer_item))
-        self.assertTrue({'merged_count', 'images', 'variant_count'} <= set(schema['components']['schemas']['Line']['properties']))
+        self.assertTrue({'merged_count', 'images', 'variant_count', 'codes'} <= set(schema['components']['schemas']['Line']['properties']))
         self.assertIn('requestBody', operations['/api/v1/management/catalog/{id}/oem-lookup/', 'post'])
         self.assertEqual(operations['/api/v1/management/matching/{id}/', 'post']['responses']['200']['content']['application/json']['schema'],
                          {'$ref': '#/components/schemas/MatchingCaseResponse'})

@@ -60,6 +60,13 @@ class LineRouteTests(S7Base):
                          {'estado': 'publicada', 'origen': 'catalogo', 'tipo': 'OEM', 'brand': 'TOYOTA', 'version': 1, 'reference_count': 1,
                           'variant_count': 0, 'merged_count': 0, 'images': []})
         self.assertEqual(row['main']['code'], '90915-YZZE1')
+        self.assertEqual(row['codes'], [])  # the main is the codigo, never one of its codes
+        added, _ = references.add(oem, 'TY-77', 'AISIN', tipo='aftermarket', actor=self.admin)
+        gone, _ = references.add(oem, 'OLD-77', 'AISIN', tipo='aftermarket', actor=self.admin)
+        references.retire(gone, actor=self.admin, reason='prueba')
+        row = self.client.get(f'{M}/lines/', {'ids': str(oem.pk)}).data['results'][0]
+        self.assertEqual(row['codes'], [{'id': added.pk, 'code': 'TY-77', 'brand': 'AISIN', 'tipo': 'aftermarket', 'estado': added.estado}])
+        self.assertEqual(row['reference_count'], 2)
         disco_row = self.client.get(f'{M}/lines/{disco.pk}/').data
         self.assertEqual((disco_row['grupo']['nombre'], disco_row['subgrupo']['name']), ('FRENOS', 'DISCOS'))
 

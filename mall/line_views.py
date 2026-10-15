@@ -109,6 +109,10 @@ class MainSerializer(serializers.Serializer):
     estado = serializers.CharField()
 
 
+class LineCodeSerializer(MainSerializer):
+    """A live Reference of the line other than its main, as the Inventario grid's code chips read it (S8)."""
+
+
 class GrupoRefSerializer(serializers.Serializer):
     id = serializers.UUIDField()
     nombre = serializers.CharField()
@@ -136,13 +140,15 @@ class LineSerializer(serializers.ModelSerializer):
     reference_count = serializers.SerializerMethodField(help_text='Referencias vivas (no retiradas), la principal incluida.')
     variant_count = serializers.SerializerMethodField(help_text='Artículos de proveedor en la línea (el stock_record_count del Inventario).')
     merged_count = serializers.SerializerMethodField(help_text='Líneas unificadas en esta (Separar SKU las devuelve).')
+    codes = serializers.SerializerMethodField(help_text='Las referencias vivas de la línea sin la principal (su código es el SKU), como las '
+                                                        'muestra el Inventario: id, code, brand, tipo y estado (S8).')
     images = PartImageSerializer(many=True, read_only=True)
 
     class Meta:
         model = Part
         fields = ['id', 'sku', 'name', 'description', 'estado', 'origen', 'tipo', 'version', 'brand', 'main', 'grupo', 'subgrupo',
                   'category', 'subcategory', 'aplicaciones_texto', 'merged_into', 'decision', 'reference_count', 'variant_count',
-                  'merged_count', 'images', 'field_sources', 'technical_revision', 'created_at', 'updated_at', 'changed_at']
+                  'merged_count', 'codes', 'images', 'field_sources', 'technical_revision', 'created_at', 'updated_at', 'changed_at']
         read_only_fields = fields
 
     def _main(self, line):
@@ -179,6 +185,11 @@ class LineSerializer(serializers.ModelSerializer):
             return line.__dict__['variant_count']
         counts = self.context.get('variant_counts')
         return counts.get(line.pk, 0) if counts is not None else line.supplier_items.count()
+
+    @extend_schema_field(LineCodeSerializer(many=True))
+    def get_codes(self, line):
+        return [{'id': ref.pk, 'code': ref.code, 'brand': ref.brand, 'tipo': ref.tipo, 'estado': ref.estado}
+                for ref in line.codes.all() if not ref.is_main]  # prefetched (live, main first): no query per row
 
     def get_merged_count(self, line) -> int:
         counts = self.context.get('merged_counts')
