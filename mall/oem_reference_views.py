@@ -665,8 +665,8 @@ class OEMCrossReferenceInput(serializers.Serializer):
 class OEMReferenceCrossReferences(APIView):
     """An aftermarket code added by hand to a number (Biblioteca OEM, Alternos): it takes a manual citation, and a code retired before
     comes back. From S9 (mall.merge_pass.code_added) the code is also a Reference: of the number's line when the code sits on that line
-    only (declarado, with an admin source); when the code puts two or more lines together they merge on their own if all are in
-    referencia without variants (3f), otherwise a merge case lists them and the code waits there."""
+    only (declarado, with an admin source); when the code puts two or more lines together a merge case lists them and the code waits
+    there (3f: a code typed by hand never merges lines on its own)."""
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_oem_cross_reference_create', request=OEMCrossReferenceInput, responses={201: OEMCrossReferenceRow},
@@ -703,7 +703,8 @@ class OEMReferenceCrossReferences(APIView):
 class OEMReferenceCrossReference(APIView):
     """Retire an aftermarket code from a number: every line that carries it stops showing it, and no catalog import files it again.
     From S9 (mall.merge_pass.retire_citation) the sources it gave the code's Reference are retired, an inferido Reference left with
-    none goes to disputa, and a merge case lists the lines of an automatic merge the code backed."""
+    none, or a declarado one the merge pass made from catalog or Biblioteca rows, goes to disputa (so no line shows it), and a merge
+    case lists the lines of an automatic merge the code backed."""
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_oem_cross_reference_retire', responses={204: None},

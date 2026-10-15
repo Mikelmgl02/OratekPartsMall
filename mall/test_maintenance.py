@@ -23,8 +23,8 @@ from django.urls import URLPattern, URLResolver, get_resolver
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
-from . import (link_oem_numbers, mark_exact_oem, oem_finder, oem_finder_revert, prune_catalog_alternos, stock_reservations,
-               supplier_catalog_import, supplier_catalog_replace)
+from . import (link_oem_numbers, mark_exact_oem, merge_pass, oem_finder, oem_finder_revert, stock_reservations, supplier_catalog_import,
+               supplier_catalog_replace)
 from . import test_deals as deal_tests
 from . import test_stock_reservations as reservation_tests
 from .apiag_models import ApiagConnection
@@ -456,7 +456,8 @@ class CliGuardTests(FreezeFolderMixin, TestCase):
             for main, argv in [(link_oem_numbers.main, ['--apply']), (mark_exact_oem.main, ['--apply']),
                                (supplier_catalog_replace.main, ['--apply', '/nonexistent.json']),
                                (supplier_catalog_import.main, ['--apply', '/nonexistent.json']),
-                               (prune_catalog_alternos.main, ['--apply']), (oem_finder.main, ['--apply-auto']),
+                               (merge_pass.main, ['--apply', '--user', 'root']), (merge_pass.main, ['--rollback']),
+                               (oem_finder.main, ['--apply-auto']),
                                (oem_finder_revert.main, ['--run', '1']),
                                (s0_suffix_revert.main, ['--apply', '--user', 'root']), (s0_suffix_revert.main, ['--rollback', '--user', 'root']),
                                (s0_normalize_numbers.main, ['--apply'])]:

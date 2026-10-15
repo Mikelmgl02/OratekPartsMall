@@ -246,15 +246,17 @@ def part_equivalents(part):
 def equivalents_for(part_ids):
     """{part id: [{'brand', 'code'}]}: what customers see next to a line's own codes, each code once, by brand and code, in a few
     queries for a whole page. From S9 (plan §3 S9: equivalents stop reading PartOEMLink and become the line's aftermarket References):
-    the line's aftermarket References, and, for the codes the merge pass left as catalog rows, the codes filed under the library numbers
-    the line holds that no other line holds as a Reference (rule 8: a code kept on another line is not shown here). The JSON key
-    stays."""
+    the line's aftermarket References in an exclusive estado (never one in disputa), and, for the codes the merge pass left as catalog
+    rows, the codes filed under the library numbers the line holds that no other line holds as a Reference (rule 8: a code kept on
+    another line is not shown here). The JSON key stays."""
     from . import references
     from .models import Reference
     ids = [str(pk) for pk in part_ids]
     codes, reached = defaultdict(dict), defaultdict(set)
     for chunk in chunks(ids):  # one query: the lines' aftermarket References and their library numbers
-        rows = (Reference.objects.filter(Q(tipo='aftermarket', is_main=False) | references.library_q(), part_id__in=chunk)
+        # an aftermarket Reference in disputa is not shown (a step 0 copy waiting for its case, a code whose sources were retired)
+        rows = (Reference.objects.filter(Q(tipo='aftermarket', is_main=False, estado__in=references.EXCLUSIVE) | references.library_q(),
+                                         part_id__in=chunk)
                 .order_by('brand', 'clave', 'pk').values_list('pk', 'part_id', 'tipo', 'brand', 'code'))
         for pk, part_id, tipo, brand, code in rows:
             if tipo == 'aftermarket':

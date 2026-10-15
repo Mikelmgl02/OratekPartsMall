@@ -2,7 +2,9 @@
 16100-79445; 16100 against 16110; partner makes; an item that replaces others (=(GW..)); W/HOUSING, '*' rows and index-only
 citations; lines kept apart; 3f retirements; the catalog-copied company References of step 0; and the routes, the main (3g), the
 codes (3e, OD15, OD17), the apply in chunks with its manifest, the rollback, the Biblioteca's hand-added codes and the case
-decisions."""
+decisions. The review of 2026-10-15 added: a linked SKU's own numbers guard the merge; the apply's second plan merges nothing; a
+code typed by hand never merges; a declarado code the pass made hides when its sources go; a step 0 case kept apart with no line;
+an import in progress stops the run."""
 import io
 import json
 import os
@@ -211,6 +213,50 @@ class GroupsAndRoutesTests(MergePassBase):
         other_b.refresh_from_db()
         self.assertEqual(Reference.objects.get(part=other_b, brand='GMB').code, 'GWN-61A')
 
+    def test_a_linked_skus_own_numbers_guard_the_merge(self):
+        """Review 2026-10-15 #1: a SKU a catalog link ties to a group is its target, so the guards read that SKU's own numbers too: a
+        Toyota joint (43470) never merges onto a SKU whose number names a shaft (43410), whatever the SKU's description says."""
+        sku = make_line('43410-33230', description='REPUESTO TOY COROLLA')
+        shaft = references.add_library_number('TOYOTA', '43410-33230', source_kind='aftermarket_catalog', citation=GMB, part_type='SEMIEJES',
+                                              description='SEMIEJE (EJE COMPLETO)', applications='TOYOTA COROLLA')[0]
+        self.assertEqual(shaft.part_id, sku.pk)
+        joint = references.add_library_number('TOYOTA', '43470-39376', source_kind='aftermarket_catalog', citation=GMB,
+                                              part_type='JUNTAS HOMOCINÉTICAS', description='JUNTA HOMOCINETICA',
+                                              applications='TOYOTA COROLLA')[0]
+        store_catalog_links({(sku.pk, joint.pk): [gmb(30)]})
+        group = self.group_of(self.plan(), joint)
+        self.assertEqual((group['route'], group['motivo'], group['linked']), ('caso', 'noun', [str(sku.pk)]))
+        self.assertIn('assembly_vs_component', group['flags'])
+        self.apply()
+        self.assertEqual(Part.objects.filter(estado='unificada').count(), 0)
+        self.assertEqual(MatchingCase.objects.get(kind='merge').guard, 'noun')
+
+    def test_a_group_strong_only_after_the_merges_waits_in_the_batch(self):
+        """Review #2: a line a catalog link ties to a SKU that another group merges into goes to the batch in the first plan (the SKU
+        is shared); once that merge is applied the second plan finds it strong, and it still waits in the batch: nothing merges it,
+        and no code filed under its number is placed on the SKU as if it had merged."""
+        sku = make_line('16100-79445', description='BOMBA AGUA TOY HILUX')
+        on_sku, loose = self.number('16100-79445'), self.number('16100-79446')
+        self.assertEqual(on_sku.part_id, sku.pk)
+        self.file('GMB', 'GWT-71A', on_sku, loose)
+        linked = self.number('16100-79447')
+        store_catalog_links({(sku.pk, linked.pk): [gmb(40)]})
+        self.file('AISIN', 'WPT-447', linked, citations=[gmb(554)])
+        planned = self.plan()
+        self.assertEqual(self.group_of(planned, on_sku)['route'], 'auto')
+        first = self.group_of(planned, linked)
+        self.assertEqual((first['route'], first['motivo']), ('lote', 'sku_compartido'))
+        self.apply()
+        self.assertEqual(self.line_of(loose).pk, sku.pk)
+        waiting = self.line_of(linked)
+        self.assertNotEqual(waiting.pk, sku.pk)
+        case = MatchingCase.objects.get(kind='merge', batch_key=merge_pass.BATCH_KEY)
+        self.assertEqual({str(pk) for pk in case.lines.values_list('pk', flat=True)}, {str(sku.pk), str(waiting.pk)})
+        self.assertFalse(Reference.objects.filter(part=sku, brand='AISIN').exists())
+        self.assertEqual(Reference.objects.get(brand='AISIN').part_id, waiting.pk)  # on its number's own line (3e)
+        again = self.apply()  # the case covers it now: a second run writes nothing
+        self.assertEqual({key: value for key, value in again['written'].items() if value}, {})
+
     def test_a_dry_run_writes_nothing(self):
         first, second = self.number('16100-79445'), self.number('16100-79446')
         self.file('GMB', 'GWT-71A', first, second)
@@ -293,6 +339,47 @@ class StepZeroTests(MergePassBase):
         self.assertTrue(Reference.objects.filter(part_id=number.part_id, brand='GMB', code='GWT-80A').exists())
 
 
+    def test_kept_apart_with_no_line_the_copy_leaves_disputa(self):
+        """Review #7: a screen that sends no line keeps a step 0 case apart: the copy on the SKU is retired, since the line of its
+        numbers holds the code (3e placed it there), and no copy waits hidden with no way out."""
+        sku = make_line('BOMBA-80', description='BOMBA AGUA TOY')
+        copy, _ = references.add(sku, 'GWT-80A', 'GMB', tipo='aftermarket', source=gmb(14))
+        number = self.number('16100-66666')
+        self.file('GMB', 'GWT-80A', number, citations=[gmb(14)])
+        self.apply()
+        self.assertEqual(Reference.all_objects.get(pk=copy.pk).estado, 'disputa')
+        self.assertNotIn(str(sku.pk), equivalents_for([sku.pk]))  # a code in disputa is not shown
+        decide(MatchingCase.objects.get(kind='merge'), 'keep_apart', actor=self.root)
+        self.assertEqual(Reference.all_objects.get(pk=copy.pk).estado, 'retirada')
+        self.assertTrue(Reference.objects.filter(part_id=number.part_id, brand='GMB', code='GWT-80A', estado='declarado').exists())
+
+    def test_kept_apart_with_no_line_a_copy_no_other_line_holds_returns_to_its_sku(self):
+        """A copy whose code no line holds after the pass (filed under numbers of two lines: a competitor's code joins nothing) is
+        declarado again on its SKU when the case is kept apart with no line."""
+        sku = make_line('BOMBA-90', description='BOMBA AGUA TOY')
+        copy, _ = references.add(sku, 'WPT-90', 'AISIN', tipo='aftermarket', source=gmb(555))
+        first, second = self.number('16100-90001'), self.number('16100-90002')
+        self.file('AISIN', 'WPT-90', first, second, citations=[gmb(555)])
+        self.apply()
+        self.assertEqual(Reference.all_objects.get(pk=copy.pk).estado, 'disputa')
+        decide(MatchingCase.objects.get(kind='merge', evidence__regla='paso0'), 'keep_apart', actor=self.root)
+        copy = Reference.all_objects.get(pk=copy.pk)
+        self.assertEqual((copy.part_id, copy.estado, copy.dispute_note), (sku.pk, 'declarado', ''))
+
+    def test_kept_apart_on_the_sku_line_the_code_moves_there(self):
+        """Kept apart with the SKU chosen: the copy is declarado again there, and the Reference the pass placed on the other line of
+        the case is retired (one line holds the code)."""
+        sku = make_line('BOMBA-81', description='BOMBA AGUA TOY')
+        copy, _ = references.add(sku, 'GWT-82A', 'GMB', tipo='aftermarket', source=gmb(17))
+        number = self.number('16100-66667')
+        self.file('GMB', 'GWT-82A', number, citations=[gmb(17)])
+        self.apply()
+        placed = Reference.objects.get(part_id=number.part_id, brand='GMB', code='GWT-82A')
+        decide(MatchingCase.objects.get(kind='merge'), 'keep_apart', actor=self.root, line=sku.pk)
+        copy, placed = Reference.all_objects.get(pk=copy.pk), Reference.all_objects.get(pk=placed.pk)
+        self.assertEqual((copy.part_id, copy.estado, placed.estado), (sku.pk, 'declarado', 'retirada'))
+
+
 class RetirementTests(MergePassBase):
     def test_retired_citations_retire_sources_dispute_inferred_codes_and_reopen_a_merge(self):
         """3f: retiring a code from a number (the Biblioteca's DELETE) retires the sources it gave; an inferido Reference left with none
@@ -320,6 +407,27 @@ class RetirementTests(MergePassBase):
         self.assertEqual(client.delete(url.format(first.uid, rows[(first.pk, 'GMB')].pk)).status_code, 204)
         case = MatchingCase.objects.get(batch_key=merge_pass.RETIRED_BATCH)
         self.assertEqual((case.guard, case.lines.count()), ('retirada', 2))
+        own = Reference.objects.get(part=kept, brand='GMB')
+        self.assertEqual(own.estado, 'declarado')  # still printed under 16100-79446
+        # Review #5: a declarado Reference the pass made, left with no live source, stops showing too.
+        self.assertEqual(client.delete(url.format(second.uid, rows[(second.pk, 'GMB')].pk)).status_code, 204)
+        own.refresh_from_db()
+        self.assertEqual(own.estado, 'disputa')
+        self.assertNotIn('GWT-71A', {row['code'] for row in equivalents_for([kept.pk]).get(str(kept.pk), [])})
+
+    def test_retiring_a_code_added_by_hand_hides_it(self):
+        """A code a person added in the Biblioteca (declarado, admin source) and then retired there stops showing: disputa."""
+        client = APIClient()
+        client.force_authenticate(self.root)
+        number = self.number('16100-13131')
+        url = '/api/v1/management/oem-references/{}/cross-references/'
+        self.assertEqual(client.post(url.format(number.uid), {'brand': 'AISIN', 'code': 'WPT-131'}, format='json').status_code, 201)
+        ref = Reference.objects.get(brand='AISIN')
+        self.assertEqual((ref.estado, ref.part_id), ('declarado', number.part_id))
+        row = OEMCrossReference.objects.get(brand='AISIN')
+        self.assertEqual(client.delete(f'{url.format(number.uid)}{row.pk}/').status_code, 204)
+        ref.refresh_from_db()
+        self.assertEqual((ref.estado, ref.dispute_note), ('disputa', 'Se retiró de la Biblioteca la equivalencia en la que se basaba.'))
 
     def test_tombstones_become_retired_sources(self):
         """At apply time a tombstone of a code that becomes a Reference on the same line is a retired catalogo source."""
@@ -374,9 +482,10 @@ class SameNumberRollbackTests(MergePassBase):
 
 
 class LaterChangesTests(MergePassBase):
-    def test_a_code_added_by_hand_merges_quiet_lines_or_opens_a_case(self):
-        """3f from the Biblioteca: a code filed under two numbers in referencia without variants merges their lines and becomes the
-        merged line's Reference; with a SKU among them it opens a case."""
+    def test_a_code_added_by_hand_on_two_lines_opens_a_case_and_never_merges(self):
+        """Review #4, 3f from the Biblioteca: a code typed by hand becomes the line's Reference when it sits on one line; filed under
+        numbers of two lines it opens a merge case and merges nothing, even between lines in referencia without variants (rule 3b: a
+        hand-typed or competitor code joins no lines on its own)."""
         client = APIClient()
         client.force_authenticate(self.root)
         first, second = self.number('16100-12121'), self.number('16100-12122')
@@ -386,15 +495,37 @@ class LaterChangesTests(MergePassBase):
         self.assertEqual(client.post(url.format(second.uid), {'brand': 'AISIN', 'code': 'WPT-121'}, format='json').status_code, 201)
         first.refresh_from_db()
         second.refresh_from_db()
-        self.assertEqual(first.part_id, second.part_id)
-        self.assertEqual(Reference.objects.get(brand='AISIN').part_id, first.part_id)
-
-        sku = make_line('16100-34343', description='BOMBA AGUA TOY')
-        on_sku, loose = self.number('16100-34343'), self.number('16100-34344')
-        self.assertEqual(on_sku.part_id, sku.pk)
-        client.post(url.format(on_sku.uid), {'brand': 'AISIN', 'code': 'WPT-343'}, format='json')
-        client.post(url.format(loose.uid), {'brand': 'AISIN', 'code': 'WPT-343'}, format='json')
-        loose.refresh_from_db()
-        self.assertNotEqual(loose.part_id, sku.pk)
+        self.assertNotEqual(first.part_id, second.part_id)
+        self.assertEqual(Part.objects.filter(estado='unificada').count(), 0)
         case = MatchingCase.objects.get(kind='merge')
-        self.assertEqual((case.evidence['regla'], case.lines.count()), ('3f', 2))
+        self.assertEqual((case.evidence['regla'], case.route, case.guard), ('3f', 'caso', 'lineas'))
+        self.assertEqual({str(pk) for pk in case.lines.values_list('pk', flat=True)}, {str(first.part_id), str(second.part_id)})
+
+
+class ImportInProgressTests(MergePassBase):
+    def test_apply_waits_for_imports_and_a_merge_that_meets_one_stops_the_run(self):
+        """Review #8: a supplier import in progress refuses a merge into its lines only for a while: --apply refuses while one is half
+        applied, and a merge that meets one stops the run (that chunk rolled back) instead of opening a case for good; a re-run once the
+        import is over merges it."""
+        from datetime import timedelta
+        from django.utils import timezone
+        from .supplier_import_models import SupplierInventoryImportJob
+        sku = make_line('16100-79445', description='BOMBA AGUA TOY HILUX')
+        on_sku, loose = self.number('16100-79445'), self.number('16100-79446')
+        self.file('GMB', 'GWT-71A', on_sku, loose)
+        supplier = make_supplier('PROVEEDOR IMPORTANDO')
+        make_variant(supplier, 'IMP-1', '16100-79445', 2, actor=self.root, line=sku)
+        job = SupplierInventoryImportJob.objects.create(owner=self.root, supplier=supplier, filename='x.xlsx', status='importing',
+                                                        expires_at=timezone.now() + timedelta(hours=1))
+        out = io.StringIO()
+        self.assertIsNone(merge_pass.run(apply=True, username=self.root.username, stdout=out, marks_path=self.marks))
+        self.assertIn('importaciones a medias', out.getvalue())
+        with patch.object(merge_pass, 'imports_running', return_value=[]):  # an import that begins after the check
+            out = io.StringIO()
+            self.assertIsNone(merge_pass.run(apply=True, username=self.root.username, stdout=out, marks_path=self.marks))
+        self.assertIn('está importando su inventario', out.getvalue())
+        self.assertEqual((Part.objects.filter(estado='unificada').count(), MatchingCase.objects.filter(kind='merge').count()), (0, 0))
+        self.assertEqual(merge_pass.manifest_lines(), [])
+        SupplierInventoryImportJob.objects.filter(pk=job.pk).update(status='applied')
+        self.apply()
+        self.assertEqual(self.line_of(loose).pk, sku.pk)

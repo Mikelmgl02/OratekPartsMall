@@ -76,6 +76,14 @@ def refuse(message):
     return ValidationError({'detail': message})
 
 
+class SupplierImporting(ValidationError):
+    """A merge or a split refused because a supplier of those lines is importing its inventory: temporary (try again when the import
+    ends), so a batch caller (mall.merge_pass) stops instead of turning it into a case. A ValidationError like refuse()."""
+
+    def __init__(self, message):
+        super().__init__({'detail': message})
+
+
 class MergeGuard(ValidationError):
     """A merge that waits for a person (S6): `guard` says why (subgrupo: the technical sheets of two subgrupos). A ValidationError with
     the message, so every caller that refuses a merge keeps working; a merge case records the guard."""
@@ -178,7 +186,7 @@ def lock_lines(ids, *, suppliers=True):
         accounts = sorted(set(m.SupplierItem.objects.filter(part_id__in=family).values_list('supplier_id', flat=True)))
         list(m.Account.objects.select_for_update().filter(pk__in=accounts).order_by('pk').values_list('pk', flat=True))
         if importing(accounts):
-            raise refuse('Un proveedor de estos SKU está importando su inventario. Espera a que termine y vuelve a intentarlo.')
+            raise SupplierImporting('Un proveedor de estos SKU está importando su inventario. Espera a que termine y vuelve a intentarlo.')
     return {part.pk: part for part in m.Part.objects.select_for_update().filter(pk__in=family).order_by('pk')}
 
 
@@ -956,7 +964,7 @@ def split_line(target_id, restore, *, actor, reason=''):
         suppliers = sorted(set(m.SupplierItem.objects.filter(part_id=target_id).values_list('supplier_id', flat=True)))
         list(m.Account.objects.select_for_update().filter(pk__in=suppliers).order_by('pk').values_list('pk', flat=True))
         if importing(suppliers):
-            raise refuse('Un proveedor de este SKU está importando su inventario. Espera a que termine y vuelve a intentarlo.')
+            raise SupplierImporting('Un proveedor de este SKU está importando su inventario. Espera a que termine y vuelve a intentarlo.')
         target = m.Part.objects.select_for_update().filter(pk=target_id).first()
         if target is None or target.merged_into_id:
             raise refuse('Este SKU ya no está en el catálogo o se agrupó en otro. Vuelve a cargar el inventario.')
@@ -995,9 +1003,10 @@ def split_line(target_id, restore, *, actor, reason=''):
         for code in codes.values():
             number, claimed = normalized_reference(code.code), taken.get(('codes', code.pk))
             alias = main_ids.get(code.pk) or owners.by_number(number, code.code)
-            if alias and code.pk not in main_ids and code.pk not in owners.refs and 'references' in history.get(alias, {}):
+            if alias and code.pk not in main_ids and code.pk not in owners.refs and history.get(alias, {}).get('s2b'):
                 # A merge that recorded what each line brought (S2b on): a code with a restored line's number that it did not bring
                 # was the target's before the merge (CHEVROLET 90499401 on 90499401-K, VAUXHALL 90499401 merged in by S9) and stays.
+                # A merge from before S2b recorded no References: its restored line's own code is retired as before (code_returns).
                 alias = ''
             if alias:
                 # A grouped line's own code is that line's and never passes to another. It stays on the canonical line while its line

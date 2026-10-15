@@ -429,12 +429,3 @@ class LibraryReaderTests(TestCase):
         # S6: a code on a line off sale hangs there, pending (never counted until the line is published).
         self.assertEqual([(row['codigo'], row['matching_status'], row['part_id']) for row in plan['preview']],
                          [(part.sku, 'matched', str(part.pk)), *[(line.sku, 'pending', str(line.pk)) for line in lines.values()]])
-
-    def test_the_alternos_prune_reads_catalog_lines(self):
-        from . import prune_catalog_alternos as prune
-        catalog = 'GMB Water Pump Catalog 2016'
-        make_library_number('TOYOTA', '16100-39315', source_kind='aftermarket_catalog', citation=catalog, detail={'catalog': 'gmb_wp_2016'})
-        lines = hidden('16100-39315-RAZ', 'BOMBA AGUA TOY 22R')
-        for code, line in zip(('GWT-41A', 'GWT-41B'), lines.values()):
-            PartCode.objects.create(part=line, brand='GMB', code=code, ref_type='company', reference_source=f'{catalog} · pág. 212')
-        self.assertEqual(prune.plan(), {'remove': [], 'review': {}})

@@ -266,6 +266,19 @@ class SplitLegacyTests(TestCase):
         self.assertEqual((main(source).pk, main(source).part_id), (alias.pk, source.pk))
         self.assertEqual(broken_invariants(), {})
 
+    def test_an_old_merge_retires_the_restored_lines_code_it_left_on_the_target(self):
+        """S9 review #3: a merge from before S2b recorded no References, so a target code that names the restored line (its codigo
+        under a brand: the worker's ADVICS 47028-60020-ADVICS on 47028-60020) is that line's and leaves the target, retired when the
+        merge did not record it as the line's; only a merge since S2b keeps such a code on the target."""
+        target, source = make_line('47028-60020'), make_line('47028-60020-ADVICS')
+        self.legacy_merge(target, source)
+        branded = Reference.objects.create(part=target, code='47028-60020-ADVICS', brand='ADVICS')
+        split_catalog_part(actor=self.root, target_id=target.pk, restore=[{'id': str(source.pk)}])
+        branded = Reference.all_objects.get(pk=branded.pk)
+        self.assertEqual(branded.estado, 'retirada')
+        self.assertEqual(main(source).code, '47028-60020-ADVICS')
+        self.assertEqual(broken_invariants(), {})
+
     def test_a_collapsed_spelling_splits_by_the_variants_own_codigo(self):
         target, source = make_line('13780-75F00', description='FILTRO'), make_line('13780-75F00_', description='FILTRO')
         own = make_variant(self.supplier, 'COL-1', '13780-75F00', 2, actor=self.root, line=target)

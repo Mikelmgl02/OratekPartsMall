@@ -80,7 +80,8 @@ class OEMInlineEditTests(APITestCase):
         aisin = OEMCrossReference.objects.get(number='WPT111')
         self.assertEqual(self.client.delete(f'{url}{aisin.pk}/').status_code, 204)  # S9: retiring it retires the source it gave
         hand.refresh_from_db()
-        self.assertEqual((hand.estado, list(hand.sources.values_list('retirada', flat=True))), ('declarado', [True]))
+        # and, left with no live source, the Reference the pass made stops showing (disputa): no line carries the code any more
+        self.assertEqual((hand.estado, list(hand.sources.values_list('retirada', flat=True))), ('disputa', [True]))
         self.assertEqual(self.client.delete(f'{url}999999/').status_code, 404)
         self.assertEqual(self.client.post(f'{URL}00000000-0000-4000-8000-000000000001/cross-references/', {'brand': 'AISIN', 'code': 'WPT-1'},
                                           format='json').status_code, 404)

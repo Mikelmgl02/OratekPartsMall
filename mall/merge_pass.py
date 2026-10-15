@@ -28,9 +28,10 @@ W/HOUSING NO. numbers under an item without H, or rows citing only the GMB index
 
 3c, guards (the failing guard is stored on the case, its flags in the evidence): the numbers' own prefixes or the SKU nouns name
 different parts (pump / fan clutch, joint / shaft: prefix or noun; with housing / without, Toyota 16100 / 16110: prefix), front/rear or
-LH/RH differ (side), or a make is missing from the applications and the makes are not partners (make). Items the catalog says
-consolidate others (=(GW..), NEW TYPE FOR, two rival brands mapping two codes) and partner makes (Ford/Mazda, Nissan/Renault...) are
-flagged only: the owner approved them merging on their own.
+LH/RH differ (side), or a make is missing from the applications and the makes are not partners (make). The guards read the numbers of
+the group's lines and of the SKU a catalog link ties to it (it becomes the target): a joint never merges onto a SKU whose number names
+a shaft. Items the catalog says consolidate others (=(GW..), NEW TYPE FOR, two rival brands mapping two codes) and partner makes
+(Ford/Mazda, Nissan/Renault...) are flagged only: the owner approved them merging on their own.
 
 3d, routes. Strong (every guard passes, at most one live line: publicada, retirada, or holding variants; a SKU tied to the group by a
 catalog link counts): merged on its own (merge_lines, automatic, reason merge_pass; the digest is the CatalogMerge list, Unificados
@@ -56,16 +57,24 @@ for S10.
 3f. A tombstone (a code retired from a number) is a retired catalogo source (ReferenceSource.retirada) on the Reference the code
 became, and an inferido Reference left with no live source goes to disputa. From S9 on, retire_citation does the same when the
 Biblioteca or a catalog replace retires a code, and opens a merge case on the lines of an automatic merge the code backed. A later
-import or a code added by hand that would join lines (join_numbers): merged on its own only when every line is in referencia without
-variants, otherwise a merge case.
+import that would join lines (join_numbers): merged on its own only when every line is in referencia without variants, otherwise a
+merge case; a code added by hand in the Biblioteca on two or more lines always opens a merge case (code_added: it never merges). A
+declarado Reference this pass made that loses its last source goes to disputa as an inferido one does.
 
 The report (--report DIR): summary.json (counts, the prototype's for comparison), groups.json, digest.json (the automatic merges),
 cases.json, codes.json (the outcome of every code), hidden.json (every storefront code that would stop showing, and where it goes),
-step0.json, tombstones.json. --apply runs under the catalog freeze (mall.refactor.guard) and the matching worker's lock: the
-automatic merges in chunks of --chunk groups, each atomic and verified (I1–I3 on its lines) before the next; then, on the catalog as
-the merges left it, the cases, the References and sources of 3e and step 0, and 3f, in chunks of lines. Every row it creates or
-changes goes to output/refactor/s9/manifest.jsonl with its values before; --rollback undoes them newest first (sources deleted,
-References retired or given their estado back, mains given back, each merge split with Separar, cases still in review deleted).
+step0.json, tombstones.json. --apply runs under the catalog freeze (mall.refactor.guard) and the matching worker's lock, and refuses
+while an Excel or catalog import is half applied: the automatic merges in chunks of --chunk groups, each atomic and verified (I1–I3 on
+its lines) before the next (a supplier import met on the way stops the run, that chunk rolled back); then, on the catalog as the merges
+left it, a second plan where nothing is automatic any more (a group strong only now waits in the batch, and no code is placed as if it
+had merged): the cases, the References and sources of 3e and step 0, and 3f, in chunks of lines. Every row it creates or changes goes
+to output/refactor/s9/manifest.jsonl with its values before; --rollback undoes them newest first (sources deleted, References retired
+or given their estado back, mains given back, each merge split with Separar, cases still in review deleted).
+
+Deploy (plan §1.2.3, review 2026-10-15): under the freeze, --apply from the worktree before the code lands (the code still live reads
+the SKUs' catalog links, so storefront equivalents, search and the Biblioteca keep every code while the pass writes); then land the code
+(its readers no longer read the links) and run --apply once more (it finds nothing left); then unfreeze. Roll back in the same freeze:
+revert the code first, then --rollback from the worktree.
 """
 import argparse
 import json
@@ -735,8 +744,12 @@ def kept_apart(snap, ids):
 
 
 def evaluate(snap, lines, own_lines, own_by_line):
-    """3c: the guards of a group (its flags in the prototype's names, which block it, and the details)."""
+    """3c: the guards of a group (its flags in the prototype's names, which block it, and the details). A SKU a catalog link ties to the
+    group joins it as its target (3d), so the guards read that SKU's own OEM numbers too: a joint never merges onto a SKU whose number
+    names a shaft (the owner, 2026-10-14), and 16100 never onto 16110."""
     nums = [num for pk in lines for num in snap.lines[pk].numbers]
+    linked = {target for num in nums for target in snap.links.get(num.id, ()) if target not in lines}
+    guard_nums = nums + [num for pk in sorted(linked) for num in snap.lines[pk].numbers]
     codes_in = {}
     for pk in lines:
         for key in own_by_line.get(pk, ()):
@@ -745,14 +758,13 @@ def evaluate(snap, lines, own_lines, own_by_line):
     cover = max((len(value) for value in codes_in.values()), default=0)
     chain = cover < len(lines) and len([key for key, value in codes_in.items() if len(value) >= 2]) >= 2
     skus = {pk for pk in lines if live_line(snap.lines[pk])}
-    linked = {target for num in nums for target in snap.links.get(num.id, ()) if target not in lines}
     skus |= linked
     flags = []
-    types = {broad(num) for num in nums} - {''}
+    types = {broad(num) for num in guard_nums} - {''}
     nouns = {sku_noun(snap.lines[pk].description) for pk in skus} - {''}
     if len(types | nouns) > 1:
         flags.append('assembly_vs_component' if (types | nouns) >= {'shaft', 'joint'} else 'part_type')
-    bs = [basic(num) for num in nums]
+    bs = [basic(num) for num in guard_nums]
     if {('pump', 'assy'), ('pump', 'bare')} <= set(bs):
         flags.append('with_housing_vs_bare')
     fb = {b[1] for b in bs if b and b[0] in ('hub', 'disc') and b[1]}
@@ -770,19 +782,19 @@ def evaluate(snap, lines, own_lines, own_by_line):
         flags.append('front_vs_rear')
     if lr >= {'L', 'R'}:
         flags.append('left_vs_right')
-    fams = {num.family for num in nums}
+    fams = {num.family for num in guard_nums}
     partner = False
     if len(fams) > 1:
-        apps = ' '.join((num.applications or '').upper() for num in nums)
+        apps = ' '.join((num.applications or '').upper() for num in guard_nums)
         missing = [f for f in fams if not any(re.search(r'\b' + re.escape(m) + r'\b', apps) for m in make_names(f))]
         same_only = all(any(len({snap.numbers[y].family for y in snap.by_number.get(num.number, {num.id})}) > 1
-                            for num in nums if num.family == f) for f in missing)
+                            for num in guard_nums if num.family == f) for f in missing)
         if missing and not same_only:
             if partner_ok(fams):
                 partner = True
             else:
                 flags.append('cross_make_unlisted')
-    consolidated = any(consolidation_note((num.applications or '').upper()) for num in nums)
+    consolidated = any(consolidation_note((num.applications or '').upper()) for num in guard_nums)
     if consolidated:
         flags.append('consolidated_item')
     blocking = [flag for flag in flags if flag != 'consolidated_item']
@@ -840,9 +852,10 @@ def code_text(snap, rows):
                 if forms[' '.join((row.code or '').upper().split())] == best)
 
 
-def plan(snap):
+def plan(snap, after_merges=False):
     """The whole pass, read-only: groups and their routes (3b–3d, 3g), cases, the codes' outcomes (3e), step 0 and the tombstones (3f),
-    and the storefront codes that would stop showing."""
+    and the storefront codes that would stop showing. after_merges: the apply's second plan, on the catalog its merges left, where no
+    group is automatic any more (a group strong only now goes to the batch), so the codes, step 0 and 3f map no merge."""
     counts, excluded = Counter(), Counter()
     mark_rows(snap, excluded)
     groups, own_lines = build_groups(snap, counts)
@@ -895,6 +908,13 @@ def plan(snap):
                                'sku_compartido': 'Un SKU que el catálogo vincula a estos números también está vinculado a otro grupo.'}[group['motivo']]
         else:
             group['route'] = 'auto'
+        if group['route'] == 'auto' and after_merges:
+            # The apply's second plan (on the catalog its merges left): every strong group of the first plan was merged or became a
+            # case, so a group strong only now (its SKU was shared with a group that merged into it) waits in the batch; nothing merges
+            # here and no code is placed as if it had.
+            group['route'], group['motivo'] = 'lote', 'tras_unificar'
+            group['reason'] = ('Tras las unificaciones automáticas de esta pasada estas líneas quedaron listas para unificarse: confirma que '
+                               'son el mismo repuesto.')
         # 3g: the target and the main.
         ordered = sorted(members, key=lambda pk: keeper_rank(snap, pk))
         if group['route'] == 'auto':
@@ -940,7 +960,7 @@ def plan(snap):
                    (('A', {'auto'}), ('A+B', {'auto', 'lote'}), ('A+B+C', {'auto', 'lote', 'caso'}))}
     clusters = plan_clusters(snap, merged, codes, step0, out_groups)
     tombstones = plan_tombstones(snap, merged, codes)
-    hidden = plan_hidden(snap, merged, codes, clusters)
+    hidden = plan_hidden(snap, merged, codes, clusters, step0)
 
     # Counts.
     for group in out_groups:
@@ -1231,10 +1251,13 @@ def plan_tombstones(snap, merged, codes):
     return {'rows': rows, 'counts': counts}
 
 
-def plan_hidden(snap, merged, codes, clusters):
+def plan_hidden(snap, merged, codes, clusters, step0=None):
     """The storefront codes that would stop showing: what each publicada line reaches today (its numbers' codes and its catalog and
-    name links' numbers' codes) against what it shows after the pass (mall.oem_links.equivalents_for: its own codes, and the codes
-    filed under the numbers it holds that no other line holds), with where each hidden code goes (a Reference, a case, the archive)."""
+    name links' numbers' codes) against what it shows after the pass (mall.oem_links.equivalents_for: its own codes in an exclusive
+    estado, and the codes filed under the numbers it holds that no other line holds), with where each hidden code goes (a Reference, a
+    case, the archive); and the step 0 copies that go to disputa (a code in disputa is not shown), which wait in their case."""
+    step0 = step0 or {'rows': []}
+    disputed = {item['reference'] for item in step0['rows'] if item.get('dispute')}
     from .lines import canonical_ids, storefront_lines
     from .oem_reference_models import PartOEMLink
     publicada = {str(pk) for pk in storefront_lines().values_list('pk', flat=True)}
@@ -1255,10 +1278,11 @@ def plan_hidden(snap, merged, codes, clusters):
         if line in publicada:
             for row in by_ref.get(ref_id, ()):
                 reached_today[line].add((snap.brand(row.brand), row.number))
-    own_codes = defaultdict(set)  # the codes a line holds itself (shown through its codes, a copy in disputa too)
+    own_codes = defaultdict(set)  # the codes a line holds itself and shows (exclusive estado; a copy step 0 disputes is not shown)
     for rows_ in snap.held.values():
         for held in rows_:
-            own_codes[merged.get(held.line, held.line)].add((snap.brand(held.brand), cc(held.code)))
+            if held.estado in references.EXCLUSIVE and held.id not in disputed:
+                own_codes[merged.get(held.line, held.line)].add((snap.brand(held.brand), cc(held.code)))
     held_by = defaultdict(set)    # code key -> lines holding it exclusively after the pass
     for key, entry in codes['entries'].items():
         if entry['outcome'] in ('existe', 'convertir'):
@@ -1284,6 +1308,18 @@ def plan_hidden(snap, merged, codes, clusters):
             rows.append({'line': line, 'sku': snap.lines[line].sku if line in snap.lines else '', 'brand': key[0], 'code': entry['code'],
                          'goes': where, 'why': reason, 'to_line': entry['line'],
                          'to_sku': snap.lines[entry['line']].sku if entry['line'] in snap.lines else ''})
+    counted = {(row['line'], (row['brand'], cc(row['code']))) for row in rows}
+    for item in step0['rows']:
+        key = (item['brand'], cc(item['code']))
+        if not item.get('dispute') or item['line'] not in publicada or (item['line'], key) in counted:
+            continue
+        entry = codes['entries'].get(key) or {}
+        counts['ocultos'] += 1
+        counts['ocultos_caso'] += 1
+        counts['ocultos_copia_en_disputa'] += 1
+        rows.append({'line': item['line'], 'sku': item['sku'], 'brand': item['brand'], 'code': item['code'], 'goes': 'caso',
+                     'why': 'copia_en_disputa', 'to_line': entry.get('line'),
+                     'to_sku': snap.lines[entry['line']].sku if entry.get('line') in snap.lines else ''})
     counts['ocultos_lineas'] = len({row['line'] for row in rows})
     return {'rows': rows, 'counts': counts}
 
@@ -1378,10 +1414,11 @@ def group_key(group):
 
 def apply_merges(snap, planned, *, actor, user, chunk, log, run, stdout):
     """The automatic merges, chunk by chunk (each atomic, verified, its manifest lines written with it). A merge the database refuses
-    becomes a merge case with the reason. Returns the counts."""
+    becomes a merge case with the reason, except a supplier's import in progress (line_merge.SupplierImporting, temporary): that chunk
+    rolls back and the run stops. Returns the counts."""
     from django.db import IntegrityError, transaction
     from rest_framework.exceptions import APIException
-    from .line_merge import detail_text, merge_lines
+    from .line_merge import SupplierImporting, detail_text, merge_lines
     from .models import Part
     from .reference_matching import open_case
     written = Counter()
@@ -1410,6 +1447,8 @@ def apply_merges(snap, planned, *, actor, user, chunk, log, run, stdout):
                                               'after': {'grupo': group['id'], 'target': target, 'sources': sources, 'reason': MERGE_REASON}})
                             written['unificaciones'] += 1
                             written['lineas_unificadas'] += len(sources)
+                except SupplierImporting:
+                    raise  # temporary: the whole chunk rolls back and the run stops (run() says so); a re-run picks it up
                 except (APIException, IntegrityError, references.ReferenceConflict) as error:
                     lines_log = [line for line in lines_log if not (line.get('action') == 'set_main' and line.get('line') == target)]
                     spec = merge_case_for(snap, sorted({target, *sources}, key=lambda pk: keeper_rank(snap, pk)),
@@ -1625,9 +1664,11 @@ def apply_tombstones(snap, planned, *, user, log, run):
 def undo(*, log, run, stdout):
     """--rollback: newest first, the sources it created are deleted, the References it created retired and the ones it changed given
     their estado back, the mains it set given back; then each merge is split (Separar) and each case still in review deleted
-    (mall.line_merge.s2b_rollback, on the hook lines)."""
+    (mall.line_merge.s2b_rollback, on the hook lines). Meant for the same freeze as the apply: once the matching worker has run, a
+    Reference of this pass that variants hang from cannot be retired; it is counted (referencias_con_variantes) and listed with its
+    line, and stays there."""
     from django.db import transaction
-    from .line_merge import s2b_rollback
+    from .line_merge import detail_text, s2b_rollback
     from .models import Part, Reference, ReferenceSource
     entries = manifest_lines()
     result = Counter()
@@ -1643,7 +1684,11 @@ def undo(*, log, run, stdout):
                         references.retire(ref, reason='Rollback S9', keep_library=False)
                         result['referencias_retiradas'] += 1
                     except references.ReferenceConflict as error:
-                        stdout.write(f'  referencia {ref.pk}: {error.message}\n')
+                        # Variants hang from it: the matching worker ran after the apply (roll back while still frozen, plan §3 S9).
+                        # It stays on its line, listed here, for a person to move with its variants or retire.
+                        hung = isinstance(error, references.ReferenceHasVariants)
+                        result['referencias_con_variantes' if hung else 'referencias_en_conflicto'] += 1
+                        stdout.write(f'  referencia {ref.pk} ({ref.brand} {ref.code}, línea {ref.part_id}) queda: {detail_text(error)}\n')
             elif model == 'mall.Reference' and action == 'update':
                 ref = Reference.all_objects.filter(pk=line['id']).first()
                 if ref is not None and ref.estado != 'retirada':
@@ -1734,27 +1779,16 @@ def quiet(snap, line_ids):
     return all(pk in snap.lines and snap.lines[pk].estado == 'referencia' and not snap.lines[pk].variants for pk in line_ids)
 
 
-def merge_or_case(snap, line_ids, *, actor, evidence, reason, numbers=None):
-    """3f for lines a new equivalence puts together: merged on their own when they are all in referencia without variants, kept apart
-    by nobody, and the 3c guards pass (the target by 3g: the best number); otherwise one merge case (the code waits there). Returns
-    ('merged', target id) or ('case', case) or ('apart', None)."""
-    from .line_merge import merge_lines, service_actor
-    from .models import Part
+def lines_case(snap, line_ids, *, evidence, reason):
+    """The merge case for lines a code a person typed puts together (3f from the Biblioteca: it writes References, merge cases and
+    Source retirements, never a merge; rule 3b: a hand-typed or competitor code joins no lines on its own), the keeper by 3g first and
+    the failing guard on it. Returns ('case', case), or ('apart', None) when the lines are kept apart or a case already asks about them."""
     from .reference_matching import open_case
     line_ids = sorted(set(line_ids))
-    if kept_apart(snap, line_ids):
+    if kept_apart(snap, line_ids) or covered(snap, line_ids):
         return 'apart', None
     info = evaluate(snap, line_ids, {}, {})
     order = sorted(line_ids, key=lambda pk: keeper_rank(snap, pk))
-    if quiet(snap, line_ids) and not info['blocking'] and not covered(snap, line_ids) and info['nums']:
-        best = min(info['nums'], key=lambda num: number_rank(snap, num))
-        target = best.line
-        if not best.is_main:
-            references.set_main(Part.objects.get(pk=target), best.id, actor=actor, reason='S9 (3f): principal del grupo')
-        merge = merge_lines(uuid.UUID(target), [uuid.UUID(pk) for pk in line_ids if pk != target], actor=actor or service_actor(),
-                            reason=MERGE_REASON, automatic=True, library=True)
-        tag_merge(merge, 'manual', [f"{code['brand']} {cc(code['code'])}" for code in evidence.get('codes') or []], info['flags'], rule='3f')
-        return 'merged', target
     spec = merge_case_for(snap, order, evidence={**evidence, 'flags': info['flags']}, reason=reason,
                           guard=info['guard'] or 'lineas', route='caso')
     if spec is None:
@@ -1764,30 +1798,26 @@ def merge_or_case(snap, line_ids, *, actor, evidence, reason, numbers=None):
 
 def code_added(number, brand, code, citation, *, actor=None):
     """3e/3f for an aftermarket code a person added by hand to a library number (the Biblioteca's POST): on one line, it becomes that
-    line's Reference (declarado, with an admin source); on two or more, the lines merge on their own when they are all in referencia
-    without variants (and pass the guards), and the code becomes the merged line's Reference; otherwise a merge case lists the lines
-    and the code waits there. Returns {'reference': id or None, 'case': id or None, 'merged': target or None}."""
+    line's Reference (declarado, with an admin source); on two or more, a merge case lists the lines and the code waits there (never a
+    merge on its own: rule 3b). Returns {'reference': id or None, 'case': id or None}."""
     from django.db import transaction
     from .brands import resolve
     name = resolve(brand)
-    out = {'reference': None, 'case': None, 'merged': None}
+    out = {'reference': None, 'case': None}
     with transaction.atomic():
         lines = lines_of_code(name, code)
         if not lines:
             return out
-        target = next(iter(lines)) if len(lines) == 1 else None
-        if target is None:
+        if len(lines) > 1:
             snap = load(scope={'lines': set(lines), 'numbers': {cc(code)}})
-            outcome, value = merge_or_case(snap, list(lines), actor=actor,
-                                           evidence={'regla': '3f', 'codes': [{'brand': name, 'code': code, 'manual': True}]},
-                                           reason=f'{name} {code}, registrado a mano, está en varias líneas: si son el mismo repuesto, unifícalas.')
-            if outcome == 'merged':
-                target, out['merged'] = value, value
-            elif outcome == 'case':
+            reason = (f'{name} {code}, registrado a mano, está en varias líneas: si son el mismo repuesto, unifícalas; si no, mantenlas '
+                      'separadas y elige la línea del código.')
+            outcome, value = lines_case(snap, list(lines), reason=reason,
+                                        evidence={'regla': '3f', 'codes': [{'brand': name, 'code': code, 'manual': True}]})
+            if outcome == 'case':
                 out['case'] = str(value.pk)
-                return out
-            else:
-                return out
+            return out
+        target = next(iter(lines))
         try:
             ref, _ = references.add(target, code, name, tipo='aftermarket', estado='declarado', actor=actor, absorb_library=False,
                                     detail={TAG: {'regla': '3e', 'manual': True}})
@@ -1849,7 +1879,8 @@ def join_numbers(ref_ids, *, actor=None, reason=''):
 
 def retire_citation(ref, brand, code, citations, *, actor=None, exclude_row=None):
     """3f, when a code is retired from a number (the Biblioteca's DELETE, a catalog replace): the catalogo sources these citations gave
-    the Reference the code is on the number's line become retired; an inferido Reference left with no live source goes to disputa; and
+    the Reference the code is on the number's line become retired; an inferido Reference left with no live source goes to disputa, and
+    so does a declarado one this pass made (3e from a catalog's own code, or a code added by hand in the Biblioteca); and
     when the code was one of the catalog's own codes behind an automatic merge of this pass, a merge case lists that merge's lines
     (Unificar keeps it, Mantener separadas takes it apart). A citation another row of the code still gives on that line (the same page
     filed under another of its numbers) stays live; exclude_row is the row being retired (still stored). Returns {'sources', 'disputed',
@@ -1878,9 +1909,16 @@ def retire_citation(ref, brand, code, citations, *, actor=None, exclude_row=None
                 updated = ReferenceSource.objects.filter(reference=held, kind=kind, citation=citation[:500], retirada=False).update(
                     retirada=True, retired_by=actor if getattr(actor, 'pk', None) else None, retired_at=now)
                 out['sources'] += updated
-            if (held.estado == 'inferido' and not held.is_main and held.sources.exists()
+            # An inferido Reference, or a declarado one this pass made from catalog or Biblioteca rows (detail s9 with its sources),
+            # left with no live source stops showing: disputa, the code is no longer on any number of this line. A person's own
+            # declarado code (no s9 detail) and a main stay.
+            made_here = held.estado == 'declarado' and TAG in (held.detail or {})
+            if ((held.estado == 'inferido' or made_here) and not held.is_main and held.sources.exists()
                     and not held.sources.filter(retirada=False).exists()):
-                references.update(held, estado='disputa', dispute_note='Su catálogo retiró la equivalencia en la que se basaba.', actor=actor)
+                manual = all(citation.startswith(MANUAL) for citation in citations or [])
+                note = ('Se retiró de la Biblioteca la equivalencia en la que se basaba.' if manual and made_here
+                        else 'Su catálogo retiró la equivalencia en la que se basaba.')
+                references.update(held, estado='disputa', dispute_note=note, actor=actor)
                 out['disputed'] = 1
         brands = catalog_brands()
         own = any(catalog_info(parse_citation(citation)[0], brands)[0] == name for citation in citations or [] if not citation.startswith(MANUAL))
@@ -1909,37 +1947,81 @@ S9_RULES = ('3d', '3e', 'paso0', '3f')
 def convert_case_codes(case, action, *, line=None, target=None, actor=None):
     """A merge case of this pass decided (mall.reference_matching.decide_merge). Merged: the codes now on the merged line only become
     its References (3e, settle_line), and the step 0 copies there were settled by the merge (their note ends "caso de unificación").
-    Kept apart with a line chosen: the case's codes become References of that line only, a copy in disputa there is declarado again,
-    and the copies on the other lines leave them (they were catalog copies; one variants hang from stays). Returns how many References
-    were added."""
-    from .models import Reference
+    Kept apart with a line chosen: the case's codes become References of that line only (a copy in disputa there is declarado again; a
+    Reference this pass placed on another of the case's lines and the copies elsewhere leave them: retired, unless variants hang from
+    them). Kept apart with no line (a step 0 case, from a screen that sends none): each copy leaves disputa, retired when another line
+    holds its code (the code stays with its OEM numbers), declarado again on its SKU otherwise; no copy waits hidden with no way out.
+    Returns how many References were added."""
     evidence = case.evidence or {}
     if evidence.get('regla') not in S9_RULES:
         return 0
     if action in ('approve', 'merge'):
         return settle_line([target], actor=actor, extra={'caso': str(case.pk)}) if target else 0
     if not line:
+        if evidence.get('regla') == 'paso0':
+            release_copies(case, actor=actor)
         return 0
+    return place_case_codes(case, str(getattr(line, 'pk', line)), actor=actor)
+
+
+def exclusive_holders(code, brand, exclude_line=None):
+    """The live exclusive public References that hold a branded code (its brand, or none), on lines that are not unificada."""
+    from .models import Reference
+    rows = Reference.all_objects.filter(clave=references.clave(references.code_key(code)), brand__in=[brand, ''], supplier__isnull=True,
+                                        estado__in=references.EXCLUSIVE, part__merged_into__isnull=True).exclude(part__estado='unificada')
+    return rows.exclude(part_id=exclude_line) if exclude_line else rows
+
+
+def release_copies(case, *, actor=None):
+    """Step 0 kept apart with no line chosen: see convert_case_codes. Returns {'retired', 'declared'}."""
+    from django.db import transaction
+    from .models import Reference
+    out = Counter()
+    for code in (case.evidence or {}).get('codes') or []:
+        copy = Reference.all_objects.filter(pk=code.get('copy'), estado='disputa', is_main=False, supplier__isnull=True).first()
+        if copy is None:
+            continue
+        try:
+            with transaction.atomic():
+                if exclusive_holders(copy.code, copy.brand, exclude_line=copy.part_id).exists():
+                    references.retire(copy, actor=actor, reason='Caso de unificación: líneas separadas; el código queda con sus números OEM')
+                    out['retired'] += 1
+                else:
+                    references.update(copy, estado='declarado', dispute_note='', actor=actor)
+                    out['declared'] += 1
+        except references.ReferenceConflict:
+            continue  # variants hang from it, or another line took the code meanwhile: it stays in disputa for a person
+    return dict(out)
+
+
+def place_case_codes(case, line_id, *, actor=None):
+    """Kept apart with a line chosen: see convert_case_codes. Returns how many References were added."""
+    from django.db import transaction
+    from .models import Reference
+    case_lines = {str(pk) for pk in case.lines.values_list('pk', flat=True)}
+    from .lines import canonical_ids
+    case_lines = set(canonical_ids(case_lines).values()) | case_lines
     added = 0
-    line_id = str(getattr(line, 'pk', line))
-    for code in evidence.get('codes') or []:
+    for code in (case.evidence or {}).get('codes') or []:
         brand, text = code.get('brand') or '', code.get('code') or ''
         if not brand or not text:
             continue
-        key = references.clave(references.code_key(text))
-        for copy in Reference.all_objects.filter(clave=key, brand=brand, supplier__isnull=True, estado='disputa').exclude(is_main=True):
-            if str(copy.part_id) == line_id:
-                references.update(copy, estado='declarado', dispute_note='', actor=actor)
-            elif code.get('copy') == copy.pk:
-                try:
-                    references.retire(copy, actor=actor, reason='Caso de unificación: el código queda en la línea elegida')
-                except references.ReferenceConflict:
-                    pass
         try:
-            ref, created = references.add(line_id, text, brand, tipo='aftermarket', estado='declarado' if code.get('own') else 'inferido',
-                                          actor=actor, absorb_library=False, detail={TAG: {'regla': '3e', 'caso': str(case.pk)}})
+            with transaction.atomic():
+                for held in exclusive_holders(text, brand, exclude_line=line_id).filter(part_id__in=sorted(case_lines), is_main=False):
+                    made = (held.detail or {}).get(TAG) or {}
+                    if made and not made.get('caso') and not made.get('manual'):  # placed by this pass, not by a person
+                        references.retire(held, actor=actor, reason='Caso de unificación: el código queda en la línea elegida')
+                key = references.clave(references.code_key(text))
+                for copy in Reference.all_objects.filter(clave=key, brand=brand, supplier__isnull=True, estado='disputa').exclude(is_main=True):
+                    if str(copy.part_id) == line_id:
+                        references.update(copy, estado='declarado', dispute_note='', actor=actor)
+                    elif code.get('copy') == copy.pk:
+                        references.retire(copy, actor=actor, reason='Caso de unificación: el código queda en la línea elegida')
+                ref, created = references.add(line_id, text, brand, tipo='aftermarket', estado='declarado' if code.get('own') else 'inferido',
+                                              actor=actor, absorb_library=False, detail={TAG: {'regla': '3e', 'caso': str(case.pk)}})
         except references.ReferenceConflict:
-            continue
+            continue  # another line holds it in a way this case does not decide (a person's code, variants): the code stays where it is
         added += 1 if created else 0
     return added
 
@@ -2016,6 +2098,17 @@ def write_report(folder, planned, snap, *, mode, written=None):
     return folder
 
 
+def imports_running():
+    """The Excel and catalog imports still applying (status importing, not expired): a merge into their suppliers' lines would be
+    refused (line_merge.SupplierImporting), so --apply waits for them (plan D0)."""
+    from django.utils import timezone
+    from .models import CatalogImportJob
+    from .supplier_import_models import SupplierInventoryImportJob
+    now = timezone.now()
+    return [f'{model.__name__} {pk}' for model in (CatalogImportJob, SupplierInventoryImportJob)
+            for pk in model.objects.filter(status='importing', expires_at__gt=now).values_list('pk', flat=True)[:5]]
+
+
 def read_only():
     """A dry run reads in a READ ONLY transaction: nothing it calls can write."""
     from django.db import connection
@@ -2029,7 +2122,7 @@ def run(*, apply=False, rollback=False, username=None, report=None, chunk=CHUNK,
     from django.contrib.auth import get_user_model
     from django.db import transaction
     from django.utils import timezone
-    from .line_merge import service_actor
+    from .line_merge import SupplierImporting, detail_text, service_actor
     from .matching_queue import matching_lock, matching_work
     stdout = stdout or sys.stdout
     user = None
@@ -2042,6 +2135,10 @@ def run(*, apply=False, rollback=False, username=None, report=None, chunk=CHUNK,
         user = get_user_model().objects.filter(username=username or '').first()
         if apply and user is None:
             stdout.write('Indica con --user el usuario que figura como autor del cambio.\n' if not username else f'No existe el usuario {username}.\n')
+            return None
+        busy = imports_running()
+        if busy:
+            stdout.write(f"Hay importaciones a medias ({', '.join(busy)}): espera a que terminen o venzan y vuelve a ejecutar.\n")
             return None
     run_line = {'stage': 's9_merge_pass', 'database': current_database(), 'run': str(uuid.uuid4()), 'actor': user.username if user else '',
                 'at': timezone.now().isoformat()}
@@ -2074,7 +2171,9 @@ def run(*, apply=False, rollback=False, username=None, report=None, chunk=CHUNK,
             written = Counter()
             written.update(apply_merges(snap, first, actor=actor, user=user, chunk=chunk, log=log, run=run_line, stdout=stdout))
             snap = load(marks_path=marks_path, positions_folder=positions_folder)  # the catalog as the merges left it
-            planned = plan(snap)
+            planned = plan(snap, after_merges=True)
+            if planned['merged']:
+                raise RuntimeError('S9: el segundo plan no debe proponer unificaciones automáticas.')
             written.update(apply_cases(snap, planned, log=log, run=run_line))
             outcomes = []
             written.update(apply_codes(snap, planned, user=user, chunk=chunk, log=log, run=run_line, outcomes=outcomes))
@@ -2087,6 +2186,10 @@ def run(*, apply=False, rollback=False, username=None, report=None, chunk=CHUNK,
             return {'mode': 'apply', 'counts': dict(first['counts']), 'written': dict(written)}
         except OSError as error:
             stdout.write(f'No se pudo escribir el manifiesto ({error}): el trozo en curso no se aplicó.\n')
+            return None
+        except SupplierImporting as error:
+            stdout.write(f'{detail_text(error)} El trozo en curso no se aplicó; los anteriores quedan en el manifiesto. Vuelve a ejecutar '
+                         '--apply cuando termine: sigue donde se quedó.\n')
             return None
 
 
