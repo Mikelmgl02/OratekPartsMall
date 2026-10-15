@@ -30,7 +30,8 @@ export type CatalogPage = Page<Part> & { facets?: CatalogFacets };
 export type OfferItem = { id: string; codigo: string; brand: string; description: string };
 // stock (cesta lines): the supplier's band for the article, as the catalog's (no units).
 export type Offer = { supplier_id: string; supplier_name: string; in_stock: boolean; stock?: Exclude<CatalogAvailability['status'], 'unknown'>; items?: OfferItem[]; selected_item?: OfferItem };
-export type StockItem = { branch_stock?: BranchStock[]; references?: { brand: string; code: string }[]; id: string; supplier_invent_id: string; part: string | null; codigo: string; brand: string; description: string; matching_status: 'pending' | 'matched' | 'review'; source: 'upload' | 'apiag'; reported_quantity: number; reserved_quantity: number; available_quantity: number; updated_at: string };
+// reference: the line's Reference the item hangs from (S3); codigo_pendiente / brand_pendiente: a code change waiting for review.
+export type StockItem = { branch_stock?: BranchStock[]; references?: { brand: string; code: string }[]; id: string; supplier_invent_id: string; part: string | null; codigo: string; brand: string; description: string; matching_status: 'pending' | 'matched' | 'review'; source: 'upload' | 'apiag'; reported_quantity: number; reserved_quantity: number; available_quantity: number; updated_at: string; reference?: number | null; codigo_pendiente?: string | null; brand_pendiente?: string | null };
 // apiag-cloud items: units per sucursal the supplier publishes (their sum is reported_quantity).
 export type BranchStock = { sucursal: string; nombre: string; disponible: number };
 // The supplier's pull from apiag-cloud (mall.apiag_sync_views). The token never comes back.
@@ -41,7 +42,8 @@ export type ApiagSyncStatus = { connected: false } | { connected: true; server: 
   error: { code: string; message: string } | null; last_mode: 'full' | 'changes' | 'day' | null; counts: ApiagSyncCounts; samples: string[];
   progress: ApiagSyncCounts & { mode?: string }; sucursales: { id: string; nombre: string }[] };
 export type ManagedPart = Pick<Part, 'id' | 'sku' | 'is_OEM' | 'name' | 'description' | 'category' | 'subcategory' | 'part_type' | 'codes' | 'images'> & { active: boolean; stock_record_count: number; merged_count?: number; identity?: { ref_type: 'unknown' | 'oem' | 'company'; brand: string } };
-export type ManagedStockItem = StockItem & { supplier: string; supplier_name: string; part_name: string | null; part_sku: string | null };
+// line_estado (S6): the estado of the item's line; Existencias shows "En preparación" when it is not publicada.
+export type ManagedStockItem = StockItem & { supplier: string; supplier_name: string; part_name: string | null; part_sku: string | null; line_estado?: string | null };
 export type ManagedAlternate = PartReference & { id: number; part: string; part_name: string; part_sku: string; code: string; brand: string };
 export type CatalogGroupingPart = Pick<Part, 'id' | 'sku' | 'name' | 'description' | 'category' | 'subcategory' | 'codes'> & { proposed_parent?: boolean };
 export type CatalogGroupingCandidate = { target_sku: string; target: CatalogGroupingPart; sources: CatalogGroupingPart[]; source_skus: string[]; source_count: number; reason: string; warnings?: string[]; needs_review: boolean };

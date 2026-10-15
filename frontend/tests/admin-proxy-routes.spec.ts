@@ -120,3 +120,19 @@ test('the proxies forward the supplier ledger routes and their filters', async (
     expect(await (await page.request.get(path)).text(), path).not.toContain('La ruta solicitada no existe');
   }
 });
+
+test('the proxy forwards Agrupación inteligente: the cases by kind and the S6 decisions on matching/<id>', async ({ page }) => {
+  test.skip(!process.env.E2E_ADMIN_TOKEN, 'A disposable superuser token is required.');
+  await page.context().addCookies([{ name: 'partsmall_session', value: process.env.E2E_ADMIN_TOKEN!, url: origin, httpOnly: true, sameSite: 'Strict' }]);
+  for (const path of ['/api/management/matching?status=review&offset=0', '/api/management/matching?status=applied&offset=0&kind=merge']) {
+    const response = await page.request.get(path);
+    expect(response.status(), `${path}: ${await response.text()}`).toBe(200);
+  }
+  // A case that does not exist: the backend refuses each decision itself (404, or 400 for an action it does not know), so nothing is written.
+  const zero = '00000000-0000-4000-8000-000000000000';
+  for (const data of [{ action: 'approve', line: zero }, { action: 'separar_referencia' }, { action: 'merge', line: zero }, { action: 'keep_apart' }]) {
+    const response = await page.request.post(`/api/management/matching/${zero}`, { data: { ...data, fingerprint: '0'.repeat(64) }, headers: { Origin: origin } });
+    expect([400, 404], `${data.action}: ${await response.text()}`).toContain(response.status());
+    expect(await response.text()).not.toContain('La ruta solicitada no existe');
+  }
+});

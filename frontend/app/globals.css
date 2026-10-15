@@ -1831,6 +1831,27 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .smart-matching-modal .inventory-ai-proposal .button:has(small) { display:grid; gap:4px; text-align:left; }
 .smart-matching-modal > .admin-toolbar-actions:last-child { margin-top:16px; align-items:center; }
 .smart-matching-modal .form-footnote { margin-top:14px; margin-bottom:14px; }
+/* The case cards of matching on References (S6): kind pills, a code change side by side, and the line choices as radios. */
+.smart-matching-modal .pill { display:inline-block; padding:4px 7px; border-radius:5px; background:#f1ede0; color:#8d8467; font-size:9px; font-weight:700; font-style:normal; letter-spacing:.02em; white-space:nowrap; }
+.smart-matching-modal .matching-case-pills { display:flex; flex-wrap:wrap; gap:6px; }
+.smart-matching-modal .matching-kinds { margin-top:8px; }
+.smart-matching-modal .inventory-ai-proposal p.matching-guard { color:#a98055; }
+.smart-matching-modal .inventory-ai-proposal p.matching-evidence, .smart-matching-modal .inventory-ai-proposal p.matching-hold { margin:0; color:var(--muted); font-size:12px; }
+.smart-matching-modal .matching-code-change { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+.smart-matching-modal .matching-code-change > svg { color:var(--muted); flex:none; }
+.smart-matching-modal .inventory-ai-proposal .matching-code-change p, .smart-matching-modal .inventory-ai-proposal p.matching-code { display:grid; gap:2px; margin:0; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:#fafaf6; min-width:0; }
+.smart-matching-modal .matching-code-change p small, .smart-matching-modal p.matching-code small { color:var(--muted); font-size:10px; letter-spacing:.03em; }
+.smart-matching-modal .matching-code-change p span, .smart-matching-modal p.matching-code span { color:var(--muted); font-size:12px; }
+.smart-matching-modal .matching-lines { display:grid; gap:8px; margin:0; padding:0; border:0; min-width:0; }
+.smart-matching-modal .matching-lines legend { margin-bottom:8px; padding:0; color:var(--muted); font-size:12px; }
+.smart-matching-modal .inventory-ai-proposal label.matching-line { display:flex; align-items:flex-start; gap:10px; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--ink); cursor:pointer; }
+.smart-matching-modal .inventory-ai-proposal label.matching-line.selected { border-color:#9fbd7f; background:#f8fbf3; }
+.smart-matching-modal .inventory-ai-proposal label.matching-line input { width:auto; flex:none; margin:3px 0 0; padding:0; }
+.smart-matching-modal .matching-line > span { display:grid; gap:3px; min-width:0; overflow-wrap:anywhere; }
+.smart-matching-modal .matching-line > span strong { display:flex; flex-wrap:wrap; align-items:center; gap:6px; font-size:13px; }
+.smart-matching-modal .matching-line small { color:var(--muted); font-size:12px; line-height:1.5; }
+.smart-matching-modal .matching-lines .part-picker { margin-top:4px; }
+.smart-matching-modal .matching-lines .part-picker select { width:100%; box-sizing:border-box; padding:11px 12px; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--ink); font:inherit; }
 
 .catalog-reference-entry { padding:12px; border:1px solid var(--line); border-radius:8px; margin-bottom:12px; background:#fff; }
 .catalog-reference-entry .form-row { margin-bottom:0; }
@@ -2254,6 +2275,8 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .sku-cell>span.sku-identity { display:inline-block; margin-top:6px; padding:3px 7px; border-radius:5px; font-size:9px; font-weight:600; letter-spacing:.3px; }
 .sku-identity.oem { background:#e6f2d5; color:#4f7232; }
 .sku-identity.internal { background:#f3f1ea; color:#8d8467; }
+.sku-identity.line-estado { flex-shrink:0; background:#fbebdf; color:#a98055; }  /* Existencias: the item's line is not publicada (S6) */
+.admin-grid-stack small.stock-code-pending { color:#a98055; font-weight:600; }
 .sku-cell>span.sku-category { color:#7f9070; }
 .admin-catalog-table .admin-role-list { max-width:340px; }
 .admin-role-list span.more { background:transparent; border:1px dashed #d4dcc8; color:#7d8f6c; cursor:help; }

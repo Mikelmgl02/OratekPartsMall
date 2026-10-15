@@ -153,11 +153,19 @@ export function catalogColumns(wide: boolean, edit: CatalogEdit | null = null): 
 function SupplierCell({ data }: Cell<ManagedStockItem>) {
   return data ? <div className="admin-grid-stack"><strong>{data.supplier_name}</strong><small>{data.source === 'apiag' ? 'apiag-cloud' : 'Carga manual'}</small></div> : null;
 }
+// A code change waiting for review (rule 5b) shows under the code the item still sells under.
 function StockCodeCell({ data }: Cell<ManagedStockItem>) {
-  return data ? <div className="admin-grid-stack"><strong>{data.codigo}</strong><small>{data.brand}</small></div> : null;
+  if (!data) return null;
+  const pending = data.codigo_pendiente || data.brand_pendiente;
+  const fresh = [data.codigo_pendiente || data.codigo, data.brand_pendiente].filter(Boolean).join(' · ');
+  return <div className="admin-grid-stack"><strong>{data.codigo}</strong>{pending ? <small className="stock-code-pending" title={`Código nuevo en revisión (Agrupación inteligente): ${fresh}`}>EN REVISIÓN: {fresh}</small> : <small>{data.brand}</small>}</div>;
 }
+// A line that is not publicada (S6: Productos nuevos are lines in preparación) holds the item out of the storefront.
+const lineEstadoLabels: Record<string, string> = { preparacion: 'EN PREPARACIÓN', referencia: 'EN PREPARACIÓN', rechazada: 'RECHAZADA', retirada: 'RETIRADA', unificada: 'UNIFICADA' };
 function LinkedSkuCell({ data }: Cell<ManagedStockItem>) {
-  return data ? <div className="admin-grid-stack"><strong className={data.part_sku ? '' : 'admin-grid-muted'}>{data.part_sku || 'Sin vincular'}</strong>{data.part_name && data.part_name !== data.part_sku && <small>{data.part_name}</small>}</div> : null;
+  if (!data) return null;
+  const estado = data.part_sku && data.line_estado && data.line_estado !== 'publicada' ? lineEstadoLabels[data.line_estado] ?? data.line_estado.toUpperCase() : '';
+  return <div className="admin-grid-stack"><div className="sku-line"><strong className={data.part_sku ? '' : 'admin-grid-muted'}>{data.part_sku || 'Sin vincular'}</strong>{estado && <span className="sku-identity line-estado">{estado}</span>}</div>{data.part_name && data.part_name !== data.part_sku && <small>{data.part_name}</small>}</div>;
 }
 function MatchCell({ data, context }: Cell<ManagedStockItem>) {
   if (!data) return null;
