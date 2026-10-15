@@ -127,9 +127,7 @@ def declared(line, items):
     from .matching_models import MatchingCase
     found, rows = set(), []
     for case in MatchingCase.objects.filter(item_id__in=[item.pk for item in items], kind=new_products.CASE_KIND, status='review').order_by('key'):
-        code, brand = getattr(case, 'new_code', ''), getattr(case, 'new_brand', '')
-        if not code:  # before S6.1's fields: the key says it (reference:<item>:<clave>|<brand>)
-            code, _, brand = case.key.split(':', 2)[-1].partition('|')
+        code, brand = case.new_code, case.new_brand
         if (code, brand) not in found:
             found.add((code, brand))
             rows.append({'code': code, 'brand': brand, 'case': str(case.pk)})

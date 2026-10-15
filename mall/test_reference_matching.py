@@ -139,7 +139,7 @@ class ResolveTests(Matching, TestCase):
         motion = make_supplier('MOTION MOTORS')
         rows = [('AB-12', '', self.supplier, ('interno', '')), ('AB-12', 'GENERICO', self.supplier, ('interno', '')),
                 ('12345-67890', '', self.supplier, ('otro', '')), ('12345-67890', 'S/M', self.supplier, ('otro', '')),
-                ('ZX-998877', 'MOTION  MOTORS', motion, ('interno', '')), ('F16-4121020', 'KAIYI', self.supplier, ('oem', 'KAIYI')),
+                ('ZX-998877', 'MOTION  MOTORS', motion, ('interno', 'MOTION MOTORS')), ('F16-4121020', 'KAIYI', self.supplier, ('oem', 'KAIYI')),
                 ('GWT-99', 'GMB', self.supplier, ('aftermarket', 'GMB'))]
         for code, brand, supplier, expected in rows:
             with self.subTest(code=code, brand=brand):
@@ -231,6 +231,23 @@ class IngestTests(Matching, TestCase):
         item = self.ingest('16100-39999', description='BOMBA AGUA')
         library.refresh_from_db()
         self.assertEqual((item.part_id, item.matching_status, library.estado), (library.pk, 'pending', 'preparacion'))
+
+    def test_a_new_product_takes_the_loads_code_and_counts_the_items_that_join_it(self):
+        # The S6.1/S6.2 interface: place() writes the load's item as it arrives (its new code still unsaved), and an item joining the
+        # line in preparación later counts there (mall.new_products.joined: version + 1, the more detailed description).
+        waiting = self.ingest('90915-YZZE1', stable='W', description='FILTRO ACEITE')  # its clave is on two lines: a line case
+        self.assertIsNone(waiting.reference_id)
+        moved = self.ingest('ZQ-55501234', stable='W', brand='GMB', description='BOMBA AGUA')
+        new = moved.part
+        self.assertEqual((new.estado, new.sku, references.main_of(new).code, references.main_of(new).brand, moved.codigo),
+                         ('preparacion', 'ZQ-55501234', 'ZQ-55501234', 'GMB', 'ZQ-55501234'))
+        self.assertEqual(MatchingCase.objects.get(key=f'line:{waiting.pk}').status, 'applied')
+        new.refresh_from_db()
+        version = new.version
+        other = self.ingest('ZQ-55501234', brand='GMB', supplier=self.other, description='BOMBA DE AGUA TOYOTA HILUX')
+        new.refresh_from_db()
+        self.assertEqual((other.part_id, other.matching_status), (new.pk, 'pending'))
+        self.assertEqual((new.version, new.description), (version + 1, 'BOMBA DE AGUA TOYOTA HILUX'))
 
     def test_the_excel_preview_says_what_the_import_does(self):
         from .supplier_import import stock_plan

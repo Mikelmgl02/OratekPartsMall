@@ -149,7 +149,9 @@ class PlaceTests(Helpers, TestCase):
         # Its own code adds nothing; GWT41A is another code (a short code keeps its separators: EC-01 is not EC01).
         self.assertEqual([case.key for case in cases], [f'reference:{item.pk}:1610039315|TOYOTA', f'reference:{item.pk}:GWT41A|GMB'])
         case = cases.first()
-        self.assertEqual((case.item_id, case.status, case.target_sku, case.method), (item.pk, 'review', 'GWT-41A', new_products.DECLARED_METHOD))
+        self.assertEqual((case.item_id, case.status, case.method, case.new_code, case.new_brand), (item.pk, 'review', new_products.DECLARED_METHOD,
+                                                                                               '16100-39315', 'TOYOTA'))
+        self.assertEqual(list(case.lines.all()), [line])   # the item's line: Aprobar adds the code there (mall.reference_matching.decide)
         self.assertEqual(new_products.declared_cases(item, line), [])
         MatchingCase.objects.filter(pk=case.pk).update(status='dismissed')
         self.assertEqual(new_products.declared_cases(item, line), [])
@@ -157,23 +159,25 @@ class PlaceTests(Helpers, TestCase):
         item.refresh_from_db()
         self.assertEqual(item.matching_status, 'pending')
 
-    def test_the_backlog_stage_places_what_d1_left_for_productos_nuevos(self):
+    def test_the_matching_backlog_places_what_d1_left_for_productos_nuevos(self):
+        # Items no line holds (D1's, whatever their legacy case says) are the matching worker's backlog: rule 4 places them, and their
+        # legacy supplier cases are dismissed as placed (plan A5); a code a catalog line has attaches there instead.
+        from .reference_matching import backlog
         first = self.item(self.dealer, '1', 'B-1000', 'WURTH', 'PIEZA')
         self.item(self.dealer, '2', 'B-1000', 'WURTH', 'PIEZA')
-        self.item(self.dealer, '3', 'B-2000', 'WURTH', 'PIEZA', case='review')   # code evidence: Agrupación inteligente has it
-        self.item(self.dealer, '4', 'B-3000', 'WURTH', 'PIEZA', case=None)       # not examined yet
-        make_line('B-4000')
-        self.item(self.dealer, '5', 'B-4000', 'WURTH', 'PIEZA')                   # its code is a catalog line's: refused, left
-        from .sku_proposals import proposals_stage
-        stats = proposals_stage()
-        self.assertEqual((stats.get('created'), stats.get('joined'), stats.get('refused')), (1, 1, 1))
+        reviewed = self.item(self.dealer, '3', 'B-2000', 'WURTH', 'PIEZA', case='review')
+        self.item(self.dealer, '4', 'B-3000', 'WURTH', 'PIEZA', case=None)
+        catalog = make_line('B-4000')
+        sold = self.item(self.dealer, '5', 'B-4000', 'WURTH', 'PIEZA')
+        stats = backlog()
+        self.assertEqual((stats['placed'], stats['attached'], stats['failed']), (3, 2, 0))   # the second B-1000 joins the first's line
         first.refresh_from_db()
-        self.assertEqual(SupplierItem.objects.filter(part=first.part).count(), 2)
-        self.assertEqual(proposals_stage(), {})   # the refused one is not tried again in this process
-        new_products.FAILED.clear()
+        self.assertEqual((first.part.estado, SupplierItem.objects.filter(part=first.part).count()), ('preparacion', 2))
+        self.assertEqual(MatchingCase.objects.get(key=f'supplier:{reviewed.pk}').reason, PLACED_REASON)
+        sold.refresh_from_db()
+        self.assertEqual((sold.part, sold.matching_status), (catalog, 'matched'))
+        self.assertEqual(backlog()['examined'], 0)   # nothing left without a Reference
 
-
-class DecisionTests(Helpers, TestCase):
     def placed(self, *rows):
         line = None
         for supplier, invent_id, code, brand, description in rows:

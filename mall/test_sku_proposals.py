@@ -11,7 +11,8 @@ from . import new_products
 from .matching_engine import item_row, save_case
 from .matching_models import MatchingCase
 from .models import Account, Part, PartType, Reference, Role, SupplierItem, User
-from .sku_proposals import proposals_stage, vehicle_makes
+from .reference_matching import backlog
+from .sku_proposals import vehicle_makes
 from .test_factories import move_variant
 
 OLD_KEYS = {'id', 'status', 'status_label', 'version', 'sku', 'description', 'brand', 'oem', 'part_type', 'references', 'field_sources',
@@ -26,7 +27,6 @@ class ProductosNuevosApiTests(APITestCase):
         self.dealer = self.supplier('Motion Motors')
         self.other = self.supplier('Repuestos Chinos')
         self.client.force_authenticate(self.root)
-        self.addCleanup(new_products.FAILED.clear)
 
     def supplier(self, name):
         account = Account.objects.create(name=name)
@@ -50,8 +50,7 @@ class ProductosNuevosApiTests(APITestCase):
         self.item(self.dealer, '10', 'A-1', 'KAIYI', 'PIEZA A', reported_quantity=3)
         self.item(self.dealer, '11', 'B-1', 'KAIYI', 'PIEZA B')
         self.item(self.dealer, '12', 'C-1', 'WURTH', 'PIEZA C')
-        self.item(self.dealer, '13', 'XX-1', 'ACME', case='review')   # code evidence: Agrupación inteligente handles it
-        self.assertEqual(proposals_stage()['created'], 3)
+        self.assertEqual(backlog()['placed'], 3)   # the matching worker's backlog: rule 4 for the items no line takes
         listing = self.client.get(self.url()).json()
         self.assertEqual(listing['count'], 3)
         first = listing['results'][0]
@@ -86,14 +85,14 @@ class ProductosNuevosApiTests(APITestCase):
 
     def test_conflicts_and_duplicates_save_nothing(self):
         self.item(self.dealer, '10', 'A-1', 'KAIYI', 'PIEZA A')
-        proposals_stage()
+        backlog()
         line = self.line('A-1')
         response = self.client.post(self.url(line), {'action': 'approve', 'expected_version': line.version + 1}, format='json')
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()['proposal']['version'], line.version)
         holder = Part.objects.create(sku='EC-01', name='EC-01')
         self.item(self.dealer, '11', 'EC01', 'WURTH', 'ARANDELA')   # another spelling of a catalog code: a new line, refused on approval
-        proposals_stage()
+        backlog()
         clash = self.line('EC01')
         response = self.client.post(self.url(clash), {'action': 'approve', 'expected_version': clash.version}, format='json')
         self.assertEqual(response.status_code, 400)
@@ -109,7 +108,7 @@ class ProductosNuevosApiTests(APITestCase):
     def test_link_to_an_existing_sku_or_reject(self):
         item = self.item(self.dealer, '10', 'A-1', 'ACME', 'PIEZA A')
         self.item(self.dealer, '11', 'B-1', 'ACME', 'PIEZA B')
-        proposals_stage()
+        backlog()
         target = Part.objects.create(sku='MASTER-1', name='MASTER-1')
         line = self.line('A-1')
         response = self.client.post(self.url(line), {'action': 'link', 'expected_version': line.version}, format='json')
@@ -125,7 +124,7 @@ class ProductosNuevosApiTests(APITestCase):
         self.assertEqual((response.json()['status'], response.json()['reject_reason'], response.json()['reject_reason_label'],
                           response.json()['reject_note']), ('rejected', 'not_a_part', 'No es un repuesto', 'Es un servicio'))
         self.item(self.other, 'A7', 'B-1', 'ACME', 'PIEZA B 12V')                  # the same code comes back: no notice (OD13)
-        proposals_stage()
+        backlog()
         self.assertEqual(self.client.get(self.url(rejected)).json()['status'], 'rejected')
         self.assertEqual(SupplierItem.objects.filter(part=rejected).count(), 2)
         summary = self.client.get(self.url(rest='summary/')).json()
@@ -133,7 +132,7 @@ class ProductosNuevosApiTests(APITestCase):
 
     def test_an_administrators_edits_through_the_api(self):
         self.item(self.dealer, '10', 'A-1', 'ACME', 'pieza a', references=[{'code': '16100-39315', 'brand': 'TOYOTA'}])
-        proposals_stage()
+        backlog()
         line = self.line('A-1')
         part_type = PartType.objects.create(category='FRENOS', name='PASTILLAS')
         self.assertEqual(self.client.patch(self.url(line), {'description': 'X'}, format='json').status_code, 400)   # the version it edits
@@ -158,7 +157,7 @@ class ProductosNuevosApiTests(APITestCase):
         self.assertIsNone(self.client.get(url).json()['pending_changed_at'])
         self.item(self.dealer, '10', 'A-1', 'KAIYI', 'PIEZA A')
         self.item(self.dealer, '11', 'B-1', 'KAIYI', 'PIEZA B')
-        proposals_stage()
+        backlog()
         first, second = self.line('A-1'), self.line('B-1')
         Part.objects.filter(pk=first.pk).update(changed_at=timezone.now() - timedelta(hours=2))
         Part.objects.filter(pk=second.pk).update(changed_at=timezone.now() - timedelta(hours=1))
@@ -179,7 +178,7 @@ class ProductosNuevosApiTests(APITestCase):
         genuine = self.item(self.dealer, '10', '025CHA-1502606', 'KAIYI', 'O-RING KAIYI GS11')
         self.item(self.other, 'A7', '025CHA 1502606', 'kaiyi', 'O-RING KAIYI')       # another supplier, same product
         self.item(self.dealer, '12', 'URT-22', 'MOTION MOTORS', 'ESCOBILLA')            # the supplier's own name: its own code (OD20)
-        proposals_stage()
+        backlog()
         genuine.refresh_from_db()
         kaiyi = self.client.get(self.url(genuine.part)).json()   # the first item placed gives the codigo its spelling
         self.assertEqual((kaiyi['oem'], kaiyi['item_count'], kaiyi['supplier_count'], kaiyi['internal_code'], kaiyi['description']),
@@ -192,7 +191,7 @@ class ProductosNuevosApiTests(APITestCase):
         target = Part.objects.create(sku='OLD-1', name='OLD-1')
         self.item(self.dealer, '1', 'R-1', 'ACME', 'NADA')
         self.item(self.dealer, '2', 'L-1', 'ACME', 'PIEZA')
-        proposals_stage()
+        backlog()
         reject, link = self.line('R-1'), self.line('L-1')
         bulk = self.url(rest='bulk/')
         done = self.client.post(bulk, {'action': 'reject', 'proposals': [{'id': str(reject.pk), 'version': reject.version, 'reason': 'not_a_part'},

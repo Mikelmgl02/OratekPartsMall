@@ -6,7 +6,7 @@ it arrives. The only writer of the S6 matching cases (MatchingCase kinds referen
     carry_out(item, resolution)  write a Resolution: the Reference found or added, the item attached, or a line case, or place()
     sync_cases(item)          the cases a variant's own data asks for: its declared codes (rule 5b), a waiting code change
     placement(variant)        the main a new line gets for a variant no line takes (rule 4: OD6, OD20, Revisión IA's internal_code)
-    place(variant)            new_products.place (S6.2): a line in preparación for the variant; a stub here until 6.2 lands
+    place(variant)            mall.new_products.place (S6.2): a line in preparación for the variant, its main as placement says
     backlog(), recheck_merge_cases(), open_reference_merge_cases()   the matching worker's stages
     decide(case, action, ...) a person's decision on a case (matching_views: approve, dismiss, separar_referencia, merge, keep_apart)
 
@@ -196,12 +196,21 @@ class Lookups:
         return bool(self.canonical(a)) and bool(self.canonical(b)) and self.root(a) == self.root(b)
 
     def brand_tipo(self, spelling):
-        """Brand.tipo (vehiculo, repuesto or '') of the brand a spelling names."""
+        """Brand.tipo (vehiculo, repuesto or '') of the brand a spelling names. A spelling no brand has yet gets the tipo the brand will
+        be created with when a Reference carries it (mall.references.ensure_brand): vehiculo for a vehicle make
+        (mall.sku_proposals.vehicle_makes), repuesto otherwise."""
         name = self.canonical(spelling)
         if name not in self.tipos:
             from .brands import lookup
             found = lookup(name) if name else None
-            self.tipos[name] = found.tipo if found is not None else ''
+            if found is not None:
+                self.tipos[name] = found.tipo
+            elif name:
+                from .sku_proposals import vehicle_makes
+                makes = vehicle_makes()
+                self.tipos[name] = 'vehiculo' if name in makes or name in set(makes.values()) else 'repuesto'
+            else:
+                self.tipos[name] = ''
         return self.tipos[name]
 
     def supplier_name(self, subject):
@@ -482,11 +491,17 @@ def internal_code(item):
 def placement_of(subject, lookups, *, interno=False):
     """The main of the line rule 4 makes: {code, brand, tipo, supplier}. interno (supplier set) for a brandless or placeholder-brand
     short code (OD6), Revisión IA's internal_code, a brand that is the supplier's own name (OD20), or when asked (Separar referencia);
-    otherwise a shared Reference: oem under a vehicle brand, aftermarket under a brand of parts, otro brandless."""
+    an interno main keeps the item's canonical brand (MOTION MOTORS for Motion Motors' own code), '' for a placeholder one. Otherwise a
+    shared Reference: oem under a vehicle brand, aftermarket under a brand of parts (or one no brand has yet), otro for a brand of no
+    tipo or none."""
     brand = effective_brand(subject, lookups)
     short = not references.oem_like(compact(subject.code))
-    if interno or (not brand and short) or own_name_brand(subject, lookups) or internal_code(subject.item):
-        return {'code': subject.code, 'brand': brand, 'tipo': 'interno', 'supplier': subject.supplier_id}
+    own = own_name_brand(subject, lookups)
+    if interno or (not brand and short) or own or internal_code(subject.item):
+        printed = lookups.canonical(subject.brand)
+        kept = brand or (printed if own else '')
+        return {'code': subject.code, 'brand': '' if kept in PLACEHOLDER_BRANDS else kept, 'tipo': 'interno',
+                'supplier': subject.supplier_id}
     return {'code': subject.code, 'brand': brand, 'tipo': tipo_for(brand, lookups), 'supplier': None}
 
 
@@ -499,55 +514,50 @@ def placement(variant, *, interno=None):
 
 
 def place(variant, *, actor=None, interno=False):
-    """new_products.place(variant) (S6.2), the shared interface: a line in preparación for the variant, which hangs from its main as
-    pending. Until 6.2's mall.new_products is there, place_stub does the same with the rules above."""
+    """Rule 4, the shared interface with S6.2: mall.new_products.place gives the variant a line in preparación whose main is what
+    placement() says (interno=True: Separar referencia), the variant hanging from it as pending (or joins the line in preparación that
+    already has its key). Returns the line; raises (new_products.PlaceRefused) when it cannot, and the variant stays pending."""
+    from .new_products import place as products_place
     variant._placement_interno = bool(interno)
-    try:
-        from .new_products import place as products_place
-    except ImportError:
-        return place_stub(variant, actor=actor)
-    return products_place(variant)
-
-
-def place_stub(variant, *, actor=None):
-    """A line in preparación (origen proveedor, the printed code as codigo, the item's description), whose main is the placement's
-    Reference (declarado, a proveedor source), and the item hanging from it as pending. Returns the line."""
-    from .models import Part
-    from .variants import attach, declared_by
-    spec = placement(variant)
-    with transaction.atomic():
-        line = Part(sku=spec['code'], description=(variant.description or '').upper(), estado='preparacion', origen='proveedor')
-        line._main_followed = True  # its main is made below
-        line.save(force_insert=True)
-        ref, _ = references.add(line, spec['code'], spec['brand'], tipo=spec['tipo'], supplier=spec['supplier'], estado='declarado',
-                                source=declared_by(variant), actor=actor, detail={TAG: stamp('4', variant)}, absorb_library=False)
-        references.set_main(line, ref, actor=actor, reason='Producto nuevo')
-        attach(variant, ref, status='pending')
+    line, _ = products_place(variant, actor=actor, internal=bool(interno))
     return line
 
 
 def enter_preparacion(line, *, actor=None):
-    """Rule 7: a line in referencia (a library number no product carried) that a variant joins becomes a line in preparación."""
-    from .lines import set_estado
+    """Rule 7: a line in referencia (a library number no product carried) that a variant joins becomes a line in preparación
+    (mall.lines.prepare: the matching's own move, nobody decided it)."""
+    from .lines import prepare
     from .models import Part
     if line.estado != 'referencia':
         return line
     locked = Part.objects.select_for_update().get(pk=line.pk)
     if locked.estado == 'referencia':
-        set_estado(locked, 'preparacion')  # the matching's own move: nobody decided it
+        prepare(locked)
     return locked
+
+
+def joined(item, line, *, prepared=False):
+    """After a variant was hung on `line`, a line outside the catalog: mall.new_products.joined counts it there (a line in preparación
+    takes version + 1, changed_at and its description from the items, unless rule 7 just moved it there; a rechazada one takes it with no
+    notice, OD13) and settles the variant's legacy supplier cases."""
+    from .lines import CATALOG
+    if line is None or line.estado in CATALOG:
+        return
+    from .new_products import joined as products_joined
+    products_joined(line, item, prepared=prepared)
 
 
 # --- writing a resolution ------------------------------------------------------------------------------------------------------------
 
 def share_line(line):
     """Lock a line FOR SHARE (plan §1.6.5: the line before its References): loads may hang items from it at once, a merge or an edit
-    waits for them, and they for it. A line in referencia is locked FOR UPDATE instead, since the item joining it moves it to
-    preparación (rule 7): two loads never both hold it shared and then wait for each other. False when it is no longer live (merged
-    meanwhile)."""
+    waits for them, and they for it. A line outside the catalog is locked FOR UPDATE instead, since the item joining it writes it (rule
+    7 moves a line in referencia to preparación; a line in preparación counts the change: mall.new_products.joined): two loads never
+    both hold it shared and then wait for each other. False when it is no longer live (merged meanwhile)."""
     from django.db import connection
+    from .lines import CATALOG
     if connection.vendor == 'postgresql':
-        mode = 'UPDATE' if line.estado == 'referencia' else 'SHARE'
+        mode = 'SHARE' if line.estado in CATALOG else 'UPDATE'
         with connection.cursor() as cursor:
             cursor.execute(f'SELECT estado, merged_into_id FROM mall_part WHERE id = %s FOR {mode}', [line.pk])
             row = cursor.fetchone()
@@ -626,9 +636,11 @@ def carry_out(item, resolution, *, actor=None, save=False, queue=True, _again=Fa
                 return carry_out(item, Resolution('no_line', '4'), actor=actor, save=save, queue=queue, _again=True)
             return carry_out(item, resolve(subject_of(item)), actor=actor, save=save, queue=queue, _again=True)
         ref = held
-    line = enter_preparacion(ref.part, actor=actor) if ref.part.estado == 'referencia' else ref.part
+    prepared = ref.part.estado == 'referencia'
+    line = enter_preparacion(ref.part, actor=actor) if prepared else ref.part
     status = resolution.status if line.estado == ref.part.estado else item_status(line, item.description)[0]
     attach(item, ref, status=status, save=save)
+    joined(item, line, prepared=prepared)
     for spec in resolution.cases:
         open_case({**spec, 'reference': spec.get('reference') or ref}, item=item)
     close_line_case(item, line, actor=None, how='vinculado')
@@ -942,13 +954,10 @@ def declared_holders(declared, item, lookups=None):
 def sync_declared(item, lookups=None):
     """Rule 5b: one reference case per code the item declares (its references) that is not already on its line; the open ones it no
     longer declares are dropped. An item without a line has none (its line case lists its declared codes)."""
-    from .part_references import normalize_references
+    from .sku_proposals import merge_references
     if item.reference_id is None or item.part_id is None:
         return 0
-    try:
-        declared = normalize_references(item.references or [])
-    except Exception:
-        declared = []
+    declared = merge_references(item.references or [])  # one at a time: a malformed code is skipped, not the rest with it
     lookups = lookups or Lookups()
     keys = []
     for row in declared:
@@ -1260,8 +1269,10 @@ def hang_on_line(item, line, *, actor=None, status=None, approve=True):
             ref, _ = reference_for(line, item.codigo, item.brand, item.supplier_id, create=True, actor=actor, source=declared_by(item), item=item)
     if ref is None:
         raise VariantConflict(f'El código {item.codigo} es un código interno de este proveedor en otro SKU: corrígelo allí antes de vincularlo aquí.')
-    line = enter_preparacion(line, actor=actor) if line.estado == 'referencia' else line
+    prepared = line.estado == 'referencia'
+    line = enter_preparacion(line, actor=actor) if prepared else line
     attach(item, ref, status=status or status_for(line), save=True)
+    joined(item, line, prepared=prepared)
     return item
 
 

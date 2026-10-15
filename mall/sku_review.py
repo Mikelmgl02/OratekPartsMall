@@ -145,9 +145,9 @@ def siblings(line, item_ids):
     return found
 
 
-def candidates(line):
+def candidates(line, hints=None):
     """Possibly the same product (the "posibles duplicados"): other lines in preparación with items and catalog lines on sale whose
-    codigo shares this one's base, then the hints the matching engine left on its items' cases (word_hints)."""
+    codigo shares this one's base, then the matching engine's description hints for its items (word_hints; hints: a Hints)."""
     base, found = code_base(line.sku), []
     if len(base) >= 5:
         waiting = Exists(SupplierItem.objects.filter(part_id=OuterRef('pk')))
@@ -158,18 +158,38 @@ def candidates(line):
                   for pk, sku, description in storefront_lines().filter(sku__istartswith=base)
                   .values_list('pk', 'sku', 'description').order_by('sku')[:CANDIDATES - len(found)]] if len(found) < CANDIDATES else []
     seen = {row['id'] for row in found}
-    return found + [row for row in word_hints(line) if row['id'] not in seen][:HINTS]
+    return found + [row for row in word_hints(line, hints) if row['id'] not in seen][:HINTS]
 
 
-def word_hints(line):
+class Hints:
+    """The matching engine's description index (mall.matching_engine.MatchIndex), built on first use: one per reviewed batch."""
+
+    def __init__(self):
+        self.index = None
+
+    def hints(self, item):
+        if self.index is None:
+            from .matching_engine import MatchIndex
+            self.index = MatchIndex()
+        return self.index.hints(item)
+
+
+def word_hints(line, hints=None):
     """Catalog SKUs the matching engine found for the line's items by description only (the same description or shared rare words)
-    when no code tied them to a SKU: possibly the same product, never evidence. Their legacy case is unmatched, or dismissed because
-    the item was placed on this line (an administrator's own dismissal keeps its hints out). Retired and merged SKUs are left out."""
-    ids = []
+    when no code tied them to a SKU: possibly the same product, never evidence. Before S6 they were left on the item's legacy case
+    (unmatched, or dismissed because the item was placed on this line; an administrator's own dismissal keeps its hints out); an item
+    placed since has none, and `hints` (a Hints) asks the engine for them (MatchIndex.hints). Retired and merged SKUs are left out."""
+    ids, cased = [], set()
     placed = Q(status='unmatched') | Q(status='dismissed', reason=PLACED_REASON)
-    for rows in (MatchingCase.objects.filter(placed, item__part_id=line.pk, kind='supplier', method=NO_CODE_EVIDENCE)
-                 .order_by('key').values_list('candidates', flat=True)):
+    for item_id, rows in (MatchingCase.objects.filter(placed, item__part_id=line.pk, kind='supplier', method=NO_CODE_EVIDENCE)
+                          .order_by('key').values_list('item_id', 'candidates')):
+        cased.add(item_id)
         ids += [row['id'] for row in rows if row.get('id') and row['id'] not in ids]
+    if hints is not None:
+        legacy = set(MatchingCase.objects.filter(item__part_id=line.pk, kind='supplier').values_list('item_id', flat=True))
+        for item in items_of(line):
+            if item.pk not in cased and item.pk not in legacy:
+                ids += [row['id'] for row in hints.hints(item) if row['id'] not in ids]
     live = {str(pk): (sku, description) for pk, sku, description in
             storefront_lines().filter(pk__in=ids).values_list('pk', 'sku', 'description')} if ids else {}
     return [{'kind': 'part', 'id': pk, 'sku': live[pk][0], 'descripcion': clean(live[pk][1])[:120]} for pk in ids if pk in live]
@@ -180,7 +200,7 @@ def items_of(line):
     return rows if rows is not None else list(SupplierItem.objects.filter(part_id=line.pk).select_related('supplier').order_by('pk'))
 
 
-def evidence(line, makes):
+def evidence(line, makes, hints=None):
     """The compact row the AI sees for one line, and the signals the rules and guards read."""
     from .sku_proposal_views import codes_of
     items = items_of(line)
@@ -207,7 +227,7 @@ def evidence(line, makes):
         'sku': line.sku, 'marca': brand, 'es_marca_de_vehiculo': bool(make), 'fabricante': make,
         'descripcion': clean(line.description)[:200], 'descripciones_de_proveedores': sorted({clean(item.description)[:120] for item in items} - {''})[:3],
         'proveedores': suppliers[:3], 'existencias': stock, 'oem': oem.code if oem is not None else '', 'alternos': [ref['code'] for ref in declared[:5]],
-        'senales': signals, 'hermanos': siblings(line, [item.pk for item in items]), 'candidatos': candidates(line),
+        'senales': signals, 'hermanos': siblings(line, [item.pk for item in items]), 'candidatos': candidates(line, hints),
         '_largo': len(clean(line.description)),
     }
 
@@ -437,7 +457,8 @@ def review_batch(user, pk, index):
         found = {str(line.pk): line for line in proposals().filter(status_q('pending'), pk__in=ids).exclude(pk__in=newer)}
         batch = [found[pk] for pk in ids if pk in found]  # decided since the run began: nothing to review
         seen = {str(proposal.pk): proposal.version for proposal in batch}
-        rows = {str(proposal.pk): evidence(proposal, makes) for proposal in batch}
+        hints = Hints()  # the engine's description hints, its index built once for the batch when an item needs it
+        rows = {str(proposal.pk): evidence(proposal, makes, hints) for proposal in batch}
         decided = {key: verdict for key, verdict in ((str(p.pk), rule_verdict(p, rows[str(p.pk)])) for p in batch) if verdict}
         asked = [proposal for proposal in batch if str(proposal.pk) not in decided]
         types, request, estimate = taxonomy(), None, 0

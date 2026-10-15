@@ -9,8 +9,8 @@ never written again (S10 archives them).
 What stays here, read by mall.new_products, mall.sku_review, the matching engine and the stage CLIs: vehicle_makes() (supplier brands
 that are a vehicle make, each with the manufacturer its OEM numbers are filed under), the placeholder brands, library_oem() (the OEM
 number the library files an aftermarket code under), merge_references() and printed_forms() (a product's codes from its items),
-catalog_owners() (the catalog SKUs a code already is, for the duplicate checks), the two refusals the views answer, and
-proposals_stage(), the matching worker's stage, which now places the backlog (mall.new_products.backlog_stage)."""
+catalog_owners() (the catalog SKUs a code already is, for the duplicate checks) and the two refusals the views answer. The matching
+worker's proposals stage is gone: its backlog stage (mall.reference_matching.backlog) places the items no line takes."""
 from collections import Counter
 
 from django.conf import settings
@@ -133,10 +133,3 @@ def owner_label(owner):
     return f'{owner[1]}{"" if owner[2] else " (retirado)"}'
 
 
-# --- the matching worker's stage -----------------------------------------------------------------------------------------------------
-
-def proposals_stage():
-    """The matching worker's Productos nuevos stage (settings.SKU_PROPOSALS_STAGE): from S6 it places the backlog on lines in
-    preparación (mall.new_products.backlog_stage) instead of refreshing proposals; a failure is logged and the pass goes on."""
-    from .new_products import backlog_stage
-    return backlog_stage()

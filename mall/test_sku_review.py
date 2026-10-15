@@ -17,7 +17,7 @@ from .models import Account, Part, Reference, Role, SupplierItem, User
 from .new_products import ai_fill, edit, oem_of, refresh
 from .oem_reference_models import OEMReference
 from .quote_assistant_models import AIUsageRecord
-from .sku_proposals import proposals_stage as propose
+from .reference_matching import backlog as propose  # the matching worker's backlog stage places the items no line takes
 from .sku_review import DOUBTFUL_OEM, guarded, typo_fix
 from .sku_review_models import SkuReviewRun, SkuReviewVerdict
 
@@ -56,7 +56,6 @@ class SkuReviewTests(APITestCase):
         self.dealer = self.supplier('Motion Motors')
         self.other = self.supplier('Repuestos Chinos')
         self.client.force_authenticate(self.root)
-        self.addCleanup(new_products.FAILED.clear)
 
     def supplier(self, name):
         account = Account.objects.create(name=name)
@@ -112,6 +111,11 @@ class SkuReviewTests(APITestCase):
         self.assertNotIn('F16-4121020-01AA-R', [c['sku'] for c in candidates(line)])     # a line in preparación with no items
         new_products.place(self.item(self.dealer, '4', 'F16-4121020-01AA-R', 'KAIYI', 'FAROL DER', case=None))
         self.assertEqual(candidates(line)[0], {'kind': 'proposal', 'id': str(waiting.pk), 'sku': 'F16-4121020-01AA-R', 'descripcion': 'FAROL DER'})
+        # An item placed since S6 has no legacy case: Revisión IA asks the matching engine for its hints (MatchIndex.hints).
+        from .sku_review import Hints
+        fresh, _ = new_products.place(self.item(self.dealer, '5', 'ZQ-777000111', 'KAIYI', 'FAROL CROMADA KAIYI', case=None))
+        self.assertEqual(candidates(fresh), [])
+        self.assertEqual([c['sku'] for c in candidates(fresh, Hints())], ['HINT-0', 'HINT-1', 'HINT-2'])
 
     def test_rules_settle_known_codes_no_uso_and_placeholder_data_without_the_ai(self):
         target = Part.objects.create(sku='A-1', name='A-1')
@@ -119,12 +123,13 @@ class SkuReviewTests(APITestCase):
         self.item(self.dealer, '2', 'B-2', 'ACME', 'NO USO FILTRO DE CABINA')
         self.item(self.dealer, '3', 'FX11-1234567-01', '', 'SIN DESCRIPCION')          # nothing to recover it from
         self.item(self.dealer, '4', 'FX11-6207118-01A', '', 'MAL CREADO')
-        self.item(self.other, 'S1', 'F02-6207118-01AA', 'KAIYI', 'MOLDURA KAIYI', case=None)  # a sibling does not rescue a mistyped code
         twin = Part.objects.create(sku='TWIN-A', name='TWIN-A')
         Reference.objects.create(part=twin, code='TW-1', brand='ACME')
         Part.objects.create(sku='TW1', name='TW1')                                  # the same code, spelled as another SKU
         self.item(self.dealer, '5', 'TW 1', 'ACME', 'PIEZA EN DOS SKU')
         propose()
+        # A sibling does not rescue a mistyped code (it arrives after the pass: the backlog would give it a line of its own).
+        self.item(self.other, 'S1', 'F02-6207118-01AA', 'KAIYI', 'MOLDURA KAIYI', case=None)
         with patch('mall.sku_review.generate_json') as ai:
             report = self.batch(self.start())
         ai.assert_not_called()
@@ -148,7 +153,6 @@ class SkuReviewTests(APITestCase):
         self.item(self.dealer, '4', 'LOW-1', 'ACME', 'PIEZA RARA')
         self.item(self.dealer, '5', 'FAR-1', 'ACME', 'BOMBA DE AGUA')
         self.item(self.dealer, '6', 'FX11-3501116-01AA', '', 'SIN DESCRIPCION')        # placeholder, but a sibling knows the number
-        self.item(self.other, 'S1', 'F02-3501116-01AA', 'KAIYI', 'TACOS DE FRENO DELANTERO KAIYI FX12', case=None)
         self.item(self.dealer, '7', 'ADM-1', 'ACME', 'DESCRIPCION MAL ESCRTA')
         for index in range(3):  # our own descriptions: the vocabulary a typo fix must land on
             Part.objects.create(sku=f'SEED-{index}', description='VIDRIO PUERTA DELANTERA BOMBA AGUA')
@@ -157,6 +161,8 @@ class SkuReviewTests(APITestCase):
         self.item(self.dealer, '9', 'KYJP000999', 'KAIYI', 'CAMARA DE REVERSA KAIYI')
         self.item(self.dealer, '10', 'URT-22', 'MOTION MOTORS', 'ESCOBILLA 22 URTTEX')
         propose()
+        # The sibling arrives after the pass (the backlog would give it a line of its own, reviewed in the same batch).
+        self.item(self.other, 'S1', 'F02-3501116-01AA', 'KAIYI', 'TACOS DE FRENO DELANTERO KAIYI FX12', case=None)
         admin = self.line('ADM-1')
         edit(admin.pk, self.root, admin.version, {'description': 'BOMBA AGAU'})   # the administrator's own typo
         before = {line.sku: (line.version, line.changed_at) for line in Part.objects.filter(estado='preparacion')}
