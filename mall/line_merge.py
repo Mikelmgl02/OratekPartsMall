@@ -995,6 +995,10 @@ def split_line(target_id, restore, *, actor, reason=''):
         for code in codes.values():
             number, claimed = normalized_reference(code.code), taken.get(('codes', code.pk))
             alias = main_ids.get(code.pk) or owners.by_number(number, code.code)
+            if alias and code.pk not in main_ids and code.pk not in owners.refs and 'references' in history.get(alias, {}):
+                # A merge that recorded what each line brought (S2b on): a code with a restored line's number that it did not bring
+                # was the target's before the merge (CHEVROLET 90499401 on 90499401-K, VAUXHALL 90499401 merged in by S9) and stays.
+                alias = ''
             if alias:
                 # A grouped line's own code is that line's and never passes to another. It stays on the canonical line while its line
                 # stays grouped; its former main goes back as its main, any other alias of it goes back when it had it (code_returns)

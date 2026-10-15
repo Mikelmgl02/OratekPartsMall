@@ -21,7 +21,7 @@ from django.db import connection
 from django.db.models import CharField, Func, Prefetch, Q, Value
 from django.db.models.functions import Replace, Upper
 
-from .oem_reference_models import (MANUAL_KINDS, OEMCrossReference, OEMReference, OEMReferenceSource, PartOEMLink, REFERENCE_STATUSES,
+from .oem_reference_models import (MANUAL_KINDS, OEMCrossReference, OEMReference, OEMReferenceSource, REFERENCE_STATUSES,
                                    SOURCE_KINDS, compact, manufacturer_name, spellings)  # noqa: F401 (compact and spellings: mall.references uses them)
 
 VERIFIED_KINDS = {'price_list', 'manufacturer_catalog'}
@@ -317,34 +317,26 @@ def wrap(refs):
 
 
 def linked_parts(refs):
-    """{reference id: [{id, sku, is_OEM, active, via, code}]}: the catalog lines that carry each library number (refs: References):
-    its own line when it is a catalog line (via 'linea'; a line in referencia is the number's own and is left out), and until S9 the
-    lines a supplier catalog or a codigo tied to it (PartOEMLink: via 'catalog' or 'sku_name'). Merged lines are left out: their codes
-    moved to the line they went into."""
+    """{reference id: [{id, sku, is_OEM, active, via, code}]}: the catalog line that carries each library number (refs: References): its
+    own line when it is a catalog line (via 'linea'; a line in referencia is the number's own and is left out). From S9 the SKU links
+    (PartOEMLink, catalog and sku_name) are no longer read: the merge pass (mall.merge_pass) put the numbers a SKU's catalog item prints
+    on that SKU's line, or opened a case for them. Merged lines are left out: their codes moved to the line they went into."""
     from .lines import catalog_q
     from .models import Part
     refs = list(refs)
-    out, seen = {ref.pk: [] for ref in refs}, defaultdict(set)
+    out = {ref.pk: [] for ref in refs}
     if not refs:
         return out
-
-    def add(ref_id, part_id, sku, is_oem, active, via, code):
-        if part_id not in seen[ref_id]:
-            seen[ref_id].add(part_id)
-            out[ref_id].append({'id': part_id, 'sku': sku, 'is_OEM': is_oem, 'active': active, 'via': via, 'code': code})
-
     lines = {line.pk: line for line in Part.objects.filter(catalog_q(), pk__in={ref.part_id for ref in refs})}
     for ref in refs:
         line = lines.get(ref.part_id)
         if line is not None:
-            add(ref.pk, line.pk, line.sku, line.is_OEM, line.active, 'linea', ref.code)
-    for row in (PartOEMLink.objects.filter(catalog_q(prefix='part__'), reference_id__in=list(out)).order_by('part__sku', 'source', 'pk')
-                .values_list('reference_id', 'part_id', 'part__sku', 'part__is_OEM', 'part__active', 'source')):
-        add(row[0], *row[1:], row[2])
+            out[ref.pk].append({'id': line.pk, 'sku': line.sku, 'is_OEM': line.is_OEM, 'active': line.active, 'via': 'linea',
+                                'code': ref.code})
     return out
 
 
 def linked_q():
-    """Q for library References some catalog line carries (the linked_parts rule), as uncorrelated subqueries."""
-    from .lines import catalog_lines, catalog_q
-    return Q(part__in=catalog_lines().values('pk')) | Q(pk__in=PartOEMLink.objects.filter(catalog_q(prefix='part__')).values('reference_id'))
+    """Q for library References some catalog line carries (the linked_parts rule), as an uncorrelated subquery."""
+    from .lines import catalog_lines
+    return Q(part__in=catalog_lines().values('pk'))

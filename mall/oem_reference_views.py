@@ -664,7 +664,9 @@ class OEMCrossReferenceInput(serializers.Serializer):
 
 class OEMReferenceCrossReferences(APIView):
     """An aftermarket code added by hand to a number (Biblioteca OEM, Alternos): it takes a manual citation, and a code retired before
-    comes back."""
+    comes back. From S9 (mall.merge_pass.code_added) the code is also a Reference: of the number's line when the code sits on that line
+    only (declarado, with an admin source); when the code puts two or more lines together they merge on their own if all are in
+    referencia without variants (3f), otherwise a merge case lists them and the code waits there."""
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_oem_cross_reference_create', request=OEMCrossReferenceInput, responses={201: OEMCrossReferenceRow},
@@ -693,11 +695,15 @@ class OEMReferenceCrossReferences(APIView):
             elif cite not in row.citations:
                 row.citations = citation_list(row.citations, cite)
                 row.save(update_fields=['citations', 'updated_at'])
+            from .merge_pass import code_added
+            code_added(ref, brand, row.code, cite, actor=request.user)
         return Response(OEMCrossReferenceRow(row).data, status=201)
 
 
 class OEMReferenceCrossReference(APIView):
-    """Retire an aftermarket code from a number: every line that carries it stops showing it, and no catalog import files it again."""
+    """Retire an aftermarket code from a number: every line that carries it stops showing it, and no catalog import files it again.
+    From S9 (mall.merge_pass.retire_citation) the sources it gave the code's Reference are retired, an inferido Reference left with
+    none goes to disputa, and a merge case lists the lines of an automatic merge the code backed."""
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_oem_cross_reference_retire', responses={204: None},
@@ -711,6 +717,8 @@ class OEMReferenceCrossReference(APIView):
                 raise NotFound('Ese alterno ya no está en el número.')
             OEMCrossReferenceRetired.objects.update_or_create(reference=ref, brand=row.brand, number=row.number,
                                                               defaults={'code': row.code, 'citations': row.citations, 'retired_by': request.user})
+            from .merge_pass import retire_citation
+            retire_citation(ref, row.brand, row.code, row.citations, actor=request.user, exclude_row=row)
             row.delete()
             from .search_document import refresh_reach
             refresh_reach([ref.pk])  # the lines that reach the number no longer find the code (S7)

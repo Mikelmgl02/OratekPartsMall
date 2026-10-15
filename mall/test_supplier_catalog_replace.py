@@ -25,7 +25,8 @@ def library(**filters):
 
 
 def catalog_sources(**filters):
-    return ReferenceSource.objects.filter(kind='catalogo', retirada=False, **filters)
+    """The library numbers' live catalog sources (S9's 3e also cites the catalog on the aftermarket codes it turns into References)."""
+    return ReferenceSource.objects.filter(kind='catalogo', retirada=False, reference__tipo='oem', **filters)
 
 
 class SupplierCatalogReplaceTests(Fresh, TestCase):
@@ -113,7 +114,8 @@ class SupplierCatalogReplaceTests(Fresh, TestCase):
         self.assertFalse(PartOEMLink.objects.filter(part=self.misled).exists())
         self.assertEqual(list(PartOEMLink.objects.filter(source='catalog').values_list('part__sku', 'reference__clave')), [('16100-11111-G', '1610011111')])
         self.assertEqual(catalog_sources().get(reference__clave='1610011111').detail['pages'], [6])
-        self.assertEqual(set(PartCode.objects.filter(is_main=False, ref_type='company').values_list('pk', flat=True)), {self.copied.pk, self.kept.pk})  # alternos are only reported
+        self.assertEqual(set(PartCode.objects.filter(is_main=False, ref_type='company').exclude(detail__has_key='s9').values_list('pk', flat=True)),
+                         {self.copied.pk, self.kept.pk})  # alternos are only reported (S9's 3e turns codes on one line into References)
 
         before = self.state()
         again = scr.run(self.new, apply=True, stdout=io.StringIO())
@@ -217,9 +219,12 @@ class ShaftRetypeReplaceTests(Fresh, TestCase):
             result = scr.run(self.path, report_dir=directory, stdout=io.StringIO())
             with open(os.path.join(directory, 'numbers.csv'), encoding='utf-8') as handle:
                 rows = [row for row in csv.DictReader(handle) if row['accion'] == 'retype']
-        self.assertEqual(result['changes']['numbers'], {'detail': 2, 'retype': 2})
+        # S9 (3f): the import put MT-99A50's two numbers on one line (both in referencia, joined by the item's own code), so the shaft
+        # that absorbed MR453384's line took MB526438 too, and both are retyped.
+        self.assertEqual(result['changes']['numbers'], {'detail': 3, 'retype': 3})
         self.assertEqual(sorted((row['numero'], row['detalle_despues']) for row in rows),
-                         [('MR453384', '{"description": "SEMIEJE (EJE COMPLETO)", "part_type": "SEMIEJES"}'), ('MR980744', '{"part_type": "SEMIEJES"}')])
+                         [('MB526438', '{"description": "SEMIEJE (EJE COMPLETO)", "part_type": "SEMIEJES"}'),
+                          ('MR453384', '{"description": "SEMIEJE (EJE COMPLETO)", "part_type": "SEMIEJES"}'), ('MR980744', '{"part_type": "SEMIEJES"}')])
         scr.run(self.path, apply=True, username='root', stdout=io.StringIO())
         shaft_ref, kept = self.ref('MR453384'), self.ref('MR980744')
         self.assertEqual((shaft_ref.description, shaft_ref.part_type), ('SEMIEJE (EJE COMPLETO)', 'SEMIEJES'))

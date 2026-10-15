@@ -13,8 +13,9 @@ What a document holds (plan §3 S7):
               References in an exclusive estado (verificado, declarado, inferido), with their other printed spellings; never a retired one,
               a non-main code in disputa, or a supplier's interno code
     compact   the same codes without separators: a code search compares them whole (' KEY ') or contained ('KEY')
-    reach     until S9 turns them into References (3e): the library numbers linked to the line (PartOEMLink) and the aftermarket codes
-              filed under its numbers (OEMCrossReference), compact, which the legacy search (mall.oem_links.search_q) reaches too
+    reach     the aftermarket codes filed under the line's own numbers (OEMCrossReference), compact, which the legacy search
+              (mall.oem_links.search_q) reaches too; from S9 a SKU's catalog and name links (PartOEMLink) are no longer read (the merge
+              pass put a catalog item's numbers on its SKU's line, and the codes on one line became its References)
     internal  {supplier id: [codes]}: the interno codes of each supplier (not the main), read only within that supplier's own catalog
     text      the description, name, grupo, subgrupo, the main's brand and every public Reference's brand, then the canonical brand of each
               alias word in them (TOY → TOY TOYOTA), so "filtro aceite toyota" finds the rows the catalog wrote as TOY
@@ -130,7 +131,7 @@ def _line_rows(line_filter):
 def _gather(line_filter):
     """{line id: values} for the lines on sale the filter (a Q on Part) names; each kind of row read once."""
     from .models import Reference
-    from .oem_reference_models import OEMCrossReference, PartOEMLink
+    from .oem_reference_models import OEMCrossReference
     lines = {str(row[0]): row for row in _line_rows(line_filter)}
     if not lines:
         return {}
@@ -142,12 +143,7 @@ def _gather(line_filter):
                     .values_list('part_id', 'pk', 'code', 'brand', 'tipo', 'estado', 'is_main', 'supplier_id', 'printed_forms')):
             refs[str(row[0])].append(row)
             held[str(row[0])].add(row[1])
-    linked = defaultdict(list)  # line id -> (Reference id, code) of the library numbers linked to it
-    for chunk in chunks(ids):
-        for part_id, ref_id, code, estado in (PartOEMLink.objects.filter(part_id__in=chunk)
-                                              .values_list('part_id', 'reference_id', 'reference__code', 'reference__estado')):
-            linked[str(part_id)].append((ref_id, code if estado != 'retirada' else ''))
-    numbers = {ref_id for line in held.values() for ref_id in line} | {ref_id for rows in linked.values() for ref_id, _ in rows}
+    numbers = {ref_id for line in held.values() for ref_id in line}
     crossed = defaultdict(list)  # Reference id -> compact aftermarket codes filed under it
     for chunk in chunks(numbers, 5000):
         for ref_id, number in OEMCrossReference.objects.filter(reference_id__in=chunk).values_list('reference_id', 'number').order_by('pk'):
@@ -165,8 +161,8 @@ def _gather(line_filter):
                 brands.append(brand)
             elif tipo == 'interno' and estado in EXCLUSIVE and supplier_id:
                 internal[str(supplier_id)] += [*forms, *(compact(form) for form in forms)]
-        reach = [compact(code) for _, code in linked.get(pk, []) if code]
-        for ref_id in [*sorted(held.get(pk, ())), *(ref_id for ref_id, _ in linked.get(pk, []))]:
+        reach = []
+        for ref_id in sorted(held.get(pk, ())):
             reach += crossed.get(ref_id, [])
         compacts = [compact(code) for code in codes]
         held_compact = set(compacts)
@@ -296,16 +292,13 @@ def alias_changed(sender, instance, raw=False, using=None, **kwargs):
 
 
 def refresh_reach(ref_ids=(), part_ids=()):
-    """refresh() for the lines whose reach follows these References (ids): the lines they sit on and the lines PartOEMLinks tie to them
-    (an aftermarket code filed or retired under a number, a number's rows moved by absorb), plus part_ids (the lines of SKU links added
-    or removed)."""
+    """refresh() for the lines whose reach follows these References (ids): the lines they sit on (an aftermarket code filed or retired
+    under a number, a number's rows moved by absorb), plus part_ids. SKU links are no longer read from S9."""
     from .models import Reference
-    from .oem_reference_models import PartOEMLink
     lines = {str(getattr(pk, 'pk', pk)) for pk in part_ids if pk}
     ids = {getattr(pk, 'pk', pk) for pk in ref_ids if pk}
     for chunk in chunks(ids):
         lines |= {str(pk) for pk in Reference.all_objects.filter(pk__in=chunk).values_list('part_id', flat=True)}
-        lines |= {str(pk) for pk in PartOEMLink.objects.filter(reference_id__in=chunk).values_list('part_id', flat=True)}
     return refresh(lines)
 
 

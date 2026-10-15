@@ -524,6 +524,7 @@ class CatalogImport:
                 elif filed:
                     pending.add((key, brand.strip().upper(), filed))
         counts = store_cross_references(entries, apply=apply, bare=bare)
+        self.filed_numbers = {ref_id for ref_id, _, _ in entries}  # S9: the numbers whose groups the merge pass looks at again (3f)
         rc['cross_reference_new'] = counts['new'] + len(pending)
         rc['cross_reference_present'] = counts['present'] + counts['cited']
 
@@ -794,7 +795,7 @@ def run(paths, *, apply=False, report_path=None, stdout=None):
     def execute():
         finder = OEMFinder(load_snapshot(), suffix_table())
         indexes = build_indexes(finder, catalog_citations(datasets))
-        reports = []
+        reports, filed = [], set()
         for data in datasets:
             job = CatalogImport(data, finder, indexes)
             job.plan()
@@ -802,6 +803,7 @@ def run(paths, *, apply=False, report_path=None, stdout=None):
             job.write_cross_references(apply)
             job.write_links(apply)
             job.write_catalog_links(apply)
+            filed |= getattr(job, 'filed_numbers', set())
             report = job.report
             report['counts'] = dict(report['counts'])
             report['reasons'] = dict(report['reasons'])
@@ -815,6 +817,12 @@ def run(paths, *, apply=False, report_path=None, stdout=None):
                          f"subgrupos asignados {c.get('subgroups_assigned', 0)} · medidas {c.get('specs_new', 0)} "
                          f"({c.get('specs_conflict', 0)} en conflicto) · equivalencias de posventa {c.get('cross_reference_new', 0)} nuevas · "
                          f"vínculos de SKU por catálogo {c.get('catalog_link_new', 0)} nuevos\n")
+        # S9, rule 3f: the groups the filed numbers now belong to merge on their own only when every line is in referencia without
+        # variants, otherwise a merge case opens; the codes now on one line become References (mall.merge_pass.join_numbers).
+        if apply and filed:
+            from .merge_pass import join_numbers
+            reports[-1]['merge_pass'] = join_numbers(filed)
+            stdout.write(f"Unificación por catálogo (3f): {reports[-1]['merge_pass']}\n")
         # The name links are retired with S4: a number a SKU's codigo names sits on that SKU, or rule 3 proposes it (S6).
         return reports, refresh_name_links(apply=apply)
 

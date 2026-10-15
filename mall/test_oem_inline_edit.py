@@ -59,6 +59,10 @@ class OEMInlineEditTests(APITestCase):
         self.assertEqual(added.status_code, 201, added.content)
         self.assertEqual((added.json()['brand'], added.json()['code'], added.json()['citations']), ('AISIN', 'WPT-111', ['Registro manual · oem-edit-root']))
         self.assertEqual(OEMCrossReference.objects.get(number='WPT111').reference_id, self.pump.pk)
+        # S9 (mall.merge_pass.code_added): the code sits on the number's line only, so it is that line's Reference, declarado by hand.
+        hand = Reference.objects.get(brand='AISIN', code='WPT-111')
+        self.assertEqual((hand.part_id, hand.tipo, hand.estado), (self.pump.part_id, 'aftermarket', 'declarado'))
+        self.assertEqual(list(hand.sources.values_list('kind', 'citation', 'retirada')), [('admin', 'Registro manual · oem-edit-root', False)])
         refused = [self.client.post(url, body, format='json') for body in ({'brand': 'TOYOTA', 'code': '16100-29160'}, {'brand': 'GMB', 'code': 'BOMBA'})]
         self.assertEqual([response.status_code for response in refused], [400, 400])  # the same make is an OEM number; a code needs a digit
 
@@ -73,6 +77,10 @@ class OEMInlineEditTests(APITestCase):
         back = self.client.post(url, {'brand': 'GMB', 'code': 'GWP-T41'}, format='json')
         self.assertEqual(back.status_code, 201)
         self.assertFalse(OEMCrossReferenceRetired.objects.exists())  # adding it by hand brings it back
+        aisin = OEMCrossReference.objects.get(number='WPT111')
+        self.assertEqual(self.client.delete(f'{url}{aisin.pk}/').status_code, 204)  # S9: retiring it retires the source it gave
+        hand.refresh_from_db()
+        self.assertEqual((hand.estado, list(hand.sources.values_list('retirada', flat=True))), ('declarado', [True]))
         self.assertEqual(self.client.delete(f'{url}999999/').status_code, 404)
         self.assertEqual(self.client.post(f'{URL}00000000-0000-4000-8000-000000000001/cross-references/', {'brand': 'AISIN', 'code': 'WPT-1'},
                                           format='json').status_code, 404)

@@ -263,6 +263,16 @@ def apply_changes(job, changes, actor):
     reach_lines = set()
     for chunk in chunks([row.pk for row in retired] + dropped):
         OEMCrossReference.objects.filter(pk__in=chunk).delete()
+    # S9, rule 3f: the catalogo sources the retired citations gave the codes' References are retired (an inferido one left with none goes
+    # to disputa, a merge they backed gets a case), before the rows change and while a dropped number still sits on its line.
+    from .merge_pass import retire_citation
+    for change in changes['codes']:
+        row = change['row']
+        if change['action'] in ('retire', 'with_number'):
+            retire_citation(row.reference, row.brand, row.code, row.citations, actor=actor, exclude_row=row)
+        elif change['action'] == 'drop_citation':
+            retire_citation(row.reference, row.brand, row.code, [c for c in row.citations if c not in change['citations']], actor=actor,
+                            exclude_row=row)
     for change in changes['codes']:
         if change['action'] in ('recite', 'drop_citation'):
             change['row'].citations = change['citations']

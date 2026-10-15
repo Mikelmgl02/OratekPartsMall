@@ -4,8 +4,7 @@ from . import reference_matching as rm
 from . import references
 from .lines import create_line
 from .models import Account, Membership, MatchingCase, Part, Role, SupplierItem, User
-from .oem_links import store_catalog_links, store_cross_references
-from .oem_reference_models import PartOEMLink
+from .oem_links import store_cross_references
 from .references import add_library_number
 from .test_oem_finder import Fresh
 from .services import ingest_inventory
@@ -19,7 +18,9 @@ def number(manufacturer, code):
 
 
 class OEMLibraryTests(Fresh, APITestCase):
-    """A SKU reached through the OEM library: its code names TOYOTA 16100-39315, and the GMB catalog ties it to the sister 16100-39317."""
+    """A SKU reached through the OEM library: its code names TOYOTA 16100-39315, and the GMB catalog prints the sister 16100-39317 for
+    the same item. From S9 (mall.merge_pass) the SKU holds both numbers (the pass merges a catalog item's numbers into its SKU's line);
+    the name and catalog links are no longer read."""
 
     def setUp(self):
         super().setUp()
@@ -27,8 +28,8 @@ class OEMLibraryTests(Fresh, APITestCase):
         store_cross_references({(self.main.pk, 'GMB', 'GWT-41A'): ['GMB 2016 · pág. 212'], (self.main.pk, 'NPW', 'T-16'): ['GMB 2016 · pág. 557'],
                                 (self.main.pk, 'AISIN', 'WPT-111'): ['GMB 2016 · pág. 212'], (self.sister.pk, 'GMB', 'GWT-41A'): ['GMB 2016 · pág. 212']})
         self.pump = Part.objects.create(sku='16100-39315-RAZ', description=PUMP)
-        PartOEMLink.objects.create(part=self.pump, reference=self.main, source='sku_name')  # its name link, as S4 re-pointed it
-        store_catalog_links({(self.pump.pk, self.sister.pk): ['GMB 2016 · pág. 212 · GWT-41A']})
+        for code in ('16100-39315', '16100-39317'):  # each absorbs its number's line in referencia (3f)
+            references.add(self.pump, code, 'TOYOTA', tipo='oem')
         self.supplier = Account.objects.create(name='PROVEEDOR NUEVO')
 
     def item(self, codigo, brand='', description=PUMP, references=()):
@@ -133,7 +134,7 @@ class LibrarySearchTests(OEMLibraryTests):
         rows = {row['sku']: row for row in self.client.get('/api/v1/catalog/', {'search': 'BOMBA'}).json()['results']}
         self.assertEqual(rows['16100-39315-RAZ']['equivalents'], [{'brand': 'AISIN', 'code': 'WPT-111'}, {'brand': 'GMB', 'code': 'GWT-41A'},
                                                                {'brand': 'NPW', 'code': 'T-16'}])  # each code once, from both numbers
-        self.assertEqual(rows['16100-39315-RAZ']['codes'], [])  # the SKU's own alternos stay separate
+        self.assertEqual([code['code'] for code in rows['16100-39315-RAZ']['codes']], ['16100-39315', '16100-39317'])  # its OEM numbers
 
     def test_a_grouped_or_inactive_sku_is_not_found_by_the_customer(self):
         Part.objects.filter(pk=self.pump.pk).update(active=False, estado='retirada')

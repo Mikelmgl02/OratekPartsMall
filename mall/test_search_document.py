@@ -73,13 +73,15 @@ class DocumentContentTests(TestCase):
         plain = make_line('PLAIN-1', description='FILTRO TOY YARIS')
         self.assertEqual(search_document.documents([plain])[str(plain.pk)]['text'], 'FILTRO TOY YARIS TOYOTA')
 
-    def test_reach_holds_linked_numbers_and_the_aftermarket_codes_filed_under_the_lines_numbers(self):
+    def test_reach_holds_the_aftermarket_codes_filed_under_the_lines_numbers_and_no_catalog_link(self):
         number = references.add_library_number('TOYOTA', '16100-29155', source_kind='aftermarket_catalog', citation='CATÁLOGO GMB 2016')[0]
         OEMCrossReference.objects.create(reference=number, brand='GMB', code='GWT-78A', number='GWT78A')
         pump = make_line('BOMBA-AGUA', description='BOMBA DE AGUA')
         PartOEMLink.objects.create(part=pump, reference=number, source='catalog')
+        self.assertEqual(search_document.documents([pump])[str(pump.pk)]['reach'], '')  # S9: a catalog link reaches nothing
+        references.add(pump, '16100-29155', 'TOYOTA', tipo='oem')  # the number on the line (it absorbs its line in referencia)
         doc = search_document.documents([pump])[str(pump.pk)]
-        self.assertEqual(doc['reach'], ' 1610029155 GWT78A ')
+        self.assertEqual(doc['reach'], ' GWT78A ')  # the number itself is one of the line's codes
 
     def test_no_supplier_item_data_is_in_a_document(self):
         supplier = make_supplier('PROVEEDOR CALIDAD')
@@ -249,19 +251,18 @@ class RefreshHookTests(TestCase):
         PartOEMLink.objects.create(part=pump, reference=number, source='catalog')
         fresh_hooks()
         store_cross_references({(number.pk, 'GMB', 'GWT-78A'): ['CATÁLOGO GMB 2016']})
-        self.assertEqual(search_document.connection_pending(), {str(holder.pk), str(pump.pk)})
+        self.assertEqual(search_document.connection_pending(), {str(holder.pk)})  # S9: the linked pump reaches nothing through the link
         other = make_line('BOMBA-3', description='BOMBA DE AGUA')
         fresh_hooks()
         store_catalog_links({(other.pk, number.pk): ['CATÁLOGO GMB 2016']})
         self.assertEqual(search_document.connection_pending(), {str(other.pk)})
         search_document.write([other.pk])
-        self.assertEqual(SearchDocument.objects.get(line=other).reach, ' 1610029155 GWT78A ')
+        self.assertEqual(SearchDocument.objects.get(line=other).reach, '')
 
     def test_the_biblioteca_cross_reference_routes_refresh_the_lines_that_reach_the_number(self):
         from rest_framework.test import APIClient
-        number = references.add_library_number('TOYOTA', '16100-29156', source_kind='aftermarket_catalog', citation='CATÁLOGO GMB 2016')[0]
         pump = make_line('BOMBA-4', description='BOMBA DE AGUA')
-        PartOEMLink.objects.create(part=pump, reference=number, source='catalog')
+        number = references.add(pump, '16100-29156', 'TOYOTA', tipo='oem', source='CATÁLOGO GMB 2016')[0]  # a number the line carries
         client = APIClient()
         client.force_authenticate(make_user('biblioteca-admin', superuser=True))
         fresh_hooks()

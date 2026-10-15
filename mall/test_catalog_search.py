@@ -3,8 +3,8 @@ from unittest.mock import patch
 from rest_framework.test import APITestCase
 
 from .models import Account, Membership, Part, PartCode, Role, SupplierItem, User
+from . import references
 from .references import add_library_number
-from .oem_reference_models import PartOEMLink
 
 
 class CatalogSearchTests(APITestCase):
@@ -67,9 +67,9 @@ class CatalogSearchTests(APITestCase):
         self.assertEqual(self.skus('cubo'), ['0-1-ALTERNO', '0-51750-J9000-KIT', '51750-J9000'])  # words only: SKU order
 
     def test_an_oem_number_the_sku_reaches_counts_as_an_exact_code(self):
-        reference = add_library_number('TOYOTA', '16100-29155', source_kind='aftermarket_catalog', citation='CATÁLOGO GMB 2016')[0]
+        add_library_number('TOYOTA', '16100-29155', source_kind='aftermarket_catalog', citation='CATÁLOGO GMB 2016')
         pump = self.part('BOMBA-AGUA', 'BOMBA DE AGUA')
-        PartOEMLink.objects.create(part=pump, reference=reference, source='catalog')
+        references.add(pump, '16100-29155', 'TOYOTA', tipo='oem')  # S9: the number on the line (a catalog link no longer reaches it)
         self.part('0-MENCION', 'EQUIVALE A 16100 29155')
         self.assertEqual(self.skus('16100 29155'), ['BOMBA-AGUA', '0-MENCION'])
         self.assertEqual(self.skus('1610029155'), ['BOMBA-AGUA'])  # descriptions match word by word, as written

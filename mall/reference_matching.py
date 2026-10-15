@@ -1590,8 +1590,10 @@ def decide_merge(case, action, *, actor, line=None):
     """merge (or approve): the case's lines merged into `line` (one of them; the case's first by default) through
     mall.line_merge.merge_lines; a merge that waits (guard subgrupo) refuses with the reason and keeps the case. keep_apart (or dismiss):
     CatalogSeparation pairs; lines a legacy merge joined (the legacy-auto-merge batch) are taken apart first (Separar SKU, as the
-    merge recorded). A batch case whose lines are one line already: approve keeps them merged. The case is locked and checked last, in
-    the same transaction as the merge or the split (plan §1.6.5)."""
+    merge recorded). A batch case whose lines are one line already: approve keeps them merged. A case of the catalog merge pass (S9,
+    mall.merge_pass.convert_case_codes): merged, the codes now on the merged line only become its References; kept apart with `line`
+    (one of the case's lines), its codes become References of that line only. The case is locked and checked last, in the same
+    transaction as the merge or the split (plan §1.6.5)."""
     from .line_merge import MergeGuard, keep_apart, merge_lines
     from .lines import canonical_ids
     from .models import Part
@@ -1617,17 +1619,26 @@ def decide_merge(case, action, *, actor, line=None):
         try:
             with transaction.atomic():
                 merge = merge_lines(target, sources, actor=actor, reason='Caso de unificación')
+                from .merge_pass import convert_case_codes
+                added = convert_case_codes(case, action, target=target.pk, actor=actor)  # S9: the codes now on one line (3e)
                 return close_case(confirm(case), 'applied', actor=actor, action='approved',
-                                  evidence={'target': str(target.pk), 'merge_id': str(merge.pk) if merge is not None else None})
+                                  evidence={'target': str(target.pk), 'merge_id': str(merge.pk) if merge is not None else None,
+                                            **({'references': added} if added else {})})
         except MergeGuard as guard:
             MatchingCase.objects.filter(pk=case.pk).update(guard=guard.guard)
             raise
     if action in ('keep_apart', 'dismiss'):
+        from .merge_pass import S9_RULES
+        if line and str(line) not in ids and (case.evidence or {}).get('regla') in S9_RULES:
+            raise ValidationError('Elige una de las líneas del caso para su código.')
         with transaction.atomic():
             if merged and len(ids) > 1:
                 split_legacy(ids, canonical, actor=actor)
             pairs = keep_apart(ids, actor=actor, case=case, reason='caso')
-            return close_case(confirm(case), 'dismissed', actor=actor, action='dismissed', evidence={'separated': pairs})
+            from .merge_pass import convert_case_codes
+            added = convert_case_codes(case, action, line=line, actor=actor)  # S9: the code goes to the line the reviewer picks (3e)
+            return close_case(confirm(case), 'dismissed', actor=actor, action='dismissed',
+                              evidence={'separated': pairs, **({'references': added, 'line': str(line)} if added else {})})
     raise ValidationError('Acción no válida para un caso de unificación.')
 
 

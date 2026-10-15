@@ -32,6 +32,22 @@ def number(manufacturer, code):
     return LibraryNumber(library().get(brand=manufacturer, clave=code))
 
 
+def approve_link_case(*lines):
+    """S9, rule 3f: an import that ties a SKU to a catalog item's numbers in referencia opens a merge case (a published line is
+    involved, so nothing merges on its own); approving it puts the numbers, and the codes filed under them, on the SKU. Returns the
+    case."""
+    from .matching_models import MatchingCase
+    from .models import User
+    from .reference_matching import decide
+    ids = {str(line.pk) for line in lines}
+    case = next(case for case in MatchingCase.objects.filter(kind='merge', status='review')
+                if ids <= {str(pk) for pk in case.lines.values_list('pk', flat=True)})
+    root = User.objects.filter(username='catalog-import-root').first() or User.objects.create_superuser(
+        'catalog-import-root', 'catalog-import-root@example.invalid', 'Example938!')
+    decide(case, 'merge', actor=root, line=lines[0].pk)
+    return case
+
+
 def source(number, kind='aftermarket_catalog'):
     return next(row for row in number.sources if row.kind == kind)
 
@@ -113,13 +129,19 @@ class SupplierCatalogImportTests(Fresh, TestCase):
         self.assertEqual(ref.ref.part.estado, 'referencia')  # S4: no line carries it, so it has a line of its own
         self.assertTrue(library(brand='TOYOTA', clave='1610039465').exists())  # printed, carried by no SKU
         self.assertFalse(self.pump.codes.filter(is_main=False).exists())  # alternos step 2c: the codes reach the pump through its numbers, never as copies
+        self.assertEqual(reached(self.pump), set())  # S9: a catalog link no longer reaches the numbers; 3f opens a merge case
+        case = approve_link_case(self.pump, ref.ref.part, library().get(brand='TOYOTA', clave='1610039465').part)
+        self.assertEqual(case.evidence['regla'], '3f')
         self.assertEqual(reached(self.pump), {('GMB', 'GWT-142A'), ('AISIN', 'WPT-142'), ('AIRTEX', 'AW9999')})
+        # 3e on the merged line: the catalog's own code is declarado; a competitor's needs a catalog checked against its PDF (OD17), and
+        # AW9999 is another SKU's alterno (rule 8).
+        self.assertEqual(set(self.pump.codes.filter(tipo='aftermarket').values_list('brand', 'code', 'estado')), {('GMB', 'GWT-142A', 'declarado')})
         self.assertEqual(PartCode.objects.get(code='AW9999').part, self.owner)  # another SKU's alterno is never moved
         self.assertFalse(self.filter.codes.filter(is_main=False, ref_type='company').exists())  # the description is an oil filter, not the catalog's water pump
         self.assertEqual(number('TOYOTA', '1610080007').ref.part_id, self.filter.pk)  # S4: its codigo carries the number, which is library data
         # The joint carries its own number (S4) and, already marked OEM, takes the sister number as an OEM alterno.
         self.assertEqual(set(self.joint.codes.filter(is_main=False).values_list('brand', 'code', 'ref_type')),
-                         {('TOYOTA', '43460-69115', 'oem'), ('TOYOTA', '43460-69116', 'oem')})
+                         {('TOYOTA', '43460-69115', 'oem'), ('TOYOTA', '43460-69116', 'oem'), ('ASVA', 'TY-LC200', 'company')})  # S9's 3e
         self.assertIn(('ASVA', 'TY-LC200'), reached(self.joint))
         self.joint.refresh_from_db()
         self.assertEqual((self.joint.category, self.joint.subcategory), ('TRANSMISIÓN', 'JUNTAS HOMOCINÉTICAS'))
@@ -189,13 +211,15 @@ class SupplierCatalogImportTests(Fresh, TestCase):
         result = self.run_import(apply=True)
         self.assertEqual(result['catalogs'][0]['counts']['retired_skus_skipped'], 1)
         self.assertFalse(retired.codes.filter(is_main=False).exists() or PartOEMLink.objects.filter(part=retired, source='catalog').exists())
+        case = approve_link_case(self.pump, library().get(brand='TOYOTA', clave='1610039466').part)
+        self.assertNotIn(retired.pk, set(case.lines.values_list('pk', flat=True)))
         self.assertIn(('GMB', 'GWT-142A'), reached(self.pump))
 
     def test_a_sku_matching_two_items_of_one_catalog_is_left_alone(self):
         PartCode.objects.create(part=self.pump, code='16100-80007', brand='TOYOTA')
         result = self.run_import(apply=True)
         self.assertEqual(result['catalogs'][0]['counts']['ambiguous_parts'], 1)
-        self.assertFalse(self.pump.codes.filter(brand='GMB').exists())
+        self.assertFalse(self.pump.codes.filter(brand='GMB').exclude(detail__has_key='s9').exists())  # no copy (S9's 3e: the number's own)
 
     def test_a_sku_classified_elsewhere_keeps_its_subgroup_and_gets_no_measurements(self):
         self.joint.category, self.joint.subcategory = 'TRANSMISIÓN', 'SEMIEJES'
@@ -318,6 +342,30 @@ class BrakeDiscSheetTests(Fresh, TestCase):
         self.assertFalse(TechnicalField.objects.filter(key='short_number').exists())
 
 
+class MergePassAfterImportTests(Fresh, TestCase):
+    """S9, rule 3f (mall.merge_pass.join_numbers): the numbers an item prints merge on their own only while every line is in referencia
+    without variants; with a SKU among them a merge case opens, and the codes on one line become References (3e)."""
+
+    def test_an_item_s_numbers_in_referencia_merge_and_a_sku_among_them_opens_a_case(self):
+        from .matching_models import MatchingCase
+        sku = Part.objects.create(sku='21010-0W025', description='BOMBA AGUA NIS PATHFINDER')
+        data = extract([item('GWT-500A', 'water_pump', oem=[('16100-50001', 'TOYOTA'), ('16100-50002', 'TOYOTA')], apps=[('TOYOTA', 'HILUX')]),
+                        item('GWN-61A', 'water_pump', oem=[('21010-0W025', 'NISSAN'), ('21010-0W026', 'NISSAN')], apps=[('NISSAN', 'PATHFINDER')])])
+        run_extract(data)
+        first, second = library().get(clave='1610050001'), library().get(clave='1610050002')
+        self.assertEqual(first.part_id, second.part_id)  # both lines were in referencia without variants: one line now
+        line = Part.objects.get(pk=first.part_id)
+        self.assertEqual((line.estado, Part._base_manager.filter(merged_into=line).count()), ('referencia', 1))
+        own = Reference.objects.get(part=line, brand='GMB')
+        self.assertEqual((own.code, own.tipo, own.estado), ('GWT-500A', 'aftermarket', 'declarado'))
+        nissan = library().get(clave='210100W026')
+        self.assertNotEqual(nissan.part_id, sku.pk)  # a published line is among them: nothing merges on its own
+        case = MatchingCase.objects.get(kind='merge')
+        self.assertEqual(({str(pk) for pk in case.lines.values_list('pk', flat=True)}, case.evidence['regla']),
+                         ({str(sku.pk), str(nissan.part_id)}, '3f'))
+        self.assertEqual(run_extract(data)['catalogs'][0].get('merge_pass', {}), {'references': 0})  # again: the case stands, nothing new
+
+
 class HubAndTensionerTests(Fresh, TestCase):
     def test_a_sku_takes_the_compatible_subgroup_its_own_description_names(self):
         hub = Part.objects.create(sku='44300-SDA-A51', description='HUB DEL HON ACCORD 03-07', is_OEM=True)
@@ -337,8 +385,11 @@ class HubAndTensionerTests(Fresh, TestCase):
         hub.refresh_from_db()
         self.assertEqual((hub.category, hub.subcategory), ('RODAMIENTOS', 'CUBOS DE RUEDA'))  # its description, not the item's bearing subgrupo
         self.assertEqual(hub.specifications.get(field__key='abs_teeth').number_value, 48)
+        approve_link_case(bearing, library().get(brand='TOYOTA', clave='1350554020').part)  # S9, 3f: the catalog link is a merge case
         self.assertIn(('ASVA', 'TYBP-001'), reached(bearing))
-        self.assertFalse(locking.codes.filter(is_main=False, ref_type='company').exists())  # a free-wheel locking hub is not a wheel hub
+        # A free-wheel locking hub is not a wheel hub: the import copies nothing onto it (the code it reaches through the number its
+        # codigo carries is that number's, which S9's 3e makes a Reference of the line the number sits on).
+        self.assertFalse(locking.codes.filter(is_main=False, ref_type='company').exclude(detail__has_key='s9').exists())
 
 
 class MakeGroupTests(Fresh, TestCase):
@@ -377,7 +428,11 @@ class ChainedMatchTests(Fresh, TestCase):
             json.dump(data, handle, ensure_ascii=False)
         try:
             sci.run([handle.name], apply=True, stdout=io.StringIO())
-            self.assertIn(('SNR', 'R177.27'), reached(bearing))  # from DAC40723336, which printed the SKU itself
+            # S9, 3f: the SKU and the line of DAC40723336's number (the item that printed the SKU itself) wait in one merge case, and
+            # DAC35620040's number is in none of them.
+            from .matching_models import MatchingCase
+            lines = [set(case.lines.values_list('pk', flat=True)) for case in MatchingCase.objects.filter(kind='merge')]
+            self.assertEqual(lines, [{bearing.pk, library().get(brand='SUZUKI', clave='0926740001').part_id}])
             again = sci.run([handle.name], apply=True, stdout=io.StringIO())
         finally:
             os.unlink(handle.name)
