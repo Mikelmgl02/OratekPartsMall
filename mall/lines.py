@@ -364,6 +364,8 @@ def bulk_create_lines(lines, *, batch_size=500, actor=None, mains=True):
     for line in lines:
         line._lifecycle = loaded_pair(line)
         line._identity = {name: line.__dict__.get(name) for name in Part.IDENTITY}
+    from .search_document import refresh
+    refresh(lines)  # bulk writes fire no save(): the Search Documents follow here (S7)
     return lines
 
 
@@ -392,6 +394,8 @@ def bulk_update_lines(lines, fields, *, batch_size=500):
         if identity:
             references.ensure_main(line, line_wins='sku' not in fields and bool({'tipo', 'is_OEM'} & set(fields)))
         line._identity = {name: line.__dict__.get(name) for name in Part.IDENTITY}
+    from .search_document import refresh
+    refresh(lines)  # bulk writes fire no save(): the Search Documents follow here (S7)
     return count
 
 
@@ -567,10 +571,14 @@ def project_subgrupos(part_types):
     text follows it (one UPDATE per subgrupo). Returns how many lines changed."""
     from .models import Part
     from .technical_data import grupo_nombre
+    from .search_document import refresh
     count = 0
     for part_type in part_types:
-        count += (Part.objects.filter(part_type=part_type).exclude(category=grupo_nombre(part_type), subcategory=part_type.name)
-                  .update(category=grupo_nombre(part_type), subcategory=part_type.name))
+        changed = (Part.objects.filter(part_type=part_type).exclude(category=grupo_nombre(part_type), subcategory=part_type.name)
+                   .update(category=grupo_nombre(part_type), subcategory=part_type.name))
+        if changed:  # their Search Documents' grupo and subgrupo follow (S7)
+            refresh(Part.objects.filter(part_type=part_type).values_list('pk', flat=True))
+        count += changed
     return count
 
 

@@ -510,6 +510,8 @@ def merge_lines(target, sources, *, actor, reason='', automatic=False, assistant
         if not library:
             from .variants import recompute_status
             recompute_status(target)
+        from .search_document import refresh
+        refresh([target.pk, *retired_ids])  # the sources leave the storefront by a queryset update: their Search Documents go (S7)
     return merge
 
 
@@ -1090,6 +1092,8 @@ def split_line(target_id, restore, *, actor, reason=''):
         keep_apart([str(target.pk), *wanted], actor=actor, split=split, reason='separar')
         from .lines import touch_visible
         touch_visible([target, *restored])
+        from .search_document import refresh
+        refresh([target, *restored])  # S7
     return {'split': split, 'target': target, 'restored': restored, 'summary': summary}
 
 

@@ -102,6 +102,8 @@ class Part(models.Model):
     def __str__(self):
         return f"{self.sku} · {self.name}" if self.name and self.name != self.sku else self.sku
     IDENTITY = ('sku', 'is_OEM', 'tipo', 'estado', 'merged_into_id')  # what the S2b shim compares against (mall.references.follow_line)
+    # What its Search Document reads (S7): a save of any of these refreshes it (mall.search_document.refresh).
+    SEARCHED = {'sku', 'name', 'description', 'category', 'subcategory', 'part_type', 'estado', 'active', 'merged_into'}
     @classmethod
     def from_db(cls, db, field_names, values):
         instance = super().from_db(db, field_names, values)
@@ -155,6 +157,9 @@ class Part(models.Model):
         from .references import follow_line
         follow_line(self, before, adding=adding, fields=fields, using=kwargs.get('using'))
         self._identity = {name: self.__dict__.get(name) for name in self.IDENTITY}
+        if (kwargs.get('using') or self._state.db or 'default') == 'default' and (fields is None or set(fields) & self.SEARCHED):
+            from .search_document import refresh
+            refresh([self.pk])  # its Search Document follows what it shows (S7), when the transaction commits
     class Meta:
         verbose_name = 'repuesto'
         verbose_name_plural = 'repuestos'
@@ -274,6 +279,8 @@ class Reference(models.Model):
                ('retirada', 'Retirada')]
     EXCLUSIVE = ('verificado', 'declarado', 'inferido')  # the estados that hold their key for one line (reference_one_live_line, 0074)
     LIVE = REFERENCE_LIVE
+    # What its line's Search Document reads (S7): a save of any of these refreshes it (mall.search_document.refresh).
+    SEARCHED = {'part', 'is_main', 'estado', 'code', 'brand', 'tipo', 'ref_type', 'printed_forms', 'supplier'}
     part = models.ForeignKey(Part, on_delete=models.PROTECT, related_name="codes", verbose_name='repuesto del catálogo')
     brand = models.CharField(max_length=120, blank=True, default='', verbose_name='marca opcional')
     code = models.CharField(max_length=120, verbose_name='código')
@@ -357,6 +364,7 @@ class Reference(models.Model):
     def from_db(cls, db, field_names, values):
         instance = super().from_db(db, field_names, values)
         instance._tipo_pair = (instance.__dict__.get('tipo'), instance.__dict__.get('ref_type'))  # what save() compares against
+        instance._search_line = instance.__dict__.get('part_id')  # the line whose Search Document it was in (save() refreshes both)
         return instance
 
     def save(self, *args, **kwargs):
@@ -386,6 +394,10 @@ class Reference(models.Model):
         if self.__dict__.pop('_adopted_main', False):
             from .references import sync_line_tipo
             sync_line_tipo(self.part, self)  # the line's tipo mirrors its main (I11)
+        if (kwargs.get('using') or self._state.db or 'default') == 'default' and (fields is None or set(fields) & self.SEARCHED):
+            from .search_document import refresh
+            refresh({self.part_id, getattr(self, '_search_line', None)})  # its line's Search Document (and the one it left), S7
+        self._search_line = self.__dict__.get('part_id')
 
     def delete(self, *args, **kwargs):
         raise ReferenceDeleteRefused(REFERENCE_DELETE_REFUSED)
@@ -649,3 +661,4 @@ from .apiag_sync_models import ApiagSucursal, ApiagSync, SupplierItemBranchStock
 from .sku_proposal_models import SkuProposal, SkuProposalItem
 from .sku_review_models import SkuReviewRun, SkuReviewVerdict
 from .brand_models import Brand, BrandAlias
+from .search_document_models import SearchDocument, SearchDocumentRebuild

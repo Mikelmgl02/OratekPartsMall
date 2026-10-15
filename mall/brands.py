@@ -139,6 +139,8 @@ def rekey(old, new, *, reason):
         if row.ref_type == 'oem':
             row.brand = new
             row.save(update_fields=['brand'])
+    from .search_document import refresh
+    refresh({row.part_id for row in moving})  # the brands in their lines' Search Documents (S7)
     enqueue_matching()  # codes are matched by (code, brand): the matching index reads the new spelling
     return {'moved': len(moving), 'kept': kept, 'cases': cases}
 
@@ -177,6 +179,8 @@ def rename(brand, new_name):
     brand.nombre = new
     brand.save(update_fields=['nombre', 'updated_at'])
     BrandAlias.objects.get_or_create(alias=old, defaults={'brand': brand})
+    from .search_document import refresh_text_containing
+    refresh_text_containing([old, *brand.aliases.values_list('alias', flat=True)])  # the brand their texts expand to (S7)
     return {'brand': brand, **moved}
 
 
@@ -204,4 +208,45 @@ def merge(source, target):
     nombre = source.nombre
     source.delete()
     BrandAlias.objects.get_or_create(alias=nombre, defaults={'brand': target})
+    from .search_document import refresh_text_containing
+    refresh_text_containing([nombre, *target.aliases.values_list('alias', flat=True)])  # the brand their texts expand to (S7)
     return {'brand': target, **moved}
+
+
+@transaction.atomic
+def add_alias(brand, spelling):
+    """Another spelling of a brand (management/brands/<id>/aliases, S7): trimmed and upper case as aliases keep it. Refused (BrandConflict)
+    when it is a brand's nombre (merge the two brands instead) or another brand's alias. The codes that carry the spelling take the
+    brand's nombre (rekey, collisions open merge cases), so from S6 no Reference carries an alias (I12); the Search Documents whose text
+    holds the word expand it to the brand. Returns (alias, the rekey's result)."""
+    from .search_document import refresh_text_containing
+    brand = Brand.objects.select_for_update().get(pk=brand.pk)
+    written = (spelling or '').strip().upper()
+    if not written:
+        raise BrandConflict('Escribe el alias.')
+    if len(written) > 120:
+        raise BrandConflict('El alias no puede superar 120 caracteres.')
+    other = Brand.objects.filter(nombre__in=spellings(written)).first()
+    if other is not None:
+        raise BrandConflict(f'{other.nombre} es una marca: une las dos marcas en vez de crear el alias.')
+    existing = BrandAlias.objects.select_for_update().filter(alias=written).select_related('brand').first()
+    if existing is not None:
+        if existing.brand_id == brand.pk:
+            return existing, {'moved': 0, 'kept': [], 'cases': []}
+        raise BrandConflict(f'{written} ya es un alias de {existing.brand.nombre}.')
+    alias = BrandAlias.objects.create(alias=written, brand=brand)
+    moved = rekey(written, brand.nombre, reason=f'{written} es un alias de {brand.nombre}')
+    refresh_text_containing([written])
+    return alias, moved
+
+
+@transaction.atomic
+def remove_alias(alias):
+    """Take a spelling off its brand (the codes already re-keyed keep the brand's nombre). The Search Documents whose text expanded it
+    follow. Returns the alias's spelling."""
+    from .search_document import refresh_text_containing
+    alias = BrandAlias.objects.select_for_update().get(pk=alias.pk)
+    spelling = alias.alias
+    alias.delete()
+    refresh_text_containing([spelling])
+    return spelling

@@ -173,6 +173,11 @@ APIAG_SYNC_DAILY_AT = os.getenv('APIAG_SYNC_DAILY_AT', '03:30')
 # supplier brands count as vehicle makes besides the ones the OEM finder and the OEM library know (their codes are that make's OEM numbers).
 SKU_PROPOSALS_STAGE = os.getenv('SKU_PROPOSALS_STAGE', '1').lower() in ('true', '1', 'yes')
 CATALOG_EXTRA_MAKES = [make.strip().upper() for make in os.getenv('CATALOG_EXTRA_MAKES', 'KAIYI').split(',') if make.strip()]
+# What the storefront search reads (inventory refactor S7, mall.catalog_search): legacy (the catalog tables, as before S7) until the
+# owner flips it to document (the Search Document, mall.search_document) once the counts verify; flipping it back is S7's rollback.
+CATALOG_SEARCH_SOURCE = os.getenv('CATALOG_SEARCH_SOURCE', 'legacy').strip().lower()
+# The matching worker rebuilds every Search Document this often (hours; 0 turns the stage off).
+SEARCH_DOCUMENT_REBUILD_HOURS = float(os.getenv('SEARCH_DOCUMENT_REBUILD_HOURS', '6') or 0)
 # Browser push notifications of the deal inbox (mall.push); off while any is empty. python -m mall.vapid_keys makes a pair.
 VAPID_PUBLIC_KEY = os.getenv('VAPID_PUBLIC_KEY', '')
 VAPID_PRIVATE_KEY = os.getenv('VAPID_PRIVATE_KEY', '')

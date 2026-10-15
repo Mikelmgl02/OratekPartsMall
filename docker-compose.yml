@@ -82,6 +82,10 @@ services:
       OEM_EXACT_MARK: ${OEM_EXACT_MARK:-0}
       # 1 sends a supplier item no code ties to a SKU to Productos nuevos (owner decision D1); its description words stay hints.
       MATCHING_NO_CODE_EVIDENCE: ${MATCHING_NO_CODE_EVIDENCE:-0}
+      # What the storefront search reads (inventory refactor S7): legacy until the Search Document's counts verify, then document.
+      CATALOG_SEARCH_SOURCE: ${CATALOG_SEARCH_SOURCE:-legacy}
+      # The matching worker rebuilds every Search Document this often (hours; 0 turns it off).
+      SEARCH_DOCUMENT_REBUILD_HOURS: ${SEARCH_DOCUMENT_REBUILD_HOURS:-6}
       CATALOG_LOW_STOCK_THRESHOLD: ${CATALOG_LOW_STOCK_THRESHOLD:-5}
       CATALOG_HIGH_STOCK_THRESHOLD: ${CATALOG_HIGH_STOCK_THRESHOLD:-20}
       DO_SPACES_KEY: ${DO_SPACES_KEY:-}

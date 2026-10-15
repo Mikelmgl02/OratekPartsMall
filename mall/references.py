@@ -381,6 +381,8 @@ def bulk_create(references, *, batch_size=500, actor=None, serialized=False):
         for ref in references:
             if ref.reference_source:
                 cite(ref, ref.reference_source, actor)
+        from .search_document import refresh
+        refresh({ref.part_id for ref in references})  # bulk inserts fire no save(): their lines' Search Documents follow here (S7)
     return references
 
 
@@ -830,11 +832,20 @@ def retire_main_of_merged(line):
     return retire(rows, reason='Línea unificada en otra', allow_main=True, allow_variants=True, keep_library=False) if rows.exists() else 0
 
 
+SEARCHED = {'part_id', 'is_main', 'estado', 'code', 'brand', 'tipo', 'ref_type', 'printed_forms', 'supplier_id'}  # what a Search Document reads
+
+
 def _bump(rows, **values):
     """A queryset update of References that keeps their version and updated_at (no signals: is_main and tipo mean nothing to the OEM
-    library mirror)."""
+    library mirror). When it changes what a Search Document reads, the documents of their lines follow (S7), the line they move to too."""
     from django.db.models import F
-    return rows.update(**values, version=F('version') + 1, updated_at=timezone.now())
+    searched = bool(SEARCHED & set(values))
+    lines = set(rows.values_list('part_id', flat=True)) if searched else set()
+    count = rows.update(**values, version=F('version') + 1, updated_at=timezone.now())
+    if searched:
+        from .search_document import refresh
+        refresh(lines | ({values['part_id']} if values.get('part_id') else set()))
+    return count
 
 
 def _mark_main(line, ref, current):

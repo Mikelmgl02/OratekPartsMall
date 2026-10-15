@@ -215,10 +215,11 @@ REFERENCE_NAMES = {'PartCode', 'Reference'}
 REFERENCE_RELATIONS = {'codes', 'alternos', 'reemplaza', 'internal_references', 'all_objects'}
 # The app modules that still name PartCode or join codes through codes__ (a join reaches retired rows, so each one names the live
 # estados: mall.references.live_q), as reviewed in S2a: at most this many uses each. New code writes Reference and goes through
-# Reference.objects or a line's codes, which leave retired rows out; S10 removes the alias and this list.
+# Reference.objects or a line's codes, which leave retired rows out; S10 removes the alias and this list. catalog_search.py's fourth is
+# no join: codes__contains on the Search Document's own codes column (S7).
 LEGACY_ALLOWED = {
     'catalog_assistant.py': 2, 'catalog_classification.py': 2, 'catalog_grouping_suggestions.py': 4, 'catalog_identity.py': 2,
-    'catalog_search.py': 3, 'matching_engine.py': 4, 'models.py': 1, 'oem_finder.py': 2, 'oem_links.py': 9, 'refactor/snapshot.py': 3,
+    'catalog_search.py': 4, 'matching_engine.py': 4, 'models.py': 1, 'oem_finder.py': 2, 'oem_links.py': 9, 'refactor/snapshot.py': 3,
     'serializers.py': 2, 'services.py': 6, 'sku_proposals.py': 2, 'supplier_catalog_replace.py': 2, 'wishlist.py': 4,
 }
 BULK_METHODS = {'bulk_create', 'bulk_update'}

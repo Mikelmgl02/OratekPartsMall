@@ -5,7 +5,10 @@ cases, never merges (mall.reference_matching.open_reference_merge_cases); the it
 (the backlog: a line case whose lines became one attaches, a load whose place() failed gets its line in Productos nuevos) and every
 attached item keeps its own cases (a waiting code change, its declared codes); cases the catalog settled meanwhile are closed; the AI
 ranks the line and merge cases only (OD12). Gone since S6: the renames (reconcile_identities), exact OEM marks, automatic family merges,
-invented parents, the SupplierCodeMapping reads and the proposals stage (place() makes the lines of Productos nuevos)."""
+invented parents, the SupplierCodeMapping reads and the proposals stage (place() makes the lines of Productos nuevos).
+
+From S7, before any pass and under the same lock, the Search Document's stage (search_document_stage) rebuilds every document when one
+is due (every SEARCH_DOCUMENT_REBUILD_HOURS, six by default) and checks I8; it runs whether or not a pass was requested."""
 import logging
 import math
 import uuid
@@ -104,7 +107,21 @@ def process_queue(*, force=False, use_ai=True):
     with matching_lock() as locked:
         if not locked:
             return None
+        documents = search_document_stage()
+        if documents is not None:  # recorded in SearchDocumentRebuild too
+            logger.info('Search documents rebuilt: %s', documents)
         return _process_queue(force=force, use_ai=use_ai)
+
+
+def search_document_stage():
+    """The Search Document's rebuild (inventory refactor S7, plan §3 S7: a stage of the runner every six hours, not cron), under the
+    matching lock and outside any pass: mall.search_document.stage rebuilds every document when one is due and checks I8; it stops
+    between two batches like any stage (checkpoint) and records its own failures. Not while a catalog import is half applied."""
+    from .models import CatalogImportJob
+    from . import search_document
+    if CatalogImportJob.objects.filter(status='importing', expires_at__gt=timezone.now()).exists():
+        return None
+    return search_document.stage(checkpoint=checkpoint)
 
 
 def _process_queue(*, force=False, use_ai=True):

@@ -74,12 +74,15 @@ class CaptureTests(Fresh, TestCase):
         from .oem_reference_models import OEMReference
         make_line('17801-30070-OLD', active=False)  # C1 (S1): publicada, unificada and retirada lines, as on the live catalog
         OEMReference.objects.all().delete()  # C4 (S4): every number of the OEM table has its Reference once S4's backfill ran
+        from . import search_document
+        search_document.rebuild()  # I8 (S7): the documents are written when a transaction commits, which a TestCase never does
         results = {(check_id, outcome) for check_id, _, outcome, _ in snapshot.run_checks()}
         self.assertIn(('C1', 'INFO'), results)  # from S4 the lines in referencia make more groups: it only informs
         self.assertIn(('C4', 'OK'), results)
         self.assertIn(('I6', 'OK'), results)
         self.assertIn(('C0', 'INFO'), results)
         self.assertIn(('I1', 'OK'), results)  # every line has its main since S2b (the Part.save shim makes it)
+        self.assertIn(('I8', 'OK'), results)
         self.assertNotIn('FALLA', {outcome for _, outcome in results})
 
 
