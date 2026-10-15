@@ -55,12 +55,38 @@ class LineRouteTests(S7Base):
         self.assertEqual(skus(origen='biblioteca'), [])
         self.assertEqual(self.client.get(f'{M}/lines/', {'estado': 'nope'}).status_code, 400)
         row = self.client.get(f'{M}/lines/', {'ids': str(oem.pk)}).data['results'][0]
-        self.assertEqual({key: row[key] for key in ('estado', 'origen', 'tipo', 'brand', 'version', 'reference_count', 'variant_count')},
+        self.assertEqual({key: row[key] for key in ('estado', 'origen', 'tipo', 'brand', 'version', 'reference_count', 'variant_count',
+                                                    'merged_count', 'images')},
                          {'estado': 'publicada', 'origen': 'catalogo', 'tipo': 'OEM', 'brand': 'TOYOTA', 'version': 1, 'reference_count': 1,
-                          'variant_count': 0})
+                          'variant_count': 0, 'merged_count': 0, 'images': []})
         self.assertEqual(row['main']['code'], '90915-YZZE1')
         disco_row = self.client.get(f'{M}/lines/{disco.pk}/').data
         self.assertEqual((disco_row['grupo']['nombre'], disco_row['subgrupo']['name']), ('FRENOS', 'DISCOS'))
+
+    def test_rows_count_variants_and_merged_lines_and_order_by_variants(self):
+        supplier = make_supplier('PROV FILAS')
+        stocked, empty, merged = self.line('STK-1', 'CON STOCK'), self.line('STK-0', 'SIN STOCK'), self.line('STK-M', 'UNIFICADA')
+        for n in range(2):
+            SupplierItem.objects.create(part=stocked, supplier=supplier, supplier_invent_id=f'V-{n}', codigo=f'STK-1-{n}', brand='',
+                                        source='upload', matching_status='matched')
+        merge_lines(stocked, [merged], actor=self.admin, reason='prueba')
+        response = self.client.get(f'{M}/lines/', {'ordering': '-variant_count', 'search': 'stk'})
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual([(row['sku'], row['variant_count'], row['merged_count']) for row in response.data['results']],
+                         [('STK-1', 2, 1), ('STK-0', 0, 0)])
+        self.assertEqual([row['sku'] for row in self.client.get(f'{M}/lines/', {'ordering': 'variant_count', 'search': 'stk'}).data['results']],
+                         ['STK-0', 'STK-1'])
+        self.assertEqual(self.client.get(f'{M}/lines/{empty.pk}/').data['merged_count'], 0)
+
+    def test_patch_keeps_the_applications_text_line_by_line(self):
+        line = self.line('APL-1', 'APLICACIONES')
+        text = '  Toyota  Corolla 2014-2018 \r\nToyota Yaris   2016\n\n'
+        response = self.client.patch(f'{M}/lines/{line.pk}/', {'expected_version': 1, 'aplicaciones_texto': text}, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['aplicaciones_texto'], 'Toyota Corolla 2014-2018\nToyota Yaris 2016')
+        same = self.client.patch(f'{M}/lines/{line.pk}/', {'expected_version': 2, 'aplicaciones_texto': 'Toyota Corolla 2014-2018\nToyota Yaris 2016'},
+                                 format='json')
+        self.assertEqual(same.data['version'], 2)  # nothing changed: the version stays
 
     def test_patch_checks_the_version_and_marks_the_fields_as_the_admins(self):
         line = self.line('ED-1', 'antes')
@@ -113,6 +139,8 @@ class LineRouteTests(S7Base):
         other = self.line('OTHER-1')
         refused = self.client.post(f'{M}/lines/{other.pk}/references/', {'code': 'GWT-41A', 'brand': 'GMB'}, format='json')
         self.assertEqual(refused.status_code, 400)
+        self.assertEqual(set(refused.data), {'detail'})  # every S7 error body is an object (ReferenceConflict was a bare list)
+        self.assertIsInstance(refused.data['detail'], str)
         rows = self.client.get(url).data
         self.assertEqual([(row['code'], row['is_main']) for row in rows], [('REF-1', True), ('GWT-41A', False)])
         ref_id = added.data['reference']['id']
@@ -123,7 +151,8 @@ class LineRouteTests(S7Base):
         main = self.client.post(f'{M}/lines/{line.pk}/main/', {'reference': ref_id, 'expected_version': 1}, format='json')
         self.assertEqual((main.status_code, main.data['sku'], main.data['main']['id'], main.data['version']), (200, 'GWT-41A', ref_id, 2))
         self.assertEqual(self.client.get(f'{M}/lines/{line.pk}/main/').data['code'], 'GWT-41A')
-        self.assertEqual(self.client.delete(f'{M}/references/{ref_id}/').status_code, 400)  # the main is never retired
+        main_refused = self.client.delete(f'{M}/references/{ref_id}/')
+        self.assertEqual((main_refused.status_code, set(main_refused.data)), (400, {'detail'}))  # the main is never retired
         old_main = Reference.objects.get(part=line, code='REF-1')
         retired = self.client.delete(f'{M}/references/{old_main.pk}/')
         self.assertEqual((retired.status_code, retired.data['estado']), (200, 'retirada'))
@@ -175,6 +204,42 @@ class CaseRouteTests(S7Base):
         self.assertEqual(decided.data['decided'], [str(case.pk)])
         self.assertEqual(len(decided.data['failed']), 1)
         self.assertEqual(Part.objects.get(pk=second.pk).merged_into_id, first.pk)
+
+    def test_the_batch_index_lists_each_batch_with_its_counts(self):
+        case, _, _ = self.merge_case(batch='lote-i')
+        self.merge_case_between('IDX-1', 'IDX-2', '')  # no batch: not listed
+        response = self.client.get(f'{M}/cases/batches/')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual([(row['batch_key'], row['counts'], row['kinds'], row['count']) for row in response.data],
+                         [('lote-i', {'review': 1}, {'merge': 1}, 1)])
+        self.assertIsNotNone(response.data[0]['created_at'])
+
+    def merge_case_between(self, a, b, batch):
+        from .reference_matching import merge_case_spec, open_case
+        return open_case(merge_case_spec([self.line(a, 'DISCO'), self.line(b, 'DISCO')], evidence={'codes': ['Y']}, reason='prueba',
+                                         batch_key=batch, route='lote' if batch else 'caso'))
+
+    def test_an_unexpected_failure_in_a_batch_fails_that_case_only(self):
+        from unittest.mock import patch
+        from . import reference_matching
+        case, first, second = self.merge_case(batch='lote-x')
+        other = self.merge_case_between('X-3', 'X-4', 'lote-x')
+        real = reference_matching.decide
+
+        def decide(case_row, action, **kwargs):
+            if case_row.pk == case.pk:
+                raise RuntimeError('boom')
+            return real(case_row, action, **kwargs)
+
+        with patch('mall.reference_matching.decide', side_effect=decide):
+            decided = self.client.post(f'{M}/cases/batches/lote-x/', {'action': 'merge', 'cases': [
+                {'id': str(case.pk), 'fingerprint': case.fingerprint}, {'id': str(other.pk), 'fingerprint': other.fingerprint}]}, format='json')
+        self.assertEqual(decided.status_code, 200, decided.data)
+        self.assertEqual(decided.data['decided'], [str(other.pk)])
+        self.assertEqual([row['id'] for row in decided.data['failed']], [str(case.pk)])
+        self.assertIn('RuntimeError', decided.data['failed'][0]['detail'])
+        self.assertEqual(MatchingCase.objects.get(pk=other.pk).status, 'applied')
+        self.assertEqual(MatchingCase.objects.get(pk=case.pk).status, 'review')
 
 
 class MergeRouteTests(S7Base):
@@ -273,9 +338,11 @@ class StorefrontTests(APITestCase):
                                            matching_status='matched', reported_quantity=4, calidad='original', condicion='nuevo',
                                            garantia='6 MESES', unidades_por_empaque=2)
         offer = self.client.get(f'/api/v1/catalog/{line.pk}/suppliers/').data[0]['items'][0]
+        item.refresh_from_db()
+        ref = item.reference
         self.assertEqual({key: offer[key] for key in ('calidad', 'condicion', 'garantia', 'unidades_por_empaque', 'reference')},
                          {'calidad': 'original', 'condicion': 'nuevo', 'garantia': '6 MESES', 'unidades_por_empaque': 2,
-                          'reference': item.reference_id})
+                          'reference': {'id': ref.pk, 'code': ref.code, 'brand': ref.brand, 'tipo': ref.tipo}})
 
     def test_brand_and_calidad_filter_and_count(self):
         kyb, plain = make_line('F-KYB', description='AMORT'), make_line('F-PLAIN', description='AMORT')

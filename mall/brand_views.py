@@ -22,6 +22,7 @@ from rest_framework.views import APIView
 
 from . import brands
 from .brand_models import Brand, BrandAlias
+from .line_views import ErrorBodies
 from .lines import catalog_q
 from .management import IsSuperuser
 from .models import Grupo, PartType, Reference
@@ -106,7 +107,7 @@ class BrandCreateRequest(serializers.Serializer):
     notas = serializers.CharField(required=False, allow_blank=True)
 
 
-class BrandList(generics.ListAPIView):
+class BrandList(ErrorBodies, generics.ListAPIView):
     permission_classes = [IsSuperuser]
     serializer_class = BrandSerializer
     pagination_class = BrandPagination
@@ -168,7 +169,7 @@ class BrandEditRequest(serializers.Serializer):
     notas = serializers.CharField(required=False, allow_blank=True)
 
 
-class BrandDetail(APIView):
+class BrandDetail(ErrorBodies, APIView):
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_brands_retrieve', responses=BrandSerializer, description='Una marca.')
@@ -215,7 +216,7 @@ class AliasResponse(serializers.Serializer):
     brand = BrandSerializer()
 
 
-class BrandAliases(APIView):
+class BrandAliases(ErrorBodies, APIView):
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_brands_aliases_create', request=AliasRequest, responses={201: AliasResponse},
@@ -232,7 +233,7 @@ class BrandAliases(APIView):
                          'brand': serialize_brand(brand)}, status=201)
 
 
-class BrandAliasDetail(APIView):
+class BrandAliasDetail(ErrorBodies, APIView):
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_brands_aliases_destroy', request=None, responses={204: None},
@@ -294,7 +295,7 @@ def save_grupo(grupo, nombre):
     return grupo
 
 
-class GrupoList(APIView):
+class GrupoList(ErrorBodies, APIView):
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_grupos_list', responses=GrupoSerializer(many=True),
@@ -311,7 +312,7 @@ class GrupoList(APIView):
         return Response(serialize_grupos([grupo])[0], status=201)
 
 
-class GrupoDetail(APIView):
+class GrupoDetail(ErrorBodies, APIView):
     permission_classes = [IsSuperuser]
 
     def grupo(self, pk):

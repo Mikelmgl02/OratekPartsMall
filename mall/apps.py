@@ -20,6 +20,13 @@ class MallConfig(AppConfig):
             post_save.connect(enqueue_matching, sender=model, dispatch_uid=f'matching_save_{name}')
             post_delete.connect(enqueue_matching, sender=model, dispatch_uid=f'matching_delete_{name}')
 
+        # A brand alias saved or deleted anywhere (the brand routes, references.ensure_brand, the Django admin) changes what the Search
+        # Documents' text expands it to (inventory refactor S7).
+        from .brand_models import BrandAlias
+        from .search_document import alias_changed
+        post_save.connect(alias_changed, sender=BrandAlias, dispatch_uid='search_document_alias_saved')
+        post_delete.connect(alias_changed, sender=BrandAlias, dispatch_uid='search_document_alias_deleted')
+
         # From inventory refactor S4 the OEM library's numbers are References (mall.references.add_library_number): the signals that
         # mirrored every OEM alterno into the OEM table and refreshed a SKU's name links are gone with it.
 

@@ -688,6 +688,8 @@ class OEMReferenceCrossReferences(APIView):
             row = OEMCrossReference.objects.filter(reference=ref, brand=brand, number=number).first()
             if row is None:
                 row = OEMCrossReference.objects.create(reference=ref, brand=brand, code=code, citations=[cite])
+                from .search_document import refresh_reach
+                refresh_reach([ref.pk])  # the lines that reach the number find the code (S7)
             elif cite not in row.citations:
                 row.citations = citation_list(row.citations, cite)
                 row.save(update_fields=['citations', 'updated_at'])
@@ -710,4 +712,6 @@ class OEMReferenceCrossReference(APIView):
             OEMCrossReferenceRetired.objects.update_or_create(reference=ref, brand=row.brand, number=row.number,
                                                               defaults={'code': row.code, 'citations': row.citations, 'retired_by': request.user})
             row.delete()
+            from .search_document import refresh_reach
+            refresh_reach([ref.pk])  # the lines that reach the number no longer find the code (S7)
         return Response(status=204)

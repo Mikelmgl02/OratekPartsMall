@@ -66,8 +66,6 @@ class Migration(migrations.Migration):
                                           'cada alias (TOY → TOY TOYOTA).', verbose_name='texto')),
                 ('brand', models.CharField(blank=True, db_index=True, default='', help_text='La marca de la referencia principal.', max_length=120,
                                            verbose_name='marca')),
-                ('calidades', models.JSONField(blank=True, default=list, help_text='Las calidades de sus artículos vinculados.',
-                                               verbose_name='calidades')),
                 ('grupo', models.CharField(blank=True, default='', max_length=120, verbose_name='grupo')),
                 ('subgrupo', models.CharField(blank=True, default='', max_length=120, verbose_name='subgrupo')),
                 ('updated_at', models.DateTimeField(auto_now=True, verbose_name='última actualización')),

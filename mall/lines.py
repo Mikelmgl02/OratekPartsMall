@@ -608,6 +608,19 @@ class LineVersionConflict(APIException):
 
 
 EDIT_FIELDS = ('description', 'name', 'aplicaciones_texto', 'part_type')
+
+
+def edited_text(text):
+    """A multi-line text as an administrator wrote it (aplicaciones_texto: one vehicle or note per line, as the library and the catalog
+    import store it): each line with single spaces, case kept, no blank lines at either end."""
+    rows = [' '.join(row.split()) for row in str(text or '').replace('\r\n', '\n').replace('\r', '\n').split('\n')]
+    while rows and not rows[0]:
+        rows.pop(0)
+    while rows and not rows[-1]:
+        rows.pop()
+    return '\n'.join(rows)
+
+
 # The moves a person makes from management/lines/<id>/transition (the estado now → the estados it may take). preparación's go through
 # Productos nuevos (mall.new_products: publish moves its items, reject keeps them); referencia's promote the library line; merging
 # (unificada) and Separar SKU (leaving it) have their own tools.
@@ -629,7 +642,7 @@ def _locked_line(line_id, expected_version):
 
 def edit_line(line_id, *, user, expected_version, **fields):
     """An administrator's edit of a line (any estado but unificada), checked against the version they read (LineVersionConflict, 409):
-    description, name, aplicaciones_texto (texts, upper case with single spaces) and part_type (the subgrupo, a PartType or None:
+    description and name (upper case, single spaces), aplicaciones_texto (as written, line by line: edited_text) and part_type (the subgrupo, a PartType or None:
     set_subgrupo; a line with a technical sheet keeps its subgrupo, as Part.save refuses). Each field that changed is theirs from now on
     (field_sources[field] = admin), the version moves and changed_at is stamped. Returns the line."""
     from django.db import transaction
@@ -641,8 +654,9 @@ def edit_line(line_id, *, user, expected_version, **fields):
         changed, names = [], []
         for name in ('description', 'name', 'aplicaciones_texto'):
             if name in fields:
-                value = ' '.join(str(fields[name] or '').split()).upper()
-                if value != ' '.join((getattr(line, name) or '').split()).upper():
+                tidy = edited_text if name == 'aplicaciones_texto' else (lambda text: ' '.join(str(text or '').split()).upper())
+                value = tidy(fields[name])
+                if value != tidy(getattr(line, name)):
                     setattr(line, name, value)
                     changed.append(name)
                     names.append(name)

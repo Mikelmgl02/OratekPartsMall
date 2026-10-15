@@ -15,7 +15,8 @@
                                 management route of Separar SKU for its line; since (a date), search; paginated
     inventory/<id>/separate/    POST Separar referencia: the item leaves its line for one of its own in preparación (409 with the reason
                                 when it cannot: a code change waiting)
-The JSON shapes are the contract of S8's screens (OEMLine, Reference)."""
+The JSON shapes are the contract of S8's screens (OEMLine, Reference). Every error body of the S7 routes is an object (ErrorBodies):
+{detail, ...} (a 409 adds version, line or owners), or a serializer's {field: [messages]} for a field it refused."""
 import uuid
 from datetime import datetime
 
@@ -33,7 +34,20 @@ from rest_framework.views import APIView
 from . import lines, references
 from .list_ordering import StableOrdering
 from .management import CatalogSearch, IsSuperuser, ManagedInventorySerializer
+from .media_serializers import PartImageSerializer
 from .models import Account, CatalogMerge, Part, PartType, Reference, ReferenceSource, SupplierItem
+
+
+class ErrorBodies:
+    """The S7 routes' error bodies are objects (the S8 contract): a bare list, as a DRF ValidationError of one message gives it
+    (ReferenceConflict, ReferenceHasVariants, a choke point's ValidationError('…')), becomes {detail}; {detail, ...} and a serializer's
+    {field: [messages]} stay as they are."""
+
+    def handle_exception(self, exc):
+        response = super().handle_exception(exc)
+        if isinstance(getattr(response, 'data', None), list):
+            response.data = {'detail': ' '.join(str(item) for item in response.data)}
+        return response
 
 
 class Conflict(APIException):
@@ -120,13 +134,15 @@ class LineSerializer(serializers.ModelSerializer):
     subgrupo = serializers.SerializerMethodField()
     decision = serializers.SerializerMethodField()
     reference_count = serializers.SerializerMethodField(help_text='Referencias vivas (no retiradas), la principal incluida.')
-    variant_count = serializers.SerializerMethodField(help_text='Artículos de proveedor en la línea.')
+    variant_count = serializers.SerializerMethodField(help_text='Artículos de proveedor en la línea (el stock_record_count del Inventario).')
+    merged_count = serializers.SerializerMethodField(help_text='Líneas unificadas en esta (Separar SKU las devuelve).')
+    images = PartImageSerializer(many=True, read_only=True)
 
     class Meta:
         model = Part
         fields = ['id', 'sku', 'name', 'description', 'estado', 'origen', 'tipo', 'version', 'brand', 'main', 'grupo', 'subgrupo',
                   'category', 'subcategory', 'aplicaciones_texto', 'merged_into', 'decision', 'reference_count', 'variant_count',
-                  'field_sources', 'technical_revision', 'created_at', 'updated_at', 'changed_at']
+                  'merged_count', 'images', 'field_sources', 'technical_revision', 'created_at', 'updated_at', 'changed_at']
         read_only_fields = fields
 
     def _main(self, line):
@@ -159,20 +175,28 @@ class LineSerializer(serializers.ModelSerializer):
         return len(line.codes.all())
 
     def get_variant_count(self, line) -> int:
+        if line.__dict__.get('variant_count') is not None:  # annotated when the list is ordered by it
+            return line.__dict__['variant_count']
         counts = self.context.get('variant_counts')
         return counts.get(line.pk, 0) if counts is not None else line.supplier_items.count()
+
+    def get_merged_count(self, line) -> int:
+        counts = self.context.get('merged_counts')
+        return counts.get(line.pk, 0) if counts is not None else Part.objects.filter(merged_into=line.pk).count()
 
 
 def line_queryset():
     return (lines.all_lines().select_related('part_type__grupo', 'decided_by')
-            .prefetch_related(Prefetch('codes', queryset=Reference.objects.order_by('-is_main', 'pk'))))
+            .prefetch_related(Prefetch('codes', queryset=Reference.objects.order_by('-is_main', 'pk')), 'images'))
 
 
 def serialize_lines(rows, request=None):
     rows = list(rows)
-    counts = dict(SupplierItem.objects.filter(part_id__in=[row.pk for row in rows]).order_by().values('part_id')
-                  .annotate(n=Count('pk')).values_list('part_id', 'n'))
-    return LineSerializer(rows, many=True, context={'request': request, 'variant_counts': counts}).data
+    ids = [row.pk for row in rows]
+    counts = dict(SupplierItem.objects.filter(part_id__in=ids).order_by().values('part_id').annotate(n=Count('pk')).values_list('part_id', 'n'))
+    merged = dict(Part.objects.filter(merged_into__in=ids).order_by().values('merged_into').annotate(n=Count('pk'))
+                  .values_list('merged_into', 'n'))
+    return LineSerializer(rows, many=True, context={'request': request, 'variant_counts': counts, 'merged_counts': merged}).data
 
 
 def serialize_line(line, request=None):
@@ -233,13 +257,13 @@ LINE_PARAMETERS = [
 ]
 
 
-class LineList(generics.ListAPIView):
+class LineList(ErrorBodies, generics.ListAPIView):
     permission_classes = [IsSuperuser]
     serializer_class = LineSerializer
     pagination_class = LinePagination
     filter_backends = [CatalogSearch, StableOrdering]
     search_fields = ['sku', 'name', 'description']
-    ordering_fields = ['sku', 'description', 'estado', 'origen', 'tipo', 'created_at', 'updated_at', 'changed_at', 'version']
+    ordering_fields = ['sku', 'description', 'estado', 'origen', 'tipo', 'created_at', 'updated_at', 'changed_at', 'version', 'variant_count']
 
     @extend_schema(operation_id='v1_management_lines_list', parameters=LINE_PARAMETERS,
                    description='Las líneas OEM con su estado, su referencia principal y su subgrupo (S7).')
@@ -283,6 +307,8 @@ class LineList(generics.ListAPIView):
             queryset = queryset.filter(pk__in=Reference.objects.filter(is_main=True, brand=resolve(brand)).values('part_id'))
         if params.get('ids'):
             queryset = queryset.filter(pk__in=as_uuid_list(params['ids'], 'ids'))
+        if 'variant_count' in params.get('ordering', ''):  # the Inventario's stock column, counted in the query only when it orders
+            queryset = queryset.annotate(variant_count=Count('supplier_items', distinct=True))
         return queryset.order_by('sku', 'id')
 
 
@@ -299,7 +325,7 @@ class LineConflictResponse(serializers.Serializer):
     version = serializers.IntegerField(required=False)
 
 
-class LineDetail(APIView):
+class LineDetail(ErrorBodies, APIView):
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_lines_retrieve', responses=LineSerializer, description='Una línea OEM, en cualquier estado.')
@@ -341,7 +367,7 @@ class TransitionRequest(serializers.Serializer):
     note = serializers.CharField(required=False, allow_blank=True, max_length=2000)
 
 
-class LineTransition(APIView):
+class LineTransition(ErrorBodies, APIView):
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_lines_transition', request=TransitionRequest,
@@ -400,7 +426,7 @@ class ReferenceAddResponse(serializers.Serializer):
     reference = LineReferenceSerializer()
 
 
-class LineReferences(APIView):
+class LineReferences(ErrorBodies, APIView):
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_lines_references_list', responses=LineReferenceSerializer(many=True),
@@ -448,7 +474,7 @@ class MainConflictResponse(serializers.Serializer):
     line = serializers.DictField(required=False, help_text='La línea que ya tiene ese código como SKU: id y sku.')
 
 
-class LineMain(APIView):
+class LineMain(ErrorBodies, APIView):
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_lines_main_retrieve', responses=LineReferenceSerializer(allow_null=True),
@@ -496,7 +522,7 @@ class ReferenceEditRequest(serializers.Serializer):
     notes = serializers.CharField(required=False, allow_blank=True)
 
 
-class ReferenceDetail(APIView):
+class ReferenceDetail(ErrorBodies, APIView):
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_references_partial_update', request=ReferenceEditRequest,
@@ -570,7 +596,7 @@ class MergePagination(PageNumberPagination):
     page_size = 25
 
 
-class MergeDigest(generics.ListAPIView):
+class MergeDigest(ErrorBodies, generics.ListAPIView):
     """The automatic merges (plan §3 S7 merges/): every CatalogMerge the matching service made (the worker's family merges before S6,
     S2b's compact duplicates), newest first, each with its line and the lines it joined, whether each is still merged there, and the
     route of Separar SKU (management/catalog/<line>/split) that takes one back out."""
@@ -623,7 +649,7 @@ class SeparateResponse(serializers.Serializer):
     line = LineSerializer()
 
 
-class InventorySeparate(APIView):
+class InventorySeparate(ErrorBodies, APIView):
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_inventory_separate', request=None,

@@ -10,7 +10,7 @@ from mall.technical_api import (PartTypeList, PartTypeDetail, TemplateDetail, Ap
                                ItemTechnicalDetail, CatalogTechnicalDetail)
 from mall.matching_views import MatchingOverview, MatchingReview
 from mall.brand_views import BrandAliasDetail, BrandAliases, BrandDetail, BrandList, GrupoDetail, GrupoList
-from mall.case_views import CaseBatch, CaseDetail, CaseList
+from mall.case_views import CaseBatch, CaseBatchIndex, CaseDetail, CaseList
 from mall.line_views import (InventorySeparate, LineDetail, LineList, LineMain, LineReferences, LineTransition, MergeDigest,
                              ReferenceDetail)
 from mall.analytics import AnalyticsDashboard, UsageEvents
@@ -137,6 +137,7 @@ urlpatterns = [
     path('api/v1/management/lines/<uuid:pk>/main/', LineMain.as_view()),
     path('api/v1/management/references/<int:pk>/', ReferenceDetail.as_view()),
     path('api/v1/management/cases/', CaseList.as_view()),
+    path('api/v1/management/cases/batches/', CaseBatchIndex.as_view()),
     path('api/v1/management/cases/batches/<str:key>/', CaseBatch.as_view()),
     path('api/v1/management/cases/<uuid:pk>/', CaseDetail.as_view()),
     path('api/v1/management/merges/', MergeDigest.as_view()),

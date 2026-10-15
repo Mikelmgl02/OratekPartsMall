@@ -18,15 +18,21 @@ What a document holds (plan §3 S7):
     internal  {supplier id: [codes]}: the interno codes of each supplier (not the main), read only within that supplier's own catalog
     text      the description, name, grupo, subgrupo, the main's brand and every public Reference's brand, then the canonical brand of each
               alias word in them (TOY → TOY TOYOTA), so "filtro aceite toyota" finds the rows the catalog wrote as TOY
-    brand     the main's brand; calidades: the calidades of its matched items (live suppliers); grupo, subgrupo: its subgrupo's names
-Everything is folded as a search word is (mall.catalog_search.fold: upper case, no accents). Stock is never in it.
+    brand     the main's brand; grupo, subgrupo: its subgrupo's names
+Everything is folded as a search word is (mall.catalog_search.fold: upper case, no accents). Stock and the supplier items' calidades are
+never in it: availability and the calidad filter read the items live.
 
 Callers. Part.save and Reference.save (every line or Reference written one by one: mall.lines.set_estado, publish, reject, prepare,
 promote_line, set_subgrupo through the line's save; mall.references.add, update, retire, revive), mall.references._bump (set_main, move,
 retype_main, absorb_into), references.bulk_create, mall.lines.bulk_create_lines, bulk_update_lines and project_subgrupos (the catalog
-import's save_plan, the assistant's bulk taxonomy, a subgrupo or grupo renamed: technical_api, Grupo.save), mall.variants.attach (its
-calidades), mall.line_merge.merge_lines and split_line, mall.brands.rekey, rename and merge and the brand alias routes. A write that
-skips all of them is repaired by the next rebuild."""
+import's save_plan, the assistant's bulk taxonomy, a subgrupo or grupo renamed: technical_api, Grupo.save), mall.line_merge.merge_lines
+and split_line, mall.brands.rekey, rename and merge; refresh_reach() for what reach reads (the aftermarket codes and SKU links the
+catalog import, the catalog replace, the Biblioteca and absorb write: mall.oem_links, mall.supplier_catalog_replace,
+mall.oem_reference_views, mall.line_merge); a BrandAlias saved or deleted anywhere (the brand routes, references.ensure_brand, the Django
+admin) through its signal (alias_changed, mall.apps). A write that skips all of them is repaired by the next rebuild.
+
+Writes are serialized (LOCK, a transaction-level advisory lock taken before a document is computed): a document is always computed from
+what was committed when its writer got the lock, so the rebuild never writes back an older document over a fresher one."""
 import logging
 import re
 import time
@@ -42,11 +48,12 @@ logger = logging.getLogger(__name__)
 
 REBUILD_HOURS = 6         # the matching worker rebuilds every document this often (SEARCH_DOCUMENT_REBUILD_HOURS; 0 turns it off)
 RETRY_MINUTES = 15        # after a failed rebuild, the stage tries again this much later instead of waiting REBUILD_HOURS
-BATCH = 1000              # documents written per transaction by a rebuild (the worker checks for a stop between two)
+BATCH = 1000              # documents recomputed and written per transaction by a rebuild (the worker checks for a stop between two)
 CHUNK = 2000              # line ids per query
 KEEP_RUNS = 100           # rebuild records kept
 EXCLUSIVE = ('verificado', 'declarado', 'inferido')
-FIELDS = ('codes', 'compact', 'reach', 'internal', 'text', 'brand', 'calidades', 'grupo', 'subgrupo')
+FIELDS = ('codes', 'compact', 'reach', 'internal', 'text', 'brand', 'grupo', 'subgrupo')
+LOCK = 724631115          # pg_advisory_xact_lock taken by every document write (724631109-724631114 are taken: plan §1.6.5)
 PENDING = '_search_document_pending'  # the connection's set of line ids waiting for the commit
 TOKEN = re.compile(r'[A-Z0-9]+')
 
@@ -122,7 +129,7 @@ def _line_rows(line_filter):
 
 def _gather(line_filter):
     """{line id: values} for the lines on sale the filter (a Q on Part) names; each kind of row read once."""
-    from .models import Reference, SupplierItem
+    from .models import Reference
     from .oem_reference_models import OEMCrossReference, PartOEMLink
     lines = {str(row[0]): row for row in _line_rows(line_filter)}
     if not lines:
@@ -145,11 +152,6 @@ def _gather(line_filter):
     for chunk in chunks(numbers, 5000):
         for ref_id, number in OEMCrossReference.objects.filter(reference_id__in=chunk).values_list('reference_id', 'number').order_by('pk'):
             crossed[ref_id].append(number)
-    calidades = defaultdict(set)
-    for chunk in chunks(ids):
-        for part_id, calidad in (SupplierItem.objects.filter(part_id__in=chunk, matching_status='matched', supplier__active=True)
-                                 .exclude(calidad='').values_list('part_id', 'calidad').distinct()):
-            calidades[str(part_id)].add(calidad)
     aliases = Aliases()
     found = {}
     for pk, (_, sku, name, description, category, subcategory, part_type, subgrupo_name, grupo_nombre) in lines.items():
@@ -174,8 +176,7 @@ def _gather(line_filter):
             'reach': padded(number for number in reach if number not in held_compact),
             'internal': {supplier: list(dict.fromkeys(values)) for supplier, values in sorted(internal.items())},
             'text': text_of([description, name, grupo, subgrupo, main_brand, *brands], aliases),
-            'brand': main_brand[:120], 'calidades': sorted(calidades.get(pk, ())),
-            'grupo': fold(grupo)[:120], 'subgrupo': fold(subgrupo)[:120]}
+            'brand': main_brand[:120], 'grupo': fold(grupo)[:120], 'subgrupo': fold(subgrupo)[:120]}
     return found
 
 
@@ -191,24 +192,33 @@ def documents(line_ids=None):
 
 # --- writing -------------------------------------------------------------------------------------------------------------------------
 
+def _lock():
+    """This transaction's document lock (LOCK): one document writer at a time, each computing what it writes after it holds the lock."""
+    if connection.vendor == 'postgresql':
+        with transaction.get_connection().cursor() as cursor:
+            cursor.execute('SELECT pg_advisory_xact_lock(%s)', [LOCK])
+
+
 def _save(docs):
-    """Upsert these documents ({line id: values}) in one statement."""
+    """Upsert these documents ({line id: values}) in one statement, in line order."""
     SearchDocument, _ = _models()
     if not docs:
         return 0
-    rows = [SearchDocument(line_id=pk, **values) for pk, values in docs.items()]
+    rows = [SearchDocument(line_id=pk, **docs[pk]) for pk in sorted(docs)]
     SearchDocument.objects.bulk_create(rows, batch_size=500, update_conflicts=True, unique_fields=['line'],
                                        update_fields=[*FIELDS, 'updated_at'])
     return len(rows)
 
 
 def write(line_ids):
-    """The documents of these lines, now: upserted for the lines on sale, deleted for the others. Returns (written, deleted)."""
+    """The documents of these lines, now: upserted for the lines on sale, deleted for the others, each chunk computed and written in one
+    transaction under the document lock (so what it writes is what was committed when it got the lock). Returns (written, deleted)."""
     SearchDocument, _ = _models()
     ids = _ids(line_ids)
     written = deleted = 0
     for chunk in chunks(ids):
         with transaction.atomic():
+            _lock()
             docs = _gather(Q(pk__in=chunk))
             written += _save(docs)
             gone = sorted(set(chunk) - set(docs))
@@ -255,22 +265,48 @@ def refresh(line_ids):
     return len(ids)
 
 
-def refresh_lines_of_references(ref_ids):
-    """refresh() for the lines these References (ids) sit on."""
-    from .models import Reference
-    ids = [getattr(ref, 'pk', ref) for ref in ref_ids]
-    if ids:
-        refresh(Reference.all_objects.filter(pk__in=ids).values_list('part_id', flat=True))
+def word_pattern(spelling):
+    """A PostgreSQL regular expression matching the spelling as whole words of a folded text (MO in 'AMORTIGUADOR MO', not in
+    'MOTOR'; NEW ERA across any separator), as Aliases.expand reads the words; None when it has no letter or digit."""
+    words = TOKEN.findall(fold(spelling))
+    return f'(^|[^A-Z0-9]){"[^A-Z0-9]+".join(words)}([^A-Z0-9]|$)' if words else None
 
 
 def refresh_text_containing(words):
-    """refresh() for the documents whose text holds any of these words (a brand alias or nombre that changed, so its expansion did)."""
+    """refresh() for the documents whose text holds any of these spellings as whole words (a brand alias or nombre that changed, so its
+    expansion did)."""
     SearchDocument, _ = _models()
     query = Q()
-    for word in {fold(word) for word in words if fold(word)}:
-        query |= Q(text__contains=word)
+    for pattern in {word_pattern(word) for word in words} - {None}:
+        query |= Q(text__regex=pattern)
     if query:
         refresh(SearchDocument.objects.filter(query).values_list('line_id', flat=True))
+
+
+def alias_changed(sender, instance, raw=False, using=None, **kwargs):
+    """post_save and post_delete of BrandAlias (mall.apps), wherever the alias is written (the brand routes, references.ensure_brand,
+    the Django admin): the documents whose text holds the spelling expand it to its brand now, or no longer."""
+    if raw or (using or 'default') != 'default':
+        return
+    try:
+        with transaction.atomic():  # a savepoint: the alias's own write stands whatever happens here
+            refresh_text_containing([instance.alias])
+    except DatabaseError:  # no document table (before 0085): the S7 rebuild writes every document anyway
+        logger.warning('Search documents not refreshed for the alias %s.', instance.alias)
+
+
+def refresh_reach(ref_ids=(), part_ids=()):
+    """refresh() for the lines whose reach follows these References (ids): the lines they sit on and the lines PartOEMLinks tie to them
+    (an aftermarket code filed or retired under a number, a number's rows moved by absorb), plus part_ids (the lines of SKU links added
+    or removed)."""
+    from .models import Reference
+    from .oem_reference_models import PartOEMLink
+    lines = {str(getattr(pk, 'pk', pk)) for pk in part_ids if pk}
+    ids = {getattr(pk, 'pk', pk) for pk in ref_ids if pk}
+    for chunk in chunks(ids):
+        lines |= {str(pk) for pk in Reference.all_objects.filter(pk__in=chunk).values_list('part_id', flat=True)}
+        lines |= {str(pk) for pk in PartOEMLink.objects.filter(reference_id__in=chunk).values_list('part_id', flat=True)}
+    return refresh(lines)
 
 
 # --- the rebuild and its check -------------------------------------------------------------------------------------------------------
@@ -313,9 +349,11 @@ def plan(docs=None):
 
 
 def rebuild(*, origin='worker', checkpoint=None, log=None):
-    """Every document from scratch: computed for every line on sale, the ones that changed (or are missing) written in batches of BATCH,
-    the documents of lines not on sale deleted, then I8 checked. checkpoint() runs between two batches (the worker's stop signal).
-    Recorded in SearchDocumentRebuild. Returns its summary."""
+    """Every document from scratch: computed for every line on sale and compared with the table; the ones that differ (or are missing)
+    are computed again and written in batches of BATCH, each batch in one transaction under the document lock (write()), so a document a
+    writer refreshed after the first pass is never overwritten with what that pass read; the documents of lines not on sale deleted, then
+    I8 checked. checkpoint() runs between two batches (the worker's stop signal). Recorded in SearchDocumentRebuild. Returns its
+    summary."""
     _, SearchDocumentRebuild = _models()
     run = SearchDocumentRebuild.objects.create(origin=origin)
     started = time.monotonic()
@@ -323,14 +361,14 @@ def rebuild(*, origin='worker', checkpoint=None, log=None):
         docs = documents()
         computed = time.monotonic() - started
         upsert, stale, same = plan(docs)
-        written = 0
+        written = deleted = 0
         pending = sorted(upsert)
         for start in range(0, len(pending), BATCH):
             if checkpoint is not None:
                 checkpoint()
-            with transaction.atomic():
-                written += _save({pk: upsert[pk] for pk in pending[start:start + BATCH]})
-        deleted = write(stale)[1] if stale else 0  # each one checked again: a line put back on sale meanwhile keeps (gets) its document
+            batch = write(pending[start:start + BATCH])  # computed again under the lock: a line taken off sale meanwhile loses its document
+            written, deleted = written + batch[0], deleted + batch[1]
+        deleted += write(stale)[1] if stale else 0  # each one checked again: a line put back on sale meanwhile keeps (gets) its document
         summary = {'lines': len(docs), 'written': written, 'unchanged': same, 'deleted': deleted, 'seconds_computing': round(computed, 1),
                    'seconds': round(time.monotonic() - started, 1), 'check': check()}
     except BaseException as error:
@@ -368,16 +406,20 @@ def rebuild_due(now=None):
 
 def stage(*, checkpoint=None):
     """The matching worker's document stage (mall.matching_worker.process_queue, under the matching lock): rebuild() when due, else
-    None. A failure is recorded and logged, never raised, so the matching pass goes on."""
+    None. A failure of any kind is recorded and logged, never raised, so the matching pass goes on; only the runner's stop
+    (WorkerStopping, a BaseException) passes through."""
     try:
         if not rebuild_due():
             return None
     except DatabaseError:  # 0085 not applied yet: nothing to rebuild
         logger.warning('Search documents: no table yet (0085_search_document).')
         return None
+    except Exception:
+        logger.exception('Search documents: could not tell whether a rebuild is due.')
+        return None
     try:
         return rebuild(origin='worker', checkpoint=checkpoint)
-    except DatabaseError:
+    except Exception:
         logger.exception('Search document rebuild failed; the next attempt comes in %s minutes.', RETRY_MINUTES)
         return {'error': 'rebuild failed'}
 

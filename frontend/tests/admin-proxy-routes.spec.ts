@@ -149,7 +149,7 @@ test('the proxy forwards the S7 routes: OEM lines, References, cases, merges, Ma
   const grupos = await page.request.get('/api/management/grupos');
   expect(grupos.status(), await grupos.text()).toBe(200);
   const paths = ['/api/management/lines?page=1&estado=preparacion&origen=proveedor&grupo=none', '/api/management/cases?status=review&kind=merge&route=lote&page=1',
-    '/api/management/merges?page=1&since=2026-01-01&search=A',
+    '/api/management/merges?page=1&since=2026-01-01&search=A', '/api/management/cases/batches',
     ...(first ? [`/api/management/lines/${first}`, `/api/management/lines/${first}/references`, `/api/management/lines/${first}/main`,
       `/api/management/cases?line=${first}`, `/api/management/lines?ids=${first}`] : []),
     ...(brand ? [`/api/management/brands/${brand}`, `/api/management/brands?familia=${brand}`] : [])];

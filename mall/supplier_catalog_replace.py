@@ -258,6 +258,9 @@ def apply_changes(job, changes, actor):
     # A dropped number's codes go with it, without a tombstone (they went with the OEM table's number before S4), so a catalog that
     # prints the number again files them again.
     dropped = [change['row'].pk for change in changes['codes'] if change['action'] == 'with_number']
+    # The lines that reached the codes and links that go stop finding them (their Search Documents' reach, S7).
+    reach_refs = {row.reference_id for row in retired} | {change['row'].reference_id for change in changes['codes'] if change['action'] == 'with_number'}
+    reach_lines = set()
     for chunk in chunks([row.pk for row in retired] + dropped):
         OEMCrossReference.objects.filter(pk__in=chunk).delete()
     for change in changes['codes']:
@@ -267,7 +270,10 @@ def apply_changes(job, changes, actor):
     removed = [change['link'].pk for change in changes['ties'] if change['action'] in ('remove', 'with_number')]
     removed += list(PartOEMLink.objects.filter(source='sku_name', reference__in=[ref.pk for ref in gone]).values_list('pk', flat=True))
     for chunk in chunks(removed):
+        reach_lines |= set(PartOEMLink.objects.filter(pk__in=chunk).values_list('part_id', flat=True))
         PartOEMLink.objects.filter(pk__in=chunk).delete()
+    from .search_document import refresh_reach
+    refresh_reach(reach_refs, reach_lines)
     for change in changes['ties']:
         if change['action'] in ('recite', 'drop_citation'):
             change['link'].citations = change['citations']

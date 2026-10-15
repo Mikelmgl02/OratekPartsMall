@@ -1,7 +1,7 @@
 """The storefront's Search Document (inventory refactor S7, plan §2): one row per line on sale (publicada and not merged, invariant I8),
 holding what a catalog search reads, already folded (upper case, no accents) so every word is one LIKE on an indexed column (GIN trigram,
 pg_trgm). mall.search_document is its only writer: refresh(line_ids) after a write that changes what a line shows, and the matching
-worker's rebuild every six hours. Stock is never in it: availability stays live. CATALOG_SEARCH_SOURCE=document makes the storefront search
+worker's rebuild every six hours. Stock and the items' calidades are never in it: availability and the calidad filter stay live. CATALOG_SEARCH_SOURCE=document makes the storefront search
 read it (mall.catalog_search); until the owner flips it the table is built and kept but nothing reads it."""
 from django.contrib.postgres.indexes import GinIndex
 from django.db import models
@@ -23,7 +23,6 @@ class SearchDocument(models.Model):
                             help_text='Descripción, nombre, grupo, subgrupo, marcas y la marca canónica de cada alias (TOY → TOY TOYOTA).')
     brand = models.CharField(max_length=120, blank=True, default='', db_index=True, verbose_name='marca',
                              help_text='La marca de la referencia principal.')
-    calidades = models.JSONField(default=list, blank=True, verbose_name='calidades', help_text='Las calidades de sus artículos vinculados.')
     grupo = models.CharField(max_length=120, blank=True, default='', verbose_name='grupo')
     subgrupo = models.CharField(max_length=120, blank=True, default='', verbose_name='subgrupo')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='última actualización')

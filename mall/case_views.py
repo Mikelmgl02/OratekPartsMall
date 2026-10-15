@@ -6,9 +6,13 @@ kind, status, route, batch, line or Reference, decide one with its fingerprint, 
                             Reference's line), reference (a Reference id); paginated, newest first
     cases/<id>/             GET one case; POST {action, fingerprint, line, target_sku}: as management/matching/<id> (409 when the case
                             changed or the decision cannot run)
+    cases/batches/          GET every batch (batch_key) with its counts by status and its cases in review by kind, the most in review
+                            first
     cases/batches/<key>/    GET the batch: its counts by status and kind and its cases in review; POST {action, cases: [{id,
                             fingerprint}]}: each case decided on its own (one failing does not stop the others), at most MAX_BATCH
 The case JSON is mall.matching_views.case_result's (MatchingCaseResponse)."""
+import logging
+
 from django.db.models import Count, Q
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
@@ -19,9 +23,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import reference_matching
+from .line_views import ErrorBodies
 from .management import IsSuperuser
 from .matching_models import MatchingCase
 from .matching_views import ACTIONS, CASE_KINDS, CASE_STATUSES, MatchingCaseResponse, MatchingConflict, MatchingReview, ReviewRequest, case_result
+
+logger = logging.getLogger(__name__)
 
 MAX_BATCH = 200
 BATCH_KEY = r'[A-Za-z0-9_.:-]{1,120}'
@@ -43,7 +50,7 @@ class CaseListResponse(serializers.Serializer):
     results = MatchingCaseResponse(many=True)
 
 
-class CaseList(APIView):
+class CaseList(ErrorBodies, APIView):
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_cases_list', responses=CaseListResponse, parameters=[
@@ -93,7 +100,7 @@ class CaseList(APIView):
         return response
 
 
-class CaseDetail(MatchingReview):
+class CaseDetail(ErrorBodies, MatchingReview):
     @extend_schema(operation_id='v1_management_cases_retrieve', responses=MatchingCaseResponse, description='Un caso de coincidencia.')
     def get(self, request, pk):
         case = cases_queryset().filter(pk=pk).first()
@@ -138,6 +145,37 @@ class CaseBatchSummary(serializers.Serializer):
     results = MatchingCaseResponse(many=True, help_text=f'Los primeros {MAX_BATCH} casos en revisión.')
 
 
+class CaseBatchIndexRow(serializers.Serializer):
+    batch_key = serializers.CharField()
+    counts = serializers.DictField(child=serializers.IntegerField(), help_text='Casos del lote por estado.')
+    kinds = serializers.DictField(child=serializers.IntegerField(), help_text='Casos en revisión del lote por tipo.')
+    count = serializers.IntegerField(help_text='Casos en revisión.')
+    created_at = serializers.DateTimeField(allow_null=True, help_text='El caso más antiguo del lote.')
+
+
+class CaseBatchIndex(ErrorBodies, APIView):
+    permission_classes = [IsSuperuser]
+
+    @extend_schema(operation_id='v1_management_cases_batches_list', responses=CaseBatchIndexRow(many=True),
+                   description='Los lotes de casos (batch_key) con sus totales por estado y sus casos en revisión por tipo; los que más '
+                               'casos en revisión tienen primero.')
+    def get(self, request):
+        from django.db.models import Min
+        rows = {}
+        for key, status, kind, n, first in (MatchingCase.objects.exclude(batch_key='').order_by().values('batch_key', 'status', 'kind')
+                                            .annotate(n=Count('pk'), first=Min('created_at'))
+                                            .values_list('batch_key', 'status', 'kind', 'n', 'first')):
+            row = rows.setdefault(key, {'batch_key': key, 'counts': {}, 'kinds': {}, 'count': 0, 'created_at': first})
+            row['counts'][status] = row['counts'].get(status, 0) + n
+            if status == 'review':
+                row['kinds'][kind] = row['kinds'].get(kind, 0) + n
+                row['count'] += n
+            if first is not None and (row['created_at'] is None or first < row['created_at']):
+                row['created_at'] = first
+        ordered = sorted(rows.values(), key=lambda row: (-row['count'], row['batch_key']))
+        return Response(CaseBatchIndexRow(ordered, many=True).data)
+
+
 def message(error):
     detail = getattr(error, 'detail', None) or str(error)
     if isinstance(detail, dict):
@@ -147,7 +185,7 @@ def message(error):
     return str(detail)
 
 
-class CaseBatch(APIView):
+class CaseBatch(ErrorBodies, APIView):
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_cases_batch_retrieve', responses=CaseBatchSummary,
@@ -197,6 +235,10 @@ class CaseBatch(APIView):
                     reference_matching.decide(case, data['action'], actor=request.user)
             except ValidationError as error:
                 failed.append({'id': pk, 'detail': message(error)})
+                continue
+            except Exception as error:  # each case is its own transaction: the ones decided stand and the rest go on
+                logger.exception('Batch %s: case %s could not be decided.', key, pk)
+                failed.append({'id': pk, 'detail': f'No se pudo decidir el caso ({type(error).__name__}): vuelve a cargarlo.'})
                 continue
             decided.append(pk)
         if decided:

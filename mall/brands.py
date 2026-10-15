@@ -218,8 +218,7 @@ def add_alias(brand, spelling):
     """Another spelling of a brand (management/brands/<id>/aliases, S7): trimmed and upper case as aliases keep it. Refused (BrandConflict)
     when it is a brand's nombre (merge the two brands instead) or another brand's alias. The codes that carry the spelling take the
     brand's nombre (rekey, collisions open merge cases), so from S6 no Reference carries an alias (I12); the Search Documents whose text
-    holds the word expand it to the brand. Returns (alias, the rekey's result)."""
-    from .search_document import refresh_text_containing
+    holds the word expand it to the brand (the alias's signal: mall.search_document.alias_changed). Returns (alias, the rekey's result)."""
     brand = Brand.objects.select_for_update().get(pk=brand.pk)
     written = (spelling or '').strip().upper()
     if not written:
@@ -236,17 +235,14 @@ def add_alias(brand, spelling):
         raise BrandConflict(f'{written} ya es un alias de {existing.brand.nombre}.')
     alias = BrandAlias.objects.create(alias=written, brand=brand)
     moved = rekey(written, brand.nombre, reason=f'{written} es un alias de {brand.nombre}')
-    refresh_text_containing([written])
     return alias, moved
 
 
 @transaction.atomic
 def remove_alias(alias):
     """Take a spelling off its brand (the codes already re-keyed keep the brand's nombre). The Search Documents whose text expanded it
-    follow. Returns the alias's spelling."""
-    from .search_document import refresh_text_containing
+    follow (the alias's signal: mall.search_document.alias_changed). Returns the alias's spelling."""
     alias = BrandAlias.objects.select_for_update().get(pk=alias.pk)
     spelling = alias.alias
     alias.delete()
-    refresh_text_containing([spelling])
     return spelling

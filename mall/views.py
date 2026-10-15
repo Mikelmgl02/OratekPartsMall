@@ -167,7 +167,7 @@ class OffersView(APIView):
         if not Membership.objects.filter(user=request.user, account__active=True, account__roles__capability='client').exists():
             raise PermissionDenied('Se requiere un rol de cliente.')
         get_object_or_404(storefront_lines(), pk=part_id)
-        items = SupplierItem.objects.filter(part_id=part_id, matching_status='matched', supplier__active=True, supplier__roles__capability='supplier', reported_quantity__gt=F('reserved_quantity')).select_related('supplier').distinct()
+        items = SupplierItem.objects.filter(part_id=part_id, matching_status='matched', supplier__active=True, supplier__roles__capability='supplier', reported_quantity__gt=F('reserved_quantity')).select_related('supplier', 'reference').distinct()
         suppliers = {}
         for item in items.order_by('supplier__name', 'codigo', 'brand', 'id'):
             offer = suppliers.setdefault(str(item.supplier_id), {'supplier_id': item.supplier_id, 'supplier_name': item.supplier.name, 'in_stock': True, 'items': []})

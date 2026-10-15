@@ -81,12 +81,12 @@ class DocumentContentTests(TestCase):
         doc = search_document.documents([pump])[str(pump.pk)]
         self.assertEqual(doc['reach'], ' 1610029155 GWT78A ')
 
-    def test_calidades_come_from_matched_items_of_live_suppliers(self):
+    def test_no_supplier_item_data_is_in_a_document(self):
         supplier = make_supplier('PROVEEDOR CALIDAD')
         line = make_line('CAL-1', description='AMORTIGUADOR')
         SupplierItem.objects.create(part=line, supplier=supplier, supplier_invent_id='C-1', codigo='CAL-1', brand='', source='upload',
                                     matching_status='matched', calidad='oes')
-        self.assertEqual(search_document.documents([line])[str(line.pk)]['calidades'], ['oes'])
+        self.assertEqual(set(search_document.documents([line])[str(line.pk)]), set(search_document.FIELDS))  # calidad stays live
 
     def test_only_lines_on_sale_have_a_document(self):
         on_sale = make_line('ON-1', description='A')
@@ -112,6 +112,26 @@ class RebuildTests(TestCase):
         self.assertEqual((summary['written'], summary['deleted']), (1, 1))
         self.assertEqual(SearchDocument.objects.get().text, 'DOS CAMBIADA')
         self.assertEqual(SearchDocumentRebuild.objects.filter(finished_at__isnull=False, error='').count(), 3)
+
+    def test_a_rebuild_never_writes_back_what_its_first_pass_read_over_a_fresher_document(self):
+        line = make_line('RACE-1', description='ANTES')
+        search_document.rebuild()
+        stale = search_document.documents()  # what a rebuild's first pass read...
+        Part.objects.filter(pk=line.pk).update(description='DESPUES')
+        search_document.write([line.pk])  # ...before a writer committed and refreshed its document
+        with patch('mall.search_document.documents', side_effect=[stale]):
+            summary = search_document.rebuild()
+        self.assertEqual(summary['written'], 1)  # it differed, so it was computed again under the lock
+        self.assertEqual(SearchDocument.objects.get(line=line).text, 'DESPUES')
+
+    def test_the_stage_records_any_failure_and_lets_the_runners_stop_through(self):
+        from .matching_runner import WorkerStopping
+        make_line('FAIL-1', description='UNO')
+        with patch('mall.search_document.rebuild', side_effect=ValueError('bug')):
+            self.assertEqual(search_document.stage(), {'error': 'rebuild failed'})
+        with patch('mall.search_document.rebuild', side_effect=WorkerStopping('stop')):
+            with self.assertRaises(WorkerStopping):
+                search_document.stage()
 
     def test_write_upserts_lines_on_sale_and_deletes_the_others(self):
         line = make_line('W-1', description='ANTES')
@@ -200,6 +220,58 @@ class RefreshHookTests(TestCase):
         self.assertIn(str(line.pk), search_document.connection_pending())
         search_document.write(search_document.connection_pending())
         self.assertEqual(SearchDocument.objects.get(line=line).text, 'FILTRO NIS FRONTIER NISSAN')
+
+    def test_an_alias_refreshes_whole_words_only_wherever_it_is_written(self):
+        monroe = Brand.objects.create(nombre='MONROE', tipo='repuesto')
+        word, inside, phrase = (make_line('W-MO', description='AMORTIGUADOR MO TRASERO'), make_line('W-MOTOR', description='SOPORTE MOTOR'),
+                                make_line('W-NEW', description='CASCO NEW-ERA'))
+        search_document.rebuild()
+        fresh_hooks()
+        alias = BrandAlias.objects.create(alias='MO', brand=monroe)  # as references.ensure_brand or the Django admin write it
+        self.assertEqual(search_document.connection_pending(), {str(word.pk)})
+        fresh_hooks()
+        alias.delete()
+        self.assertEqual(search_document.connection_pending(), {str(word.pk)})
+        fresh_hooks()
+        BrandAlias.objects.create(alias='NEW ERA CAP', brand=Brand.objects.create(nombre='NEW ERA', tipo='repuesto'))
+        self.assertEqual(search_document.connection_pending(), set())  # every word of the alias, in order
+        BrandAlias.objects.create(alias='NEW  ERA.', brand=monroe)
+        self.assertEqual(search_document.connection_pending(), {str(phrase.pk)})
+        self.assertNotIn(str(inside.pk), search_document.connection_pending())
+        self.assertEqual(search_document.word_pattern('S/M'), '(^|[^A-Z0-9])S[^A-Z0-9]+M([^A-Z0-9]|$)')
+        self.assertIsNone(search_document.word_pattern('.'))
+
+    def test_aftermarket_codes_and_sku_links_refresh_the_lines_that_reach_them(self):
+        from .oem_links import store_catalog_links, store_cross_references
+        number = references.add_library_number('TOYOTA', '16100-29155', source_kind='aftermarket_catalog', citation='CATÁLOGO GMB 2016')[0]
+        holder = Reference.objects.get(pk=number.pk).part
+        pump = make_line('BOMBA-2', description='BOMBA DE AGUA')
+        PartOEMLink.objects.create(part=pump, reference=number, source='catalog')
+        fresh_hooks()
+        store_cross_references({(number.pk, 'GMB', 'GWT-78A'): ['CATÁLOGO GMB 2016']})
+        self.assertEqual(search_document.connection_pending(), {str(holder.pk), str(pump.pk)})
+        other = make_line('BOMBA-3', description='BOMBA DE AGUA')
+        fresh_hooks()
+        store_catalog_links({(other.pk, number.pk): ['CATÁLOGO GMB 2016']})
+        self.assertEqual(search_document.connection_pending(), {str(other.pk)})
+        search_document.write([other.pk])
+        self.assertEqual(SearchDocument.objects.get(line=other).reach, ' 1610029155 GWT78A ')
+
+    def test_the_biblioteca_cross_reference_routes_refresh_the_lines_that_reach_the_number(self):
+        from rest_framework.test import APIClient
+        number = references.add_library_number('TOYOTA', '16100-29156', source_kind='aftermarket_catalog', citation='CATÁLOGO GMB 2016')[0]
+        pump = make_line('BOMBA-4', description='BOMBA DE AGUA')
+        PartOEMLink.objects.create(part=pump, reference=number, source='catalog')
+        client = APIClient()
+        client.force_authenticate(make_user('biblioteca-admin', superuser=True))
+        fresh_hooks()
+        added = client.post(f'/api/v1/management/oem-references/{number.uid}/cross-references/', {'brand': 'GMB', 'code': 'GWT-79A'}, format='json')
+        self.assertEqual(added.status_code, 201, added.data)
+        self.assertIn(str(pump.pk), search_document.connection_pending())
+        fresh_hooks()
+        retired = client.delete(f'/api/v1/management/oem-references/{number.uid}/cross-references/{added.data["id"]}/')
+        self.assertEqual(retired.status_code, 204)
+        self.assertIn(str(pump.pk), search_document.connection_pending())
 
     def test_outside_a_transaction_the_document_is_written_at_once(self):
         from types import SimpleNamespace

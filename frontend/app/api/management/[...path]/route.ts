@@ -15,7 +15,7 @@ async function handle(request: NextRequest, context: Context) {
   const batch = '[A-Za-z0-9_.:-]{1,120}';  // a case batch's key (legacy-auto-merge)
   // The inventory refactor's S7 routes (mall/line_views.py, case_views.py, brand_views.py), read and written by S8's screens.
   const s7 = {
-    GET: `lines|lines/${uuid}|lines/${uuid}/references|lines/${uuid}/main|cases|cases/${uuid}|cases/batches/${batch}|merges|brands|brands/[0-9]+|grupos|grupos/${uuid}`,
+    GET: `lines|lines/${uuid}|lines/${uuid}/references|lines/${uuid}/main|cases|cases/${uuid}|cases/batches|cases/batches/${batch}|merges|brands|brands/[0-9]+|grupos|grupos/${uuid}`,
     POST: `lines/${uuid}/transition|lines/${uuid}/references|lines/${uuid}/main|cases/${uuid}|cases/batches/${batch}|brands|brands/[0-9]+/aliases|grupos|inventory/${uuid}/separate`,
     PATCH: `lines/${uuid}|references/[0-9]+|brands/[0-9]+|grupos/${uuid}`,
     DELETE: `references/[0-9]+|brands/[0-9]+/aliases/[0-9]+`,
@@ -41,7 +41,7 @@ async function handle(request: NextRequest, context: Context) {
     if (profile.status !== 200) return json(profile.data, profile.status);
     if (!profile.data.is_superuser) return json({ detail: 'Esta sección está disponible únicamente para superusuarios.' }, 403);
     const target = suffixToken === null ? route : `catalog/suffixes/${encodeURIComponent(suffixToken)}`;
-    const result = await django(`management/${target}/${query.size ? `?${query}` : ''}`, { method: request.method, body }, token, (route.startsWith('catalog/assistant') || route.endsWith('/oem-lookup') || route.endsWith('/apiag/test') || route === 'catalog/proposals/bulk' || route.startsWith('catalog/proposals/review') || route === 'catalog/bulk-edit' || route.startsWith('cases/batches/') || /^lines\/[a-f0-9-]{36}\/transition$/.test(route) || route === 'merges') ? 120000 : 15000);
+    const result = await django(`management/${target}/${query.size ? `?${query}` : ''}`, { method: request.method, body }, token, (route.startsWith('catalog/assistant') || route.endsWith('/oem-lookup') || route.endsWith('/apiag/test') || route === 'catalog/proposals/bulk' || route.startsWith('catalog/proposals/review') || route === 'catalog/bulk-edit' || route.startsWith('cases/batches/') || /^lines\/[a-f0-9-]{36}\/transition$/.test(route) || route === 'merges' || (request.method !== 'GET' && /^brands\/[0-9]+(\/aliases)?$/.test(route))) ? 120000 : 15000);
     return json(result.data, result.status);
   } catch { return unavailable(); }
 }

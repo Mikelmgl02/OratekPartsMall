@@ -191,8 +191,20 @@ class StockEntrySerializer(serializers.ModelSerializer):
         model = StockEntry
         fields = ['id', 'item', 'kind', 'quantity', 'direction', 'balance_type', 'reserved_delta', 'reserved_direction', 'reported_after', 'reserved_after', 'reference', 'created_at']
 
+class OfferReferenceSerializer(serializers.Serializer):
+    """The line's Reference a variant hangs from (S7): codes[] has no ids and leaves out the main and the interno codes, so the offer says
+    which code it is."""
+    id = serializers.IntegerField()
+    code = serializers.CharField()
+    brand = serializers.CharField(allow_blank=True)
+    tipo = serializers.CharField()
+
+
 class OfferItemSerializer(serializers.ModelSerializer):
-    # S7 (additive): what the supplier says about the variant (S3.2, '' or null when unknown) and the line's Reference it hangs from.
+    # S7 (additive): what the supplier says about the variant (S3.2, '' or null when unknown) and the line's Reference it hangs from
+    # ({id, code, brand, tipo}, or null).
+    reference = OfferReferenceSerializer(read_only=True, allow_null=True)
+
     class Meta:
         model = SupplierItem
         fields = ['id', 'codigo', 'brand', 'description', 'calidad', 'condicion', 'garantia', 'unidades_por_empaque', 'reference']

@@ -268,6 +268,9 @@ def repoint_library_rows(ref, kept):
                     out['cited'][name].setdefault(str(other.pk), list(other.citations))
                     model.objects.filter(pk=other.pk).update(citations=merged)
                     other.citations = merged
+    if out['codes'] or out['links']:  # what the lines of both numbers reach moved (their Search Documents' reach, S7)
+        from .search_document import refresh_reach
+        refresh_reach([ref.pk, kept.pk])
     return out
 
 
@@ -279,6 +282,9 @@ def return_library_rows(record, actor=None):
     for name, (model, _) in models.items():
         if rows.get(name):
             model.objects.filter(pk__in=rows[name], reference_id=record['into']).update(reference_id=record['ref'])
+    if rows.get('codes') or rows.get('links'):  # S7: the reach of both numbers' lines
+        from .search_document import refresh_reach
+        refresh_reach([record['ref'], record['into']])
     for name, cited in (rows.get('cited') or {}).items():
         for pk, before in cited.items():
             models[name][0].objects.filter(pk=pk).update(citations=before)

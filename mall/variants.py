@@ -282,16 +282,12 @@ def attach(item, ref, *, status=None, save=True):
     line = ref.part
     if not references.is_live(line):
         raise VariantConflict(f'El SKU {line.sku} se agrupó en otro: vincula el artículo al SKU en el que se agrupó.')
-    before = item.__dict__.get('part_id')
     item.reference, item.part = ref, line
     item.matching_status = status_for(line, status)
     item._attached = True  # SupplierItem.save's shim has nothing to do
     if save:
         item.save(update_fields=['reference', 'part', 'matching_status', 'codigo', 'brand', 'codigo_pendiente', 'brand_pendiente',
                                  'updated_at'])
-        if item.calidad:  # the calidades of the lines' Search Documents (S7)
-            from .search_document import refresh
-            refresh({line.pk, before})
     return item
 
 

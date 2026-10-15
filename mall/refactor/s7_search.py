@@ -1,6 +1,6 @@
 """Stage S7 of the inventory refactor: the storefront's Search Document (mall.search_document).
 
-    python -m mall.refactor.s7_search --dry-run|--apply|--rollback|--check|--compare [--snapshot PATH] [--json]
+    python -m mall.refactor.s7_search --dry-run|--apply|--rollback|--check|--compare [--snapshot PATH | --supplier-codes N] [--json]
 
 --dry-run computes every document (one per line on sale, I8) without writing: how many lines, how big the documents are, how long it
 takes, and, once 0085 is applied, how many a rebuild would write, leave alone and delete. It only reads, so it runs on the live database
@@ -13,7 +13,10 @@ six hours from then on, and every writer refreshes its lines' documents.
 the documents are rebuilt by --apply or the worker).
 --check runs I8 both ways (Appendix C, C7); --compare runs the snapshot's searches (the newest snapshot's sample, or --snapshot) on both
 backends (mall.catalog_search.backend) and lists, per search, what the document finds that the legacy search does not and the reverse:
-the expected result is the same lines or more.
+the expected result is the same lines or more. --compare --supplier-codes N runs instead the codes of the N most recently updated matched
+supplier items (lines on sale, live suppliers), as everyone searches them: after S6 a supplier's new codes are interno References, which
+the document finds only in that supplier's own catalog, so each one the document misses is a code only its own supplier still finds
+(tell the owner before flipping CATALOG_SEARCH_SOURCE).
 
 On the live database --apply and --rollback need the S0.11 guard (mall.refactor.guard: the catalog freeze is on and no writer is still
 busy); each run appends a line (the database, when, the user, the summary) to mall.refactor.output.manifest_path('s7')."""
@@ -56,7 +59,7 @@ def dry_run():
     sizes = {field: sum(len(doc[field]) for doc in docs.values()) for field in ('codes', 'compact', 'reach', 'text')}
     result = {'database': current_database(), 'lines': len(docs), 'seconds_computing': seconds,
               'with_reach': sum(1 for doc in docs.values() if doc['reach']), 'with_internal': sum(1 for doc in docs.values() if doc['internal']),
-              'with_brand': sum(1 for doc in docs.values() if doc['brand']), 'with_calidades': sum(1 for doc in docs.values() if doc['calidades']),
+              'with_brand': sum(1 for doc in docs.values() if doc['brand']),
               'characters': sizes, 'table': table_ready()}
     if result['table']:
         upsert, stale, same = search_document.plan(docs)
@@ -97,6 +100,21 @@ def snapshot_searches(path=None):
         path = found[-1]
     with gzip.open(path, 'rt', encoding='utf-8') as source:
         return str(path), json.load(source)['sample']['searches']
+
+
+def recent_supplier_codes(limit):
+    """The codigos of the most recently updated matched items of live suppliers on lines on sale, each once, newest first."""
+    from ..lines import storefront_lines
+    from ..models import SupplierItem
+    codes = []
+    rows = (SupplierItem.objects.filter(matching_status='matched', supplier__active=True, part__in=storefront_lines().values('pk'))
+            .exclude(codigo='').order_by('-updated_at', 'pk').values_list('codigo', flat=True))
+    for code in rows.iterator(chunk_size=2000):
+        if code not in codes:
+            codes.append(code)
+            if len(codes) >= limit:
+                break
+    return codes
 
 
 def compare(searches, page=50):
@@ -141,6 +159,8 @@ def main(argv=None, stdout=None):
     mode.add_argument('--check', action='store_true', help='I8 en ambos sentidos.')
     mode.add_argument('--compare', action='store_true', help='Las búsquedas de la instantánea en ambas búsquedas.')
     parser.add_argument('--snapshot', help='La instantánea cuya muestra de búsquedas usa --compare (la más reciente si se omite).')
+    parser.add_argument('--supplier-codes', type=int, metavar='N',
+                        help='--compare con los códigos de los N artículos de proveedor vinculados más recientes en vez de la instantánea.')
     parser.add_argument('--user', help='Usuario que figura en el manifiesto.')
     parser.add_argument('--json', action='store_true', help='Imprime el resultado en JSON.')
     options = parser.parse_args(argv)
@@ -162,7 +182,10 @@ def main(argv=None, stdout=None):
     else:
         if not table_ready():
             raise SystemExit('Falta 0085_search_document: --compare lee los documentos.')
-        path, searches = snapshot_searches(options.snapshot)
+        if options.supplier_codes:
+            path, searches = f'supplier-codes:{options.supplier_codes}', recent_supplier_codes(options.supplier_codes)
+        else:
+            path, searches = snapshot_searches(options.snapshot)
         rows = compare(searches)
         result = {'snapshot': path, 'searches': len(rows), 'superset': sum(row['superset'] for row in rows),
                   'same_first_page': sum(row['same_first_page'] for row in rows), 'rows': rows}

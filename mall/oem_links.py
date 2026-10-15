@@ -140,6 +140,9 @@ def store_cross_references(entries, *, apply=True, bare=()):
         with transaction.atomic():
             OEMCrossReference.objects.bulk_create(new, batch_size=1000, ignore_conflicts=True)
             OEMCrossReference.objects.bulk_update(cited, ['citations', 'updated_at'], batch_size=1000)
+            if new:  # the lines that reach these numbers find the new codes (their Search Documents' reach, S7)
+                from .search_document import refresh_reach
+                refresh_reach({row.reference_id for row in new})
     return {'new': len(new), 'cited': len(cited), 'present': len(plan) - len(new) - len(cited)}
 
 
@@ -166,6 +169,9 @@ def store_catalog_links(entries, *, apply=True):
         with transaction.atomic():
             PartOEMLink.objects.bulk_create(new, batch_size=1000, ignore_conflicts=True)
             PartOEMLink.objects.bulk_update(cited, ['citations'], batch_size=1000)
+            if new:  # the linked lines reach the numbers and their codes (their Search Documents' reach, S7)
+                from .search_document import refresh_reach
+                refresh_reach(part_ids={row.part_id for row in new})
     return {'new': len(new), 'cited': len(cited), 'present': len(plan) - len(new) - len(cited)}
 
 
