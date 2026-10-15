@@ -11,7 +11,8 @@ const accounts = [
 const offers = [
   {supplier_id:'supplier-a', supplier_name:'PROVEEDOR A', in_stock:true, items:[
     {id:'item-a', codigo:'58411-1R000-G', brand:'MARCA A', description:'TAMBOR A'},
-    {id:'item-b', codigo:'58411-1R000-KSM', brand:'MARCA B', description:'TAMBOR B'},
+    // What the supplier says about the variant and the line's Reference it sells (S7), shown in the offer (S8).
+    {id:'item-b', codigo:'58411-1R000-KSM', brand:'MARCA B', description:'TAMBOR B', calidad:'oes', condicion:'nuevo', garantia:'6 MESES', unidades_por_empaque:2, reference:{id:7, code:'KSM-77', brand:'KSM', tipo:'aftermarket'}},
   ]},
   {supplier_id:'supplier-b', supplier_name:'PROVEEDOR B', in_stock:true, items:[
     {id:'item-c', codigo:'58411-1R000-G', brand:'MARCA A', description:'TAMBOR C'},
@@ -102,4 +103,13 @@ test('history failure preserves basket state and can be retried independently', 
   await expect(row(page)).toContainText('3 ENVIADAS · POR REVISAR');
   await expect(row(page)).toContainText('5 EN REVISIÓN');
   await expect(row(page)).toContainText('1 EN CESTA');
+});
+
+test('an offer shows what the supplier says about each article and which code it sells', async ({page}) => {
+  await setup(page);
+  await page.route('**/request-state', route => route.fulfill({json:emptyHistory}));
+  await page.goto('/'); await openDetail(page);
+  const variant = page.getByRole('group', {name:'Artículo 58411-1R000-KSM · MARCA B', exact:true});
+  await expect(variant.locator('.offer-variant-facts')).toHaveText('OES (EQUIPO ORIGINAL) · NUEVO · GARANTÍA 6 MESES · 2 POR EMPAQUE · VENDE KSM-77 (AFTERMARKET · KSM)');
+  await expect(row(page).locator('.offer-variant-facts')).toHaveCount(0);  // nothing said: nothing shown
 });

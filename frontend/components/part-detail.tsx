@@ -10,6 +10,8 @@ import StockStatus from './stock-status';
 import FavoriteButton from './favorite-button';
 import PartRequestStates, { ItemRequestStates } from './part-request-states';
 import { BasketLine, Offer, Part, request } from '@/lib/types';
+import { referenceTipoLabels, variantFactsText } from '@/lib/line-types';
+import type { VariantOfferItem } from '@/lib/line-types';
 import type { ClientPartRequestState } from '@/lib/request-types';
 import { previewOffers } from '@/lib/preview';
 // onAsk: Preguntar al proveedor, the conversation with that supplier (before ordering, or about this part), from a client account.
@@ -71,11 +73,20 @@ export default function PartDetail({ part, preview, canQuote, accountId, basketL
         {offer.items?.map(item => {
           const draft = quantityInBasket(offer, item.id, item.codigo, item.brand);
           const history = requestState?.items.find(row => row.supplier_item_id === item.id && row.supplier_id === offer.supplier_id && row.codigo === item.codigo && row.brand === item.brand);
-          return <div className="sku-supplier-item" role="group" aria-label={`Artículo ${item.codigo} · ${item.brand || 'Sin marca'}`} key={item.id}><div><strong>{item.codigo}</strong><span>{item.brand || 'Sin marca indicada'}</span>{item.description && <p>{item.description}</p>}{!own && <ItemRequestStates draftQuantity={draft} history={history}/>}</div>{!own && <div className="supplier-item-actions">{draft > 0 ? <><button className="button soft small" aria-label={`${item.codigo} agregado, ${draft} en cesta`} onClick={onBasket}><Check size={16}/>Agregado · {draft}</button><button className="button text small" aria-label={`Agregar más ${item.codigo} de ${offer.supplier_name}`} onClick={() => onAdd({...offer, selected_item:item}, quantity)}>Agregar más<ArrowUpRight size={14}/></button></> : <button className="button primary small" aria-label={`Agregar ${item.codigo} de ${offer.supplier_name} a la cesta`} onClick={() => onAdd({...offer, selected_item:item}, quantity)}>Agregar a la cesta<ArrowUpRight size={16}/></button>}</div>}</div>;
+          return <div className="sku-supplier-item" role="group" aria-label={`Artículo ${item.codigo} · ${item.brand || 'Sin marca'}`} key={item.id}><div><strong>{item.codigo}</strong><span>{item.brand || 'Sin marca indicada'}</span>{item.description && <p>{item.description}</p>}<VariantFacts item={item as VariantOfferItem} sku={part.sku}/>{!own && <ItemRequestStates draftQuantity={draft} history={history}/>}</div>{!own && <div className="supplier-item-actions">{draft > 0 ? <><button className="button soft small" aria-label={`${item.codigo} agregado, ${draft} en cesta`} onClick={onBasket}><Check size={16}/>Agregado · {draft}</button><button className="button text small" aria-label={`Agregar más ${item.codigo} de ${offer.supplier_name}`} onClick={() => onAdd({...offer, selected_item:item}, quantity)}>Agregar más<ArrowUpRight size={14}/></button></> : <button className="button primary small" aria-label={`Agregar ${item.codigo} de ${offer.supplier_name} a la cesta`} onClick={() => onAdd({...offer, selected_item:item}, quantity)}>Agregar a la cesta<ArrowUpRight size={16}/></button>}</div>}</div>;
         })}
       </div>;
     })}</div>
     </div>
     </div>
   </Modal>;
+}
+
+// What the supplier says about the article it offers (S7: calidad, condición, garantía, units per package) and which of the SKU's codes it
+// sells (its Reference), when that is not the SKU's own code.
+function VariantFacts({ item, sku }: { item: VariantOfferItem; sku: string }) {
+  const facts = variantFactsText(item);
+  const reference = item.reference && item.reference.code !== sku && item.reference.code !== item.codigo ? item.reference : null;
+  if (!facts && !reference) return null;
+  return <p className="offer-variant-facts">{facts}{facts && reference ? ' · ' : ''}{reference ? `VENDE ${reference.code}${reference.brand ? ` (${referenceTipoLabels[reference.tipo] ?? ''} · ${reference.brand})` : ''}` : ''}</p>;
 }
