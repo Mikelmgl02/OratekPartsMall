@@ -502,7 +502,8 @@ def load(*, marks_path=MARKS_FILE, positions_folder=None, scope=None):
         for ref_id, kind, citation, retirada in ReferenceSource.objects.filter(reference_id__in=chunk).values_list('reference_id', 'kind', 'citation', 'retirada'):
             by_id[ref_id].sources[(kind, citation)] = retirada
     copies = set(ReferenceSource.objects.filter(kind='catalogo', reference__tipo='aftermarket', reference__estado__in=references.LIVE,
-                                                reference__supplier__isnull=True).values_list('reference_id', flat=True)) if scope is None else set()
+                                                reference__supplier__isnull=True).exclude(reference__detail__has_key=TAG)
+                 .values_list('reference_id', flat=True)) if scope is None else set()  # never the References this pass made (3e)
     missing = copies - set(by_id)
     if missing:  # a copy whose clave no catalog row has (its code is not an aftermarket code of any number)
         for pk, part_id, code, key, brand, estado, tipo, is_main, source in (

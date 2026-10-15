@@ -20,7 +20,7 @@ from .line_merge import keep_apart
 from .matching_models import MatchingCase
 from .models import CatalogMerge, Part, Reference, ReferenceSource
 from .oem_links import equivalents_for, store_catalog_links, store_cross_references
-from .oem_reference_models import OEMCrossReference, OEMCrossReferenceRetired
+from .oem_reference_models import OEMCrossReference, OEMCrossReferenceRetired, PartOEMLink
 from .reference_matching import decide
 from .test_factories import make_line, make_supplier, make_user, make_variant
 
@@ -114,8 +114,9 @@ class GroupsAndRoutesTests(MergePassBase):
         self.assertEqual({line['outcome'] for line in outcomes}, {'converted'})
         self.assertEqual(len(outcomes), OEMCrossReference.objects.count())
 
-        again = self.apply()  # a second run finds nothing left to do
+        again = self.apply()  # a second run finds nothing left to do, and the References it made are no step 0 copies
         self.assertEqual({key: value for key, value in again['written'].items() if value}, {})
+        self.assertEqual(again['counts'].get('paso0_copias', 0), 0)
 
     def test_toyota_16100_and_16110_never_merge(self):
         """With housing and without (Toyota 16100 / 16110): a case, guard prefix, with both lines."""
@@ -458,6 +459,24 @@ class RollbackTests(MergePassBase):
         first.refresh_from_db()
         second.refresh_from_db()
         self.assertNotEqual(first.part_id, second.part_id)
+
+
+    def test_the_rollback_leaves_a_skus_catalog_link_where_it_was(self):
+        """The rehearsal of 2026-10-15: a SKU's catalog link to a number the pass merged into it stays on the SKU after Separar (it
+        moved to the number's own referencia line, so the code still serving, which reads the links, lost the SKU's equivalents)."""
+        sku = make_line('BOMBA-L1', description='BOMBA AGUA TOY')
+        number = self.number('16100-45454')
+        store_catalog_links({(sku.pk, number.pk): [gmb(20)]})
+        self.file('AISIN', 'WPT-454', number, citations=[gmb(556)])
+        links = lambda: sorted((str(part), ref, source) for part, ref, source in PartOEMLink.objects.values_list('part_id', 'reference_id', 'source'))
+        before = links()
+        self.apply()
+        self.assertEqual(self.line_of(number).pk, sku.pk)
+        self.assertEqual(merge_pass.run(rollback=True, stdout=io.StringIO())['unificaciones_separadas'], 1)
+        self.assertNotEqual(self.line_of(number).pk, sku.pk)
+        self.assertEqual(links(), before)
+        again = merge_pass.run(stdout=io.StringIO(), marks_path=self.marks)['planned']  # and a later run proposes the same merge again
+        self.assertEqual(self.group_of(again, number)['route'], 'auto')
 
 
 class SameNumberRollbackTests(MergePassBase):
