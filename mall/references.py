@@ -68,6 +68,7 @@ REFERENCE_LOCK = 724631114  # pg advisory lock class of a clave (matching 724631
 TIPO_OF = {'oem': 'oem', 'company': 'aftermarket', 'unknown': 'otro'}            # ref_type -> tipo (plan A2)
 REF_TYPE_OF = {'oem': 'oem', 'aftermarket': 'company', 'interno': 'unknown', 'otro': 'unknown'}  # tipo -> ref_type, kept until S10
 TIPOS = tuple(REF_TYPE_OF)
+PUBLIC_TIPOS = tuple(tipo for tipo in TIPOS if tipo != 'interno')  # what every reader sees; interno only as a line's main
 ESTADOS = ('verificado', 'declarado', 'inferido', 'disputa', 'retirada')
 EXCLUSIVE = ('verificado', 'declarado', 'inferido')
 LIVE = EXCLUSIVE + ('disputa',)
@@ -160,8 +161,9 @@ def pair_tipo(ref):
 def live_q(prefix=''):
     """The References readers see (Reference.objects: not retired, and not a supplier's interno code unless it is a line's main),
     through a relation when prefix names one ('codes__', 'part__codes__'): a join reaches every row, unlike Reference.objects and a
-    line's codes."""
-    return Q(**{f'{prefix}estado__in': LIVE}) & ~Q(**{f'{prefix}tipo': 'interno', f'{prefix}is_main': False})
+    line's codes. Every condition is positive, so through a relation they all test the same joined row: a negated one would become a
+    NOT EXISTS over all the line's codes (slower, and it would drop a line for any interno code it holds)."""
+    return Q(**{f'{prefix}estado__in': LIVE}) & (Q(**{f'{prefix}is_main': True}) | Q(**{f'{prefix}tipo__in': PUBLIC_TIPOS}))
 
 
 def own_interno_q(supplier, prefix=''):

@@ -238,7 +238,8 @@ BASE=$OUT/01-base.json.gz
 if [ "$PRINT" = 1 ]; then
     START='<migración del respaldo>'
 else
-    START=$(docker exec "$DB_CONTAINER" psql -U "$PGUSER_NAME" -d "$DB" -Atc "SELECT max(name) FROM django_migrations WHERE app = 'mall'")
+    # The last migration applied, not the highest name: S5's 0082 was applied before S2b's 0075.
+    START=$(docker exec "$DB_CONTAINER" psql -U "$PGUSER_NAME" -d "$DB" -Atc "SELECT name FROM django_migrations WHERE app = 'mall' ORDER BY applied DESC, id DESC LIMIT 1")
 fi
 echo "La copia está en la migración $START."
 
