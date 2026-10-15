@@ -2,7 +2,7 @@ export type Page<T> = { count: number; next: string | null; previous: string | n
 export type MembershipPermission = 'owner' | 'manager' | 'staff';
 export type Account = { id: string; name: string; roles: string[]; capabilities: string[]; permission?: MembershipPermission; apiag_connected?: boolean };
 export type SessionUser = { id: number; username: string; first_name: string; last_name: string; is_superuser: boolean };
-export type AdminSection = 'inventory' | 'alternates' | 'oem' | 'accounts' | 'users' | 'invitations' | 'analytics' | 'deals' | 'templates' | 'applications';
+export type AdminSection = 'inventory' | 'alternates' | 'oem' | 'accounts' | 'users' | 'invitations' | 'analytics' | 'deals' | 'templates' | 'applications' | 'cases' | 'brands' | 'grupos';
 export type Member = { id: number; user: number; account: string; permission: MembershipPermission; username: string; email: string; account_name: string; user_active: boolean; permission_label: string };
 // The supplier's apiag-cloud server. The token is write-only: responses carry its last four characters (token_hint), never the token.
 export type ApiagConnection = { server_url: string; token_hint: string; token_readable: boolean; updated_at: string; updated_by: string | null };
@@ -173,3 +173,11 @@ export async function request<T>(url: string, options?: RequestInit): Promise<T>
   }
   return data;
 }
+
+// Inventory refactor S8: the labels of the OEM line's fields in the S7 routes' errors (lib/line-types.ts holds their shapes).
+Object.assign(fieldLabel, {
+  estado: 'Estado', tipo: 'Tipo', origen: 'Origen', clave: 'Clave', subgrupo: 'Subgrupo', grupo: 'Grupo', reference: 'Referencia', line: 'Línea OEM',
+  codigo_pendiente: 'Código nuevo en revisión', brand_pendiente: 'Marca nueva en revisión', brand_family: 'Familia de marca', familia: 'Familia de marca',
+  expected_version: 'Versión', aplicaciones_texto: 'Aplicaciones', dispute_note: 'Motivo de la disputa', notes: 'Notas', notas: 'Notas', nombre: 'Nombre',
+  alias: 'Alias', merge_into: 'Unir con', supplier: 'Proveedor', reason: 'Motivo', fingerprint: 'Caso', cases: 'Casos', action: 'Acción',
+});

@@ -78,7 +78,7 @@ export default function AdminWorkspace({ user, section = 'accounts' }: { user: S
     try { const account = await request<ManagedAccount>(`${base}/accounts/${id}`); setUserEditor(null); setMemberEditor(account); }
     catch (error) { setError(message(error)); }
   }
-  const heading = { inventory: 'Inventario', alternates: 'Alternos', oem: 'OEM', accounts: 'Cuentas', users: 'Usuarios', invitations: 'Invitaciones', analytics: 'Estadísticas', deals: 'Acuerdos', templates: 'Plantillas técnicas', applications: 'Aplicaciones vehiculares' }[tab];
+  const heading = { inventory: 'Inventario', alternates: 'Alternos', oem: 'OEM', accounts: 'Cuentas', users: 'Usuarios', invitations: 'Invitaciones', analytics: 'Estadísticas', deals: 'Acuerdos', templates: 'Plantillas técnicas', applications: 'Aplicaciones vehiculares', cases: 'Casos de coincidencia', brands: 'Marcas', grupos: 'Grupos y subgrupos' }[tab];
   const navigation = [
     { key: 'inventory', slug: 'inventario', text: 'Inventario', Icon: Boxes, group: 'Catálogo' },
     { key: 'alternates', slug: 'alternos', text: 'Alternos', Icon: Repeat2, group: 'Catálogo' },

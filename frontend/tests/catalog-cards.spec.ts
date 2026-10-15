@@ -4,7 +4,10 @@ const parts = ['low', 'high', 'sold_out', 'unknown', 'medium'].map((status, inde
   id: `part-${index}`, sku: index === 0 ? '58411-1R000' : `SKU-${index}`, name: '',
   description: index === 0 ? 'DISCO DE FRENO VENTILADO DELANTERO PARA HYUNDAI ACCENT' : '',
   category: index === 0 ? 'FRENOS' : '', subcategory: index === 0 ? 'DISCOS DELANTEROS' : '',
-  codes: index === 0 ? [{code: '58411-1R000-G', brand: 'MARCA A'}, {code: '58-1R0', brand: 'MARCA B'}, {code: 'D-HYU-1R', brand: ''}] : [],
+  // Codes carry their Reference's tipo and estado (S7): one in disputa, a retired one and a supplier's interno code never show (S8).
+  codes: index === 0 ? [{code: '58411-1R000-G', brand: 'MARCA A'}, {code: '58-1R0', brand: 'MARCA B', tipo: 'oem', estado: 'verificado'}, {code: 'D-HYU-1R', brand: ''},
+    {code: 'DISP-77', brand: 'MARCA C', tipo: 'aftermarket', estado: 'disputa'}, {code: 'OLD-77', brand: 'MARCA D', tipo: 'aftermarket', estado: 'retirada'},
+    {code: 'INT-77', brand: '', tipo: 'interno', estado: 'declarado'}] : [],
   // Codes reached through the SKU's OEM numbers: shown with its own alternos, each once.
   equivalents: index === 0 ? [{code: '58411-1R000-G', brand: 'MARCA A'}, {code: 'T-16', brand: 'NPW'}] : index === 1 ? [{code: 'WPT-111', brand: 'AISIN'}] : [],
   availability: {status, supplier_count: status === 'low' ? 2 : status === 'high' || status === 'medium' ? 1 : 0, updated_at: status === 'unknown' ? null : '2026-10-02T16:30:00Z'},
@@ -47,7 +50,9 @@ for (const viewport of [{name:'desktop', width:1440, height:1000}, {name:'mobile
     await expect(detail).toContainText('BAJAS EXISTENCIAS');
     await expect(detail).toContainText('DISCOS DELANTEROS');
     await expect(detail).toContainText('D-HYU-1R');
-    await expect(detail.getByLabel('Alternos', {exact:true})).toContainText('T-16 · EMPRESA · NPW');
+    await expect(detail.getByLabel('Alternos', {exact:true})).toContainText('T-16 · AFTERMARKET · NPW');
+    await expect(detail.getByLabel('Alternos', {exact:true})).toContainText('58-1R0 · OEM · MARCA B');
+    for (const hidden of ['DISP-77', 'OLD-77', 'INT-77']) await expect(detail).not.toContainText(hidden);
     await expect(detail).toContainText('Aún no hay proveedores con existencias disponibles.');
     await expect(detail.getByRole('button', {name:/Agregar/})).toHaveCount(0);
   });
