@@ -67,10 +67,10 @@ CATALOGS = (('GMB Water Pump Catalog', 'GMB', True),
             ('ASVA Tensioner', 'ASVA', True),
             ('ATE K24', 'ATE', True))
 TAG_ROLES = ('brand', 'house_brand')
-# D2 (owner, 2026-10-13): rule 3 links "a dash plus a known brand suffix" on its own; any other auto-eligible TAG (an origin such as -J,
-# a genuine mark such as -G, -NP) finds the base's line but waits for a click there. The suffix roles that name a brand (brand and
-# company_code share the role brand); widening it is the owner's call.
-RULE3_ROLES = ('brand', 'house_brand')
+# D2 (owner, 2026-10-13, widened 2026-10-15): rule 3 links on its own through any auto-eligible TAG when the part names agree: a brand
+# suffix (-GMB) and also an origin (-J, -JP), a genuine mark (-G) or a supplier or commercial marker (-NP, -K), the diagram's rule 3 and
+# "keep merging suffix variants". A lifecycle TAG (ANULADO) is never auto-eligible, so the strip stops before it.
+RULE3_ROLES = ('brand', 'house_brand', 'genuine', 'origin', 'neutral')
 # What a case's fingerprint rests on, besides its evidence: bumped only when the fingerprints themselves change shape (never with the
 # matching engine's VERSION, which would put every dismissed case back in review).
 FINGERPRINT_VERSION = 1
@@ -267,9 +267,9 @@ def own_name_brand(subject, lookups):
 
 
 def brand_tag(entry):
-    """Whether a suffix-table entry is a known brand suffix (D2: '58411-1R000-GMB'): a TAG of a brand, house brand or company code, every
-    part of a slash compound too. Origin, genuine, commercial and supplier markers (J, JAPON, G, PROMO, NP) are TAGs but name no brand:
-    rule 3 finds the base's line through them and waits for a click there (a line case, guard sufijo)."""
+    """Whether a suffix-table entry links on its own under rule 3 (D2): a TAG whose role is in RULE3_ROLES, every part of a slash compound
+    too: a brand, house brand or company code (58411-1R000-GMB), and since 2026-10-15 an origin, genuine, supplier or commercial marker
+    (J, G, NP, K). Any other TAG finds the base's line and waits for a click there (a line case, guard sufijo)."""
     from .catalog_suffixes import ROLE_BY_KIND
     components = getattr(entry, 'components', None)
     if components:

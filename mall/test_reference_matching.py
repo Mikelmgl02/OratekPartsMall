@@ -503,9 +503,10 @@ class RuleThreeGuardTests(Matching, TestCase):
             ('58411-07000-GMB', 'TAMBOR 180MM KIA PICANTO 12-18', ('case', 'spec_conflict')),  # other years
             ('58411-07000-GMB', 'TAMBOR 200MM KIA PICANTO 04-11', ('case', 'spec_conflict')),  # another size
             ('58411-07000-GMB', 'DISCO 180MM KIA PICANTO 04-11', ('case', 'noun')),       # another part
-            ('58411-07000-K', 'TAMBOR 180MM KIA PICANTO 04-11', ('case', 'sufijo')),      # an origin: the base's line, by a click
-            ('58411-07000-NP', 'TAMBOR 180MM KIA PICANTO 04-11', ('case', 'sufijo')),
-            ('58411-07000-G', 'TAMBOR 180MM KIA PICANTO 04-11', ('case', 'sufijo')),      # a genuine mark
+            ('58411-07000-K', 'TAMBOR 180MM KIA PICANTO 04-11', ('new_reference_on_line', '')),  # an origin links too (2026-10-15)
+            ('58411-07000-NP', 'TAMBOR 180MM KIA PICANTO 04-11', ('new_reference_on_line', '')),  # a supplier marker
+            ('58411-07000-G', 'TAMBOR 180MM KIA PICANTO 04-11', ('new_reference_on_line', '')),   # a genuine mark
+            ('58411-07000-K', 'TAMBOR 200MM KIA PICANTO 04-11', ('case', 'spec_conflict')),     # but never against the specs
         ]
         for code, description, expected in rows:
             with self.subTest(code=code, description=description):
