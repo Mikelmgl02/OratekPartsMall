@@ -28,7 +28,7 @@ function ItemCell({ data }: InventoryCell) {
 }
 function VariantCell({ data }: InventoryCell) {
   const text = data ? variantFactsText(data as Variant) : '';
-  return data ? <span className={text ? 'admin-grid-text' : 'admin-grid-muted'}>{text || '—'}</span> : null;
+  return data ? <span className={text ? 'admin-grid-text' : 'admin-grid-muted'}>{text || 'Sin datos'}</span> : null;
 }
 function MatchCell({ data }: InventoryCell) {
   return data ? <span className={`status ${data.matching_status}`} title={pendingCode(data) ? 'Código nuevo en revisión' : undefined}>{data.matching_status === 'matched' ? 'Vinculado' : data.matching_status === 'review' ? 'Por revisar' : 'Pendiente'}</span> : null;
