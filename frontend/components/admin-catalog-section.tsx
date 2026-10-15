@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import type { CellDoubleClickedEvent, CellValueChangedEvent, GridApi } from 'ag-grid-community';
 import { Boxes, BrainCircuit, Check, Combine, FileSpreadsheet, FileWarning, History, Layers3, Library, LoaderCircle, PencilLine, Plus, Repeat2, Search, Sparkles, Tags, Ungroup, Warehouse } from 'lucide-react';
 import { CatalogImportIssuePage, ManagedAlternate, ManagedPart, ManagedStockItem, Page, request } from '@/lib/types';
@@ -17,7 +18,6 @@ import { MainReferenceDialog } from './admin-references-editor';
 import { UppercaseInput } from './uppercase-field';
 import CatalogImport from './admin-catalog-import';
 import ImportIssues from './admin-import-issues';
-import CatalogGrouping from './admin-catalog-grouping';
 import CatalogSplit from './admin-catalog-split';
 import CatalogMergeWith from './admin-catalog-merge';
 import InventoryAssistant from './admin-inventory-assistant';
@@ -55,7 +55,6 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
   const [removeAlternate, setRemoveAlternate] = useState<ManagedAlternate | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [issuesOpen, setIssuesOpen] = useState(false);
-  const [groupingOpen, setGroupingOpen] = useState(false);
   // Separar SKU: null opens its list, a SKU opens that SKU's split.
   const [splitTarget, setSplitTarget] = useState<{ id: string; sku: string } | null | undefined>();
   const [mergeParts, setMergeParts] = useState<ManagedPart[] | null>(null);  // Agrupar con…, from the grid's right click
@@ -90,7 +89,7 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
     {section === 'inventory' && <>
       <div className="inventory-view-tabs" role="group" aria-label="Vistas de inventario"><button className={!stockView && !newView && !ledgerView ? 'selected' : ''} aria-pressed={!stockView && !newView && !ledgerView} onClick={() => showInventory('catalog')}><Boxes size={15} aria-hidden="true"/>Inventario interno</button><button className={stockView ? 'selected' : ''} aria-pressed={stockView} onClick={() => showInventory('stock')}><Warehouse size={15} aria-hidden="true"/>Existencias por proveedor</button><button className={newView ? 'selected' : ''} aria-pressed={newView} onClick={() => showInventory('new')}><Sparkles size={15} aria-hidden="true"/>Productos nuevos{!!newCount && <span className="import-issues-count" aria-label={`${newCount} productos nuevos por revisar`}>{newCount}</span>}</button><button className={ledgerView ? 'selected' : ''} aria-pressed={ledgerView} onClick={() => showInventory('ledger')}><History size={15} aria-hidden="true"/>Libro de movimientos</button></div>
       <div className="inventory-tools" role="group" aria-label="Herramientas del inventario">
-        <div className="inventory-tool-group"><span>Calidad del catálogo</span><div>{!stockView && <button className="inventory-tool" onClick={() => setGroupingOpen(true)}><Layers3 size={15}/>Agrupar SKU</button>}{!stockView && <button className="inventory-tool" onClick={() => setSplitTarget(null)}><Ungroup size={15}/>Separar SKU</button>}<button className="inventory-tool" onClick={()=>setMatchingOpen(true)}><Combine size={15}/>Agrupación inteligente</button>{!stockView && <button className={`inventory-tool${pendingIssueCount ? ' attention' : ''}`} aria-label="Errores de importación" onClick={() => setIssuesOpen(true)}><FileWarning size={15}/>Errores de importación{!!pendingIssueCount && <span className="import-issues-count" aria-hidden="true">{pendingIssueCount}</span>}</button>}</div></div>
+        <div className="inventory-tool-group"><span>Calidad del catálogo</span><div><Link className="inventory-tool" href="/administracion?seccion=casos"><Layers3 size={15}/>Casos de coincidencia</Link>{!stockView && <button className="inventory-tool" onClick={() => setSplitTarget(null)}><Ungroup size={15}/>Separar SKU</button>}<button className="inventory-tool" onClick={()=>setMatchingOpen(true)}><Combine size={15}/>Agrupación inteligente</button>{!stockView && <button className={`inventory-tool${pendingIssueCount ? ' attention' : ''}`} aria-label="Errores de importación" onClick={() => setIssuesOpen(true)}><FileWarning size={15}/>Errores de importación{!!pendingIssueCount && <span className="import-issues-count" aria-hidden="true">{pendingIssueCount}</span>}</button>}</div></div>
         <div className="inventory-tool-group"><span>OEM</span><div><button className="inventory-tool" onClick={()=>setOemLibraryOpen(true)}><Library size={15}/>Biblioteca OEM</button><button className="inventory-tool" onClick={()=>setSuffixesOpen(true)}><Tags size={15}/>Sufijos</button></div></div>
         {!stockView && <div className="inventory-tool-group"><span>Asistencia</span><div><button type="button" className="inventory-tool" onClick={()=>setAssistantOpen(true)}><BrainCircuit size={15}/>Asistente IA</button></div></div>}
       </div>
@@ -111,7 +110,6 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
     {issuesOpen && <ImportIssues onClose={() => { setIssuesOpen(false); setRevision(value => value + 1); }} onSaved={() => saved('Fila corregida y guardada en el inventario interno.')}/>}
     {splitTarget !== undefined && <CatalogSplit part={splitTarget} onClose={() => setSplitTarget(undefined)} onChanged={saved}/>}
     {mergeParts && <CatalogMergeWith key={mergeParts.map(part => part.id).join()} parts={mergeParts} onClose={() => setMergeParts(null)} onSaved={text => { setMergeParts(null); saved(text); }}/>}
-    {groupingOpen && <CatalogGrouping onClose={() => setGroupingOpen(false)} onSaved={(targetSku, count) => saved(`${count} ${count === 1 ? 'SKU agrupado' : 'SKU agrupados'} bajo ${targetSku}.`)}/>}
     {assistantOpen && <InventoryAssistant onClose={()=>setAssistantOpen(false)} onSaved={()=>saved('Clasificación de inventario actualizada desde el asistente IA.')}/>}
     {alternateEditor !== undefined && <AlternateEditor alternate={alternateEditor} onClose={() => setAlternateEditor(undefined)} onSaved={() => { setAlternateEditor(undefined); saved('Alterno guardado.'); }}/>}
     {matchEditor && <MatchEditor item={matchEditor} onClose={() => setMatchEditor(null)} onSaved={text => { setMatchEditor(null); saved(text || 'Coincidencia actualizada.'); }}/>}
