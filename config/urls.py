@@ -36,7 +36,6 @@ from mall.oem_review_views import OEMReviewBulk, OEMReviewBulkStep, OEMReviewDec
 from mall.oem_auto_views import OEMPendingApply, OEMPendingList, OEMPendingPreview, OEMPendingSendToReview
 from mall.oem_reference_views import (OEMReferenceBulkEdit, OEMReferenceCrossReference, OEMReferenceCrossReferences, OEMReferenceItem, OEMReferenceList,
                                      OEMReferencePartTypes, PartOEMEquivalents)
-from mall.alternate_review import AlternateReviewItem, AlternateReviewList
 from mall.catalog_media import CatalogImages, CatalogImageDetail, CatalogImageOrder
 from mall.catalog_grouping_suggestions import CatalogGroupingList, CatalogGroupingClassify
 from mall.supplier_import import SupplierInventoryImport, SupplierInventoryImportTemplate, SupplierInventoryImportJobView, SupplierInventoryImportErrors
@@ -148,8 +147,6 @@ urlpatterns = [
     path('api/v1/management/grupos/', GrupoList.as_view()),
     path('api/v1/management/grupos/<uuid:pk>/', GrupoDetail.as_view()),
     path('api/v1/management/alternates/', management.AlternateList.as_view()),
-    path('api/v1/management/alternate-review/', AlternateReviewList.as_view()),
-    path('api/v1/management/alternate-review/<uuid:pk>/', AlternateReviewItem.as_view()),
     path('api/v1/management/alternates/<int:pk>/', management.AlternateDetail.as_view()),
     path('api/v1/management/accounts/', management.AccountList.as_view()),
     path('api/v1/management/accounts/<uuid:pk>/', management.AccountDetail.as_view()),

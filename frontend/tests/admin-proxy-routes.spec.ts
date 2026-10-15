@@ -4,13 +4,13 @@ import { expect, test } from '@playwright/test';
 // routes in the browser, before the proxy, so this one calls the real proxy and backend: GETs, and a batch the backend refuses unread.
 const origin = process.env.E2E_BASE_URL || 'http://localhost:8080';
 
-test('the proxy forwards the routes of Editar celdas (Inventario and Biblioteca OEM), Separar SKU, Por revisar and the SKU editor', async ({ page }) => {
+test('the proxy forwards the routes of Editar celdas (Inventario and Biblioteca OEM), Separar SKU and the SKU editor', async ({ page }) => {
   test.skip(!process.env.E2E_ADMIN_TOKEN, 'A disposable superuser token is required.');
   await page.context().addCookies([{ name: 'partsmall_session', value: process.env.E2E_ADMIN_TOKEN!, url: origin, httpOnly: true, sameSite: 'Strict' }]);
   const catalog = await page.request.get('/api/management/catalog?page=1');
   expect(catalog.status()).toBe(200);
   const first = (await catalog.json()).results[0]?.id;
-  const paths = ['/api/management/catalog/taxonomy', '/api/management/alternate-review', '/api/management/catalog/merged?page=1&origin=automatic',
+  const paths = ['/api/management/catalog/taxonomy', '/api/management/catalog/merged?page=1&origin=automatic',
     '/api/management/oem-references/part-types',
     ...(first ? [`/api/management/catalog/${first}/oem-equivalents`, `/api/management/catalog/${first}/split`] : [])];
   for (const path of paths) {
@@ -49,6 +49,18 @@ test('the proxy no longer forwards the OEM-link routes the owner retired on 2026
   for (const path of ['/api/management/catalog/mark-oem', '/api/management/catalog/create-oem', '/api/management/catalog/unmark-oem']) {
     const response = await page.request.post(path, { data: { rows: [] }, headers: { Origin: origin } });
     expect(response.status(), path).toBe(404);
+    expect(await response.text()).toContain('La ruta solicitada no existe');
+  }
+});
+
+test('the proxy no longer forwards Alternos › Por revisar, retired with the catalog merge pass (S9)', async ({ page }) => {
+  test.skip(!process.env.E2E_ADMIN_TOKEN, 'A disposable superuser token is required.');
+  await page.context().addCookies([{ name: 'partsmall_session', value: process.env.E2E_ADMIN_TOKEN!, url: origin, httpOnly: true, sameSite: 'Strict' }]);
+  // Its catalog copies became References or merge cases (step 0): the proxy answers itself, so nothing reaches the backend.
+  const zero = '00000000-0000-4000-8000-000000000000';
+  for (const response of [await page.request.get('/api/management/alternate-review'), await page.request.get(`/api/management/alternate-review/${zero}`),
+    await page.request.post(`/api/management/alternate-review/${zero}`, { data: { action: 'keep', alternate: 0 }, headers: { Origin: origin } })]) {
+    expect(response.status()).toBe(404);
     expect(await response.text()).toContain('La ruta solicitada no existe');
   }
 });

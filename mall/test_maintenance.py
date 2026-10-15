@@ -101,7 +101,7 @@ class FreezeMiddlewareTests(FreezeFolderMixin, SimpleTestCase):
         ('post', '/api/v1/management/catalog/grouping/merge/'), ('post', f'/api/v1/management/catalog/{ID}/split/'),
         ('post', f'/api/v1/management/catalog/{ID}/images/'), ('put', f'/api/v1/management/catalog/{ID}/technical/'),
         ('patch', f'/api/v1/management/inventory/{ID}/'), ('post', '/api/v1/management/alternates/'),
-        ('delete', '/api/v1/management/alternates/7/'), ('post', f'/api/v1/management/alternate-review/{ID}/'),
+        ('delete', '/api/v1/management/alternates/7/'),
         ('patch', f'/api/v1/management/oem-references/{ID}/'), ('post', '/api/v1/management/oem-review/bulk/'),
         ('post', '/api/v1/management/oem-finder/pending/apply/'), ('post', '/api/v1/management/oem-finder/runs/3/revert/'),
         ('post', '/api/v1/management/matching/'), ('post', f'/api/v1/management/matching/{ID}/'),

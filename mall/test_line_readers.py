@@ -224,10 +224,8 @@ class AdminReaderTests(APITestCase):
         rows = self.client.get('/api/v1/management/catalog/merged/').data['results']
         self.assertEqual([row['sku'] for row in rows], [self.part.sku])
 
-    def test_the_alternate_review_and_the_mark_oem_plan(self):
+    def test_the_mark_oem_plan(self):  # Alternos › Por revisar retired with the merge pass (S9)
         from .catalog_oem_mark import plan_rows
-        for line in self.hidden.values():
-            self.assertEqual(self.client.get(f'/api/v1/management/alternate-review/{line.pk}/').status_code, 404, line.estado)
         self.assertEqual([str(row['id']) for row in plan_rows([self.part.pk, *[line.pk for line in self.hidden.values()]])], [str(self.part.pk)])
 
 

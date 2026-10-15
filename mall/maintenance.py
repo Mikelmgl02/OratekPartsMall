@@ -27,7 +27,7 @@ RETRY_AFTER = '120'
 # now would be checked against a catalog about to change, and its job would hold up the next window's pre-flight). From S7 also the
 # lines, References, cases, merges, brands and grupos of the inventory refactor's routes.
 CATALOG_ROUTES = [re.compile(pattern) for pattern in (
-    r'^/api/v1/management/(catalog|inventory|alternates|alternate-review|oem-references|oem-review|oem-finder|matching|part-types|applications)(/|$)',
+    r'^/api/v1/management/(catalog|inventory|alternates|oem-references|oem-review|oem-finder|matching|part-types|applications)(/|$)',
     r'^/api/v1/management/(lines|references|cases|merges|brands|grupos)(/|$)',
     r'^/api/v1/accounts/[^/]+/inventory/(ingest|import)(/|$)',
 )]
