@@ -9,6 +9,7 @@ from rest_framework.test import APITestCase
 
 from .models import Account, CatalogImportJob, Membership, Part, PartCode, Role, StockEntry, SupplierItem, User
 from .services import ingest_inventory
+from .test_factories import make_line
 
 
 class CatalogImportTests(APITestCase):
@@ -46,7 +47,7 @@ class CatalogImportTests(APITestCase):
         self.assertEqual(Part.objects.count(), 0)
 
     def test_preview_then_import_groups_alternos_preserves_ids_codes_and_ledger(self):
-        existing = Part.objects.create(sku='58411-1R000', name='NOMBRE EXISTENTE', description='DESCRIPCIÓN EXISTENTE', active=True)
+        existing = make_line(sku='58411-1R000', name='NOMBRE EXISTENTE', description='DESCRIPCIÓN EXISTENTE', active=True)
         old_code = PartCode.objects.create(part=existing, code='OLD-CODE')
         supplier = Account.objects.create(name='Proveedor Excel')
         supplier.roles.add(Role.objects.get(code='supplier_retail'))
@@ -69,13 +70,12 @@ class CatalogImportTests(APITestCase):
         self.assertEqual(imported.status_code, 200)
         self.assertTrue(imported.data['imported'])
         existing.refresh_from_db()
-        self.assertEqual(existing.name, 'NOMBRE EXISTENTE')
-        self.assertEqual(existing.description, 'DESCRIPCIÓN EXISTENTE')
+        self.assertEqual(existing.description, 'DESCRIPCIÓN EXISTENTE')  # S10: name is the description
         self.assertTrue(existing.active)
         self.assertTrue(PartCode.objects.filter(pk=old_code.pk).exists())
         self.assertEqual(existing.codes.filter(is_main=False).count(), 3)
         new = Part.objects.get(sku='000123')
-        self.assertEqual(new.name, 'REPUESTO NUEVO')
+        self.assertEqual((new.name, new.description), ('DESCRIPCIÓN', 'DESCRIPCIÓN'))  # NOMBRE fills only a blank DESCRIPCION (S10)
         self.assertFalse(new.active)
         self.assertEqual(new.codes.get(is_main=False).code, '000045')
         stock.refresh_from_db()
@@ -93,7 +93,7 @@ class CatalogImportTests(APITestCase):
         """S3: a supplier's interno code is its own name for the line; a catalog file listing the same code makes a public Reference
         beside it, never a hidden spelling of the interno."""
         from . import references
-        line = Part.objects.create(sku='58411-1R000', name='TAMBOR', active=True)
+        line = make_line(sku='58411-1R000', name='TAMBOR', active=True)
         supplier = Account.objects.create(name='Proveedor Interno')
         interno, _ = references.add(line, 'LOCAL-58411', tipo='interno', supplier=supplier, estado='declarado')
         raw = self.excel([['58411-1R000', '', '', 'LOCAL-58411']])
@@ -191,7 +191,7 @@ class CatalogImportTests(APITestCase):
         self.assertEqual(Part.objects.count(), 0)
 
     def test_confirmation_requires_same_file_user_and_unchanged_catalog(self):
-        part = Part.objects.create(sku='EXISTING', name='BEFORE')
+        part = make_line(sku='EXISTING', name='BEFORE')
         raw = self.excel([['EXISTING', 'AFTER']])
         preview = self.upload(raw).data
         self.assertEqual(self.upload(raw, mode='import').status_code, 409)
@@ -200,11 +200,11 @@ class CatalogImportTests(APITestCase):
         self.client.force_authenticate(other_root)
         self.assertEqual(self.upload(raw, mode='import', preview_token=preview['preview_token']).status_code, 409)
         self.client.force_authenticate(self.root)
-        part.name = 'NEWER EDIT'
+        part.description = 'NEWER EDIT'
         part.save()
         self.assertEqual(self.upload(raw, mode='import', preview_token=preview['preview_token']).status_code, 409)
         part.refresh_from_db()
-        self.assertEqual(part.name, 'NEWER EDIT')
+        self.assertEqual(part.description, 'NEWER EDIT')
 
     def test_failed_batch_rolls_back_skus_as_well_as_codes(self):
         raw = self.excel([['NEW', '', '', 'NEW-ALT']])
@@ -220,8 +220,8 @@ class CatalogImportTests(APITestCase):
         self.assertEqual(Part.objects.count(), 0)
 
     def test_batch_accepts_more_than_5000_rows_and_only_updates_supplied_fields(self):
-        existing = Part.objects.create(sku='BATCH-0000', name='OLD', description='KEEP ME', active=False)
-        raw = self.excel([[f'BATCH-{index:04}', 'new name' if index == 0 else '', '', f'ALT-{index:04}'] for index in range(6001)])
+        existing = make_line(sku='BATCH-0000', description='KEEP ME', active=False)
+        raw = self.excel([[f'BATCH-{index:04}', '', 'new name' if index == 0 else '', f'ALT-{index:04}'] for index in range(6001)])
         preview = self.upload(raw)
         self.assertTrue(preview.data['valid'])
         self.assertEqual(preview.data['preview_count'], 6001)
@@ -237,8 +237,7 @@ class CatalogImportTests(APITestCase):
         self.assertEqual(Part.objects.count(), 6001)
         self.assertEqual(PartCode.objects.filter(is_main=False).count(), 6001)
         existing.refresh_from_db()
-        self.assertEqual(existing.name, 'NEW NAME')
-        self.assertEqual(existing.description, 'KEEP ME')
+        self.assertEqual(existing.description, 'NEW NAME')  # only the fields a row gives change
         self.assertFalse(existing.active)
 
     def test_durable_batches_are_atomic_owner_bound_and_retry_safe(self):
@@ -300,13 +299,13 @@ class CatalogImportTests(APITestCase):
         self.assertEqual(self.client.post(url, {'batch_index': 1}).status_code, 409)
         self.assertEqual(self.client.get(url).data['progress']['completed_batches'], 1)
         self.assertEqual(Part.objects.count(), 501)
-        self.assertEqual(Part.objects.get(sku='CATEG-0500').category, '')
+        self.assertEqual(Part.objects.select_related('part_type__grupo').get(sku='CATEG-0500').category, '')
 
     def test_categoria_and_subcategoria_compare_against_the_lines_subgrupo(self):
         """S5: the columns compare against the line's subgrupo by its FK, and a changed SUBCATEGORIA names the subgrupo in the grupo the
         line already has."""
-        line = Part.objects.create(sku='CATEG-FK', category='FRENOS', subcategory='DISCOS')
-        Part.objects.filter(pk=line.pk).update(category='TEXTO VIEJO')  # text out of step: the FK decides
+        line = make_line(sku='CATEG-FK', category='FRENOS', subcategory='DISCOS')
+        Part.objects.filter(pk=line.pk).update(legacy_category='TEXTO VIEJO')  # the old text column: never read (S10)
         columns = ['SKU', 'CATEGORIA', 'SUBCATEGORIA']
         preview = self.upload(self.excel([['CATEG-FK', 'frenos', 'discos']], columns)).data
         self.assertEqual((preview['summary']['unchanged_skus'], preview['preview'][0]['category']), (1, 'FRENOS'))

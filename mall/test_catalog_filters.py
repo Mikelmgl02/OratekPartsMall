@@ -2,6 +2,7 @@ from django.test import override_settings
 from rest_framework.test import APITestCase
 
 from .models import Account, Membership, Part, PartCode, Role, SupplierItem, User
+from .test_factories import line_fields, make_line
 
 
 @override_settings(CATALOG_LOW_STOCK_THRESHOLD=5, CATALOG_HIGH_STOCK_THRESHOLD=20)
@@ -20,7 +21,7 @@ class CatalogFilterTests(APITestCase):
         self.client.force_authenticate(self.user)
 
     def part(self, sku, category='FRENOS', subcategory='DISCOS'):
-        return Part.objects.create(sku=sku, description='REPUESTO', category=category, subcategory=subcategory)
+        return make_line(sku=sku, description='REPUESTO', category=category, subcategory=subcategory)
 
     def item(self, part, quantity, supplier=None, reserved=0, status='matched'):
         return SupplierItem.objects.create(part=part, supplier=supplier or self.supplier,
@@ -68,7 +69,7 @@ class CatalogFilterTests(APITestCase):
         self.assertTrue(all(set(row) == {'value', 'label', 'count'} for row in facets))
 
     def test_facets_count_all_pages_and_respect_search_with_disjunctive_counts(self):
-        Part.objects.bulk_create([Part(sku=f'DISC-{i:03}', category='FRENOS', subcategory='DISCOS') for i in range(60)])
+        Part.objects.bulk_create([Part(**line_fields(dict(sku=f'DISC-{i:03}', category='FRENOS', subcategory='DISCOS'))) for i in range(60)])
         self.part('PAD', subcategory='PASTILLAS')
         self.part('OIL', category='FILTROS', subcategory='ACEITE')
         response = self.client.get(self.url, {'include_facets': '1', 'category': 'FRENOS', 'subcategory': 'DISCOS'})
@@ -80,30 +81,29 @@ class CatalogFilterTests(APITestCase):
         self.assertEqual(searched['facets']['category'], [{'value': 'FILTROS', 'label': 'FILTROS', 'count': 1}])
 
     def test_groups_and_subgroups_read_each_lines_subgrupo_by_its_fk(self):
-        """S5: the filters and facets keep their text parameters but read each line's subgrupo (its grupo's nombre and its name); a line
-        with no subgrupo counts by its text, a partial classification."""
+        """S5, S10: the filters and facets keep their text parameters but read each line's subgrupo (its grupo's nombre and its name);
+        a line with no subgrupo has none (S10: its old text is never read)."""
         disc = self.part('DISC')
-        Part.objects.filter(pk=disc.pk).update(category='TEXTO VIEJO', subcategory='OTRO')  # text out of step: the FK decides
-        Part.objects.create(sku='HALF', description='REPUESTO', category='FRENOS')
+        Part.objects.filter(pk=disc.pk).update(legacy_category='TEXTO VIEJO', legacy_subcategory='OTRO')  # the old text: never read
+        make_line(sku='HALF', description='REPUESTO', category='FRENOS')  # half a pair: no subgrupo
         facets = self.client.get(self.url, {'include_facets': '1'}).data['facets']
-        self.assertEqual({row['value']: row['count'] for row in facets['category']}, {'FRENOS': 2})
+        self.assertEqual({row['value']: row['count'] for row in facets['category']}, {'FRENOS': 1, '': 1})
         self.assertEqual([(row['value'], row['label'], row['count']) for row in facets['subcategory']], [('', 'Sin subgrupo', 1), ('DISCOS', 'DISCOS', 1)])
         rows = self.client.get(self.url, {'category': 'FRENOS', 'subcategory': 'DISCOS'}).data['results']
         self.assertEqual([row['sku'] for row in rows], ['DISC'])
         self.assertEqual(self.client.get(self.url, {'category': 'TEXTO VIEJO'}).data['count'], 0)
         grupo = disc.part_type.grupo
         grupo.nombre = 'FRENADO'
-        grupo.save()  # a rename renames the text too (Grupo.save), the out-of-step text above included
+        grupo.save()  # its lines read the new nombre
         self.assertEqual(self.client.get(self.url, {'category': 'FRENADO'}).data['count'], 1)
-        self.assertEqual(Part.objects.filter(pk=disc.pk).values_list('category', 'subcategory').get(), ('FRENADO', 'DISCOS'))
 
     def test_facets_exclude_inactive_merged_and_ineligible_supplier_records(self):
         part = self.part('CANONICAL')
         inactive = self.part('INACTIVE', category='HIDDEN')
-        inactive.active = False
+        inactive.estado = 'retirada'
         inactive.save()
         merged = self.part('MERGED', category='HIDDEN')
-        merged.merged_into = part
+        merged.merged_into, merged.estado = part, 'unificada'
         merged.save()
         self.item(part, 1)
         self.item(part, 1)

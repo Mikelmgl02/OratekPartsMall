@@ -15,7 +15,7 @@ from .catalog_import import build_plan, save_plan
 from .models import PartCode, Reference, ReferenceDeleteRefused, ReferenceSource
 from .oem_reference_models import OEMReference, OEMReferenceSource
 from .services import matching_part
-from .test_factories import make_client, make_line, make_reference, make_supplier, make_user, make_variant, run_migration_function
+from .test_factories import (make_client, make_code, make_line, make_reference, make_supplier, make_user, make_variant, run_migration_function)
 
 ALGO = 'algo:oem-finder:v3:current:7'
 CATALOG = 'GMB Water Pump Catalog 2016 · pág. 551'
@@ -39,7 +39,9 @@ def drop_tighten_constraints():
 
 
 def stored(ref):
-    return Reference.all_objects.filter(pk=ref.pk).values_list('tipo', 'ref_type', 'estado').get()
+    """(tipo, the JSON's ref_type, estado) of a Reference as stored: ref_type is derived from tipo since S10."""
+    tipo, estado = Reference.all_objects.filter(pk=ref.pk).values_list('tipo', 'estado').get()
+    return tipo, references.legacy_ref_type(tipo), estado
 
 
 def storefront_codes(client, search):
@@ -98,7 +100,7 @@ class RenameTests(TestCase):
         self.assertIsNotNone(Reference.objects.filter(is_main=False).values_list('uid', flat=True).get(pk=ref.pk))  # the database fills it
 
     def test_new_columns_take_their_defaults_and_old_style_writes_keep_working(self):
-        ref = PartCode.objects.create(part=make_line('OLD-1'), code='old-code', ref_type='company', brand=' gmb ')
+        ref = make_code(part=make_line('OLD-1'), code='old-code', ref_type='company', brand=' gmb ')
         ref.refresh_from_db()
         self.assertEqual((ref.code, ref.brand, ref.tipo, ref.ref_type, ref.kind, ref.estado, ref.printed_forms, ref.detail, ref.version,
                           ref.is_main, ref.supplier), ('OLD-CODE', 'GMB', 'aftermarket', 'company', 'manufacturer', 'declarado', [], {}, 1,
@@ -117,42 +119,24 @@ class RenameTests(TestCase):
                          [('JSON-ALT', 'GMB', 'manufacturer', 'company'), ('JSON-OEM-12345', 'TOYOTA', 'oem', 'oem')])
 
 
-class TipoPairTests(TestCase):
-    """Reference.save keeps tipo and ref_type in step: a tipo changed since load wins, otherwise ref_type decides."""
+class RefTypeMirrorTests(TestCase):
+    """S10 (0086): the column ref_type is no field: a trigger writes it from tipo on every write, whatever writes the row, and the
+    JSON's ref_type and kind are derived from tipo."""
 
-    def setUp(self):
-        self.line = make_line('PAIR-1')
+    def column(self, ref):
+        from django.db import connection
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT tipo, ref_type FROM mall_partcode WHERE id = %s', [ref.pk])
+            return cursor.fetchone()
 
-    def test_a_new_reference_takes_the_tipo_given_or_the_one_its_ref_type_names(self):
-        by_ref_type = Reference.objects.create(part=self.line, code='P-1', ref_type='oem', brand='TOYOTA')
-        by_tipo = Reference.objects.create(part=self.line, code='P-2', tipo='aftermarket', brand='GMB')
-        interno = Reference.objects.create(part=self.line, code='P-3', tipo='interno', supplier=make_supplier('PAIR PROVEEDOR'))
-        self.assertEqual([stored(ref)[:2] for ref in (by_ref_type, by_tipo, interno)],
-                         [('oem', 'oem'), ('aftermarket', 'company'), ('interno', 'unknown')])
-
-    def test_a_legacy_write_of_ref_type_alone_moves_tipo_and_update_fields_writes_both(self):
-        ref = Reference.objects.get(pk=make_reference(self.line, 'P-4').pk)
-        ref.ref_type = 'company'
-        ref.save(update_fields=['ref_type'])
-        self.assertEqual(stored(ref)[:2], ('aftermarket', 'company'))
-        ref = Reference.objects.get(pk=ref.pk)
-        ref.kind = 'oem'  # the legacy kind setter writes ref_type
-        ref.save()
-        self.assertEqual(stored(ref)[:2], ('oem', 'oem'))
-        ref = Reference.objects.get(pk=ref.pk)
-        ref.tipo = 'otro'
-        ref.save(update_fields=['tipo'])
-        self.assertEqual(stored(ref)[:2], ('otro', 'unknown'))
-        self.assertEqual(Reference.objects.get(pk=ref.pk).version, 4)
-
-    def test_a_row_the_old_code_wrote_follows_its_ref_type_on_the_next_save(self):
-        drop_tighten_constraints()
-        ref = make_reference(self.line, 'P-5')
-        Reference.all_objects.filter(pk=ref.pk).update(ref_type='oem')  # the code before S2a wrote ref_type alone
-        ref = Reference.objects.get(pk=ref.pk)
-        ref.notes = 'REVISADO'
-        ref.save()
-        self.assertEqual(stored(ref)[:2], ('oem', 'oem'))
+    def test_the_column_follows_tipo(self):
+        line = make_line('PAIR-1')
+        oem = make_reference(line, 'P-1', brand='TOYOTA', tipo='oem')
+        interno = make_reference(line, 'P-3', tipo='interno', supplier=make_supplier('PAIR PROVEEDOR'))
+        self.assertEqual([self.column(ref) for ref in (oem, interno)], [('oem', 'oem'), ('interno', 'unknown')])
+        Reference.all_objects.filter(pk=oem.pk).update(tipo='aftermarket')
+        oem.refresh_from_db()
+        self.assertEqual((self.column(oem), oem.ref_type, oem.kind), (('aftermarket', 'company'), 'company', 'manufacturer'))
 
 
 class BrandlessReservationTests(TestCase):
@@ -579,8 +563,7 @@ class TightenTests(TestCase):
         line = make_line('TIGHT-C')
         ref = make_reference(line, 'TIGHT-1', brand='GMB', tipo='aftermarket')
         rows = Reference.all_objects.filter(pk=ref.pk)
-        self.refused(lambda: rows.update(ref_type='oem'))  # tipo and ref_type move together until S10
-        self.refused(lambda: rows.update(tipo='interno', ref_type='unknown'))  # an interno code names its supplier
+        self.refused(lambda: rows.update(tipo='interno'))  # an interno code names its supplier (S10: ref_type follows tipo by itself)
         self.refused(lambda: rows.update(supplier=make_supplier('TIGHT OTRO')))
         self.refused(lambda: rows.update(estado='disputa'))  # a dispute says why
         self.refused(lambda: rows.update(estado='perdida'))
@@ -588,25 +571,6 @@ class TightenTests(TestCase):
         self.refused(lambda: rows.update(reemplazado_por=F('id')))
         rows.update(estado='disputa', dispute_note='OTRA MEDIDA')
         self.assertEqual(stored(ref), ('aftermarket', 'company', 'disputa'))
-
-    def test_the_repair_puts_tipo_in_step_and_stops_on_what_needs_a_person(self):
-        run_migration_function(self.MIGRATION, 'repair_references')  # nothing to repair
-        drop_tighten_constraints()
-        line = make_line('TIGHT-R')
-        oem = make_reference(line, 'TIGHT-OEM-1234', brand='TOYOTA', tipo='oem')
-        company = make_reference(line, 'TIGHT-2', brand='GMB', tipo='aftermarket')
-        interno = make_reference(line, 'TIGHT-3', tipo='interno', supplier=make_supplier('TIGHT INTERNO'))
-        Reference.all_objects.filter(pk__in=[oem.pk, company.pk]).update(tipo='otro')  # written by the code before S2a
-        Reference.all_objects.filter(pk=company.pk).update(reemplazado_por=F('id'))
-        for _ in range(2):  # idempotent
-            run_migration_function(self.MIGRATION, 'repair_references')
-        self.assertEqual([stored(ref)[:2] for ref in (oem, company, interno)], [('oem', 'oem'), ('aftermarket', 'company'), ('interno', 'unknown')])
-        self.assertIsNone(Reference.objects.get(pk=company.pk).reemplazado_por_id)
-        make_reference(make_line('TIGHT-R2'), 'TIGHTOEM1234', brand='TOYOTA', tipo='oem')
-        Reference.all_objects.filter(pk=company.pk).update(estado='disputa')
-        with self.assertRaisesMessage(RuntimeError, '1 referencias en disputa sin motivo; 1 claves (clave, marca, proveedor) que tienen dos '
-                                                    'referencias vivas (TIGHTOEM1234 TOYOTA)'):
-            run_migration_function(self.MIGRATION, 'repair_references')
 
     def test_the_reverse_refuses_while_one_printed_code_is_held_twice(self):
         run_migration_function(self.MIGRATION, 'refuse_printed_duplicates')

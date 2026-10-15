@@ -2,38 +2,39 @@ from unittest.mock import patch
 from django.test import override_settings
 from rest_framework.test import APITestCase
 from .models import Account, Part, PartCode, SupplierItem, StockEntry, User, CatalogIdentityChange, OEMLookupCache
-from .catalog_identity import prefer_oem, reconcile_identities, identity_status
+from .catalog_identity import classify_company_main, prefer_oem, identity_status
 from .management import ManagedPartSerializer
 from . import reference_matching as rm
 from .oem_lookup import lookup_oem
 from .catalog_classification import ClassificationProviderError
 from .services import ingest_inventory
+from .test_factories import make_code, make_line
 
 
 class OEMIdentityTests(APITestCase):
     def setUp(self):
         self.admin = User.objects.create_superuser('oem-admin', 'oem@example.invalid', 'Example938!')
         self.client.force_authenticate(self.admin)
-        self.part = Part.objects.create(sku='0110-GSU45A48-FEB', name='0110-GSU45A48-FEB', description='PUNTA FLECHA EXT TOY RAV4 19-')
+        self.part = make_line(sku='0110-GSU45A48-FEB', name='0110-GSU45A48-FEB', description='PUNTA FLECHA EXT TOY RAV4 19-')
         self.url = f'/api/v1/management/catalog/{self.part.pk}/'
 
     def oem(self, code='43460-TEST', brand='TOYOTA', source='CATÁLOGO REVISADO'):
-        return PartCode.objects.create(part=self.part, code=code, brand=brand, ref_type='oem', reference_source=source)
+        return make_code(part=self.part, code=code, brand=brand, ref_type='oem', reference_source=source)
 
     def test_company_type_is_not_oem_even_after_removing_suffix(self):
-        reconcile_identities(self.admin)
+        classify_company_main(self.part, self.admin)
         self.part.refresh_from_db()
         self.assertEqual(self.part.sku, '0110-GSU45A48-FEB')
-        self.assertEqual(set(self.part.codes.values_list('code','brand','ref_type')), {
-            ('0110-GSU45A48-FEB', 'FEBEST', 'company'), ('0110-GSU45A48', 'FEBEST', 'company')})
+        self.assertEqual(set(self.part.codes.values_list('code','brand','tipo')), {
+            ('0110-GSU45A48-FEB', 'FEBEST', 'aftermarket'), ('0110-GSU45A48', 'FEBEST', 'aftermarket')})
         self.assertEqual(identity_status(self.part)['status'], 'needs_oem')
         self.assertEqual(CatalogIdentityChange.objects.count(), 0)
 
     @override_settings(CATALOG_COMPANY_SUFFIXES={'CUSTOM': 'ACME'})
     def test_company_registry_works_for_other_feeds_without_code_specific_rules(self):
         self.part.sku = 'ABC-123456-CUSTOM'; self.part.save()
-        reconcile_identities()
-        self.assertTrue(self.part.codes.filter(code='ABC-123456', brand='ACME', ref_type='company').exists())
+        classify_company_main(self.part)
+        self.assertTrue(self.part.codes.filter(code='ABC-123456', brand='ACME', tipo='aftermarket').exists())
 
     def test_verified_oem_becomes_main_without_changing_stock_identity(self):
         supplier = Account.objects.create(name='PROVEEDOR')
@@ -45,7 +46,7 @@ class OEMIdentityTests(APITestCase):
         promoted = prefer_oem(self.part, actor=self.admin)
         self.assertEqual(promoted.pk, self.part.pk)
         self.assertEqual(promoted.sku, '43460-TEST')
-        self.assertEqual(promoted.name, '43460-TEST')
+        self.assertEqual(promoted.name, 'PUNTA FLECHA EXT TOY RAV4 19-')  # S10: name is the description
         item.refresh_from_db()
         self.assertEqual(item.part_id, self.part.pk)
         self.assertEqual(item.codigo, '0110-GSU45A48-FEB')
@@ -71,7 +72,7 @@ class OEMIdentityTests(APITestCase):
         self.assertEqual(result.status_code, 200, result.data)
         self.assertEqual(result.data['sku'], '43460-SECOND')
         self.assertEqual(result.data['identity']['ref_type'], 'oem')
-        self.assertEqual(self.part.codes.filter(ref_type='oem').count(), 2)
+        self.assertEqual(self.part.codes.filter(tipo='oem').count(), 2)
         self.assertEqual(prefer_oem(self.part).sku, '43460-SECOND')
 
     def test_new_typed_ref_promotes_on_save_and_preserves_company_as_alterno(self):
@@ -84,7 +85,7 @@ class OEMIdentityTests(APITestCase):
     def test_company_requires_name_and_legacy_kind_maps_to_single_column(self):
         result = self.client.patch(self.url, {'codes':[{'code':'XYZ1234','brand':'','ref_type':'company'}]}, format='json')
         self.assertEqual(result.status_code, 400)
-        code = PartCode.objects.create(part=self.part, code='TEST', kind='manufacturer')
+        code = make_code(part=self.part, code='TEST', kind='manufacturer')
         self.assertEqual(code.ref_type, 'company')
         result = self.client.patch(f'/api/v1/management/alternates/{code.pk}/', {'kind':'oem','ref_type':'company'}, format='json')
         self.assertEqual(result.status_code, 400)
@@ -172,7 +173,7 @@ class OEMIdentityTests(APITestCase):
 
     def test_typed_supplier_references_use_correct_namespace(self):
         from .part_references import normalize_references, parse_reference_cell, format_references
-        PartCode.objects.create(part=self.part, code='ABC123456', brand='FEBEST', ref_type='company')
+        make_code(part=self.part, code='ABC123456', brand='FEBEST', ref_type='company')
         # S6: a declared code is a reference case listing the lines that hold its key under its brand (rule 5b), never a link.
         item = SupplierItem(supplier=Account.objects.create(name='PROVEEDOR'), part=None)
         holders = rm.declared_holders({'code': 'ABC123456', 'brand': 'FEBEST', 'ref_type': 'company'}, item)
@@ -185,7 +186,7 @@ class OEMIdentityTests(APITestCase):
 
     def test_oem_default_filter_and_public_api(self):
         self.assertFalse(self.part.is_OEM)
-        oem = Part.objects.create(sku='OEM-VERIFIED', is_OEM=True)
+        oem = make_line(sku='OEM-VERIFIED', is_OEM=True)
         result = self.client.get('/api/v1/management/catalog/', {'is_OEM': 'true'})
         self.assertEqual([p['id'] for p in result.data['results']], [str(oem.pk)])
         result = self.client.get('/api/v1/management/catalog/', {'is_OEM': 'false'})
@@ -195,7 +196,7 @@ class OEMIdentityTests(APITestCase):
         self.assertTrue(PartSerializer(oem).data['is_OEM'])
 
     def test_rename_does_not_transfer_oem_flag_to_new_code(self):
-        self.part.is_OEM = True
+        self.part.tipo = 'OEM'
         self.part.save()
         result = self.client.patch(self.url, {'sku':'NEW-INTERNAL-CODE'}, format='json')
         self.assertEqual(result.status_code, 200, result.data)
@@ -204,7 +205,7 @@ class OEMIdentityTests(APITestCase):
         self.assertEqual(self.part.codes.get(code=self.part.sku).ref_type, 'oem')
 
     def test_flagged_oem_is_not_replaced_by_single_alternate(self):
-        self.part.is_OEM = True
+        self.part.tipo = 'OEM'
         self.part.save()
         self.oem()
         self.assertEqual(prefer_oem(self.part).sku, self.part.sku)
@@ -214,20 +215,20 @@ class OEMIdentityTests(APITestCase):
         self.assertEqual(result.data['sku'], '43460-TEST')
 
     def test_oem_main_matches_oem_namespace_but_does_not_become_company_reference(self):
-        self.part.is_OEM = True
+        self.part.tipo = 'OEM'
         self.part.save()
         supplier = Account.objects.create(name='PROVEEDOR')
         subject = lambda brand: rm.subject_of(None, {'codigo': self.part.sku, 'brand': brand}, supplier)
         # S6 (rules 1 and 2): a brandless main reserves its code for every brand, so any brand's item with it joins the line ...
         self.assertEqual(rm.resolve(subject('TOYOTA')).line, self.part)
-        PartCode.objects.create(part=self.part, code=self.part.sku, ref_type='oem', brand='TOYOTA')
+        make_code(part=self.part, code=self.part.sku, ref_type='oem', brand='TOYOTA')
         self.assertEqual((rm.resolve(subject('TOYOTA')).rule, rm.resolve(subject('HONDA')).rule), ('exacta', 'sin_marca'))
         # ... and the line stays OEM: no company code is made of it.
-        self.assertFalse(self.part.codes.filter(ref_type='company', code=self.part.sku).exists())
+        self.assertFalse(self.part.codes.filter(tipo='aftermarket', code=self.part.sku).exists())
 
     def test_marked_oem_suffix_is_not_stripped_into_an_internal_family(self):
         base = Part.objects.create(sku='OEM1234567', description='ROTULA TOYOTA RAV4 2019')
-        original = Part.objects.create(sku=base.sku+'-ABC', description=base.description, is_OEM=True)
+        original = make_line(sku=base.sku+'-ABC', description=base.description, is_OEM=True)
         self.assertEqual(rm.open_reference_merge_cases(), 0)  # S6: the worker never merges families, and no clave joins them
         original.refresh_from_db()
         self.assertIsNone(original.merged_into_id)
@@ -247,7 +248,7 @@ class OEMIdentityTests(APITestCase):
         from .catalog_assistant import current_row, unchanged
         from .catalog_classification import ClassificationConflict
         snapshot = current_row(self.part)
-        self.part.is_OEM = True
+        self.part.tipo = 'OEM'
         self.part.save()
         with self.assertRaises(ClassificationConflict):
             unchanged(self.part, snapshot)

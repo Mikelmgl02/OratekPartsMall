@@ -2,9 +2,8 @@
 
 An OEM reference and its provenance must already be in the reviewed library.
 Manufacturer suffix rules identify a company, not interchangeability or an OEM.
-From S4 the OEM list is the library's References (mall.references.library_q): exact_listed and disputed_codes read them, and
-mark_exact_matches (which marked OEM the SKUs whose compact code was a declared or verified number of the list) is retired, since a
-line holding its number as a Reference mirrors its main's tipo.
+From S4 the OEM list is the library's References (mall.references.library_q): exact_listed and disputed_codes read them (marking OEM
+the SKUs whose compact code was a number of the list went with S4, and reconcile_identities with S10: the owner retired OEM linking).
 
 Since S2b a line's identity is its main Reference (mall.references): prefer_oem makes the chosen OEM Reference the main
 (references.set_main, the codigo following it while the line is live) instead of renaming the line and keeping its old SKU as an
@@ -12,10 +11,9 @@ alterno, which the old main now is anyway; marking OEM retypes the main (referen
 """
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Q
 from rest_framework.exceptions import ValidationError
 from .catalog_families import normalized_reference
-from .lines import all_lines, catalog_lines, storefront_lines
+from .lines import all_lines, catalog_lines
 from . import references
 from .models import Part, Reference
 
@@ -75,26 +73,35 @@ def reference_type(code):
     return code.get('ref_type') or {'oem': 'oem', 'manufacturer': 'company'}.get(code.get('kind'), 'unknown')
 
 
+def sourced(ref):
+    """Whether a Reference has a live source (its sources prefetched by the lists: no query per row then)."""
+    cache = getattr(ref, '_prefetched_objects_cache', {})
+    if 'sources' in cache:
+        return any(not source.retirada for source in cache['sources'])
+    return ref.sources.filter(retirada=False).exists()
+
+
 def identity_status(part):
     """What Inventario's MAIN badge says (ManagedPart.identity), from the line's main Reference: its tipo as the legacy ref_type and
-    its brand. A line without a main yet (before mall.refactor.s2b_main_refs) falls back to its codigo, as before S2b."""
+    its brand. A line without a main falls back to its codigo, as before S2b."""
     codes = list(part.codes.all())
     main = references.main_in(codes)
-    oems = [c for c in codes if c.ref_type == 'oem']
-    verified = [c for c in oems if c.brand and c.reference_source.strip()]
-    status = ('oem' if part.is_OEM else 'choose_oem' if len({normalized_reference(c.code) for c in verified}) > 1
+    oem_line = part.tipo == 'OEM'
+    verified = [c for c in codes if c.tipo == 'oem' and c.brand and sourced(c)]
+    status = ('oem' if oem_line else 'choose_oem' if len({normalized_reference(c.code) for c in verified}) > 1
               else 'oem_available' if verified else 'needs_oem')
     if main is not None:
-        brand = main.brand or ((company_reference(part.sku) or {}).get('brand', '') if main.ref_type == 'company' else '')
-        return {'ref_type': 'oem' if part.is_OEM else main.ref_type if main.ref_type != 'unknown' else
+        ref_type = references.legacy_ref_type(main.tipo)
+        brand = main.brand or ((company_reference(part.sku) or {}).get('brand', '') if ref_type == 'company' else '')
+        return {'ref_type': 'oem' if oem_line else ref_type if ref_type != 'unknown' else
                 ('company' if company_reference(part.sku) else 'unknown'), 'status': status, 'brand': brand}
     current = [c for c in codes if normalized_reference(c.code) == normalized_reference(part.sku)]
     first = next((c for c in verified if c in current), None)
     return {
-        'ref_type': 'oem' if part.is_OEM else next((c.ref_type for c in current if c.ref_type == 'company'),
-                                          'company' if company_reference(part.sku) else 'unknown'),
+        'ref_type': 'oem' if oem_line else next((references.legacy_ref_type(c.tipo) for c in current if c.tipo == 'aftermarket'),
+                                                'company' if company_reference(part.sku) else 'unknown'),
         'status': status,
-        'brand': first.brand if first else next((c.brand for c in current if c.ref_type == 'company'),
+        'brand': first.brand if first else next((c.brand for c in current if c.tipo == 'aftermarket'),
                                                (company_reference(part.sku) or {}).get('brand', '')),
     }
 
@@ -108,16 +115,16 @@ def prefer_oem(part, *, actor=None, selected=None, confirm_current=False):
     verified OEM. Collisions require the existing merge review instead of silently combining unrelated catalog items.
     """
     part = Part.objects.select_for_update().get(pk=part.pk)
-    if part.merged_into_id or not part.active:
+    if part.merged_into_id or part.estado != 'publicada':
         if selected:
             raise ValidationError('Selecciona un SKU principal activo.')
         return part
     # A main explicitly marked OEM is already canonical. Only a reviewed choice
     # can replace it with another OEM; its alternos do not own this flag.
-    if part.is_OEM and not selected:
+    if part.tipo == 'OEM' and not selected:
         return part
-    oems = list(part.codes.filter(ref_type='oem').order_by('code', 'brand', 'pk'))
-    eligible = [c for c in oems if c.brand and c.reference_source.strip()]
+    oems = list(part.codes.filter(tipo='oem').prefetch_related('sources').order_by('code', 'brand', 'pk'))
+    eligible = [c for c in oems if c.brand and sourced(c)]
     if selected:
         target = next((c for c in eligible if c.code == selected['code'] and c.brand == selected['brand']), None)
         if not target:
@@ -129,7 +136,7 @@ def prefer_oem(part, *, actor=None, selected=None, confirm_current=False):
     if not target:
         return part
     if target.code == part.sku:
-        if (selected or confirm_current) and not part.is_OEM:
+        if (selected or confirm_current) and part.tipo != 'OEM':
             references.set_main(part, target, actor=actor, reason='OEM confirmado')
         return part
     if rename_conflicts(part, target.code):
@@ -185,23 +192,7 @@ def company_base_code(part, sku, actor=None):
         return None  # another line holds the key (mall.references.validate): grouping review decides
 
 
-def reconcile_identities(actor=None):
-    """Shared by every feed: inexpensive local references before AI matching."""
-    criteria = Q(codes__ref_type='oem', codes__estado__in=references.LIVE)
-    for suffix in company_registry():
-        criteria |= Q(sku__endswith='-' + suffix)
-    # A main already marked OEM is left alone by prefer_oem and never takes a company alterno: skip it up front.
-    ids = storefront_lines().filter(criteria, is_OEM=False).values_list('pk', flat=True).distinct()
-    promoted = 0
-    for pk in list(ids):
-        with transaction.atomic():
-            part = Part.objects.select_for_update().get(pk=pk)
-            if not part.is_OEM and company_reference(part.sku):
-                classify_company_main(part, actor)
-            before = part.sku
-            updated = prefer_oem(part, actor=actor)
-            promoted += int(before != updated.sku)
-    return promoted
+
 
 
 # --- the OEM list (from S4: the library's References) ---------------------------------------------------------------------------------
@@ -237,17 +228,3 @@ def disputed_codes(codes=None):
     if not bad:
         return set()
     return bad - {normalized_reference(code) for code in library.filter(references.compact_q(bad)).exclude(estado='disputa').values_list('code', flat=True)}
-
-
-def exact_items(part_ids=None, codes=None):
-    """Retired with S4 (with mark_exact_matches): a line whose codigo is a library number holds that number as a Reference, and its
-    tipo mirrors its main (S2b). Returns {}."""
-    return {}
-
-
-def mark_exact_matches(actor=None, *, part_ids=None, codes=None, apply=True):
-    """Retired with S4 (plan §3 S4): marking OEM the lines whose codigo is a number of the OEM list is moot once the library's numbers
-    are References and a line's tipo mirrors its main; OEM_EXACT_MARK is ignored. Returns []."""
-    return []
-
-

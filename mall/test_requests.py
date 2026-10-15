@@ -23,7 +23,7 @@ class SupplierRequestWorkflowTests(APITestCase):
         self.client_account = make_client('CLIENTE ORIGINAL', self.buyer)
         self.supplier_a = make_supplier('PROVEEDOR A', self.seller_a)
         self.supplier_b = make_supplier('PROVEEDOR B', self.seller_b, role='supplier_wholesale')
-        self.part = make_line('58411-1R000', name='TAMBOR ORIGINAL', description='DESCRIPCION ORIGINAL')
+        self.part = make_line('58411-1R000', description='TAMBOR ORIGINAL')
         for code in ['58411-1R000-G', '58411-1R000-KSM']:
             make_reference(self.part, code)
         self.item_a = self.item(self.supplier_a, self.seller_a, 'A-001', '58411-1R000-G', 10)
@@ -86,7 +86,7 @@ class SupplierRequestWorkflowTests(APITestCase):
 
     def test_part_states_remain_client_scoped_and_include_merged_sku_snapshots(self):
         self.submit(self.payload([(self.item_a, 3)]))
-        old = Part.objects.create(sku='OLD-SKU', active=False, merged_into=self.part)
+        old = make_line(sku='OLD-SKU', active=False, merged_into=self.part)
         SupplierRequestLine.objects.update(part=old, sku=old.sku)
         other = self.account('OTRO CLIENTE', 'client_business', self.seller_b)
         self.client.force_authenticate(self.seller_b)
@@ -389,7 +389,7 @@ class SupplierRequestWorkflowTests(APITestCase):
             move_variant(self.item_b, values.pop('part', self.part), **values)  # an item with no line has no Reference and waits (S3)
             self.assertEqual(self.submit(data).status_code, 400)
         move_variant(self.item_b, self.part, reported_quantity=20, matching_status='matched')
-        self.part.active = False
+        self.part.estado = 'retirada'
         self.part.save()
         self.assertEqual(self.submit(data).status_code, 400)
         self.assertFalse(ClientRequestSubmission.objects.exists())
@@ -425,7 +425,7 @@ class SupplierRequestWorkflowTests(APITestCase):
     def test_line_snapshots_and_party_names_survive_later_catalog_and_supplier_changes(self):
         response = self.submit(self.payload([(self.item_a, 2)], notes='PENDIENTE'))
         request_id = response.data['requests'][0]['id']
-        self.part.name, self.part.sku, self.part.description = 'NOMBRE NUEVO', 'SKU NUEVO', 'TEXTO NUEVO'
+        self.part.sku, self.part.description = 'SKU NUEVO', 'TEXTO NUEVO'
         self.part.save()
         SupplierItem.objects.filter(pk=self.item_a.pk).update(codigo='CODIGO NUEVO', brand='MARCA NUEVA', description='DESCRIPCION NUEVA')
         Account.objects.filter(pk=self.client_account.pk).update(name='CLIENTE NUEVO')
@@ -435,7 +435,7 @@ class SupplierRequestWorkflowTests(APITestCase):
         self.assertEqual(response.data['client']['name'], 'CLIENTE ORIGINAL')
         line = response.data['lines'][0]
         self.assertEqual((line['sku'], line['name'], line['codigo'], line['brand'], line['description'], line['supplier_invent_id']),
-                         ('58411-1R000', 'TAMBOR ORIGINAL', '58411-1R000-G', 'KSM', 'TAMBOR A-001', 'A-001'))
+                         ('58411-1R000', 'TAMBOR ORIGINAL', '58411-1R000-G', 'KSM', 'TAMBOR A-001', 'A-001'))  # name: the description then (S10)
         self.assertEqual((line['supplier_item_id'], line['part_id']), (str(self.item_a.pk), str(self.part.pk)))
         self.assertIsNone(line['stock'])
 

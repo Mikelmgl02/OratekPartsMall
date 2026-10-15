@@ -2,13 +2,12 @@
 
 Until S6 the matching worker turned supplier items no SKU took into one SkuProposal per product (the same compact code and brand,
 whatever the supplier), and an administrator approved, linked or rejected it. From S6 a new product is a line in preparación
-(mall.new_products, which replaced this module's write side: place, publish, reject, link, edit, ai_fill), and
-mall.refactor.s6_new_products turned the pending proposals into those lines with their ids kept. The SkuProposal rows are history,
-never written again (S10 archives them).
+(mall.new_products, which replaced this module's write side: place, publish, reject, link, edit, ai_fill), and the S6 stage CLI turned
+the pending proposals into those lines with their ids kept. S10 archived the SkuProposal rows (archive schema).
 
-What stays here, read by mall.new_products, mall.sku_review, the matching engine and the stage CLIs: vehicle_makes() (supplier brands
-that are a vehicle make, each with the manufacturer its OEM numbers are filed under), the placeholder brands, library_oem() (the OEM
-number the library files an aftermarket code under), merge_references() and printed_forms() (a product's codes from its items),
+What stays here, read by mall.new_products, mall.sku_review and the matching engine: vehicle_makes() (supplier brands
+that are a vehicle make, each with the manufacturer its OEM numbers are filed under), the placeholder brands, merge_references() and
+printed_forms() (a product's codes from its items),
 catalog_owners() (the catalog SKUs a code already is, for the duplicate checks) and the two refusals the views answer. The matching
 worker's proposals stage is gone: its backlog stage (mall.reference_matching.backlog) places the items no line takes."""
 from collections import Counter
@@ -23,6 +22,9 @@ from .models import PartCode
 from .part_references import normalize_references
 
 MAX_REFERENCES = 100
+# Productos nuevos' states, as the proposals had them before S6 (the JSON keeps them: mall.sku_proposal_views maps a line's estado).
+STATUSES = [('pending', 'Por revisar'), ('approved', 'Aprobado'), ('linked', 'Vinculado a un SKU existente'), ('rejected', 'Rechazado'),
+            ('resolved', 'Resuelto por el emparejamiento')]
 PROPOSAL_LOCK = 724631112  # pg advisory lock class of an approval's codes (matching pass 724631109 ... suffix table 724631111)
 PLACEHOLDER_BRANDS = {'GENERICO', 'GENERICA', 'GENERIC', 'S/M', 'SM', 'S/MARCA', 'SIN MARCA', 'N/A', 'NA', 'VARIOS', 'VARIAS', 'OTRO',
                       'OTROS', 'OTRA', 'OTRAS', 'NINGUNA', 'ALTERNO', 'ALTERNA', 'IMPORTADO', 'CHINA', 'TAIWAN'}
@@ -72,17 +74,6 @@ def vehicle_makes():
         if make:
             makes.setdefault(make, make)
     return makes
-
-
-def library_oem(code, brand):
-    """(OEM number, manufacturer, citation) the OEM library files this aftermarket code under, when it names exactly one."""
-    from .oem_reference_models import OEMCrossReference
-    rows = list(OEMCrossReference.objects.filter(number=normalized_reference(code), brand__iexact=brand, reference__isnull=False)
-                .select_related('reference')[:2])
-    if len(rows) != 1:
-        return '', '', ''
-    reference, citations = rows[0].reference, rows[0].citations or []  # the number's Reference (S4): its code is the first printed form
-    return reference.code[:120], reference.brand[:120], str(citations[0])[:300] if citations else ''
 
 
 def merge_references(declared):

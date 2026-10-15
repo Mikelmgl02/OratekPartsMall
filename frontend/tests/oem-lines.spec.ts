@@ -108,11 +108,11 @@ test('the line panel saves General with its version, recovers from a conflict an
 
   // Someone else saved the line meanwhile: the save is refused and the panel shows the line as it is now.
   const current = mock.lines.get(pump.id)!;
-  Object.assign(current, { version: 7, name: 'BOMBA DE AGUA' });
+  Object.assign(current, { version: 7, description: 'BOMBA DE AGUA' });
   await panel.getByLabel('Aplicaciones', { exact: true }).fill('toyota hilux 1990-1997');
   await panel.getByRole('button', { name: 'Guardar línea OEM' }).click();
   await expect(panel.getByRole('alert')).toContainText('La línea cambió mientras la editabas');
-  await expect(panel.getByLabel('Nombre del repuesto (opcional)')).toHaveValue('BOMBA DE AGUA');
+  await expect(panel.getByLabel('Descripción', { exact: true })).toHaveValue('BOMBA DE AGUA');
 
   await panel.getByRole('button', { name: 'Retirar', exact: true }).click();
   await expect(panel.getByRole('region', { name: 'Estado de la línea OEM' })).toContainText('RETIRADA');

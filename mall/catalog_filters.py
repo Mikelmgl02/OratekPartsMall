@@ -61,9 +61,9 @@ def with_stock_units(query, own=None):
     return query.annotate(_stock_units=Subquery(totals, output_field=IntegerField()))
 
 
-# What a line is filtered and counted by: its subgrupo's grupo and name (the FK), else its text (a partial classification, until S10).
-TAXONOMY = {'category': lambda: Coalesce(F('part_type__grupo__nombre'), F('category')),
-            'subcategory': lambda: Coalesce(F('part_type__name'), F('subcategory'))}
+# What a line is filtered and counted by: its subgrupo's grupo and name (the FK: its only classification from S10).
+TAXONOMY = {'category': lambda: Coalesce(F('part_type__grupo__nombre'), Value('')),
+            'subcategory': lambda: Coalesce(F('part_type__name'), Value(''))}
 
 
 def apply_filters(query, values, omit=None):

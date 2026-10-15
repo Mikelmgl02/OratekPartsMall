@@ -3,8 +3,10 @@
 The factories speak the target's terms (supplier, line, reference, variant, library number) and build today's rows through the paths
 the app itself uses. Each stage of the refactor changes these functions, not the hundreds of tests built on them:
 
-- make_line: an OEM line, today a catalog Part.
-- make_reference: one of the line's codes, a Reference (PartCode until S2a); tipo oem, aftermarket, interno or otro, ref_type in step.
+- make_line: an OEM line, today a catalog Part. It still takes the legacy keywords (line_fields, S10): name is the description when
+  none is given, category and subcategory the subgrupo they name, active=False a retirada line, is_OEM=True a line of tipo OEM.
+- make_reference: one of the line's codes, a Reference (PartCode until S2a); tipo oem, aftermarket, interno or otro; its source is cited.
+- make_code: Reference.objects.create in the legacy terms too (ref_type names the tipo, reference_source a cited source).
 - make_variant: a supplier's item, today a SupplierItem loaded through ingest_inventory like an upload.
 - make_library_number: a number of the OEM library: from S4 a Reference (tipo oem, its manufacturer as brand) on the line that carries
   it or on a line of its own in referencia, with one source (mall.references.add_library_number).
@@ -27,7 +29,7 @@ from .models import Account, Membership, Part, Reference, Role, User
 from .services import ingest_inventory
 
 PASSWORD = 'Example938!'
-# The target's Reference tipo -> the legacy ref_type Reference.save keeps in step until S10.
+# The target's Reference tipo -> the legacy ref_type (derived from S10).
 REF_TYPES = {'oem': 'oem', 'aftermarket': 'company', 'interno': 'unknown', 'otro': 'unknown'}
 
 
@@ -53,20 +55,58 @@ def make_client(name, *members, role='client_business'):
     return make_account(name, role, *members)
 
 
+def line_fields(fields):
+    """A line's fields for the keywords a test gives in the legacy terms (S10 took the columns away): name is the description when
+    none is given, category and subcategory the subgrupo they name (both, or none), merged_into a unificada line and active=False a
+    retirada one (unless an estado is given), is_OEM=True a line of tipo OEM (its main follows). legacy_brand is dropped."""
+    from .technical_data import part_type_for
+    fields = dict(fields)
+    name = fields.pop('name', None)
+    if name and not fields.get('description'):
+        fields['description'] = name
+    category, subcategory = fields.pop('category', ''), fields.pop('subcategory', '')
+    if category and subcategory and 'part_type' not in fields and 'part_type_id' not in fields:
+        fields['part_type'] = part_type_for(category, subcategory)
+    if (fields.get('merged_into') or fields.get('merged_into_id')) and 'estado' not in fields:
+        fields['estado'] = 'unificada'
+    if fields.pop('active', None) is False and 'estado' not in fields:
+        fields['estado'] = 'retirada'
+    if fields.pop('is_OEM', False) and 'tipo' not in fields:
+        fields['tipo'] = 'OEM'
+    fields.pop('legacy_brand', None)
+    return fields
+
+
 def make_line(sku, **fields):
-    """An OEM line under its codigo (today Part.sku); other Part fields pass through."""
-    return Part.objects.create(sku=sku, **fields)
+    """An OEM line under its codigo (today Part.sku); other Part fields pass through, the legacy ones translated (line_fields)."""
+    return Part.objects.create(sku=sku, **line_fields(fields))
 
 
 def make_catalog(rows):
-    """{sku: line} for (sku, description) rows, each named after its SKU (the OEM finder's catalogs)."""
-    return {sku: make_line(sku, name=sku, description=description) for sku, description in rows}
+    """{sku: line} for (sku, description) rows (the OEM finder's catalogs)."""
+    return {sku: make_line(sku, description=description) for sku, description in rows}
+
+
+def make_code(**fields):
+    """Reference.objects.create, written as it is, for keywords in the legacy terms too: ref_type (or kind) names the tipo when none is given,
+    reference_source is cited as the Reference's source (mall.references.cite; S10 took both columns away)."""
+    source = fields.pop('reference_source', '')
+    ref_type = fields.pop('ref_type', None)
+    kind = fields.pop('kind', None)  # the JSON's older name: alias, oem, manufacturer
+    if ref_type is None and kind is not None:
+        ref_type = {'alias': 'unknown', 'manufacturer': 'company'}.get(kind, kind)
+    if ref_type is not None and 'tipo' not in fields:
+        fields['tipo'] = references.tipo_of(ref_type)
+    ref = Reference.objects.create(**fields)
+    if source:
+        references.cite(ref, source)
+    return ref
 
 
 def make_reference(line, code, *, brand='', tipo='otro', source='', **fields):
     """One of the line's codes, written as it is (no key check: a test may need a clash). brand '' means any brand; source is where
-    the equivalence came from (reference_source); estado, supplier... pass through."""
-    return Reference.objects.create(part=line, code=code, brand=brand, tipo=tipo, ref_type=REF_TYPES[tipo], reference_source=source, **fields)
+    the equivalence came from (cited: its reference_source); estado, supplier... pass through."""
+    return make_code(part=line, code=code, brand=brand, tipo=tipo, reference_source=source, **fields)
 
 
 def make_variant(supplier, invent_id, code, quantity=0, *, actor=None, brand='', description='', line=None, **data):
@@ -200,3 +240,15 @@ def move_variant(item, line, **values):
     row = SupplierItem.objects.get(pk=pk)
     ref, _ = variants.reference_for(line, values.get('codigo', row.codigo), values.get('brand', row.brand), row.supplier_id, create=True, item=row)
     return SupplierItem.objects.filter(pk=pk).update(part=line, reference=ref, **values)
+
+
+def make_legacy_case(item, status='unmatched', *, candidates=(), method='', reason='', key=None):
+    """A supplier case from before S6 as 0086 (S10) left it: a line case of the item, keeping what it was in evidence['s10']
+    (unmatched became review, resolved applied). candidates: the rows of the engine's hints."""
+    from .matching_engine import digest, item_row
+    from .matching_models import MatchingCase
+    converted = {'unmatched': 'review', 'resolved': 'applied'}.get(status, status)
+    sources = [item_row(item)]
+    return MatchingCase.objects.create(key=key or f'supplier:{item.pk}', kind='line', item=item, sources=sources, candidates=list(candidates),
+                                       method=method, reason=reason, status=converted, fingerprint=digest(['legacy', sources, method]),
+                                       evidence={'s10': {'kind': 'supplier', 'status': status}})

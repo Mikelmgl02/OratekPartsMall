@@ -9,6 +9,7 @@ from django.test.utils import CaptureQueriesContext
 from django.utils.dateparse import parse_datetime
 from rest_framework.test import APITestCase
 from .models import Account, Membership, Part, PartCode, Role, SupplierItem, User
+from .test_factories import make_line
 
 
 class CatalogStockThresholdSettingsTests(SimpleTestCase):
@@ -67,7 +68,7 @@ class CatalogAvailabilityTests(APITestCase):
             self.assertNotIn('available_quantity', row)
 
     def test_alternate_search_multiple_items_and_roles_do_not_multiply_stock(self):
-        part = Part.objects.create(sku='58411-1R000', description='DISCO VENTILADO', category='FRENOS', subcategory='DISCOS')
+        part = make_line(sku='58411-1R000', description='DISCO VENTILADO', category='FRENOS', subcategory='DISCOS')
         PartCode.objects.create(part=part, code='ALT-ONE')
         PartCode.objects.create(part=part, code='ALT-TWO')
         self.item(part, 4, 2)

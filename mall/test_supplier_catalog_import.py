@@ -6,15 +6,32 @@ import tempfile
 from django.test import TestCase
 
 from . import supplier_catalog_import as sci
-from .catalog_identity import reconcile_identities
 from .models import Part, PartCode
 from .oem_links import part_equivalents
 from . import references
 from .models import Reference, ReferenceSource
 from .oem_reference import LibraryNumber
-from .oem_reference_models import OEMCrossReference, PartOEMLink
 from .technical_models import PartSpecification, PartType, TechnicalField
 from .test_oem_finder import Fresh
+from .test_factories import make_code, make_line
+
+
+def filed(result, number=None):
+    """The aftermarket codes an import filed under its numbers, sorted: (number clave, brand, code, citations). From S10 they are the
+    rows it read, in memory (result['rows']), never stored."""
+    claves = dict(Reference.all_objects.filter(pk__in={row[1] for row in result['rows']}).values_list('pk', 'clave'))
+    rows = sorted((claves[row[1]], row[2], row[3], tuple(row[5])) for row in result['rows'])
+    return [row for row in rows if number is None or row[0] == number]
+
+
+def filed_codes(result, number, brand=None):
+    return sorted((row[1], row[2]) if brand is None else row[2] for row in filed(result, number) if brand is None or row[1] == brand)
+
+
+def linked(result, part):
+    """The numbers (claves) the import matched a SKU's catalog item to (result['links'], in memory from S10)."""
+    claves = dict(Reference.all_objects.filter(pk__in={ref for _, ref in result['links']}).values_list('pk', 'clave'))
+    return sorted({claves[ref] for pk, ref in result['links'] if str(pk) == str(part.pk)})
 
 
 def reached(part):
@@ -70,7 +87,7 @@ class SupplierCatalogImportTests(Fresh, TestCase):
     def setUp(self):
         super().setUp()
         self.pump = Part.objects.create(sku='16100-39466-G', description='BOMBA AGUA TOY HIACE 2KD')
-        self.joint = Part.objects.create(sku='43460-69115', description='PUNTA FLECHA TOY LAND CRUISER 200', is_OEM=True)
+        self.joint = make_line(sku='43460-69115', description='PUNTA FLECHA TOY LAND CRUISER 200', is_OEM=True)
         self.filter = Part.objects.create(sku='16100-80007', description='FILTRO ACEITE TOY HIACE')
         self.owner = Part.objects.create(sku='AW-OWNED-SKU', description='BOMBA AGUA NIS URVAN')
         PartCode.objects.create(part=self.owner, code='AW9999', brand='AIRTEX')
@@ -101,19 +118,14 @@ class SupplierCatalogImportTests(Fresh, TestCase):
 
     def state(self):
         return (PartCode.objects.count(), library().count(), ReferenceSource.objects.count(), PartSpecification.objects.count(),
-                PartType.objects.count(), TechnicalField.objects.count(), list(Part.objects.order_by('sku').values_list('sku', 'is_OEM', 'part_type_id')),
-                sorted(OEMCrossReference.objects.values_list('reference__clave', 'brand', 'code', 'citations')),
-                sorted(PartOEMLink.objects.values_list('part__sku', 'reference__clave', 'source', 'citations')))
-
-    def links(self, part, source):
-        return sorted(PartOEMLink.objects.filter(part=part, source=source).values_list('reference__clave', flat=True))
+                PartType.objects.count(), TechnicalField.objects.count(), list(Part.objects.order_by('sku').values_list('sku', 'is_OEM', 'part_type_id')))
 
     def test_dry_run_writes_nothing_and_reports_the_plan(self):
         before = self.state()
         result = self.run_import(apply=False)
         self.assertEqual(self.state(), before)
         gmb, asva = (c['counts'] for c in result['catalogs'])
-        self.assertEqual((gmb['linked_parts'], gmb['oem_numbers'], gmb['codes_carried_by_numbers'], gmb['cross_reference_new']), (1, 3, 1, 7))
+        self.assertEqual((gmb['linked_parts'], gmb['oem_numbers'], gmb['codes_carried_by_numbers'], gmb['cross_reference_rows']), (1, 3, 1, 7))
         self.assertEqual((gmb.get('brand_code_new', 0), gmb.get('cross_ref_new', 0)), (0, 0))  # the numbers carry the codes: no copies
         self.assertEqual(asva['linked_parts'], 1)
         self.assertEqual(asva['subgroups_assigned'], 1)
@@ -132,16 +144,17 @@ class SupplierCatalogImportTests(Fresh, TestCase):
         self.assertEqual(reached(self.pump), set())  # S9: a catalog link no longer reaches the numbers; 3f opens a merge case
         case = approve_link_case(self.pump, ref.ref.part, library().get(brand='TOYOTA', clave='1610039465').part)
         self.assertEqual(case.evidence['regla'], '3f')
-        self.assertEqual(reached(self.pump), {('GMB', 'GWT-142A'), ('AISIN', 'WPT-142'), ('AIRTEX', 'AW9999')})
+        # S10: what the line reaches is its References: the catalog's own code; a competitor's only from a PDF-checked catalog (OD17).
+        self.assertEqual(reached(self.pump), {('GMB', 'GWT-142A')})
         # 3e on the merged line: the catalog's own code is declarado; a competitor's needs a catalog checked against its PDF (OD17), and
         # AW9999 is another SKU's alterno (rule 8).
         self.assertEqual(set(self.pump.codes.filter(tipo='aftermarket').values_list('brand', 'code', 'estado')), {('GMB', 'GWT-142A', 'declarado')})
         self.assertEqual(PartCode.objects.get(code='AW9999').part, self.owner)  # another SKU's alterno is never moved
-        self.assertFalse(self.filter.codes.filter(is_main=False, ref_type='company').exists())  # the description is an oil filter, not the catalog's water pump
+        self.assertFalse(self.filter.codes.filter(is_main=False, tipo='aftermarket').exists())  # the description is an oil filter, not the catalog's water pump
         self.assertEqual(number('TOYOTA', '1610080007').ref.part_id, self.filter.pk)  # S4: its codigo carries the number, which is library data
         # The joint carries its own number (S4) and, already marked OEM, takes the sister number as an OEM alterno.
-        self.assertEqual(set(self.joint.codes.filter(is_main=False).values_list('brand', 'code', 'ref_type')),
-                         {('TOYOTA', '43460-69115', 'oem'), ('TOYOTA', '43460-69116', 'oem'), ('ASVA', 'TY-LC200', 'company')})  # S9's 3e
+        self.assertEqual(set(self.joint.codes.filter(is_main=False).values_list('brand', 'code', 'tipo')),
+                         {('TOYOTA', '43460-69115', 'oem'), ('TOYOTA', '43460-69116', 'oem'), ('ASVA', 'TY-LC200', 'aftermarket')})  # S9's 3e
         self.assertIn(('ASVA', 'TY-LC200'), reached(self.joint))
         self.joint.refresh_from_db()
         self.assertEqual((self.joint.category, self.joint.subcategory), ('TRANSMISIÓN', 'JUNTAS HOMOCINÉTICAS'))
@@ -154,19 +167,13 @@ class SupplierCatalogImportTests(Fresh, TestCase):
 
     def test_apply_files_aftermarket_codes_under_every_number_and_links_the_skus_to_them(self):
         result = self.run_import(apply=True)
-        for number in ('1610039466', '1610039465'):  # the second is carried by no SKU: its codes are kept all the same
-            ref = library().get(brand='TOYOTA', clave=number)
-            self.assertEqual(sorted(ref.cross_references.values_list('brand', 'code')), [('AIRTEX', 'AW9999'), ('AISIN', 'WPT-142'), ('GMB', 'GWT-142A')])
-        aisin = OEMCrossReference.objects.get(reference__clave='1610039466', brand='AISIN')
-        self.assertEqual(aisin.citations, ['CATÁLOGO DE PRUEBA (2016) · pág. 7'])
-        self.assertEqual(self.links(self.pump, 'catalog'), ['1610039465', '1610039466'])
-        self.assertEqual(PartOEMLink.objects.get(part=self.pump, reference__clave='1610039466', source='catalog').citations,
-                         ['CATÁLOGO DE PRUEBA (2016) · pág. 5 · GWT-142A'])
-        self.assertEqual(self.links(self.pump, 'sku_name'), [])  # S4 retires the name links
-        self.assertFalse(PartOEMLink.objects.filter(part=self.owner).exists())  # owning AW9999 as an alterno ties no SKU to the numbers
+        for number in ('1610039466', '1610039465'):  # the second is carried by no SKU: its codes are read all the same
+            self.assertEqual(filed_codes(result, number), [('AIRTEX', 'AW9999'), ('AISIN', 'WPT-142'), ('GMB', 'GWT-142A')])
+        self.assertEqual([row[3] for row in filed(result, '1610039466') if row[1] == 'AISIN'], [('CATÁLOGO DE PRUEBA (2016) · pág. 7',)])
+        self.assertEqual(linked(result, self.pump), ['1610039465', '1610039466'])
+        self.assertEqual(linked(result, self.owner), [])  # owning AW9999 as an alterno ties no SKU to the numbers
         gmb = result['catalogs'][0]['counts']
-        self.assertEqual((gmb['cross_reference_new'], gmb['catalog_link_new']), (7, 2))
-        self.assertEqual((result['name_links']['new'], result['name_links']['retired']), (0, True))
+        self.assertEqual((gmb['cross_reference_rows'], gmb['catalog_links']), (7, 2))
 
     def test_duplicate_skus_of_one_item_get_no_alternos_but_both_reach_its_numbers(self):
         twin = Part.objects.create(sku='16100-39465-RAZ', description='BOMBA AGUA TOY HIACE')
@@ -174,22 +181,18 @@ class SupplierCatalogImportTests(Fresh, TestCase):
         self.assertEqual(result['catalogs'][0]['counts']['duplicate_part_items'], 1)
         self.assertFalse(PartCode.objects.filter(part__in=[self.pump, twin], brand='AISIN').exists())  # a code has one owner
         for part in (self.pump, twin):
-            self.assertEqual(self.links(part, 'catalog'), ['1610039465', '1610039466'])
+            self.assertEqual(linked(result, part), ['1610039465', '1610039466'])
 
-    def test_no_oem_alterno_on_a_sku_not_marked_oem_so_reconciliation_renames_nothing(self):
+    def test_no_oem_alterno_on_a_sku_not_marked_oem(self):
         self.run_import(apply=True)
-        self.assertFalse(PartCode.objects.filter(part=self.pump, ref_type='oem').exists())
-        skus = list(Part.objects.order_by('pk').values_list('sku', flat=True))
-        reconcile_identities()
-        self.assertEqual(list(Part.objects.order_by('pk').values_list('sku', flat=True)), skus)
+        self.assertFalse(PartCode.objects.filter(part=self.pump, tipo='oem').exists())
 
     def test_reapplying_changes_nothing(self):
         self.run_import(apply=True)
         once = self.state()
         result = self.run_import(apply=True)
         self.assertEqual(self.state(), once)
-        gmb = result['catalogs'][0]['counts']
-        self.assertEqual((gmb.get('cross_reference_new', 0), gmb.get('catalog_link_new', 0), gmb['codes_carried_by_numbers']), (0, 0, 1))
+        self.assertEqual(result['catalogs'][0]['counts']['codes_carried_by_numbers'], 1)
 
     def test_a_dry_run_after_an_apply_reports_stored_measurements_as_present(self):
         self.run_import(apply=True)
@@ -210,7 +213,7 @@ class SupplierCatalogImportTests(Fresh, TestCase):
         retired = Part.objects.create(sku='16100-39466-G-ANULADO', description='BOMBA AGUA TOY HIACE 2KD')
         result = self.run_import(apply=True)
         self.assertEqual(result['catalogs'][0]['counts']['retired_skus_skipped'], 1)
-        self.assertFalse(retired.codes.filter(is_main=False).exists() or PartOEMLink.objects.filter(part=retired, source='catalog').exists())
+        self.assertFalse(retired.codes.filter(is_main=False).exists() or linked(result, retired))
         case = approve_link_case(self.pump, library().get(brand='TOYOTA', clave='1610039466').part)
         self.assertNotIn(retired.pk, set(case.lines.values_list('pk', flat=True)))
         self.assertIn(('GMB', 'GWT-142A'), reached(self.pump))
@@ -222,10 +225,9 @@ class SupplierCatalogImportTests(Fresh, TestCase):
         self.assertFalse(self.pump.codes.filter(brand='GMB').exclude(detail__has_key='s9').exists())  # no copy (S9's 3e: the number's own)
 
     def test_a_sku_classified_elsewhere_keeps_its_subgroup_and_gets_no_measurements(self):
-        self.joint.category, self.joint.subcategory = 'TRANSMISIÓN', 'SEMIEJES'
-        from .technical_data import bind_part_types
-        bind_part_types([self.joint])
-        self.joint.save()
+        from .lines import set_subgrupo
+        from .technical_data import part_type_for
+        self.joint.save(update_fields=set_subgrupo(self.joint, part_type_for('TRANSMISIÓN', 'SEMIEJES')))
         result = self.run_import(apply=True)
         self.joint.refresh_from_db()
         self.assertEqual(self.joint.subcategory, 'SEMIEJES')
@@ -246,13 +248,12 @@ class SharedNumberTests(Fresh, TestCase):
             result = sci.run([handle.name], apply=True, stdout=io.StringIO())
         finally:
             os.unlink(handle.name)
-        codes = lambda number: sorted(OEMCrossReference.objects.filter(reference__clave=number).values_list('code', flat=True))
+        codes = lambda number: sorted(row[2] for row in filed(result, number))
         self.assertEqual(codes('1610079445'), [])  # GMB prints it for two pumps: it cannot say which one replaces it
         self.assertEqual(codes('1610069185'), ['GWT-71A', 'WPT-071'])
         self.assertEqual(codes('1610009010'), ['GWT-116A', 'GWT-116AH', 'WPT-116'])  # variants of one pump count as one part
-        self.assertFalse(PartOEMLink.objects.filter(part=pump, source='catalog').exists())  # matched only through the shared number
+        self.assertEqual(linked(result, pump), [])  # matched only through the shared number
         self.assertFalse(pump.codes.filter(is_main=False).exists())  # nor copies of either pump's codes
-        self.assertEqual(list(PartOEMLink.objects.filter(part=pump).values_list('reference__clave', 'source')), [])  # no name links from S4
         counts = result['catalogs'][0]['counts']
         self.assertEqual((counts['shared_numbers'], counts['matches_through_shared_numbers']), (1, 2))
         self.assertEqual(result['catalogs'][0]['samples']['shared_number_matches'][0]['numbers'], ['1610079445'])
@@ -261,7 +262,7 @@ class SharedNumberTests(Fresh, TestCase):
 class NumberlessItemTests(Fresh, TestCase):
     def test_codes_no_number_can_carry_still_reach_the_sku_as_alternos(self):
         pump = Part.objects.create(sku='BOMBA-X', description='BOMBA AGUA TOY HIACE 3L')
-        PartCode.objects.create(part=pump, brand='GMB', code='GWX-999', ref_type='company')
+        make_code(part=pump, brand='GMB', code='GWX-999', ref_type='company')
         data = extract([item('GWX-999', 'water_pump', cross_refs=[('AISIN', 'WPX-999')], apps=[('TOYOTA', 'HIACE')])])
         with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False, encoding='utf-8') as handle:
             json.dump(data, handle, ensure_ascii=False)
@@ -270,7 +271,7 @@ class NumberlessItemTests(Fresh, TestCase):
         finally:
             os.unlink(handle.name)
         self.assertEqual(result['catalogs'][0]['counts']['cross_ref_new'], 1)
-        self.assertTrue(pump.codes.filter(brand='AISIN', code='WPX-999', ref_type='company').exists())  # the catalog prints no OEM number
+        self.assertTrue(pump.codes.filter(brand='AISIN', code='WPX-999', tipo='aftermarket').exists())  # the catalog prints no OEM number
 
 
 class SupplierCatalogImportGuardTests(Fresh, TestCase):
@@ -300,8 +301,8 @@ class SupplierCatalogImportGuardTests(Fresh, TestCase):
         ref = number('HYUNDAI', '495012S300')
         self.assertEqual(ref.part_type, 'SEMIEJES')  # Hyundai 49501 is a drive-shaft assembly number, listed for the joint
         self.assertTrue(source(ref).detail['assembly_number_listed_for_component'])
-        self.assertFalse(ref.ref.cross_references.exists())  # the joint's codes do not replace the whole drive shaft
-        self.assertFalse(PartOEMLink.objects.filter(part=self.joint, source='catalog').exists())
+        self.assertEqual(filed(result, '495012S300'), [])  # the joint's codes do not replace the whole drive shaft
+        self.assertEqual(linked(result, self.joint), [])
 
 
 class OEMOnlyItemTests(Fresh, TestCase):
@@ -320,12 +321,12 @@ class OEMOnlyItemTests(Fresh, TestCase):
         ref = number('TOYOTA', '4346060010')
         self.assertEqual(source(ref).detail['brand_codes'], [])
         self.assertEqual(ref.ref.part_id, part.pk)  # S4: its codigo carries the number, library data beside its main
-        self.assertFalse(part.codes.filter(is_main=False, ref_type='company').exists())
+        self.assertFalse(part.codes.filter(is_main=False, tipo='aftermarket').exists())
 
 
 class BrakeDiscSheetTests(Fresh, TestCase):
     def test_a_disc_hat_diameter_is_kept_and_the_brand_short_number_is_not_a_measurement(self):
-        disc = Part.objects.create(sku='43512-60150', description='DISCO FRENO DEL TOY LAND CRUISER', is_OEM=True)
+        disc = make_line(sku='43512-60150', description='DISCO FRENO DEL TOY LAND CRUISER', is_OEM=True)
         data = extract([item('24.0132-0123.1', 'brake_disc', oem=[('43512-60150', 'TOYOTA')], name_es='DISCO DE FRENO',
                              specs=[('inner_diameter', 'DIÁMETRO INTERIOR', '210', 'mm'), ('short_number', 'NÚMERO CORTO', '410123', ''),
                                     ('diameter', 'DIÁMETRO', '354', 'mm')])], key='ate', title='ATE', brand='ATE', product_line='brake_disc')
@@ -368,7 +369,7 @@ class MergePassAfterImportTests(Fresh, TestCase):
 
 class HubAndTensionerTests(Fresh, TestCase):
     def test_a_sku_takes_the_compatible_subgroup_its_own_description_names(self):
-        hub = Part.objects.create(sku='44300-SDA-A51', description='HUB DEL HON ACCORD 03-07', is_OEM=True)
+        hub = make_line(sku='44300-SDA-A51', description='HUB DEL HON ACCORD 03-07', is_OEM=True)
         bearing = Part.objects.create(sku='13505-54020-KOYO', description='BALINERA TENSOR TOY 2L 3L')
         locking = Part.objects.create(sku='43530-60010', description='HUB LIBRE TOY LAND CRUISER')
         data = extract([item('HNWH-CM5F', 'hub_bearing', oem=[('44300-SDA-A51', 'HONDA')], name_es='RODAMIENTO DE RUEDA',
@@ -389,7 +390,7 @@ class HubAndTensionerTests(Fresh, TestCase):
         self.assertIn(('ASVA', 'TYBP-001'), reached(bearing))
         # A free-wheel locking hub is not a wheel hub: the import copies nothing onto it (the code it reaches through the number its
         # codigo carries is that number's, which S9's 3e makes a Reference of the line the number sits on).
-        self.assertFalse(locking.codes.filter(is_main=False, ref_type='company').exclude(detail__has_key='s9').exists())
+        self.assertFalse(locking.codes.filter(is_main=False, tipo='aftermarket').exclude(detail__has_key='s9').exists())
 
 
 class MakeGroupTests(Fresh, TestCase):
@@ -403,7 +404,7 @@ class MakeGroupTests(Fresh, TestCase):
         self.assertEqual({group(m) for m in ['PEUGEOT', 'VOLVO', 'LAND ROVER', 'OTHER']}, {''})  # no make evidence
 
     def test_a_volkswagen_disc_links_to_a_vw_sku(self):
-        disc = Part.objects.create(sku='1K0615301AA', description='DISCO FRENO DEL VW GOLF JETTA', is_OEM=True)
+        disc = make_line(sku='1K0615301AA', description='DISCO FRENO DEL VW GOLF JETTA', is_OEM=True)
         data = extract([item('24.0125-0111.1', 'brake_disc', oem=[('1K0615301AA', 'VOLKSWAGEN'), ('1K0615301AA', 'AUDI')], name_es='DISCO DE FRENO',
                              apps=[('VOLKSWAGEN', 'GOLF V'), ('SEAT', 'LEON')])], key='ate', title='ATE', brand='ATE', product_line='brake_disc')
         with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False, encoding='utf-8') as handle:
@@ -464,8 +465,8 @@ class CVAssemblyCheckTests(Fresh, TestCase):
     def test_mazda_25_40_50_60_numbers_are_the_joint_and_shaft_skus_finder_and_partner_classes_still_make_shafts(self):
         Part.objects.create(sku='28321-FG010', description='EJE COMPLETO SUB FORESTER 08-12 RH')  # a SKU sold as the whole shaft
         shaft = Part.objects.create(sku='SEM-MAZ-01', description='SEMIEJE MAZ 3 05 RH')
-        PartCode.objects.create(part=shaft, brand='MAZDA', code='BP4K-25-50XA', ref_type='oem')
-        run_extract(extract([
+        make_code(part=shaft, brand='MAZDA', code='BP4K-25-50XA', ref_type='oem')
+        result = run_extract(extract([
             # The owner, 2026-10-14: 25-40X/25-50X/25-60X name the joint, X variants included, under Ford, Kia (Mazda-era too) or Mazda.
             self.joint('MZ-056A44', [('G565-25-500B', 'FORD'), ('G572-22-510', 'FORD')]),
             self.joint('MZ-11', [('0K2N1-25-600', 'KIA'), ('B002-25-400B', 'KIA'), ('KK370-22-510', 'KIA')]),
@@ -479,32 +480,29 @@ class CVAssemblyCheckTests(Fresh, TestCase):
         for manufacturer, why, number in shafts:  # the SKU's OEM alterno already filed BP4K-25-50XA with the SKU's text
             cited = ReferenceSource.objects.get(reference__brand=manufacturer, reference__clave=number, kind='catalogo')
             self.assertTrue(cited.detail.get('assembly_number_listed_for_component'), (why, number))
-            self.assertFalse(OEMCrossReference.objects.filter(reference__clave=number).exists(), number)
+            self.assertEqual(filed(result, number), [], number)
         joints = [('FORD', 'G56525500B'), ('FORD', 'G57222510'), ('KIA', '0K2N125600'), ('KIA', 'B00225400B'), ('KIA', 'KK37022510'),
                   ('MAZDA', 'GA2A2560X'), ('MAZDA', 'PP042550XA'), ('SUBARU', '28391FG010')]
         for manufacturer, number in joints:
             self.assertFalse(self.assembly(manufacturer, number), number)  # joint numbers keep the joint's codes
-            self.assertTrue(OEMCrossReference.objects.filter(reference__clave=number, brand='ASVA').exists(), number)
+            self.assertTrue(filed_codes(result, number, 'ASVA'), number)
             ref = LibraryNumber(library().get(brand=manufacturer, clave=number))
             self.assertEqual((ref.description, ref.part_type), ('JUNTA HOMOCINÉTICA EXTERIOR', 'JUNTAS HOMOCINÉTICAS'), number)
 
     def test_a_shaft_sku_makes_its_numbers_shafts_by_its_oem_alterno_its_link_or_its_subgrupo(self):
         alterno = Part.objects.create(sku='SEM-MIT-01', description='SEMIEJE MIT LANCER 05 LH')
-        PartCode.objects.create(part=alterno, brand='MITSUBISHI', code='MR453384', ref_type='oem')
-        linked = Part.objects.create(sku='SEM-MIT-02', description='EJE COMPLETO MIT LANCER 05 RH')
-        ref = references.add_library_number('MITSUBISHI', 'MR453383', source_kind='aftermarket_catalog', citation='OTRO CATÁLOGO')[0]
-        PartOEMLink.objects.create(part=linked, reference=ref, source='catalog', citations=['OTRO CATÁLOGO'])
-        Part.objects.create(sku='MR498974', description='FLECHA COMPLETA MIT MONTERO', category='TRANSMISIÓN', subcategory='SEMIEJES')
+        make_code(part=alterno, brand='MITSUBISHI', code='MR453384', ref_type='oem')
+        make_line(sku='MR498974', description='FLECHA COMPLETA MIT MONTERO', category='TRANSMISIÓN', subcategory='SEMIEJES')
         boot = Part.objects.create(sku='BOT-MIT-01', description='BOTA SEMIEJE MIT LANCER')  # a part of the shaft, not the shaft
-        PartCode.objects.create(part=boot, brand='MITSUBISHI', code='MR580474', ref_type='oem')
-        self.assertTrue({'MR453384', 'MR453383', 'MR498974'} <= sci.shaft_numbers())
+        make_code(part=boot, brand='MITSUBISHI', code='MR580474', ref_type='oem')
+        self.assertTrue({'MR453384', 'MR498974'} <= sci.shaft_numbers())  # (a SKU's catalog link no longer says it: S10 stores none)
         self.assertNotIn('MR580474', sci.shaft_numbers())
-        run_extract(extract([self.joint('MT-99A50', [('MR453384', 'MITSUBISHI'), ('MR453383', 'MITSUBISHI'), ('MR498974', 'MITSUBISHI'),
+        result = run_extract(extract([self.joint('MT-99A50', [('MR453384', 'MITSUBISHI'), ('MR453383', 'MITSUBISHI'), ('MR498974', 'MITSUBISHI'),
                                                       ('MR580474', 'MITSUBISHI')])],
                             key='asva_cv', title='ASVA CV', brand='ASVA', product_line='cv_joint'))
-        for number in ('MR453384', 'MR453383', 'MR498974'):
-            self.assertFalse(OEMCrossReference.objects.filter(reference__clave=number).exists(), number)
-        self.assertTrue(OEMCrossReference.objects.filter(reference__clave='MR580474', brand='ASVA', code='MT-99A50').exists())
+        for number in ('MR453384', 'MR498974'):
+            self.assertEqual(filed(result, number), [], number)
+        self.assertEqual(filed_codes(result, 'MR580474'), [('ASVA', 'MT-99A50')])
 
     def test_an_mr_number_is_the_joint_s_own_unless_a_shaft_sku_says_otherwise(self):
         joint = Part.objects.create(sku='MR-567160-NDK', description='PUNTA FLECHA EXT MIT LANCER 05')
@@ -512,46 +510,41 @@ class CVAssemblyCheckTests(Fresh, TestCase):
                                       self.joint('MT-08', [('MR222052', 'MITSUBISHI')], product_type='cv_joint_inner')],
                                      key='asva_cv', title='ASVA CV', brand='ASVA', product_line='cv_joint'))
         self.assertEqual(result['catalogs'][0]['counts']['linked_parts'], 1)
-        self.assertEqual(sorted(PartOEMLink.objects.filter(part=joint, source='catalog').values_list('reference__clave', flat=True)),
-                         ['MR567160', 'MR580474'])  # MR is a series, not a shaft code: the SKU is the joint these numbers name
-        self.assertFalse(joint.codes.filter(ref_type='company').exists())  # its numbers carry the ASVA code
-        self.assertEqual(sorted(OEMCrossReference.objects.values_list('reference__clave', 'code')),
+        self.assertEqual(linked(result, joint), ['MR567160', 'MR580474'])  # MR is a series, not a shaft code: the SKU is the joint these numbers name
+        self.assertEqual(sorted((row[0], row[2]) for row in filed(result)),
                          [('MR222052', 'MT-08'), ('MR567160', 'MT-38A43'), ('MR580474', 'MT-38A43')])
         self.assertFalse(self.assembly('MITSUBISHI', 'MR222052'))
 
     def test_a_sku_in_the_cv_joint_subgrupo_is_a_joint(self):
-        joint = Part.objects.create(sku='44010-S04-010-NDK', description='PUNTA FLECHA EXT HON CIVIC VTI 99', category='TRANSMISIÓN',
+        joint = make_line(sku='44010-S04-010-NDK', description='PUNTA FLECHA EXT HON CIVIC VTI 99', category='TRANSMISIÓN',
                                     subcategory='CV JOINT')  # the catalog's own subgrupo for CV joints
-        run_extract(extract([self.joint('HO-28', [('44010-S04-010', 'HONDA'), ('44014-S04-000', 'HONDA')], apps=[('HONDA', 'CIVIC')])],
-                            key='asva_cv', title='ASVA CV', brand='ASVA', product_line='cv_joint'))
-        self.assertEqual(sorted(PartOEMLink.objects.filter(part=joint, source='catalog').values_list('reference__clave', flat=True)),
-                         ['44010S04010', '44014S04000'])
+        result = run_extract(extract([self.joint('HO-28', [('44010-S04-010', 'HONDA'), ('44014-S04-000', 'HONDA')], apps=[('HONDA', 'CIVIC')])],
+                                     key='asva_cv', title='ASVA CV', brand='ASVA', product_line='cv_joint'))
+        self.assertEqual(linked(result, joint), ['44010S04010', '44014S04000'])
 
     def test_cv_axle_items_are_shafts_themselves_and_keep_their_numbers(self):
-        run_extract(extract([item('CVSK-001R', 'cv_axle', oem=[('0K012-25-500D', 'KIA')], name_es='SEMIEJE')],
-                            key='asva_cv', title='ASVA CV', brand='ASVA', product_line='cv_joint'))
-        self.assertTrue(OEMCrossReference.objects.filter(reference__clave='0K01225500D', brand='ASVA', code='CVSK-001R').exists())
+        result = run_extract(extract([item('CVSK-001R', 'cv_axle', oem=[('0K012-25-500D', 'KIA')], name_es='SEMIEJE')],
+                                     key='asva_cv', title='ASVA CV', brand='ASVA', product_line='cv_joint'))
+        self.assertEqual(filed_codes(result, '0K01225500D'), [('ASVA', 'CVSK-001R')])
 
 
 class OwnItemCodeTests(Fresh, TestCase):
     """Target data step 1: the catalog's own item code is filed under its numbers wherever one can take it."""
 
     def codes(self, number):
-        return sorted(OEMCrossReference.objects.filter(reference__clave=number).values_list('brand', 'code'))
+        return filed_codes(self.result, number)
 
     def test_an_own_code_without_a_digit_is_filed_and_a_competitor_one_is_not(self):
         data = extract([item('FDWH-FOCMF', 'wheel_hub', oem=[('1223640', 'FORD')], cross_refs=[('SNR', 'R152.62'), ('BENDIX', 'HUB')], name_es='CUBO DE RUEDA'),
                         item('AB', 'wheel_hub', oem=[('1230907', 'FORD')], name_es='CUBO DE RUEDA')],
                        key='asva_hub', title='ASVA HUB', brand='ASVA', product_line='wheel_hub')
-        first = run_extract(data)
+        self.result = first = run_extract(data)
         self.assertEqual(self.codes('1223640'), [('ASVA', 'FDWH-FOCMF'), ('SNR', 'R152.62')])  # BENDIX HUB names nothing
         self.assertEqual(self.codes('1230907'), [])  # two letters are no code
-        self.assertEqual(first['catalogs'][0]['counts']['cross_reference_new'], 2)
-        again = run_extract(data)
-        self.assertEqual(again['catalogs'][0]['counts'].get('cross_reference_new', 0), 0)
+        self.assertEqual(first['catalogs'][0]['counts']['cross_reference_rows'], 2)
 
     def test_ate_powerdisc_twins_are_one_disc_and_file_both_codes(self):
-        run_extract(extract([item('24.0108-0111.1', 'brake_disc', oem=[('168 423 02 12', 'MERCEDES-BENZ')], name_es='DISCO DE FRENO'),
+        self.result = run_extract(extract([item('24.0108-0111.1', 'brake_disc', oem=[('168 423 02 12', 'MERCEDES-BENZ')], name_es='DISCO DE FRENO'),
                              item('24.0308-0111.1', 'brake_disc', oem=[('168 423 02 12', 'MERCEDES-BENZ')], name_es='DISCO DE FRENO'),
                              item('24.0109-0114.1', 'brake_disc', oem=[('203 423 01 12', 'MERCEDES-BENZ')], name_es='DISCO DE FRENO'),
                              item('24.0110-0115.1', 'brake_disc', oem=[('203 423 01 12', 'MERCEDES-BENZ')], name_es='DISCO DE FRENO')],

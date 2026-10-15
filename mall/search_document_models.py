@@ -1,8 +1,8 @@
 """The storefront's Search Document (inventory refactor S7, plan §2): one row per line on sale (publicada and not merged, invariant I8),
 holding what a catalog search reads, already folded (upper case, no accents) so every word is one LIKE on an indexed column (GIN trigram,
 pg_trgm). mall.search_document is its only writer: refresh(line_ids) after a write that changes what a line shows, and the matching
-worker's rebuild every six hours. Stock and the items' calidades are never in it: availability and the calidad filter stay live. CATALOG_SEARCH_SOURCE=document makes the storefront search
-read it (mall.catalog_search); until the owner flips it the table is built and kept but nothing reads it."""
+worker's rebuild every six hours. Stock and the items' calidades are never in it: availability and the calidad filter stay live. The
+storefront search reads nothing else (mall.catalog_search; from S10 the legacy search is gone)."""
 from django.contrib.postgres.indexes import GinIndex
 from django.db import models
 from django.utils import timezone
@@ -15,7 +15,9 @@ class SearchDocument(models.Model):
     codes = models.TextField(blank=True, default='', verbose_name='códigos',
                              help_text='Las referencias públicas no retiradas y sus otras grafías; una en disputa solo si es la principal.')
     compact = models.TextField(blank=True, default='', verbose_name='códigos compactos', help_text='Los mismos códigos sin separadores.')
-    reach = models.TextField(blank=True, default='', verbose_name='números alcanzados',
+    # S10 contract, step 1 (0086): nothing fills or reads reach any more (the aftermarket codes it held were OEMCrossReference rows, which
+    # S10 archives); a database default fills it until step 2 takes it out of the state and 0089 drops it with its index.
+    reach = models.TextField(blank=True, default='', db_default='', verbose_name='números alcanzados',
                              help_text='Hasta S9: los números OEM vinculados a la línea y los códigos posventa archivados bajo sus números, compactos.')
     internal = models.JSONField(default=dict, blank=True, verbose_name='códigos internos',
                                 help_text='{id del proveedor: [códigos]}: sus códigos internos, solo para su propio catálogo.')

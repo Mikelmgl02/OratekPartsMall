@@ -132,24 +132,13 @@ class EnsureMainsTests(TestCase):
         keeper = make_line('13780-75F00')
         duplicate = create_line('13780-75F00_')
         first = references.ensure_mains()
-        case = MatchingCase.objects.get(method='main_codigo')
-        self.assertEqual((first['cases'], case.target_sku, [row['id'] for row in case.sources]), (1, keeper.sku, [str(duplicate.pk)]))
+        case = MatchingCase.objects.get(guard='main_codigo')  # S10: a merge case (a catalog case before)
+        self.assertEqual((first['cases'], case.kind, case.target_sku, [row['id'] for row in case.candidates]),
+                         (1, 'merge', keeper.sku, [str(duplicate.pk)]))
         case.status = 'dismissed'
         case.save(update_fields=['status'])
         self.assertEqual(references.ensure_mains()['cases'], 0)  # a person decided: never reopened
         self.assertEqual(MatchingCase.objects.get(pk=case.pk).status, 'dismissed')
-
-    def test_the_shim_leaves_a_line_the_backfill_has_not_reached_to_it(self):
-        drop_tighten_constraints()  # the state before the backfill and 0076
-        line = make_line('48654-30030', is_OEM=True)
-        references.purge(Reference.all_objects.filter(part=line).values_list('pk', flat=True))
-        Part.objects.filter(pk=line.pk).update(tipo='UNKNOWN')  # 0075's default
-        line = Part.objects.get(pk=line.pk)
-        line.description = 'BASE AMORT'
-        line.save()  # a full save: pair_line_tipo puts tipo back to OEM, which is no retype of a main
-        self.assertIsNone(main(line))
-        self.assertEqual(Part.objects.get(pk=line.pk).tipo, 'OEM')
-
 
 class PreferOemTests(TestCase):
     def test_an_oem_that_is_another_lines_codigo_opens_a_merge_case(self):
@@ -158,10 +147,10 @@ class PreferOemTests(TestCase):
         make_reference(line, 'MR968365', brand='MITSUBISHI', tipo='oem', source='CATÁLOGO REVISADO', estado='disputa',
                        dispute_note='El código MR968365 es el SKU MR-968365: caso de unificación.')
         prefer_oem(line)
-        case = MatchingCase.objects.get(method='main_codigo')
-        self.assertEqual(([row['id'] for row in case.sources], case.target_sku), ([str(line.pk)], holder.sku))
+        case = MatchingCase.objects.get(guard='main_codigo')
+        self.assertEqual(([row['id'] for row in case.candidates], case.target_sku), ([str(line.pk)], holder.sku))
         prefer_oem(line)  # every pass: still one case
-        self.assertEqual(MatchingCase.objects.filter(method='main_codigo').count(), 1)
+        self.assertEqual(MatchingCase.objects.filter(guard='main_codigo').count(), 1)
         self.assertEqual(Part.objects.get(pk=line.pk).sku, '0110-MR968365-FEB')
 
 
@@ -184,18 +173,6 @@ class RollbackHookTests(Fresh, TestCase):
         self.root = make_user('s2b-hook', superuser=True)
         self.keeper = make_line('16100-39315', description='BOMBA AGUA TOY HILUX')
         self.duplicate = make_line('16100-39315_', description='BOMBA AGUA TOY HILUX')
-
-    def test_a_merge_whose_lines_went_into_another_line_stays_with_its_record(self):
-        merge = line_merge.merge_lines(self.keeper, [self.duplicate], actor=self.root, reason='compact_duplicate', automatic=True)
-        later = make_line('16100-39315-Z', description='BOMBA AGUA TOY HILUX')
-        line_merge.merge_lines(later, [self.keeper], actor=self.root, reason='prueba')  # flattens the duplicate onto later
-        lines = [{'stage': 's2b', 'hook': True, 'model': 'mall.CatalogMerge', 'id': str(merge.pk), 'action': 'create', 'at': '1', 'after': {}}]
-        result = line_merge.s2b_rollback(log=[], run={}, lines=lines)
-        self.assertEqual(result['split'], 0)
-        self.assertTrue(CatalogMerge.objects.filter(pk=merge.pk).exists())
-        self.assertIn('sus líneas están en otro SKU', result['changed'][0])
-        self.assertIn(merge.sources[0]['main'], result['kept'])
-        self.assertEqual(broken_invariants(), {})
 
     def test_the_service_account_an_automatic_merge_creates_stays_disabled(self):
         get_user_model().objects.filter(username=line_merge.SERVICE_ACCOUNT).delete()

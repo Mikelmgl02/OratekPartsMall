@@ -1,6 +1,6 @@
 """Inventory refactor S4, review fixes: a short library number is found by its compact form (OPEL 5 69 036 is 569036) and written
 without the punctuation an extract left at its edges, the rollback leaves what moved since the apply and gives the OEM table back what
-the code wrote after landing, an absorbed number's codes and links follow it (and come back with Separar), a catalog replace drops a
+the code wrote after landing, a catalog replace drops a
 number to a rejected line of its own and a later import brings it back, Editar celdas maps a subgrupo's name, a number variants hang
 from never leaves its line, rule 3f locks no supplier, the automatic families and the import absorb or promote a line in referencia,
 the Biblioteca refuses to dispute a catalog line's main, a code a person adds stops being library data, and the S0 tool that merged
@@ -26,7 +26,6 @@ from .brand_models import Brand
 from .catalog_grouping import merge_catalog_parts
 from .lines import bulk_create_lines, create_line
 from .models import CatalogMerge, Part, Reference
-from .oem_reference_models import OEMCrossReference, OEMCrossReferenceRetired, OEMReference, PartOEMLink
 from .supplier_import_models import SupplierInventoryImportJob
 from .technical_data import part_type_for
 from .test_factories import Fresh, make_line, make_reference, make_supplier, make_user, make_variant
@@ -72,39 +71,6 @@ class ShortNumberTests(Fresh, TestCase):
         self.assertEqual((line.pk, line.estado), (ref.part_id, 'publicada'))
 
 
-class AbsorbRowsTests(Fresh, TestCase):
-    def test_an_absorbed_numbers_codes_and_links_follow_it_and_come_back_with_separar(self):
-        root = make_user('s4r-absorb', superuser=True)
-        source, target, linked = make_line('LINEA-A'), make_line('LINEA-B'), make_line('ENLAZADA')
-        ref = make_reference(source, '17801-30070', brand='TOYOTA', tipo='oem', detail={'origen': 'biblioteca'})  # a library number
-        kept = make_reference(target, '17801-30070', brand='TOYOTA', tipo='aftermarket', estado='disputa',
-                              dispute_note='El código 17801-30070 ya es de otro SKU (LINEA-A): caso de unificación.')
-        moved = OEMCrossReference.objects.create(reference=ref, brand='AISIN', code='ARG-1', number='ARG1', citations=['ATE'])
-        mine = OEMCrossReference.objects.create(reference=ref, brand='GMB', code='GWT-1', number='GWT1', citations=['ATE'])
-        theirs = OEMCrossReference.objects.create(reference=kept, brand='GMB', code='GWT-1', number='GWT1', citations=['GMB'])
-        tomb = OEMCrossReferenceRetired.objects.create(reference=ref, brand='X', code='X-1', number='X1')
-        link = PartOEMLink.objects.create(part=linked, reference=ref, source='catalog', citations=['ATE'])
-        merge = line_merge.merge_lines(target, [source], actor=root, reason='prueba')
-        moved.refresh_from_db()
-        tomb.refresh_from_db()
-        link.refresh_from_db()
-        theirs.refresh_from_db()
-        self.assertEqual((moved.reference_id, tomb.reference_id, link.reference_id), (kept.pk, kept.pk, kept.pk))
-        self.assertEqual(theirs.citations, ['GMB', 'ATE'])  # a code the kept number has: it takes the citations
-        self.assertEqual(Reference.objects.get(pk=kept.pk).tipo, 'oem')
-        record = merge.sources[0]['absorbed'][0]
-        self.assertEqual(record['library_rows']['codes'], [moved.pk])
-        line_merge.split_line(target.pk, [{'id': str(source.pk), 'codes': [], 'items': [], 'images': []}], actor=root)
-        moved.refresh_from_db()
-        tomb.refresh_from_db()
-        link.refresh_from_db()
-        theirs.refresh_from_db()
-        mine.refresh_from_db()
-        self.assertEqual((moved.reference_id, tomb.reference_id, link.reference_id, mine.reference_id), (ref.pk, ref.pk, ref.pk, ref.pk))
-        self.assertEqual(theirs.citations, ['GMB'])
-        self.assertEqual(Reference.objects.get(pk=kept.pk).tipo, 'aftermarket')
-
-
 class CatalogReplaceDropTests(Fresh, TestCase):
     def setUp(self):
         super().setUp()
@@ -123,21 +89,17 @@ class CatalogReplaceDropTests(Fresh, TestCase):
 
     def test_a_dropped_number_waits_on_a_rejected_line_and_comes_back_with_its_codes(self):
         number = Reference.objects.get(references.library_q(), brand='NISSAN', clave='2101033333')
-        self.assertTrue(OEMCrossReference.objects.filter(reference=number).exists())
         scr.run(self.new, apply=True, username='root', stdout=io.StringIO())
         number.refresh_from_db()
         line = Part.objects.get(pk=number.part_id)
         self.assertEqual((number.estado, number.is_main, line.estado, line.decision_reason), ('disputa', True, 'rechazada', 'bad_data'))
         self.assertIn(references.DROPPED, number.detail)
-        self.assertFalse(OEMCrossReference.objects.filter(reference=number).exists())  # its codes went with it ...
-        self.assertFalse(OEMCrossReferenceRetired.objects.filter(reference=number).exists())  # ... without a tombstone
         kept = Reference.objects.get(references.library_q(), brand='NISSAN', clave='2101022222')
         self.assertEqual(Part.objects.get(pk=kept.part_id).estado, 'referencia')
         sci.run([self.old], apply=True, stdout=io.StringIO())  # a catalog that prints it again brings it back
         number.refresh_from_db()
         self.assertEqual((number.estado, Part.objects.get(pk=number.part_id).estado), ('declarado', 'referencia'))
         self.assertNotIn(references.DROPPED, number.detail)
-        self.assertTrue(OEMCrossReference.objects.filter(reference=number).exists())
 
     def test_a_familia_line_keeps_the_number_still_printed(self):
         toyota = Brand.objects.create(nombre='TOYOTA', tipo='vehiculo')
@@ -259,4 +221,3 @@ class AutomaticPathTests(Fresh, TestCase):
         line = Part.objects.get(sku='1610039315')
         number.refresh_from_db()
         self.assertEqual((references.main_of(line).estado, number.part_id), ('declarado', line.pk))
-        self.assertFalse(OEMReference.objects.exists())  # nothing written to the frozen OEM table

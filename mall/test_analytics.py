@@ -15,6 +15,7 @@ from .analytics_models import UsageEvent, UsageVisit
 from .models import Account, Membership, Part, PartCode, Role, StockEntry, SupplierItem, User
 from .pricing_models import PricingAuditEvent, record_pricing_event
 from .request_models import ClientRequestSubmission, DealQuotation, DealQuotationLine, SupplierRequest, SupplierRequestLine
+from .test_factories import make_line
 
 QUOTATION_KPI_KEYS = {'first_quotes', 'average_quote_seconds', 'quoted_orders', 'handshaked_orders', 'average_revisions', 'blocked_accepts', 'blocked_orders',
                       'accepted_with_shortfall'}
@@ -33,7 +34,7 @@ class AnalyticsTests(APITestCase):
         Membership.objects.create(user=self.other, account=self.other_account)
         self.supplier = Account.objects.create(name='ANALYTICS SUPPLIER')
         self.supplier.roles.add(*Role.objects.filter(capability='supplier'))
-        self.part = Part.objects.create(sku='58411-1R000', description='TAMBOR', category='FRENOS', subcategory='TAMBORES')
+        self.part = make_line(sku='58411-1R000', description='TAMBOR', category='FRENOS', subcategory='TAMBORES')
         PartCode.objects.create(part=self.part, code='58411-1R000-G')
         self.item = SupplierItem.objects.create(supplier=self.supplier, part=self.part, supplier_invent_id='STABLE-1',
                                                 codigo='58411-1R000-G', brand='TEST', source='upload',
@@ -90,7 +91,7 @@ class AnalyticsTests(APITestCase):
 
     def test_real_catalog_results_are_counted_and_invalid_events_leave_no_records(self):
         PartCode.objects.create(part=self.part, code='58411-1R000-KSM')
-        Part.objects.create(sku='INACTIVE', description='58411', active=False)
+        make_line(sku='INACTIVE', description='58411', active=False)
         self.assertEqual(self.post('search', term='58411', result_count=999).status_code, 202)
         self.assertEqual(UsageEvent.objects.get().result_count, 1)
         self.assertEqual(self.post('search', term='NOT-IN-CATALOG').status_code, 202)

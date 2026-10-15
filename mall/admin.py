@@ -23,12 +23,12 @@ class PartAdminForm(forms.ModelForm):
 
 @admin.register(Part)
 class PartAdmin(admin.ModelAdmin):
-    """estado is the line's lifecycle; active follows it (Part.save). Merging and Separar SKU own unificada."""
+    """estado is the line's lifecycle and tipo its main's; active and is_OEM mirror them (S10). Merging and Separar SKU own unificada."""
     form = PartAdminForm
-    list_display = ['sku', 'name', 'estado', 'origen', 'active', 'merged_into']
+    list_display = ['sku', 'description', 'estado', 'origen', 'active', 'merged_into']
     list_filter = ['estado', 'origen']
-    search_fields = ['sku', 'name', 'description']
-    readonly_fields = ['active', 'merged_into', 'decided_by', 'decided_at', 'version', 'created_at', 'updated_at', 'changed_at']
+    search_fields = ['sku', 'description']
+    readonly_fields = ['active', 'is_OEM', 'merged_into', 'decided_by', 'decided_at', 'version', 'created_at', 'updated_at', 'changed_at']
     def formfield_for_choice_field(self, db_field, request, **kwargs):
         if db_field.name == 'estado':
             kwargs['choices'] = [choice for choice in db_field.choices if choice[0] != 'unificada']
@@ -45,10 +45,13 @@ class PartAdmin(admin.ModelAdmin):
 class ReferenceAdminForm(forms.ModelForm):
     """A Reference is checked as mall.references writes it: a new one as build() makes it (a dispute says why, interno ⇔ supplier), a
     change on the values it ends up with (references.check), and its key as validate() checks it (another line's key, the brandless
-    reservation), so a refusal is a form error, never a failed save."""
+    reservation), so a refusal is a form error, never a failed save. reference_source is a citation for a new source (S10: the
+    sources are the record), never a column."""
+    reference_source = forms.CharField(required=False, max_length=500, label='Fuente (cita)',
+                                       help_text='Una fuente nueva de la referencia; las anteriores siguen en Fuentes.')
     class Meta:
         model = Reference
-        fields = ['part', 'code', 'brand', 'tipo', 'estado', 'supplier', 'reference_source', 'dispute_note', 'notes']
+        fields = ['part', 'code', 'brand', 'tipo', 'estado', 'supplier', 'dispute_note', 'notes']
     def clean(self):
         from . import references
         data = super().clean()
@@ -89,7 +92,7 @@ class ReferenceAdmin(admin.ModelAdmin):
     list_filter = ['tipo', 'estado']
     search_fields = ['code', 'brand', 'clave', 'part__sku']
     raw_id_fields = ['part', 'supplier']
-    readonly_fields = ['clave', 'uid', 'ref_type', 'printed_forms', 'reemplazado_por', 'oem_reference', 'detail', 'created_by', 'created_at',
+    readonly_fields = ['clave', 'uid', 'ref_type', 'printed_forms', 'reemplazado_por', 'detail', 'created_by', 'created_at',
                        'updated_at', 'version']
     inlines = [ReferenceSourceInline]
     def get_queryset(self, request):
@@ -99,7 +102,8 @@ class ReferenceAdmin(admin.ModelAdmin):
         data = {name: form.cleaned_data[name] for name in form.changed_data if name in form.cleaned_data}
         if not change:
             obj.pk = references.add(obj.part, obj.code, obj.brand, tipo=obj.tipo, estado=obj.estado, supplier=obj.supplier,
-                                    source=obj.reference_source, actor=request.user, notes=obj.notes, dispute_note=obj.dispute_note)[0].pk
+                                    source=form.cleaned_data.get('reference_source', ''), actor=request.user, notes=obj.notes,
+                                    dispute_note=obj.dispute_note)[0].pk
             return
         current = Reference.all_objects.get(pk=obj.pk)
         if data.get('estado') == 'retirada':

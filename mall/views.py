@@ -116,7 +116,7 @@ class CatalogList(generics.ListAPIView):
             ids = list(self.base_query.order_by().values_list('pk', flat=True)[:REUSED_MATCHES + 1])
             if len(ids) <= REUSED_MATCHES:
                 self.base_query = Part.objects.filter(pk__in=ids)
-        query = apply_filters(self.base_query, self.catalog_filters).prefetch_related('codes', 'images')
+        query = apply_filters(self.base_query, self.catalog_filters).select_related('part_type__grupo').prefetch_related('codes', 'images')
         # A code search lists the exact code first, then the codes containing it; everything else stays in SKU order.
         rank = search_rank(search, self.scope.own)
         return query.annotate(search_rank=rank).order_by('search_rank', 'sku', 'id') if rank is not None else query.order_by('sku', 'id')

@@ -26,7 +26,8 @@ from .classification_models import CatalogClassificationState, CatalogClassifica
 from .catalog_import import ImportResponse
 from .management import IsSuperuser
 from .lines import all_lines, catalog_lines, shared_referencia_codigos, storefront_lines
-from .models import Part, Reference
+from .models import PartType, Reference
+from .technical_data import classification
 from .references import live_q
 from .catalog_families import (normalized_reference, supplier_base, supplier_suffix_match,
                                family_candidates, description_text)
@@ -131,14 +132,29 @@ def references(row):
 
 
 def group_row(group, part=None):
+    """A file's SKU as the AI reads it, over the line it updates (S10: name is the description, category / subcategory its subgrupo's)."""
     fields = group['fields']
+    category, subcategory = classification(part) if part else ('', '')
+    description = fields.get('description', part.description if part else '')
     return {'sku': group['sku'], 'row': group['row'],
-            'is_OEM': part.is_OEM if part else False,
-            'name': fields.get('name', part.name if part else '')[:200],
-            'description': fields.get('description', part.description if part else '')[:2000],
-            'category': fields.get('category', part.category if part else ''),
-            'subcategory': fields.get('subcategory', part.subcategory if part else ''),
+            'is_OEM': part.tipo == 'OEM' if part else False,
+            'name': fields.get('name', description)[:200],
+            'description': description[:2000],
+            'category': fields.get('category', category),
+            'subcategory': fields.get('subcategory', subcategory),
             'codes': group.get('reference_details', [{'brand': brand, 'code': code} for brand, code in list(group['codes'])[:40]])[:40]}
+
+
+def catalogue_row(part):
+    """A catalog line as a candidate (S10: name is the description, category / subcategory its subgrupo's, a code's ref_type its
+    tipo's and its reference_source the newest source's citation). Load it with select_related('part_type__grupo') and
+    prefetch_related('codes__sources')."""
+    from . import references as reference_rows
+    category, subcategory = classification(part)
+    return {'sku': part.sku, 'row': None, 'name': part.name, 'is_OEM': part.tipo == 'OEM', 'description': part.description[:2000],
+            'category': category, 'subcategory': subcategory,
+            'codes': [{'brand': code.brand or '', 'code': code.code, 'ref_type': code.ref_type, 'reference_source': reference_rows.source_text(code)}
+                      for code in sorted(part.codes.all(), key=lambda code: code.pk) if not code.is_main][:40]}
 
 
 def candidate_context(groups, source_skus):
@@ -146,7 +162,7 @@ def candidate_context(groups, source_skus):
     # batches can still be proposed together. Only bounded context reaches AI.
     # A line in referencia (a library number no product carries, S4) is no catalog line: the import promotes or absorbs it.
     existing = {part.sku: part for part in all_lines().filter(sku__in=groups).exclude(estado='referencia')
-                .only('sku', 'is_OEM', 'name', 'description', 'category', 'subcategory')}
+                .select_related('part_type__grupo').only('sku', 'tipo', 'description', 'part_type__name', 'part_type__grupo__nombre')}
     staged = {sku: group_row(group, existing.get(sku)) for sku, group in groups.items()}
     token_index = {}
     prefix_index = {}
@@ -159,24 +175,16 @@ def candidate_context(groups, source_skus):
     bases = {base for sku in staged if (base := supplier_base(sku))}
     aliases = {code['code'] for row in source for code in row['codes']} | {row['sku'] for row in source} | {supplier_base(row['sku']) for row in source}
     catalogue = (storefront_lines().filter(Q(sku__in=aliases) | Q(live_q('codes__'), codes__code__in=aliases)).distinct().order_by('sku')
-                 .prefetch_related('codes'))
-    catalogue_rows = {part.sku: {'sku': part.sku, 'row': None, 'name': part.name,
-                               'is_OEM': part.is_OEM,
-                               'description': part.description[:2000], 'category': part.category,
-                               'subcategory': part.subcategory,
-                               'codes': [{'brand': code.brand, 'code': code.code, 'ref_type': code.ref_type, 'reference_source': code.reference_source} for code in sorted(part.codes.all(), key=lambda code: code.pk) if not code.is_main][:40]}
-                      for part in catalogue[:AI_BATCH_SIZE * MAX_CANDIDATES]}
+                 .select_related('part_type__grupo').prefetch_related('codes__sources'))
+    catalogue_rows = {part.sku: catalogue_row(part) for part in catalogue[:AI_BATCH_SIZE * MAX_CANDIDATES]}
     # Exact part-number references in descriptions also identify existing SKUs.
     literal_refs = set()
     for row in source:
         literal_refs.update(re.findall(r'\b[A-Z0-9]+(?:[-./][A-Z0-9]+)+\b', f"{row['name']} {row['description']}".upper()))
     if literal_refs:
-        for part in catalog_lines().filter(sku__in=literal_refs).order_by('sku').prefetch_related('codes')[:AI_BATCH_SIZE * MAX_CANDIDATES]:
-            catalogue_rows[part.sku] = {'sku': part.sku, 'row': None, 'name': part.name,
-                                      'is_OEM': part.is_OEM,
-                                      'description': part.description[:2000], 'category': part.category,
-                                      'subcategory': part.subcategory,
-                                      'codes': [{'brand': code.brand, 'code': code.code, 'ref_type': code.ref_type, 'reference_source': code.reference_source} for code in sorted(part.codes.all(), key=lambda code: code.pk) if not code.is_main][:40]}
+        for part in (catalog_lines().filter(sku__in=literal_refs).order_by('sku').select_related('part_type__grupo')
+                     .prefetch_related('codes__sources')[:AI_BATCH_SIZE * MAX_CANDIDATES]):
+            catalogue_rows[part.sku] = catalogue_row(part)
     rows = {**catalogue_rows, **staged}
     blocked = (set(all_lines().filter(sku__in=bases).exclude(estado='referencia').values_list('sku', flat=True))
                | set(Reference.objects.filter(code__in=bases).exclude(part__estado='referencia').values_list('code', flat=True))
@@ -267,7 +275,7 @@ def call_provider(source, candidates, candidate_skus, instructions='', feature='
     if not key:
         raise ClassificationUnavailable()
     taxonomy = [{'category': category, 'subcategory': subcategory} for category, subcategory in
-                Part.objects.exclude(category='').values_list('category', 'subcategory').distinct().order_by('category', 'subcategory')[:200]]
+                PartType.objects.order_by('grupo__nombre', 'name').values_list('grupo__nombre', 'name')[:200]]
     payload = {'systemInstruction': {'parts': [{'text': SYSTEM_INSTRUCTION}]},
                'contents': [{'role': 'user', 'parts': [{'text': json.dumps(
                    {'sources': source, 'candidates': list(candidates.values()), 'candidate_skus': candidate_skus, 'taxonomy': taxonomy,
@@ -535,7 +543,7 @@ def apply_review(user, pk, decisions):
             if target not in groups:
                 parent = proposed_parents.get(target)
                 groups[target] = {'sku': target, 'row': groups[sku]['row'],
-                                  'fields': {key: parent[key] for key in ['name', 'description']} if parent else {}, 'codes': {}}
+                                  'fields': {'description': parent['description']} if parent else {}, 'codes': {}}
             if target != sku:
                 groups[target]['codes'].setdefault(('', sku), groups[sku]['row'])
                 for pair, row in groups[sku]['codes'].items():

@@ -8,9 +8,8 @@ from . import reference_matching
 from .matching_queue import matching_work
 from .models import Account, CatalogMerge, Part, PartCode, SupplierItem, User
 from .references import add_library_number
-from .oem_reference_models import PartOEMLink
 from .services import ingest_inventory
-from .test_factories import move_variant
+from .test_factories import make_code, move_variant
 
 URL = '/api/v1/management/catalog/'
 
@@ -30,7 +29,7 @@ class CatalogSplitTests(APITestCase):
         """Three SKUs of one base code, each with its supplier stock row, grouped automatically under a new parent (as the matching
         worker did before S6: the legacy automatic merges)."""
         children = [Part.objects.create(sku=f'58411-08000-{suffix}', description=self.description) for suffix in ['K', 'NP', 'RAZ']]
-        PartCode.objects.create(part=children[0], brand='KOREA', code='KX-100', ref_type='company')
+        make_code(part=children[0], brand='KOREA', code='KX-100', ref_type='company')
         for index, part in enumerate(children):
             ingest_inventory(supplier=self.supplier, actor=self.admin, data={'update_id': f'ITEM-{index}', 'supplier_invent_id': f'ITEM-{index}',
                              'codigo': part.sku, 'brand': '', 'description': self.description, 'source': 'upload', 'quantity': 5})
@@ -123,18 +122,6 @@ class CatalogSplitTests(APITestCase):
         self.client.force_authenticate(User.objects.create_user('split-staff', 'split-staff@example.invalid', 'Testing938!'))
         self.assertEqual(self.client.get(f'{URL}{parent.pk}/split/').status_code, 403)
 
-    def test_catalog_links_follow_the_codes_that_made_them(self):
-        parent = self.grouped()
-        cite = 'CATÁLOGO KOREA 2024 · pág. 3 · KX-100'  # the catalog item KX-100, matched through the code the K SKU brought
-        printed = add_library_number('KIA', '58411-07000', source_kind='aftermarket_catalog', citation='CATÁLOGO KOREA 2024')[0]
-        own = add_library_number('KIA', '58411-08000', source_kind='aftermarket_catalog', citation='CATÁLOGO KOREA 2024')[0]  # the parent's code
-        for reference in (printed, own):
-            PartOEMLink.objects.create(part=parent, reference=reference, source='catalog', citations=[cite])
-        summary = self.split(parent, self.restore(self.plan(parent), '58411-08000-K')).json()['summary']
-        self.assertEqual((summary['links_moved'], summary['links_shared']), (1, 1))
-        links = sorted(PartOEMLink.objects.filter(source='catalog').values_list('part__sku', 'reference__clave'))
-        self.assertEqual(links, [('58411-08000', '5841108000'), ('58411-08000-K', '5841107000'), ('58411-08000-K', '5841108000')])
-
     def test_the_worker_never_regroups_skus_a_split_separated_through_references(self):
         pairs = []
         for number in ['60150', '60160']:
@@ -167,7 +154,7 @@ class CatalogSplitTests(APITestCase):
     def test_a_merge_by_hand_records_what_each_sku_brought_so_its_split_is_exact(self):
         main = Part.objects.create(sku='43512-60150', description='DISCO FRENO DEL TOY LAND CRUISER')
         other = Part.objects.create(sku='DF-4512', description='DISCO FRENO DEL TOY LAND CRUISER')
-        PartCode.objects.create(part=other, brand='GMB', code='GD-4512', ref_type='company')
+        make_code(part=other, brand='GMB', code='GD-4512', ref_type='company')
         # An item no load placed (from S6 a load would give it a new product's line of its own), moved onto other by a code that names
         # neither SKU (its supplier's interno code, S3).
         item = SupplierItem.objects.create(supplier=self.supplier, supplier_invent_id='X-1', codigo='ZX 77', brand='', description='DISCO',

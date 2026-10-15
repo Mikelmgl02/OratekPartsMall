@@ -5,7 +5,7 @@ import { Check, GitMerge, Layers3, ListChecks, LoaderCircle, RefreshCw, Search, 
 import { Page, request } from '@/lib/types';
 import { batchLabels, CASE_KINDS, caseKindLabels, lineEstadoLabels } from '@/lib/line-types';
 import type { CaseAction, CaseBatch, CaseBatchIndexRow, CaseBatchResult, CaseDecision, CasePage, MatchingCase, MergeDigestRow } from '@/lib/line-types';
-import { CaseArticle, CaseCard, caseLines, caseTitle, guardLabels, isKnownKind, isOpen, LegacyCaseCard } from './matching-case-card';
+import { CaseArticle, CaseCard, caseLines, caseTitle, guardLabels, isKnownKind, isOpen } from './matching-case-card';
 import CatalogSplit from './admin-catalog-split';
 import { UppercaseInput } from './uppercase-field';
 
@@ -18,9 +18,9 @@ const VIEWS: { key: View; slug: string; label: string; Icon: typeof ListChecks }
   { key: 'cases', slug: 'casos', label: 'Casos', Icon: ListChecks }, { key: 'batches', slug: 'lotes', label: 'Lotes', Icon: Layers3 },
   { key: 'merges', slug: 'unificaciones', label: 'Unificaciones automáticas', Icon: GitMerge },
 ];
-// unmatched: a supplier case from before S6 that found no SKU; it is still decided on its card (cases/<id>).
-const STATUSES = [['review', 'POR REVISAR'], ['unmatched', 'SIN COINCIDENCIA'], ['applied', 'APLICADOS'], ['dismissed', 'DESCARTADOS']] as const;
-const emptyStatus: Record<string, string> = { review: 'por revisar', unmatched: 'sin coincidencia', applied: 'aplicados', dismissed: 'descartados' };
+// The cases from before S6 (supplier, catalog, catalog_reference, seed; unmatched and resolved) became these kinds and statuses in S10.
+const STATUSES = [['review', 'POR REVISAR'], ['applied', 'APLICADOS'], ['dismissed', 'DESCARTADOS']] as const;
+const emptyStatus: Record<string, string> = { review: 'por revisar', applied: 'aplicados', dismissed: 'descartados' };
 // Why the matching service merged (CatalogMerge.summary.reason): the rule names it records; free text from older merges shows as written.
 const mergeReasons: Record<string, string> = { compact_duplicate: 'Mismo código con otra grafía (con o sin guiones o espacios).' };
 
@@ -64,7 +64,6 @@ function CaseQueue({ revision }: { revision: number }) {
   const [page, setPage] = useState(1);
   const [data, setData] = useState<CasePage | null>(null);
   const [lines, setLines] = useState<Record<string, string>>({});          // the line chosen, by id
-  const [targets, setTargets] = useState<Record<string, string>>({});      // legacy cases: the SKU typed or picked
   const [searching, setSearching] = useState<Record<string, boolean>>({});
   const [picking, setPicking] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(''); const [error, setError] = useState(''); const [notice, setNotice] = useState('');
@@ -78,7 +77,7 @@ function CaseQueue({ revision }: { revision: number }) {
     catch (caught) { if (id === requestId.current) setError(message(caught)); }
   }, [status, kind, route, page]);
   useEffect(() => { void load(); }, [load, revision]);
-  function reset() { setPage(1); setLines({}); setTargets({}); setSearching({}); setPicking({}); setError(''); setNotice(''); }
+  function reset() { setPage(1); setLines({}); setSearching({}); setPicking({}); setError(''); setNotice(''); }
   async function decide(item: MatchingCase, decision: CaseDecision, text: string) {
     setBusy(item.id); setError(''); setNotice('');
     try {
@@ -109,8 +108,7 @@ function CaseQueue({ revision }: { revision: number }) {
             searching={!!searching[key]} onSearch={() => setSearching(current => ({ ...current, [key]: true }))}
             picking={!!picking[key]} onPick={() => setPicking(current => ({ ...current, [key]: !current[key] }))}
             onDecide={(decision, text) => void decide(item, decision, text)}/>
-        : <LegacyCaseCard item={item} busy={!!busy} target={targets[key] ?? item.target_sku} onTarget={value => setTargets(current => ({ ...current, [key]: value }))}
-            onDecide={(decision, text) => void decide(item, decision, text)}/>}</CaseArticle>;
+        : <p>{item.reason}</p>}</CaseArticle>;
     })}</div>
     {data && <div className="pagination"><span>{number(data.count)} {data.count === 1 ? 'caso' : 'casos'}</span><div><button type="button" className="button soft small" disabled={!data.previous || !!busy} onClick={() => setPage(page - 1)}>Anterior</button><span>Página {page}</span><button type="button" className="button soft small" disabled={!data.next || !!busy} onClick={() => setPage(page + 1)}>Siguiente</button></div></div>}
   </>;

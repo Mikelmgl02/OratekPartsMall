@@ -16,8 +16,7 @@ from .ai_budget import feature_budget, month_spend
 from .catalog_classification import ClassificationConflict, provider_configuration
 from .lines import prepared_by_rule_7
 from .management import IsSuperuser, UppercaseCharField
-from .models import Reference, SupplierItem
-from .sku_proposal_models import SkuProposal
+from .models import Part, Reference, SupplierItem
 from .sku_proposal_views import STATUS_LABELS, codes_of, status_for
 from .sku_review_models import SkuReviewRun
 from .technical_data import grupo_nombre
@@ -80,8 +79,8 @@ def current(verdict):
 
 def verdict_json(verdict):
     return {
-        'id': str(verdict.pk), 'proposal': str(verdict.line_id or verdict.proposal_id), 'state': state(verdict), 'method': verdict.method,
-        'verdict': verdict.verdict, 'reason': verdict.reason, 'reason_label': dict(SkuProposal.REJECT_REASONS).get(verdict.reason, ''),
+        'id': str(verdict.pk), 'proposal': str(verdict.line_id or ''), 'state': state(verdict), 'method': verdict.method,
+        'verdict': verdict.verdict, 'reason': verdict.reason, 'reason_label': dict(Part.REASONS).get(verdict.reason, ''),
         'confidence': verdict.confidence, 'reasons': verdict.reasons, 'suggestions': verdict.suggestions, 'applied': verdict.applied,
         'reviewed_version': verdict.proposal_version,
         'link_part': {'id': str(verdict.link_part_id), 'sku': verdict.link_part.sku} if verdict.link_part_id else None,

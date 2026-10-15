@@ -47,10 +47,9 @@ export type Variant = StockItem & VariantFacts & { line_estado?: LineEstado | nu
 // An offer's item on the storefront (S7): the variant's data and the Reference it sells.
 export type VariantOfferItem = { id: string; codigo: string; brand: string; description: string; reference?: OfferReference | null } & VariantFacts;
 
-// Matching Cases (case_result): reference | code_change | variant | line | merge; supplier, catalog, catalog_reference, seed before S6.
+// Matching Cases (case_result): reference | code_change | variant | line | merge (S10 converted the kinds from before S6).
 export type CaseKind = 'reference' | 'code_change' | 'variant' | 'line' | 'merge';
-export type LegacyCaseKind = 'supplier' | 'catalog' | 'catalog_reference' | 'seed';
-export type CaseStatus = 'review' | 'unmatched' | 'applied' | 'dismissed' | 'resolved';
+export type CaseStatus = 'review' | 'applied' | 'dismissed';
 export type CaseAction = 'approve' | 'dismiss' | 'separar_referencia' | 'merge' | 'keep_apart';
 export type CaseRoute = 'lote' | 'caso' | '';
 type CaseCode = { brand: string; code: string };
@@ -60,7 +59,7 @@ export type CaseRow = { id: string; sku: string; description: string; name?: str
 export type CaseLine = { id: string; sku: string; description: string; estado: string; name?: string; codes?: CaseCode[] };
 export type CaseReference = { id: number; code: string; brand: string; tipo?: string; estado?: string; line?: string; line_sku?: string };
 export type MatchingCase = {
-  id: string; kind: CaseKind | LegacyCaseKind | string; sources: CaseRow[]; candidates: CaseRow[]; target_sku: string; method?: string; reason: string;
+  id: string; kind: CaseKind | string; sources: CaseRow[]; candidates: CaseRow[]; target_sku: string; method?: string; reason: string;
   status: CaseStatus | string; fingerprint: string; supplier_name: string; ai: { target_sku?: string; reason?: string; error?: string; confidence?: number };
   reference?: CaseReference | null; new_code?: string; new_brand?: string; lines?: CaseLine[]; evidence?: Record<string, unknown>; guard?: string;
   route?: CaseRoute | string; batch_key?: string; decided_by?: string; decided_at?: string | null; created_at?: string | null; item_id?: string | null;
@@ -119,9 +118,9 @@ export const caseKindLabels: Record<string, string> = { code_change: 'CAMBIO DE 
   line: 'ELEGIR LÍNEA OEM', merge: 'UNIFICAR LÍNEAS', supplier: 'ARTÍCULO DE PROVEEDOR', catalog: 'FAMILIA DEL CATÁLOGO', catalog_reference: 'ALTERNO DEL CATÁLOGO',
   seed: 'FAMILIA SIN SKU PRINCIPAL' };
 export const CASE_KINDS: CaseKind[] = ['code_change', 'reference', 'variant', 'line', 'merge'];
-export const caseStatusLabels: Record<string, string> = { review: 'POR REVISAR', unmatched: 'SIN COINCIDENCIA', applied: 'APLICADOS', dismissed: 'DESCARTADOS', resolved: 'RESUELTOS' };
+export const caseStatusLabels: Record<string, string> = { review: 'POR REVISAR', applied: 'APLICADOS', dismissed: 'DESCARTADOS' };
 /** One case's status, on its card (the plural labels name the tabs and counts). */
-export const caseStatusLabel: Record<string, string> = { review: 'POR REVISAR', unmatched: 'SIN COINCIDENCIA', applied: 'APLICADO', dismissed: 'DESCARTADO', resolved: 'RESUELTO' };
+export const caseStatusLabel: Record<string, string> = { review: 'POR REVISAR', applied: 'APLICADO', dismissed: 'DESCARTADO' };
 export const batchLabels: Record<string, string> = { 'legacy-auto-merge': 'UNIFICACIONES AUTOMÁTICAS ANTERIORES' };
 export const brandTipoLabels: Record<Exclude<BrandTipo, ''>, string> = { vehiculo: 'MARCA DE VEHÍCULO', repuesto: 'MARCA DE REPUESTOS' };
 export const calidadLabels: Record<Calidad, string> = { original: 'ORIGINAL', oes: 'OES (EQUIPO ORIGINAL)', alternativo: 'ALTERNATIVO' };

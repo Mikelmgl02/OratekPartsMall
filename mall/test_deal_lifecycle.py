@@ -142,7 +142,7 @@ class DealLifecycleTests(APITestCase):
         self.assertEqual((entry['supplier']['name'], sorted((line['codigo'], line['requested'], line['units']) for line in entry['lines'])),
                          ('PROVEEDOR A', [('58411-1R000-G', 3, 3), ('58411-1R000-KSM', 2, 2)]))
         # A line on a SKU that merged into the card's SKU counts under the card's SKU, in the badge and in its summary.
-        old = Part.objects.create(sku='OLD-SKU', name='VIEJO', active=False, merged_into=self.part)
+        old = make_line(sku='OLD-SKU', name='VIEJO', active=False, merged_into=self.part)
         SupplierRequestLine.objects.filter(request=first, supplier_item=self.item_a2).update(part=old, sku=old.sku)
         self.assertEqual(open_units()[str(self.part.pk)], {'units': 5, 'orders': 1})
         [entry] = self.client.get(f'/api/v1/accounts/{self.client_account.pk}/open-units/{self.part.pk}/').data['orders']

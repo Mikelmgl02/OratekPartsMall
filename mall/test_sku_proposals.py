@@ -8,12 +8,13 @@ from rest_framework.test import APIClient, APITestCase
 
 from .brand_models import Brand
 from . import new_products
-from .matching_engine import item_row, save_case
+from .matching_engine import item_row
 from .matching_models import MatchingCase
 from .models import Account, Part, PartType, Reference, Role, SupplierItem, User
+from .technical_data import part_type_for
 from .reference_matching import backlog
 from .sku_proposals import vehicle_makes
-from .test_factories import move_variant
+from .test_factories import make_legacy_case, make_line, move_variant
 
 OLD_KEYS = {'id', 'status', 'status_label', 'version', 'sku', 'description', 'brand', 'oem', 'part_type', 'references', 'field_sources',
             'internal_code', 'ai_review', 'item_count', 'supplier_count', 'stock', 'items', 'part', 'decided_by', 'decided_at',
@@ -37,7 +38,7 @@ class ProductosNuevosApiTests(APITestCase):
         item = SupplierItem.objects.create(supplier=account, supplier_invent_id=invent_id, codigo=codigo, brand=brand, description=description,
                                            source='apiag', **fields)
         if case:
-            save_case(key=f'supplier:{item.pk}', kind='supplier', sources=[item_row(item)], candidates=[], item=item, status=case)
+            make_legacy_case(item, case)
         return item
 
     def line(self, sku):
@@ -90,7 +91,7 @@ class ProductosNuevosApiTests(APITestCase):
         response = self.client.post(self.url(line), {'action': 'approve', 'expected_version': line.version + 1}, format='json')
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()['proposal']['version'], line.version)
-        holder = Part.objects.create(sku='EC-01', name='EC-01')
+        holder = make_line(sku='EC-01', name='EC-01')
         self.item(self.dealer, '11', 'EC01', 'WURTH', 'ARANDELA')   # another spelling of a catalog code: a new line, refused on approval
         backlog()
         clash = self.line('EC01')
@@ -100,8 +101,8 @@ class ProductosNuevosApiTests(APITestCase):
                                            'owners': [{'id': str(holder.pk), 'sku': 'EC-01', 'active': True}]})
         detail = self.client.get(self.url(clash)).json()
         self.assertEqual((detail['catalog_match'], detail['status']), ([{'id': str(holder.pk), 'sku': 'EC-01', 'code': 'EC01', 'active': True}], 'pending'))
-        holder.active = False
-        holder.save(update_fields=['active'])
+        holder.estado = 'retirada'
+        holder.save(update_fields=['estado'])
         retired = self.client.post(self.url(clash), {'action': 'approve', 'expected_version': clash.version}, format='json')
         self.assertEqual(retired.json()['detail'], 'EC01 ya está en el catálogo como SKU EC-01 (retirado): reactívalo para vincular ahí sus artículos.')
 
@@ -109,7 +110,7 @@ class ProductosNuevosApiTests(APITestCase):
         item = self.item(self.dealer, '10', 'A-1', 'ACME', 'PIEZA A')
         self.item(self.dealer, '11', 'B-1', 'ACME', 'PIEZA B')
         backlog()
-        target = Part.objects.create(sku='MASTER-1', name='MASTER-1')
+        target = make_line(sku='MASTER-1', name='MASTER-1')
         line = self.line('A-1')
         response = self.client.post(self.url(line), {'action': 'link', 'expected_version': line.version}, format='json')
         self.assertEqual(response.status_code, 400)                                 # which SKU
@@ -134,7 +135,7 @@ class ProductosNuevosApiTests(APITestCase):
         self.item(self.dealer, '10', 'A-1', 'ACME', 'pieza a', references=[{'code': '16100-39315', 'brand': 'TOYOTA'}])
         backlog()
         line = self.line('A-1')
-        part_type = PartType.objects.create(category='FRENOS', name='PASTILLAS')
+        part_type = part_type_for('FRENOS', 'PASTILLAS')
         self.assertEqual(self.client.patch(self.url(line), {'description': 'X'}, format='json').status_code, 400)   # the version it edits
         self.assertEqual(self.client.patch(self.url(line), {'expected_version': line.version, 'name': 'X'}, format='json').status_code, 400)
         response = self.client.patch(self.url(line), {'expected_version': line.version, 'description': 'Pastilla delantera',
@@ -147,7 +148,7 @@ class ProductosNuevosApiTests(APITestCase):
         self.assertEqual((re.sub('[^A-Z0-9]', '', declared['code']), declared['brand']), ('1610039315', 'TOYOTA'))
         stale = self.client.patch(self.url(line), {'expected_version': line.version, 'sku': 'OTRO'}, format='json')
         self.assertEqual((stale.status_code, stale.json()['proposal']['version']), (409, data['version']))
-        move_variant(SupplierItem.objects.get(supplier_invent_id='10'), Part.objects.create(sku='ELSEWHERE', name='ELSEWHERE'),
+        move_variant(SupplierItem.objects.get(supplier_invent_id='10'), make_line(sku='ELSEWHERE', name='ELSEWHERE'),
                      matching_status='matched')
         self.assertEqual(self.client.get(self.url(line)).json()['status'], 'resolved')   # its items left: no decision waits
         self.assertEqual(self.client.get(self.url(rest='summary/')).json()['resolved'], 1)
@@ -185,10 +186,10 @@ class ProductosNuevosApiTests(APITestCase):
                          ({'code': genuine.part.sku, 'brand': 'KAIYI'}, 2, 2, False, 'O-RING KAIYI GS11'))
         own = self.client.get(self.url(self.line('URT-22'))).json()
         self.assertEqual((own['internal_code'], own['oem'], own['brand']), (True, None, 'MOTION MOTORS'))
-        self.assertEqual(MatchingCase.objects.filter(kind='supplier', status='dismissed').count(), 3)
+        self.assertEqual(MatchingCase.objects.filter(evidence__s10__kind='supplier', status='dismissed').count(), 3)
 
     def test_bulk_rejects_and_links_one_by_one(self):
-        target = Part.objects.create(sku='OLD-1', name='OLD-1')
+        target = make_line(sku='OLD-1', name='OLD-1')
         self.item(self.dealer, '1', 'R-1', 'ACME', 'NADA')
         self.item(self.dealer, '2', 'L-1', 'ACME', 'PIEZA')
         backlog()

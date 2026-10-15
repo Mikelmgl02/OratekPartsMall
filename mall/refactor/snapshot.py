@@ -73,8 +73,8 @@ def choose_sample(username=None):
     """The inputs a snapshot reads. Every --diff reuses its base's sample, so a later stage reads exactly these again."""
     from django.db.models import F, Q
     from ..lines import catalog_lines, storefront_lines
-    from ..models import Account, Membership, PartCode, SupplierItem, User
-    from ..oem_reference_models import OEMReference, PartOEMLink
+    from ..models import Account, Membership, Reference, SupplierItem, User
+    from ..references import library_q
     admins = User.objects.filter(is_superuser=True, is_active=True)
     admin = (admins.filter(username=username) if username else admins).order_by('pk').first()
     if admin is None:
@@ -88,16 +88,16 @@ def choose_sample(username=None):
             suppliers[str(account.pk)] = member
     live = storefront_lines()
     skus = list(ordered_by_hash(live).values_list('sku', flat=True)[:SIZES['import_new']])
-    codes = list(ordered_by_hash(PartCode.objects.filter(part__in=live)).values_list('code', flat=True)[:5])
+    codes = list(ordered_by_hash(Reference.objects.filter(part__in=live)).values_list('code', flat=True)[:5])
     searches = list(dict.fromkeys(['', *WORDS, *skus[:10], *[compact(sku) for sku in skus[:5]], *codes]))[:SIZES['searches']]
     stocked = SupplierItem.objects.filter(matching_status='matched', reported_quantity__gt=F('reserved_quantity'), supplier__active=True)
-    numbered = Q(pk__in=PartCode.objects.filter(ref_type='oem', oem_reference__isnull=False).values('part_id')) | Q(
-        pk__in=PartOEMLink.objects.values('part_id'))
+    # Lines with an OEM number of the library or an aftermarket code (S10: what equivalents read).
+    numbered = Q(pk__in=Reference.objects.filter(Q(library_q()) | Q(tipo='aftermarket', is_main=False)).values('part_id'))
     return {
         'users': {'admin': admin.pk, 'client': client, 'suppliers': suppliers},
         'searches': searches,
         'offers': ids(live.filter(pk__in=stocked.values('part_id')), SIZES['offers']),
-        'biblioteca': ids(OEMReference.objects.all(), SIZES['biblioteca']),
+        'biblioteca': [str(uid) for uid in ordered_by_hash(Reference.objects.filter(library_q())).values_list('uid', flat=True)[:SIZES['biblioteca']]],
         'oem_equivalents': ids(live.filter(numbered), SIZES['oem_equivalents']),
         'technical': ids(live.filter(part_type__isnull=False), SIZES['technical']),
         'split': ids(live.filter(pk__in=catalog_lines(('unificada',)).values('merged_into_id')), SIZES['split']),

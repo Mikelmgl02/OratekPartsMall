@@ -42,6 +42,7 @@ from .refactor.migration_ops import LockTimeout, with_lock_timeout
 from .request_models import StockReservation
 from .supplier_import_models import SupplierInventoryImportJob
 from .test_apiag_sync import FakeApiag
+from .test_factories import make_line
 
 ID = '00000000-0000-4000-8000-000000000001'
 ACCOUNT = f'/api/v1/accounts/{ID}'
@@ -207,7 +208,7 @@ class FreezeThroughTheApiTests(FreezeFolderMixin, APITestCase):
     def setUp(self):
         super().setUp()
         self.root = User.objects.create_superuser('root-freeze', 'root-freeze@example.invalid', 'SecureRoot938!')
-        self.part = Part.objects.create(sku='58411-1R000', name='Tambor', description='TAMBOR HYU ACCENT 11-16')
+        self.part = make_line(sku='58411-1R000', name='Tambor', description='TAMBOR HYU ACCENT 11-16')
         self.client.force_authenticate(self.root)
 
     def test_a_frozen_catalog_edit_writes_nothing_and_an_open_write_still_saves(self):

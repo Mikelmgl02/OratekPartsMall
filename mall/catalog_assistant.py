@@ -15,12 +15,12 @@ from rest_framework.views import APIView
 
 from .catalog_assistant_models import CatalogAssistantJob, CatalogAssistantSuggestion, CategorySuggestionCache
 from .category_suggestions import CATEGORY_BATCH_SIZE, classify_categories
-from .technical_data import bind_part_types, classification as subgrupo_of
+from .technical_data import classification as subgrupo_of, normalized_label, subgrupos_for
 from .catalog_classification import (AI_BATCH_SIZE, PROVIDER_TIMEOUT, ClassificationConflict,
     ClassificationUnavailable, call_provider, candidate_context, provider_configuration, validate_suggestions)
 from .catalog_grouping import merge_catalog_parts
 from .management import IsSuperuser, UppercaseCharField
-from .lines import SUBGRUPO_FIELDS, bulk_update_lines, storefront_lines
+from .lines import SUBGRUPO_FIELDS, bulk_update_lines, set_subgrupo, storefront_lines
 from .models import CatalogMerge, Part
 from .references import live_q
 
@@ -60,22 +60,26 @@ class AssistantAction(serializers.Serializer):
 
 
 def eligible_parts(scope, search):
+    """The storefront's lines an analysis covers: unclassified ones have no subgrupo (from S10 a line has one or none)."""
     parts = storefront_lines()
     if scope == 'unclassified':
-        parts = parts.filter(Q(category='') | Q(subcategory=''))
+        parts = parts.filter(part_type__isnull=True)
     if search:
-        parts = parts.filter(Q(sku__icontains=search) | Q(name__icontains=search) |
-            Q(description__icontains=search) | Q(live_q('codes__'), codes__code__icontains=search) |
-            Q(category__icontains=search) | Q(subcategory__icontains=search)).distinct()
+        parts = parts.filter(Q(sku__icontains=search) | Q(description__icontains=search) |
+            Q(live_q('codes__'), codes__code__icontains=search) |
+            Q(part_type__grupo__nombre__icontains=search) | Q(part_type__name__icontains=search)).distinct()
     return parts.order_by('sku')
 
 
 def current_row(part):
+    """A line as an analysis saw it; load it with select_related('part_type__grupo') and prefetch_related('codes'). From S10 name is
+    its description and category / subcategory its subgrupo's grupo and name; a code's ref_type is its tipo's."""
+    category, subcategory = subgrupo_of(part)
     return {'id': str(part.pk), 'sku': part.sku, 'name': part.name, 'description': part.description,
-            'is_OEM': part.is_OEM,
-            'category': part.category, 'subcategory': part.subcategory, 'active': part.active,
+            'is_OEM': part.tipo == 'OEM',
+            'category': category, 'subcategory': subcategory, 'active': part.estado == 'publicada',
             'merged_into': str(part.merged_into_id) if part.merged_into_id else None,
-            'codes': [{'brand': code.brand, 'code': code.code, 'ref_type': code.ref_type, 'reference_source': code.reference_source}
+            'codes': [{'brand': code.brand or '', 'code': code.code, 'ref_type': code.ref_type}
                       for code in part.codes.all() if not code.is_main]}  # the main is the codigo (S2b): suggestions keep their fingerprint
 
 
@@ -146,7 +150,7 @@ def classify(user, pk, index):
             return classify_category_batch(user, job, claim, index, selected)
         # Retrieve candidates from the full active catalog, across batch and filter
         # boundaries. Only the 50 sources and bounded candidates reach Gemini.
-        parts = list(storefront_lines().prefetch_related('codes').order_by('sku'))
+        parts = list(storefront_lines().select_related('part_type__grupo').prefetch_related('codes').order_by('sku'))
         rows = {part.sku: current_row(part) for part in parts}
         selected_ids = set(selected)
         selected_skus = [part.sku for part in parts if str(part.pk) in selected_ids]
@@ -184,7 +188,7 @@ def classify(user, pk, index):
 
 def classify_category_batch(user, job, claim, index, selected):
     # A category needs only its source row, never a scan of all catalog candidates.
-    parts = list(storefront_lines().filter(pk__in=selected).prefetch_related('codes'))
+    parts = list(storefront_lines().filter(pk__in=selected).select_related('part_type__grupo').prefetch_related('codes'))
     if len(parts) != len(selected):
         raise ClassificationConflict('Algunos SKU se desactivaron o agruparon. Crea un análisis nuevo.')
     by_id = {str(part.pk): current_row(part) for part in parts}
@@ -215,8 +219,8 @@ def unchanged(part, snapshot):
     actual_refs = {(item['brand'], item['code']): item for item in actual['codes']}
     for ref in snapshot['codes']:
         current = actual_refs.get((ref['brand'], ref['code']), {})
-        if any(key in ref and ref[key] != current.get(key) for key in ['ref_type', 'reference_source']):
-            raise ClassificationConflict(f'El tipo o la fuente de los alternos de {part.sku} cambió desde el análisis.')
+        if 'ref_type' in ref and ref['ref_type'] != current.get('ref_type'):  # (a code's source is no longer compared: S10)
+            raise ClassificationConflict(f'El tipo de los alternos de {part.sku} cambió desde el análisis.')
     old_codes = {(item['brand'], item['code']) for item in snapshot['codes']}
     if not old_codes.issubset({(item['brand'], item['code']) for item in actual['codes']}):
         raise ClassificationConflict(f'Los alternos de {part.sku} cambiaron desde el análisis. Revisa el inventario actual.')
@@ -270,7 +274,7 @@ def apply(user, pk, decisions, offset):
                 # analysis is reusable; an unrelated concurrent creation is not.
                 if not CatalogMerge.objects.filter(target=parts[target], summary__assistant_job=str(job.pk)).exists():
                     raise ClassificationConflict(f'El SKU {target} se creó después del análisis. Revisa su agrupación antes de continuar.')
-                if any(getattr(parts[target], field) != suggestion.context[target][field] for field in ['name', 'description']):
+                if parts[target].description != suggestion.context[target]['description']:  # (its name is its description: S10)
                     raise ClassificationConflict(f'El SKU {target} cambió desde el análisis.')
         else:
             unchanged(parts[target], suggestion.context[target])
@@ -284,7 +288,7 @@ def apply(user, pk, decisions, offset):
         entry = targets.setdefault(target, {'sources': [], 'classification': classification})
         if source != target:
             entry['sources'].append(source)
-    changed_parts = []
+    changed_parts, wanted = [], {}
     for target, data in sorted(targets.items()):
         category, subcategory = data['classification']
         if data['sources']:
@@ -297,11 +301,15 @@ def apply(user, pk, decisions, offset):
             current = dict(zip(['category', 'subcategory'], subgrupo_of(part)))
             chosen = {field: value for field, value in [('category', category), ('subcategory', subcategory)] if value}
             if any(current[field] != value for field, value in chosen.items()):
-                for field, value in {**current, **chosen}.items():  # the half left blank stays the line's own (its subgrupo's)
-                    setattr(part, field, value)
+                pair = {**current, **chosen}  # the half left blank stays the line's own (its subgrupo's)
+                wanted[part.pk] = (normalized_label(pair['category']), normalized_label(pair['subcategory']))
                 changed_parts.append(part)
-    if changed_parts:  # the chosen grupo / subgrupo names the subgrupo, found or created, and mall.lines writes it with its text
-        bind_part_types(changed_parts)
+    if changed_parts:  # the chosen grupo / subgrupo names the subgrupo, found or created at once, and mall.lines writes it
+        if not all(all(pair) for pair in wanted.values()):
+            raise ValidationError('Indica el grupo y el subgrupo juntos.')
+        subgrupos = subgrupos_for(wanted.values())
+        for part in changed_parts:
+            set_subgrupo(part, subgrupos[wanted[part.pk]])
         bulk_update_lines(changed_parts, SUBGRUPO_FIELDS)
     invalidate_keys = []
     for suggestion, value in normalized:

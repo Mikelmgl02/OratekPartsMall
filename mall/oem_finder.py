@@ -490,7 +490,9 @@ SKU_SOURCES = ('sku', 'sku_segment', 'sku_prefixed')
 class Snapshot:
     """Read-only rows: parts {id, sku, name, description, category, subcategory, active, merged_into_id, is_OEM, estado} (every
     Part, retired included; a row without estado is publicada, as before S1), codes {part_id, code, brand, ref_type,
-    reference_source}, items {supplier_id, part_id, codigo, brand, references, reported_quantity, reserved_quantity}. Ids are strings."""
+    reference_source}, items {supplier_id, part_id, codigo, brand, references, reported_quantity, reserved_quantity}. Ids are strings.
+    From S10 load_snapshot derives the names the finder reads: name is the SKU, category and subcategory the subgrupo's, active and
+    is_OEM estado's and tipo's, a code's ref_type its tipo's and its reference_source its newest source's citation."""
 
     def __init__(self, parts, codes=(), items=(), source='rows'):
         self.parts, self.codes, self.items, self.source = list(parts), list(codes), list(items), source
@@ -500,8 +502,10 @@ def load_snapshot():
     """ORM .values() reads only, in a stable order so lexicon tie-breaks (and fingerprints) repeat run to run. On PostgreSQL the
     three reads share one REPEATABLE READ READ ONLY transaction: an upload committed meanwhile never splits Parts from codes."""
     from django.db import connection, transaction
+    from django.db.models import F
+    from . import references
     from .lines import catalog_lines, catalog_q
-    from .models import PartCode, SupplierItem
+    from .models import Reference, SupplierItem
     from .references import LIBRARY_ORIGIN
     outermost = not connection.in_atomic_block
     # The catalog's lines (publicada and retirada) and the unificada ones (for their merges and frozen codigos), as before S4: a line in
@@ -512,14 +516,22 @@ def load_snapshot():
             with connection.cursor() as cursor:
                 cursor.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
         # sorted here by code point, not by the database collation (en_US.utf8 ignores punctuation and changes with glibc)
-        parts = sorted((dict(p, id=str(p['id']), merged_into_id=str(p['merged_into_id']) if p['merged_into_id'] else None)
-                        for p in catalog_lines(estados).values('id', 'sku', 'name', 'description', 'category', 'subcategory', 'active',
-                                                               'merged_into_id', 'is_OEM', 'estado').iterator(chunk_size=5000)), key=lambda p: p['sku'])
+        rows = (catalog_lines(estados).annotate(grupo_name=F('part_type__grupo__nombre'), subgrupo_name=F('part_type__name'))
+                .values('id', 'sku', 'description', 'grupo_name', 'subgrupo_name', 'merged_into_id', 'tipo', 'estado'))
+        parts = sorted(({'id': str(p['id']), 'sku': p['sku'], 'name': p['sku'], 'description': p['description'],
+                         'category': p['grupo_name'] or '', 'subcategory': p['subgrupo_name'] or '', 'active': p['estado'] == 'publicada',
+                         'merged_into_id': str(p['merged_into_id']) if p['merged_into_id'] else None, 'is_OEM': p['tipo'] == 'OEM',
+                         'estado': p['estado']} for p in rows.iterator(chunk_size=5000)), key=lambda p: p['sku'])
         # A line's main (S2b) is its SKU, already in parts: left out, so the snapshots and the cases' fingerprints stay as they were; so
         # are the numbers S4 put on catalog lines as library numbers (detail.origen biblioteca), which are library data too.
-        codes = [dict(c, part_id=str(c['part_id'])) for c in PartCode.objects.filter(catalog_q(estados, prefix='part__'), is_main=False)
-                 .exclude(detail__contains={'origen': LIBRARY_ORIGIN}).order_by('pk').values('part_id', 'code', 'brand', 'ref_type', 'reference_source')
-                 .iterator(chunk_size=5000)]
+        rows = list(Reference.objects.filter(catalog_q(estados, prefix='part__'), is_main=False)
+                    .exclude(detail__contains={'origen': LIBRARY_ORIGIN}).order_by('pk').values('pk', 'part_id', 'code', 'brand', 'tipo')
+                    .iterator(chunk_size=5000))
+        sources = {}
+        for start in range(0, len(rows), 5000):
+            sources.update(references.source_texts([row['pk'] for row in rows[start:start + 5000]]))
+        codes = [{'part_id': str(c['part_id']), 'code': c['code'], 'brand': c['brand'], 'ref_type': references.legacy_ref_type(c['tipo']),
+                  'reference_source': sources.get(c['pk'], '')} for c in rows]
         items = [dict(s, part_id=str(s['part_id']), supplier_id=str(s['supplier_id'])) for s in SupplierItem.objects.filter(
             part__isnull=False).order_by('pk').values('supplier_id', 'part_id', 'codigo', 'brand', 'references', 'reported_quantity',
                                                       'reserved_quantity').iterator(chunk_size=5000)]

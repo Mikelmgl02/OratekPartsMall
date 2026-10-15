@@ -18,8 +18,8 @@ from .catalog_split import split_catalog_part, split_plan
 from .catalog_split_models import CatalogSeparation
 from .matching_models import MatchingDecision
 from .models import CatalogMerge, Part, PartImage, Reference, ReferenceSource, SupplierItem, WishlistItem
+from .technical_data import part_type_for
 from .oem_finder_models import OEMAutoCandidate, OEMReviewCase
-from .oem_reference_models import PartOEMLink
 from .supplier_import_models import SupplierInventoryImportJob
 from .technical_models import PartType, PartSpecification, TechnicalField, TechnicalTemplate
 from .test_factories import make_library_number, make_line, make_reference, make_supplier, make_user, make_variant, unhook_variants
@@ -63,11 +63,6 @@ class MergeLinesTests(TestCase):
         WishlistItem.objects.create(user=self.root, part=self.target)
         duplicate = WishlistItem.objects.create(user=self.root, part=self.source)
         favourite = WishlistItem.objects.create(user=other, part=self.source)
-        number = make_library_number('KIA', '58411-07000', source_kind='aftermarket_catalog', citation='CATÁLOGO KOREA')
-        PartOEMLink.objects.create(part=self.target, reference=number, source='catalog', citations=['A · KX-1'])
-        PartOEMLink.objects.create(part=self.source, reference=number, source='catalog', citations=['B · KX-100'])
-        own = make_library_number('KIA', '58411-07001', citation='LISTA')
-        link = PartOEMLink.objects.create(part=self.source, reference=own, source='catalog', citations=['C · KX-100'])
         review = OEMReviewCase.objects.create(part=self.source, fingerprint='f', tier='REVIEW')
         auto = OEMAutoCandidate.objects.create(part=self.source, tier='AUTO_FLAG_CURRENT', apply_tier='AUTO_FLAG_CURRENT', sku=self.source.sku,
                                                candidate='58411-07000', fingerprint='f', rules_version='v')
@@ -86,8 +81,6 @@ class MergeLinesTests(TestCase):
         self.assertEqual(sorted(PartImage.objects.filter(part=self.target).values_list('pk', flat=True)), sorted([kept.pk, moved.pk]))
         self.assertEqual(sorted(WishlistItem.objects.values_list('user_id', 'part_id')), sorted([(self.root.pk, self.target.pk), (other.pk, self.target.pk)]))
         self.assertFalse(WishlistItem.objects.filter(pk=duplicate.pk).exists())
-        self.assertEqual(PartOEMLink.objects.get(part=self.target, reference=number).citations, ['A · KX-1', 'B · KX-100'])
-        self.assertEqual(PartOEMLink.objects.get(pk=link.pk).part_id, self.target.pk)
         review.refresh_from_db()
         auto.refresh_from_db()
         suggestion.refresh_from_db()
@@ -97,11 +90,11 @@ class MergeLinesTests(TestCase):
         entry = merge.sources[0]
         self.assertEqual((entry['main'], sorted(entry['references']), entry['codes']), (former.pk, sorted([alt.pk, former.pk]),
                                                                                          [{'brand': 'KOREA', 'code': 'KX-100'}]))
-        self.assertEqual((entry['items'], entry['images'], entry['favorites']['moved'], entry['favorites']['dropped'], entry['links']),
-                         ([str(item.pk)], [str(moved.pk)], [favourite.pk], [self.root.pk], [link.pk]))
+        self.assertEqual((entry['items'], entry['images'], entry['favorites']['moved'], entry['favorites']['dropped']),
+                         ([str(item.pk)], [str(moved.pk)], [favourite.pk], [self.root.pk]))
         self.assertEqual((merge.summary['reason'], merge.summary['automatic'], merge.summary['estado']), ('prueba', False, {'before': 'publicada', 'after': 'publicada'}))
 
-        # Separar gives all of it back: the former main as the source's main, its rows, favourites, links and dependents.
+        # Separar gives all of it back: the former main as the source's main, its rows, favourites and dependents.
         restore = [{'id': str(self.source.pk), 'codes': [alt.pk], 'items': [str(item.pk)], 'images': [str(moved.pk)]}]
         result = line_merge.split_line(self.target.pk, restore, actor=self.root)
         self.source.refresh_from_db()
@@ -109,7 +102,6 @@ class MergeLinesTests(TestCase):
         self.assertEqual(Reference.objects.get(pk=alt.pk).part_id, self.source.pk)
         self.assertEqual(SupplierItem.objects.get(pk=item.pk).part_id, self.source.pk)
         self.assertEqual(sorted(WishlistItem.objects.filter(part=self.source).values_list('user_id', flat=True)), sorted([self.root.pk, other.pk]))
-        self.assertEqual(PartOEMLink.objects.get(pk=link.pk).part_id, self.source.pk)
         review.refresh_from_db()
         auto.refresh_from_db()
         suggestion.refresh_from_db()
@@ -149,8 +141,8 @@ class MergeLinesTests(TestCase):
         self.assertEqual(line_merge.merged_estado([referencia, rechazada], []), 'rechazada')
         self.assertEqual(line_merge.merged_estado([referencia, referencia], []), 'referencia')
         self.assertEqual(line_merge.merged_estado([prep, prep], []), 'preparacion')
-        self.target.active = False
-        self.target.save(update_fields=['active'])
+        self.target.estado = 'retirada'
+        self.target.save(update_fields=['estado'])
         merge = line_merge.merge_lines(self.target, [self.source], actor=self.root)
         self.target.refresh_from_db()
         self.assertEqual((self.target.estado, self.target.active, merge.summary['estado']), ('publicada', True, {'before': 'retirada', 'after': 'publicada'}))
@@ -176,12 +168,12 @@ class MergeLinesTests(TestCase):
         with self.assertRaisesMessage(ValidationError, 'OTRO-SKU identifica otro SKU'):
             line_merge.merge_lines(self.target, [source], actor=self.root)
         sheet = make_line('SHEET-1')
-        part_type = PartType.objects.create(category='FRENOS', name='TAMBORES LM')
-        template = TechnicalTemplate.objects.create(part_type=part_type)
+        part_type = part_type_for('FRENOS', 'TAMBORES LM')
+        template = TechnicalTemplate.objects.get(part_type=part_type)  # made with its subgrupo
         field = TechnicalField.objects.create(template=template, key='diametro', label='Diámetro', unit='mm', kind='number')
         PartSpecification.objects.create(part=sheet, field=field, number_value=200)
         # S6: specs move only onto a target with no subgrupo or the same one; another subgrupo's sheet waits (guard subgrupo).
-        Part.objects.filter(pk=self.target.pk).update(part_type=PartType.objects.create(category='FRENOS', name='DISCOS LM'))
+        Part.objects.filter(pk=self.target.pk).update(part_type=part_type_for('FRENOS', 'DISCOS LM'))
         self.target.refresh_from_db()
         with self.assertRaisesMessage(line_merge.MergeGuard, 'fichas técnicas'):
             line_merge.merge_lines(self.target, [sheet], actor=self.root)
@@ -303,22 +295,3 @@ class SeparationTests(APITestCase):
         self.assertIn(line_merge.pair(c.pk, b.pk), line_merge.separated_pairs())
         self.assertEqual(line_merge.kept_apart_among([c.pk, b.pk]), [line_merge.pair(c.pk, b.pk)])
         self.assertTrue(line_merge.apart(a.pk, b.pk))
-
-    def test_dismissing_a_compact_duplicate_or_shared_number_case_keeps_its_lines_apart(self):
-        from .matching_engine import part_row, save_case
-        lines = [make_line(f'CASE-{n}') for n in range(3)]
-        rows = [part_row(Part.objects.prefetch_related('codes').get(pk=line.pk)) for line in lines]
-        shared = save_case(key='catalog:shared:x', kind='catalog', sources=rows[1:], candidates=rows[:1], target='CASE-0',
-                           method='shared_oem_number', reason='r')
-        family = save_case(key='catalog:FAM', kind='catalog', sources=rows[1:2], candidates=rows[:1], target='CASE-0', method='family_review',
-                           reason='r')
-        for case in (shared, family):
-            response = self.client.post(f'/api/v1/management/matching/{case.pk}/', {'action': 'dismiss', 'fingerprint': case.fingerprint},
-                                        format='json')
-            self.assertEqual(response.status_code, 200, response.content)
-        self.assertEqual(CatalogSeparation.objects.filter(case=shared).count(), 3)  # every pair of its three lines
-        self.assertEqual(set(CatalogSeparation.objects.values_list('reason', flat=True)), {'shared_oem_number'})  # a family dismissal writes none
-        self.assertTrue(line_merge.apart(lines[1].pk, lines[2].pk))
-        self.assertEqual(MatchingDecision.objects.get(case=shared).evidence['separated'], 3)
-
-

@@ -1,7 +1,8 @@
 """OEM reference library service (inventory refactor S4): the library's numbers are References (tipo oem with their manufacturer as
 brand, mall.references.add_library_number), and this module reads and describes them the way the Biblioteca OEM showed the OEM table:
 compact numbers, the status rule, the source kinds, the subgrupo a library part type maps to, and the catalog lines that carry a
-number.
+number. From S10 it also keeps the library's helpers and choices (compact, manufacturer_name, spellings, citation_list, the old
+statuses and source kinds), which lived with the OEM table's models until S10 archived those tables.
 
 Until S8 the Biblioteca's JSON keeps the OEM table's legacy values: a number's id is its Reference's uid (the OEMReference id for the
 numbers the library had before S4), its code is the compact number (compact(code): a short number's clave is its printed spelling), status is verified, declared, inferred or disputed
@@ -21,8 +22,46 @@ from django.db import connection
 from django.db.models import CharField, Func, Prefetch, Q, Value
 from django.db.models.functions import Replace, Upper
 
-from .oem_reference_models import (MANUAL_KINDS, OEMCrossReference, OEMReference, OEMReferenceSource, REFERENCE_STATUSES,
-                                   SOURCE_KINDS, compact, manufacturer_name, spellings)  # noqa: F401 (compact and spellings: mall.references uses them)
+from .catalog_families import normalized_reference
+
+REFERENCE_STATUSES = [('verified', 'Verificado'), ('declared', 'Declarado'), ('inferred', 'Inferido'), ('disputed', 'En disputa')]
+SOURCE_KINDS = [('price_list', 'Lista de precios de distribuidor'), ('manufacturer_catalog', 'Catálogo del fabricante'),
+                ('aftermarket_catalog', 'Catálogo de marca de repuesto'), ('ai_lookup', 'Búsqueda OEM con IA'),
+                ('supplier_declaration', 'Declaración de proveedor'), ('catalog_approval', 'Aprobación en el catálogo'),
+                ('oem_finder', 'Buscador OEM'), ('manual', 'Registro manual')]
+# Sources a person registers (and may remove); the others follow the catalog's OEM codes and are never edited by hand.
+MANUAL_KINDS = ('manual', 'price_list', 'manufacturer_catalog', 'aftermarket_catalog', 'supplier_declaration')
+MAX_PRINTED = 20
+
+
+def compact(code):
+    """17801-30070 -> 1780130070, mr-968365 -> MR968365: the stored form of an OEM number (the catalog's normalized_reference)."""
+    return normalized_reference(str(code or ''))
+
+
+def manufacturer_name(value):
+    return ' '.join(str(value or '').upper().split())
+
+
+def spellings(forms, code):
+    """Distinct uppercase spellings of this number other than the compact form itself; a spelling of another number is dropped."""
+    out = []
+    for form in forms or []:
+        form = ' '.join(str(form or '').upper().split())[:80]
+        if form and form != code and compact(form) == code and form not in out:
+            out.append(form)
+    return out[:MAX_PRINTED]
+
+
+def citation_list(citations, *more):
+    """Distinct non-blank citations in first-seen order, each cut to 500 characters."""
+    out = []
+    for text in [*(citations or []), *more]:
+        text = str(text or '').strip()[:500]
+        if text and text not in out:
+            out.append(text)
+    return out
+
 
 VERIFIED_KINDS = {'price_list', 'manufacturer_catalog'}
 DECLARED_KINDS = {'aftermarket_catalog', 'supplier_declaration', 'catalog_approval', 'manual'}
@@ -95,16 +134,6 @@ def subgrupo_names():
         if grupo and name:
             out[fold(name)].append((grupo, name))
     return dict(out)
-
-
-def tables_ready():
-    """False until migration 0079 runs: the library's tables, and the column (ref_id) that hangs their rows from References."""
-    tables = set(connection.introspection.table_names())
-    if not {OEMReference._meta.db_table, OEMReferenceSource._meta.db_table, OEMCrossReference._meta.db_table} <= tables:
-        return False
-    with connection.cursor() as cursor:
-        columns = {column.name for column in connection.introspection.get_table_description(cursor, OEMCrossReference._meta.db_table)}
-    return 'ref_id' in columns
 
 
 def derived_status(sources):

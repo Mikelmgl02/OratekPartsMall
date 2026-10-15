@@ -11,6 +11,7 @@ from .catalog_import import load_job_groups, replace_job_groups
 from . import references
 from .models import Account, CatalogImportJob, CatalogMerge, Membership, Part, PartCode, PartImage, Reference, Role, StockEntry, SupplierItem, User
 from .services import ingest_inventory
+from .test_factories import make_line
 
 
 @override_settings(GEMINI_API_KEY='test-key')
@@ -22,7 +23,7 @@ class MissingCatalogParentTests(APITestCase):
     def setUp(self):
         self.root = User.objects.create_superuser('family-root', 'family@example.invalid', 'Family938!')
         self.client.force_authenticate(self.root)
-        self.parts = [Part.objects.create(sku=f'{self.base}-{suffix}', name=f'{self.base}-{suffix}',
+        self.parts = [make_line(sku=f'{self.base}-{suffix}', name=f'{self.base}-{suffix}',
                       description='TAMBOR KIA PICANTO ' + ('04-10' if suffix == 'KSM-NP' else '04-11'))
                       for suffix in ['K', 'KSM-NP', 'NP', 'RAZ']]
 

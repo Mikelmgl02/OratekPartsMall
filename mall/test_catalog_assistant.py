@@ -8,6 +8,7 @@ from rest_framework.test import APITestCase
 
 from .catalog_assistant_models import CatalogAssistantJob
 from .catalog_classification import ClassificationProviderError
+from .technical_data import part_type_for
 from .models import Account, CatalogMerge, Part, PartCode, Role, StockEntry, SupplierItem, User
 from .services import ingest_inventory
 
@@ -68,7 +69,7 @@ class CatalogAssistantTests(APITestCase):
             self.assertEqual(self.action(job, mode='classify', batch_index=0).status_code, 503)
 
     def test_filtered_scope_idempotent_create_and_candidates_outside_filter(self):
-        self.base.category, self.base.subcategory = 'FRENOS', 'TAMBORES'
+        self.base.part_type = part_type_for('FRENOS', 'TAMBORES')
         self.base.save()
         self.assertEqual(self.client.get(self.url).data['eligible_count'], 1)
         self.assertEqual(self.client.get(self.url, {'scope':'all'}).data['eligible_count'], 2)
@@ -100,7 +101,7 @@ class CatalogAssistantTests(APITestCase):
             self.assertEqual((last.data['status'], last.data['count']), ('completed',55))
             page = self.client.get(f'{self.url}{job["id"]}/', {'offset':50})
             self.assertEqual(len(page.data['results']),5)
-        self.assertEqual(Part.objects.filter(category='').count(),55)
+        self.assertEqual(Part.objects.filter(part_type__isnull=True).count(),55)
         self.assertFalse(CatalogMerge.objects.exists())
 
     def test_reviewed_merge_preserves_stock_and_is_idempotent(self):
@@ -160,7 +161,7 @@ class CatalogAssistantTests(APITestCase):
         self.assertIn('evidencia verificable', variant['reason'])
         self.assertEqual(result.data['applied_count'], 0)
         self.assertFalse(CatalogMerge.objects.exists())
-        self.assertEqual(Part.objects.filter(category='').count(), 2)
+        self.assertEqual(Part.objects.filter(part_type__isnull=True).count(), 2)
 
     def test_live_claim_blocks_second_request_and_expired_lease_can_resume(self):
         job = self.start()
@@ -182,7 +183,7 @@ class CatalogAssistantTests(APITestCase):
         self.assertEqual(CatalogAssistantJob.objects.get(pk=job['id']).suggestions.filter(status='pending').count(),2)
         self.variant.description=self.base.description
         self.variant.save()
-        self.base.category='MANUAL EDIT'
+        self.base.part_type = part_type_for('MANUAL EDIT', 'VARIOS')
         self.base.save()
         self.assertEqual(self.action(job,mode='apply',decisions=self.decisions(job)).status_code,409)
         self.base.refresh_from_db()
@@ -195,7 +196,7 @@ class CatalogAssistantTests(APITestCase):
         self.assertEqual(result.status_code,200)
         self.assertEqual(result.data['dismissed_count'],1)
         base = next(item for item in job['results'] if item['source_sku']==self.base.sku)
-        self.base.category='MANUAL GROUP';self.base.save()
+        self.base.part_type = part_type_for('MANUAL GROUP', 'VARIOS'); self.base.save()
         result=self.action(job,mode='apply',decisions=[{'id':base['id'],'target_sku':self.base.sku,'category':'','subcategory':''}])
         self.assertEqual(result.status_code,200,result.data)
         self.base.refresh_from_db()
@@ -211,4 +212,4 @@ class CatalogAssistantTests(APITestCase):
         cyclic = [{**value,'target_sku':self.variant.sku if value['target_sku']==self.base.sku and next(item for item in job['results'] if item['id']==value['id'])['source_sku']==self.base.sku else self.base.sku} for value in values]
         self.assertEqual(self.action(job,mode='apply',decisions=cyclic).status_code,400)
         self.assertFalse(CatalogMerge.objects.exists())
-        self.assertEqual(Part.objects.filter(category='').count(),2)
+        self.assertEqual(Part.objects.filter(part_type__isnull=True).count(),2)

@@ -23,39 +23,14 @@ from django.db import models
 from django.db.models import F, Q
 from django.db.models.functions import Upper
 
-from .catalog_families import normalized_reference
 from .catalog_suffix_models import values
+# The library's helpers and choices live in mall.oem_reference from S10 (these models leave the state in S10's step 2).
+from .oem_reference import (MANUAL_KINDS, MAX_PRINTED, REFERENCE_STATUSES, SOURCE_KINDS, citation_list, compact,  # noqa: F401
+                            manufacturer_name, spellings)
 
-REFERENCE_STATUSES = [('verified', 'Verificado'), ('declared', 'Declarado'), ('inferred', 'Inferido'), ('disputed', 'En disputa')]
-SOURCE_KINDS = [('price_list', 'Lista de precios de distribuidor'), ('manufacturer_catalog', 'Catálogo del fabricante'),
-                ('aftermarket_catalog', 'Catálogo de marca de repuesto'), ('ai_lookup', 'Búsqueda OEM con IA'),
-                ('supplier_declaration', 'Declaración de proveedor'), ('catalog_approval', 'Aprobación en el catálogo'),
-                ('oem_finder', 'Buscador OEM'), ('manual', 'Registro manual')]
 # How a SKU is tied to a number besides its OEM alternos (PartOEMLink).
 LINK_SOURCES = [('sku_name', 'Nombre del SKU'), ('catalog', 'Catálogo de marca de repuesto')]
-# Sources a person registers (and may remove); the others follow the catalog's OEM alternos and are never edited by hand.
-MANUAL_KINDS = ('manual', 'price_list', 'manufacturer_catalog', 'aftermarket_catalog', 'supplier_declaration')
 AUTOMATIC_KINDS = ('catalog_approval', 'oem_finder', 'ai_lookup')
-MAX_PRINTED = 20
-
-
-def compact(code):
-    """17801-30070 -> 1780130070, mr-968365 -> MR968365: the stored form of an OEM number (the catalog's normalized_reference)."""
-    return normalized_reference(str(code or ''))
-
-
-def manufacturer_name(value):
-    return ' '.join(str(value or '').upper().split())
-
-
-def spellings(forms, code):
-    """Distinct uppercase spellings of this number other than the compact form itself; a spelling of another number is dropped."""
-    out = []
-    for form in forms or []:
-        form = ' '.join(str(form or '').upper().split())[:80]
-        if form and form != code and compact(form) == code and form not in out:
-            out.append(form)
-    return out[:MAX_PRINTED]
 
 
 class OEMReference(models.Model):
@@ -133,16 +108,6 @@ class OEMReferenceSource(models.Model):
     @property
     def removable(self):
         return self.kind in MANUAL_KINDS
-
-
-def citation_list(citations, *more):
-    """Distinct non-blank citations in first-seen order, each cut to 500 characters."""
-    out = []
-    for text in [*(citations or []), *more]:
-        text = str(text or '').strip()[:500]
-        if text and text not in out:
-            out.append(text)
-    return out
 
 
 class OEMCrossReference(models.Model):

@@ -1,13 +1,11 @@
-
-from django.db import IntegrityError, transaction
-from django.test import TestCase
+"""What a line reaches through its OEM numbers (inventory refactor S10): its aftermarket References in an exclusive estado, each with the
+numbers of the line the merge pass placed it under (detail s9 numbers), and the Biblioteca's view of the same codes."""
 from rest_framework.test import APITestCase
 
 from . import references
 from .models import Part, User
-from .oem_links import name_key, part_equivalents, store_catalog_links, store_cross_references
+from .oem_links import equivalents_for, part_equivalents
 from .oem_reference import linked_parts
-from .oem_reference_models import OEMCrossReference, PartOEMLink
 from .test_oem_finder import Fresh
 
 URL = '/api/v1/management/oem-references/'
@@ -18,63 +16,18 @@ def number(manufacturer, code, citation='CATÁLOGO GMB 2016'):
     return references.add_library_number(manufacturer, code, source_kind='aftermarket_catalog', citation=citation)[0]
 
 
-class NameKeyTests(Fresh, TestCase):
-    def test_the_code_or_the_code_before_its_tags_names_the_number(self):
-        for sku, key in (('16100-29155', '1610029155'), ('16100-79445-NPW', '1610079445'), ('16100-39466-G', '1610039466'),
-                         ('90919-01164 DENSO', '9091901164'), ('04465-0K240-AISIN', '044650K240')):
-            self.assertEqual(name_key(sku), key, sku)
-
-    def test_variants_retired_skus_and_codes_without_digits_name_nothing(self):
-        for sku in ('DAC47880055-KIT-FEB', '43512-52120-ANULADO', '43512-52120_7_DELETED', 'ABCDEF', '123', '', None):
-            self.assertEqual(name_key(sku), '', sku)
-
-
-class StoreTests(Fresh, TestCase):
-    def setUp(self):
-        super().setUp()
-        self.ref = number('TOYOTA', '16100-29155')
-
-    def test_cross_references_merge_spellings_and_citations(self):
-        counts = store_cross_references({(self.ref.pk, 'aisin', 'wpt-111'): ['GMB 2016 · pág. 5'], (self.ref.pk, 'AISIN', 'WPT 111'): ['ASVA 2017 · pág. 9'],
-                                         (self.ref.pk, 'GMB', 'GWT-101A'): ['GMB 2016 · pág. 5'], (self.ref.pk, 'AIRTEX', 'N/A'): ['GMB 2016'],
-                                         (self.ref.pk, '', 'AW1698'): ['GMB 2016']})
-        self.assertEqual(counts, {'new': 2, 'cited': 0, 'present': 0})
-        aisin = OEMCrossReference.objects.get(brand='AISIN')
-        self.assertEqual((aisin.code, aisin.number, aisin.citations, aisin.reference_id, aisin.legacy_reference_id),
-                         ('WPT-111', 'WPT111', ['GMB 2016 · pág. 5', 'ASVA 2017 · pág. 9'], self.ref.pk, None))
-        again = store_cross_references({(self.ref.pk, 'AISIN', 'WPT-111'): ['GMB 2016 · pág. 5', 'ATE 2017 · pág. 2']})
-        self.assertEqual(again, {'new': 0, 'cited': 1, 'present': 0})
-        self.assertEqual(OEMCrossReference.objects.get(brand='AISIN').citations, ['GMB 2016 · pág. 5', 'ASVA 2017 · pág. 9', 'ATE 2017 · pág. 2'])
-        self.assertEqual(store_cross_references({(self.ref.pk, 'AISIN', 'WPT-111'): ['ATE 2017 · pág. 2']}), {'new': 0, 'cited': 0, 'present': 1})
-
-    def test_dry_runs_count_without_writing(self):
-        self.assertEqual(store_cross_references({(self.ref.pk, 'AISIN', 'WPT-111'): ['GMB']}, apply=False)['new'], 1)
-        part = Part.objects.create(sku='BOMBA-1', description='BOMBA AGUA')
-        self.assertEqual(store_catalog_links({(part.pk, self.ref.pk): ['GMB · GWT-101A']}, apply=False)['new'], 1)
-        self.assertFalse(OEMCrossReference.objects.exists() or PartOEMLink.objects.exists())
-
-    def test_constraints(self):
-        row = OEMCrossReference.objects.create(reference=self.ref, brand=' aisin ', code=' wpt-111 ')
-        self.assertEqual((row.brand, row.code, row.number), ('AISIN', 'WPT-111', 'WPT111'))
-        for update in ({'number': 'WPT-111'}, {'brand': 'aisin'}, {'brand': ''}):
-            with self.assertRaises(IntegrityError, msg=update), transaction.atomic():
-                OEMCrossReference.objects.filter(pk=row.pk).update(**update)
-        part = Part.objects.create(sku='BOMBA-1', description='BOMBA AGUA')
-        with self.assertRaises(IntegrityError), transaction.atomic():
-            PartOEMLink.objects.create(part=part, reference=self.ref, source='otro')
-
-
 class EquivalentsTests(Fresh, APITestCase):
     def setUp(self):
         super().setUp()
         self.root = User.objects.create_superuser('oem-links-root', 'oem-links-root@example.invalid', 'Example938!')
         self.client.force_authenticate(self.root)
         self.main, self.sister = number('TOYOTA', '16100-29155'), number('TOYOTA', '16100-29156')
-        store_cross_references({(self.main.pk, 'AISIN', 'WPT-111'): ['GMB 2016 · pág. 5'], (self.main.pk, 'GMB', 'GWT-101A'): ['GMB 2016 · pág. 5'],
-                                (self.sister.pk, 'AISIN', 'WPT-111'): ['GMB 2016 · pág. 5'], (self.sister.pk, 'AIRTEX', 'AW-1698'): ['ASVA 2017 · pág. 9']})
         self.part = Part.objects.create(sku='16100-29155-NPW', description='BOMBA AGUA TOY')
-        references.add(self.part, 'GWT 101A', 'GMB', ref_type='company', source='GMB 2016 · pág. 5')
-        store_catalog_links({(self.part.pk, self.sister.pk): ['GMB 2016 · pág. 5 · GWT-101A'], (self.part.pk, self.main.pk): ['GMB 2016 · pág. 5 · GWT-101A']})
+        references.add(self.part, 'GWT-101A', 'GMB', ref_type='company', source='GMB 2016 · pág. 5')
+        # The codes the merge pass made the line's References (S9), each under the numbers the catalog printed it for.
+        references.add(self.part, 'WPT-111', 'AISIN', tipo='aftermarket', source='GMB 2016 · pág. 5',
+                       detail={'s9': {'numbers': ['1610029155', '1610029156']}})
+        references.add(self.part, 'AW-1698', 'AIRTEX', tipo='aftermarket', source='ASVA 2017 · pág. 9', detail={'s9': {'numbers': ['1610029156']}})
 
     def carry(self):
         """Both numbers on the SKU's line, as the merge pass leaves a catalog item's numbers on its SKU (S9): each absorbs its line in
@@ -82,23 +35,28 @@ class EquivalentsTests(Fresh, APITestCase):
         for code in ('16100-29155', '16100-29156'):
             references.add(self.part, code, 'TOYOTA', tipo='oem', source='CATÁLOGO')
 
-    def test_a_sku_reaches_the_codes_of_the_numbers_on_its_line_and_no_catalog_link_any_more(self):
-        self.assertEqual(part_equivalents(self.part), {'numbers': [], 'cross_references': []})  # S9: the catalog links are not read
+    def test_a_line_reaches_its_aftermarket_references_and_the_numbers_it_carries(self):
+        data = part_equivalents(self.part)
+        self.assertEqual(data['numbers'], [])
+        self.assertEqual(sorted((c['brand'], c['code']) for c in data['cross_references']),
+                         [('AIRTEX', 'AW-1698'), ('AISIN', 'WPT-111'), ('GMB', 'GWT-101A')])
         self.carry()
         data = part_equivalents(self.part)
         self.assertEqual([(str(n['reference']), n['via']) for n in data['numbers']],
                          [('TOYOTA 1610029155', ['oem']), ('TOYOTA 1610029156', ['oem'])])
         codes = {(c['brand'], c['code']): c for c in data['cross_references']}
-        self.assertEqual(sorted(codes), [('AIRTEX', 'AW-1698'), ('AISIN', 'WPT-111'), ('GMB', 'GWT-101A')])
         self.assertEqual(codes[('AISIN', 'WPT-111')]['numbers'], [self.main.uid, self.sister.uid])
-        self.assertTrue(codes[('GMB', 'GWT-101A')]['on_sku'])  # the copy the catalog import also wrote as a company alterno
-        self.assertFalse(codes[('AISIN', 'WPT-111')]['on_sku'])
+        self.assertEqual(codes[('AIRTEX', 'AW-1698')]['numbers'], [self.sister.uid])
+        self.assertEqual((codes[('AISIN', 'WPT-111')]['citations'], codes[('AISIN', 'WPT-111')]['on_sku']), (['GMB 2016 · pág. 5'], True))
+        self.assertEqual(equivalents_for([self.part.pk])[str(self.part.pk)],
+                         [{'brand': 'AIRTEX', 'code': 'AW-1698'}, {'brand': 'AISIN', 'code': 'WPT-111'}, {'brand': 'GMB', 'code': 'GWT-101A'}])
 
-    def test_a_number_on_the_line_counts_and_a_grouped_sku_reaches_nothing(self):
-        references.add(self.part, '16100-29155', 'TOYOTA', tipo='oem', source='CATÁLOGO')  # absorbs the number's referencia line (3f)
-        self.assertEqual(part_equivalents(self.part)['numbers'][0]['via'], ['oem'])
+    def test_a_code_in_disputa_is_no_equivalent_and_a_grouped_sku_reaches_nothing(self):
+        code = self.part.codes.get(brand='AIRTEX')
+        references.update(code, estado='disputa', dispute_note='En otra línea.')
+        self.assertNotIn(('AIRTEX', 'AW-1698'), {(c['brand'], c['code']) for c in part_equivalents(self.part)['cross_references']})
         target = Part.objects.create(sku='BOMBA-2', description='BOMBA AGUA')
-        Part.objects.filter(pk=self.part.pk).update(merged_into=target, active=False, estado='unificada')
+        Part.objects.filter(pk=self.part.pk).update(merged_into=target, estado='unificada')
         self.part.refresh_from_db()
         self.assertEqual(part_equivalents(self.part), {'numbers': [], 'cross_references': []})
 
@@ -118,18 +76,18 @@ class EquivalentsTests(Fresh, APITestCase):
 
     def test_the_library_shows_the_codes_and_the_line_that_carries_each_number(self):
         rows = {row['code']: row for row in self.client.get(URL).json()['results']}
-        self.assertEqual([s['sku'] for s in rows['1610029155']['linked_skus']], [])  # S9: a catalog link no longer ties a SKU
+        self.assertEqual(([s['sku'] for s in rows['1610029155']['linked_skus']], rows['1610029155']['cross_reference_count']), ([], 0))
         self.carry()
         rows = {row['code']: row for row in self.client.get(URL).json()['results']}
         self.assertEqual((rows['1610029155']['cross_reference_count'], [c['code'] for c in rows['1610029155']['cross_reference_preview']]),
-                         (2, ['WPT-111', 'GWT-101A']))
+                         (2, ['WPT-111', 'GWT-101A']))  # AW-1698 was placed under the sister only; GWT-101A under no number: both
         self.assertEqual([(s['sku'], s['via']) for s in rows['1610029155']['linked_skus']], [('16100-29155-NPW', 'linea')])
         self.assertEqual([(s['sku'], s['via']) for s in rows['1610029156']['linked_skus']], [('16100-29155-NPW', 'linea')])
         detail = self.client.get(f'{URL}{self.sister.uid}/').json()
         self.assertEqual([(c['brand'], c['code'], c['citations']) for c in detail['cross_references']],
-                         [('AIRTEX', 'AW-1698', ['ASVA 2017 · pág. 9']), ('AISIN', 'WPT-111', ['GMB 2016 · pág. 5'])])
+                         [('AIRTEX', 'AW-1698', ['ASVA 2017 · pág. 9']), ('AISIN', 'WPT-111', ['GMB 2016 · pág. 5']),
+                          ('GMB', 'GWT-101A', ['GMB 2016 · pág. 5'])])
         self.assertEqual(sorted(r['code'] for r in self.client.get(URL, {'q': 'wpt 111'}).json()['results']), ['1610029155', '1610029156'])
-        self.assertEqual([r['code'] for r in self.client.get(URL, {'q': 'GWT-101A'}).json()['results']], ['1610029155'])
         lone = number('TOYOTA', '16100-00001')
         self.assertEqual([r['code'] for r in self.client.get(URL, {'linked': 'false'}).json()['results']], [lone.clave])
         self.assertEqual(linked_parts([lone])[lone.pk], [])

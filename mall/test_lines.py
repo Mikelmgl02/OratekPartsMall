@@ -1,5 +1,5 @@
-"""The OEM line's lifecycle (inventory refactor S1): estado and active kept in step by Part.save and the bulk writers, the readers'
-querysets, the writers that merge, split, retire and create lines, and the backfill CLI (mall.refactor.s1_lifecycle)."""
+"""The OEM line's lifecycle (inventory refactor S1, S10): estado decides and active mirrors it (S10), the readers' querysets, and the
+writers that merge, split, retire and create lines."""
 from datetime import timedelta
 
 from django.db import IntegrityError, connection, transaction
@@ -11,7 +11,7 @@ from . import lines
 from .catalog_grouping import merge_catalog_parts
 from .catalog_import import build_plan, save_plan
 from .models import Part, SupplierItem
-from .test_factories import make_line, make_supplier, make_user, run_migration_function
+from .test_factories import line_fields, make_line, make_supplier, make_user, run_migration_function
 
 # 0072's CHECKs, which a test of the backfill drops inside its own transaction to stage the rows 0071 leaves (merged lines still
 # publicada) before the backfill runs.
@@ -32,9 +32,9 @@ def stored(line):
     return Part.objects.filter(pk=line.pk).values_list('estado', 'active').get()
 
 
-class LinePairTests(TestCase):
-    """Part.save keeps estado and active in step: whichever changed since the line was loaded wins, merged_into forces unificada, and
-    update_fields naming either writes both."""
+class LineMirrorTests(TestCase):
+    """estado is the line's lifecycle and active its mirror (S10: 0086's trigger writes it from estado, whatever writes the row; 0089
+    makes it a generated column)."""
 
     def test_a_new_line_is_publicada_from_the_catalog_and_stamped(self):
         line = make_line('16100-39315')
@@ -44,49 +44,28 @@ class LinePairTests(TestCase):
         self.assertIsNone(line.changed_at)
         self.assertEqual(stored(line), ('publicada', True))
 
-    def test_old_writers_that_only_know_active_retire_and_publish(self):
-        retired = make_line('RET-1', active=False)
-        self.assertEqual(stored(retired), ('retirada', False))
-        line = Part.objects.get(pk=retired.pk)
-        line.active = True
-        line.save(update_fields=['active'])
-        self.assertEqual(stored(line), ('publicada', True))
-        line.active = False
-        line.save()
-        self.assertEqual(stored(line), ('retirada', False))
-
-    def test_estado_wins_when_it_is_what_changed(self):
+    def test_active_follows_estado_and_a_write_of_active_alone_changes_nothing(self):
         line = make_line('REF-1', estado='referencia')
         self.assertEqual(stored(line), ('referencia', False))
         line = Part.objects.get(pk=line.pk)
         line.estado = 'publicada'
         line.save(update_fields=['estado'])
-        self.assertEqual(stored(line), ('publicada', True))
-        both = make_line('REF-2', estado='preparacion', active=True)  # both differ from the defaults: estado wins
+        self.assertEqual((stored(line), line.active), (('publicada', True), True))
+        both = make_line('REF-2', estado='preparacion', active=True)  # the test factory drops active: estado decides
         self.assertEqual(stored(both), ('preparacion', False))
+        retired = make_line('RET-1', active=False)
+        self.assertEqual(stored(retired), ('retirada', False))
+        Part.objects.filter(pk=retired.pk).update(estado='retirada')
+        with connection.cursor() as cursor:  # a writer that names the column itself: the trigger keeps the mirror
+            cursor.execute('UPDATE mall_part SET active = true WHERE id = %s', [retired.pk])
+        self.assertEqual(stored(retired), ('retirada', False))
 
-    def test_merged_into_forces_unificada_and_leaving_it_follows_active(self):
+    def test_a_merged_line_is_unificada(self):
         target = make_line('16100-39316')
         merged = make_line('16100-39316-GMB', merged_into=target)
         self.assertEqual(stored(merged), ('unificada', False))
-        line = Part.objects.get(pk=make_line('16100-39316-AS').pk)
-        line.merged_into = target
-        line.save(update_fields=['merged_into'])
-        self.assertEqual(stored(line), ('unificada', False))
-        line.merged_into, line.active = None, True
-        line.save(update_fields=['merged_into', 'active'])
-        self.assertEqual(stored(line), ('publicada', True))
 
-    def test_a_stored_pair_out_of_step_follows_active_on_the_next_save(self):
-        drop_lifecycle_checks()  # a row as 0071 can hold it before the backfill
-        line = make_line('DRIFT-1')
-        Part.objects.filter(pk=line.pk).update(estado='retirada', active=True)  # what a queryset writer without estado leaves
-        line = Part.objects.get(pk=line.pk)
-        line.description = 'BOMBA DE AGUA'
-        line.save()
-        self.assertEqual(stored(line), ('publicada', True))
-
-    def test_a_save_of_other_fields_leaves_the_pair_and_stamps_updated_at(self):
+    def test_a_save_of_other_fields_leaves_the_estado_and_stamps_updated_at(self):
         line = make_line('STAMP-1')
         before = line.updated_at
         Part.objects.filter(pk=line.pk).update(updated_at=before - timedelta(days=1))
@@ -99,26 +78,11 @@ class LinePairTests(TestCase):
 
     def test_refresh_from_db_reloads_what_save_compares_against(self):
         line = make_line('REFRESH-1')
-        Part.objects.filter(pk=line.pk).update(estado='retirada', active=False)
+        Part.objects.filter(pk=line.pk).update(estado='retirada')
         line.refresh_from_db()
         line.description = 'CAMBIO'
         line.save()
         self.assertEqual(stored(line), ('retirada', False))
-
-    def test_active_alone_never_moves_a_line_off_the_catalog(self):
-        draft = make_line('OFF-1', estado='preparacion')
-        for fields in (None, ['active']):
-            line = Part.objects.get(pk=draft.pk)
-            line.active = True
-            with self.subTest(update_fields=fields), self.assertRaises(lines.LineStateError):
-                line.save(update_fields=fields)
-        self.assertEqual(stored(draft), ('preparacion', False))
-        line = Part.objects.get(pk=draft.pk)
-        line.active, line.description = False, 'EN PREPARACION'  # already in step: nothing to refuse
-        line.save()
-        self.assertEqual(stored(line), ('preparacion', False))
-        lines.set_estado(line, 'publicada')  # what moves it
-        self.assertEqual(stored(line), ('publicada', True))
 
     def test_a_deferred_estado_assigned_since_load_wins_and_save_loads_nothing_more(self):
         line = make_line('DEFER-1')
@@ -129,23 +93,13 @@ class LinePairTests(TestCase):
         loaded = Part.objects.only('pk', 'sku', 'description').get(pk=line.pk)
         loaded.description = 'SOLO LA DESCRIPCION'
         loaded.save(update_fields=['description'])
-        self.assertNotIn('active', loaded.__dict__)  # the pair it remembers is read from what it holds, not loaded
-        self.assertNotIn('estado', loaded.__dict__)
+        self.assertNotIn('estado', loaded.__dict__)  # nothing is loaded to mirror
         self.assertEqual(stored(line), ('retirada', False))
-
-    def test_repaired_estado_is_the_rule_old_writers_leave(self):
-        cases = {(True, None, 'publicada'): ('publicada', True), (False, None, 'publicada'): ('retirada', False),
-                 (True, 'X', 'publicada'): ('unificada', False), (False, None, 'unificada'): ('retirada', False),
-                 (True, None, 'unificada'): ('publicada', True), (True, None, 'retirada'): ('publicada', True),
-                 (False, None, 'referencia'): ('referencia', False), (True, None, 'preparacion'): None, (True, None, 'otro'): None}
-        for (active, merged, estado), expected in cases.items():
-            with self.subTest(active=active, merged=merged, estado=estado):
-                self.assertEqual(lines.repaired_estado(active, merged, estado), expected)
 
 
 class LifecycleCheckTests(TestCase):
-    """0072's CHECKs: a writer that moves one column of the pair without the other fails, and so does an unknown estado or a
-    rejection without its reason. Its repair puts the rows old writers leave back in step, and stops on what needs a person."""
+    """0072's CHECKs: an unknown estado or origen, unificada without its line (or the other way) and a rejection without its reason
+    fail (active is the trigger's since S10: no writer can set it out of step)."""
 
     def assert_refused(self, **values):
         line = make_line(f'CHK-{len(values)}-{"-".join(map(str, values.values()))}'[:60])
@@ -154,34 +108,14 @@ class LifecycleCheckTests(TestCase):
 
     def test_the_checks_refuse_half_a_pair_and_unknown_values(self):
         target = make_line('CHK-TARGET')
-        for values in ({'active': False}, {'estado': 'retirada'}, {'merged_into': target, 'active': False}, {'estado': 'unificada', 'active': False},
-                       {'estado': 'borrada', 'active': False}, {'origen': 'otro'}, {'estado': 'rechazada', 'active': False}):
+        for values in ({'merged_into': target}, {'estado': 'unificada'}, {'estado': 'borrada'}, {'origen': 'otro'}, {'estado': 'rechazada'}):
             with self.subTest(values=values):
                 self.assert_refused(**values)
         line = make_line('CHK-OK')
-        Part.objects.filter(pk=line.pk).update(active=False, estado='retirada')
+        Part.objects.filter(pk=line.pk).update(estado='retirada')
+        self.assertEqual(stored(line), ('retirada', False))
         Part.objects.filter(pk=line.pk).update(merged_into=target, estado='unificada')
-        Part.objects.filter(pk=make_line('CHK-REJ').pk).update(active=False, estado='rechazada', decision_reason='other', decided_at=timezone.now())
-
-    def test_the_repair_puts_old_writers_rows_in_step_and_passes_on_an_empty_catalog(self):
-        run_migration_function('0072_line_lifecycle_checks', 'repair_estado')  # nothing to repair
-        drop_lifecycle_checks()
-        target = make_line('REP-TARGET')
-        rows = {sku: make_line(sku) for sku in ('REP-MERGED', 'REP-RETIRED', 'REP-BACK', 'REP-UNMERGED', 'REP-REF')}
-        Part.objects.filter(pk=rows['REP-MERGED'].pk).update(merged_into=target, active=False, estado='publicada')
-        Part.objects.filter(pk=rows['REP-RETIRED'].pk).update(active=False, estado='publicada')
-        Part.objects.filter(pk=rows['REP-BACK'].pk).update(active=True, estado='retirada')
-        Part.objects.filter(pk=rows['REP-UNMERGED'].pk).update(active=False, estado='unificada')
-        Part.objects.filter(pk=rows['REP-REF'].pk).update(active=False, estado='referencia')
-        for _ in range(2):  # idempotent
-            run_migration_function('0072_line_lifecycle_checks', 'repair_estado')
-        self.assertEqual({sku: stored(line) for sku, line in rows.items()},
-                         {'REP-MERGED': ('unificada', False), 'REP-RETIRED': ('retirada', False), 'REP-BACK': ('publicada', True),
-                          'REP-UNMERGED': ('retirada', False), 'REP-REF': ('referencia', False)})
-        Part.objects.filter(pk=rows['REP-REF'].pk).update(active=True)
-        Part.objects.filter(pk=target.pk).update(estado='rechazada', active=False)
-        with self.assertRaisesMessage(RuntimeError, '1 líneas activas en referencia, preparación o rechazada; 1 líneas rechazadas sin motivo'):
-            run_migration_function('0072_line_lifecycle_checks', 'repair_estado')
+        Part.objects.filter(pk=make_line('CHK-REJ').pk).update(estado='rechazada', decision_reason='other', decided_at=timezone.now())
 
 
 class LineReaderTests(TestCase):
@@ -241,17 +175,6 @@ class LineReaderTests(TestCase):
             lines.detail_line(self.unificada.pk, write=True)
         self.assertEqual(str(refused.exception.detail), 'El SKU L-UNI se agrupó en L-PUB: edita ese SKU.')
 
-    def test_merged_into_decides_unificada_before_the_backfill_too(self):
-        with connection.cursor() as cursor:
-            cursor.execute('SET CONSTRAINTS ALL IMMEDIATE')  # setUp's deferred checks, so the table can be altered
-        drop_lifecycle_checks()  # a merged row as 0071 leaves it: estado still at its default
-        Part.objects.filter(pk=self.unificada.pk).update(estado='publicada')
-        Part.objects.filter(pk=self.retirada.pk).update(estado='publicada')
-        self.assertEqual(self.skus(lines.catalog_lines(('unificada',))), {'L-UNI'})
-        self.assertEqual(self.skus(lines.catalog_lines()), {'L-PUB', 'L-RET'})
-        self.assertEqual(self.skus(lines.storefront_lines()), {'L-PUB'})
-
-
 class LineWriterTests(TestCase):
     def setUp(self):
         self.root = make_user('lines-root', superuser=True)
@@ -277,20 +200,21 @@ class LineWriterTests(TestCase):
         with self.assertRaises(lines.LineStateError):
             lines.set_estado(merged, 'publicada')
 
-    def test_create_and_bulk_writers_keep_the_pair(self):
+    def test_create_and_bulk_writers_check_the_estado(self):
         created = lines.create_line('W-3', origen='proveedor', decided_by=self.root, decided_at=timezone.now(), description='X')
         self.assertEqual((created.origen, created.estado, created.decided_by), ('proveedor', 'publicada', self.root))
         with self.assertRaises(lines.LineStateError):
             lines.create_line('W-4', estado='unificada')
         with self.assertRaises(lines.LineStateError):
             lines.create_line('W-4', origen='otro')
-        new = lines.bulk_create_lines([Part(sku=' w-5 ', active=False), Part(sku='W-6', estado='referencia')])
+        new = lines.bulk_create_lines([Part(**line_fields(dict(sku=' w-5 ', active=False))), Part(sku='W-6', estado='referencia')])
         self.assertEqual([stored(line) for line in new], [('retirada', False), ('referencia', False)])
         self.assertEqual(Part.objects.get(pk=new[0].pk).sku, 'W-5')
         loaded = list(Part.objects.filter(pk__in=[line.pk for line in new]).order_by('sku'))
-        loaded[0].active = True
-        lines.bulk_update_lines(loaded, ['active'])
+        lines.bulk_update_lines(loaded, lines.stage_estado(loaded[0], 'publicada'))
         self.assertEqual(stored(loaded[0]), ('publicada', True))
+        with self.assertRaises(TypeError):  # S10: active is no column a writer names
+            lines.bulk_update_lines(loaded, ['active'])
 
     def test_touch_visible_stamps_changed_at_only(self):
         line = make_line('W-7')

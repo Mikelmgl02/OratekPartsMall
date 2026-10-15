@@ -68,7 +68,7 @@ def internal_q(value, own, exact=False):
 
 def document_word_q(word, own=None, resolved=None):
     """A document matches a word: its text or a printed code contains it (or the brand it names), a code without separators contains a
-    word with a digit, a number the line reaches contains one of MIN_SEARCH characters or more, an own interno code contains it."""
+    word with a digit, an own interno code contains it."""
     key = compact(word)
     match = Q(text__contains=word) | Q(codes__contains=word)
     brand = (resolved or {}).get(word)
@@ -76,8 +76,6 @@ def document_word_q(word, own=None, resolved=None):
         match |= Q(text__contains=brand)
     if any(char.isdigit() for char in key):
         match |= Q(compact__contains=key)
-        if len(key) >= MIN_SEARCH:
-            match |= Q(reach__contains=key)
         if own:
             match |= internal_q(key, own)
     if own:
@@ -86,10 +84,9 @@ def document_word_q(word, own=None, resolved=None):
 
 
 def document_code_q(key, exact=False, own=None):
-    """A document holds a code equal to key (exact) or containing it: one of its codes without separators, a number it reaches, an own
-    interno code."""
+    """A document holds a code equal to key (exact) or containing it: one of its codes without separators, an own interno code."""
     needle = f' {key} ' if exact else key
-    match = Q(compact__contains=needle) | Q(reach__contains=needle)
+    match = Q(compact__contains=needle)
     return match | internal_q(key, own, exact=exact) if own else match
 
 

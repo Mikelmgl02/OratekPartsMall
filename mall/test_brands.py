@@ -116,9 +116,9 @@ class BrandRenameMergeTests(TestCase):
         self.assertEqual(set(BrandAlias.objects.filter(brand=self.bilstein).values_list('alias', flat=True)), {'FEB', 'FEBI'})
         member.refresh_from_db()
         self.assertEqual(member.familia, self.bilstein)
-        case = MatchingCase.objects.get(pk=result['cases'][0])
-        self.assertEqual((case.kind, case.status, case.target_sku), ('catalog_reference', 'review', self.other.sku))
-        self.assertEqual(case.sources[0]['sku'], self.pump.sku)
+        case = MatchingCase.objects.get(pk=result['cases'][0])  # S10: a merge case over the two lines (a catalog_reference case before)
+        self.assertEqual((case.kind, case.status, case.route), ('merge', 'review', 'caso'))
+        self.assertEqual(set(case.lines.values_list('sku', flat=True)), {self.pump.sku, self.other.sku})
         self.assertIn('01234', case.reason)
         self.assertEqual(brands.merge(Brand.objects.create(nombre='FEBI2'), self.bilstein)['cases'], [])
 

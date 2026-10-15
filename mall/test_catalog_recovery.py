@@ -8,6 +8,7 @@ from rest_framework.test import APITestCase
 
 from .models import Account, CatalogImportJob, Membership, Part, PartCode, Role, StockEntry, User
 from .services import ingest_inventory
+from .test_factories import make_line
 
 
 class CatalogDateRecoveryTests(APITestCase):
@@ -50,7 +51,7 @@ class CatalogDateRecoveryTests(APITestCase):
         result = response.data
         self.assertTrue(result['valid'])
         self.assertEqual(result['preview'][0]['sku'], '10-3042')
-        self.assertEqual(result['preview'][0]['name'], '10-3042')
+        self.assertEqual(result['preview'][0]['name'], 'BALINERA 10-3042')  # S10: name is the description (a NOMBRE copying the SKU is dropped)
         self.assertEqual(result['date_recovery_count'], 1)
         self.assertEqual(result['numeric_warning_count'], 0)
         audit = result['recovery_rows'][0]
@@ -63,7 +64,7 @@ class CatalogDateRecoveryTests(APITestCase):
         self.assertEqual(Part.objects.count(), 0)
         saved = self.client.post(self.job_url(result), {'batch_index': 0})
         self.assertTrue(saved.data['imported'])
-        self.assertEqual(Part.objects.get(sku='10-3042').name, '10-3042')
+        self.assertEqual(Part.objects.get(sku='10-3042').name, 'BALINERA 10-3042')
 
     def test_nearby_intact_numeric_hyphen_family_recovers_four_digit_suffix(self):
         original = datetime(3595, 2, 1)
@@ -115,7 +116,7 @@ class CatalogDateRecoveryTests(APITestCase):
         result = response.data
         self.assertTrue(result['valid'])
         self.assertEqual(result['preview'][0]['sku'], '00AB-001')
-        self.assertEqual(result['preview'][0]['name'], '00AB-001')
+        self.assertEqual(result['preview'][0]['name'], 'ABRAZADERA INOXIDABLE 1/2')
         audit = result['recovery_rows'][0]
         self.assertFalse(audit['automatic'])
         self.assertTrue(audit['resolved'])
@@ -246,7 +247,7 @@ class CatalogDateRecoveryTests(APITestCase):
         self.assertEqual(Part.objects.count(), 0)
 
     def test_reviewed_recovery_preserves_existing_catalog_ids_supplier_ids_and_stock_ledger(self):
-        existing = Part.objects.create(sku='6-12', name='BEFORE')
+        existing = make_line(sku='6-12', name='BEFORE')
         old_code = PartCode.objects.create(part=existing, code='OLD-CODE')
         supplier = Account.objects.create(name='Proveedor Recovery')
         supplier.roles.add(Role.objects.get(code='supplier_retail'))

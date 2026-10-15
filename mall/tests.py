@@ -7,6 +7,7 @@ from .models import Account, Invitation, Membership, Part, PartCode, Role, Stock
 from .services import ingest_inventory
 from .lines import catalog_lines
 from .matching_models import MatchingCase
+from .test_factories import make_line
 
 class HealthTests(APITestCase):
     def test_health_is_available_without_authentication(self):
@@ -33,7 +34,7 @@ class FoundationTests(APITestCase):
         self.account = Account.objects.create(name='Supplier A')
         self.account.roles.add(Role.objects.get(code='supplier_retail'))
         Membership.objects.create(user=self.user, account=self.account, permission='owner')
-        self.part = Part.objects.create(sku='FILTER', name='Filter')
+        self.part = make_line(sku='FILTER', name='Filter')
         PartCode.objects.create(part=self.part, brand='acme', code='abc')
         self.client.force_authenticate(self.user)
         self.url = f'/api/v1/accounts/{self.account.pk}/inventory/ingest/'
@@ -71,7 +72,7 @@ class FoundationTests(APITestCase):
 
     def test_changed_code_does_not_silently_remap(self):
         self.ingest()
-        different = Part.objects.create(sku='OTHER PART', name='Other part')
+        different = make_line(sku='OTHER PART', name='Other part')
         PartCode.objects.create(part=different, brand='ACME', code='DEF')
         response = self.ingest(update_id='event-2', codigo='DEF')
         self.assertEqual(response.status_code, 200)

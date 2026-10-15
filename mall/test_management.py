@@ -6,9 +6,10 @@ from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient, APITestCase
 
-from .models import Account, Alternate, Invitation, Membership, Part, PartCode, Role, StockEntry, SupplierItem, User
+from .models import Account, Invitation, Membership, Part, PartCode, Role, StockEntry, SupplierItem, User
 from .lines import catalog_lines
 from .services import ingest_inventory
+from .test_factories import make_line
 
 
 class ManagementTests(APITestCase):
@@ -22,7 +23,7 @@ class ManagementTests(APITestCase):
         self.client.force_authenticate(self.root)
 
     def test_non_superusers_are_denied_every_management_operation(self):
-        part = Part.objects.create(sku='ORIGINAL', name='Original')
+        part = make_line(sku='ORIGINAL', name='Original')
         alternate = PartCode.objects.create(part=part, code='ALTERNO')
         item = SupplierItem.objects.create(supplier=self.account, supplier_invent_id='locked', codigo='TEST', brand='TEST', source='upload')
         operations = [
@@ -66,9 +67,10 @@ class ManagementTests(APITestCase):
         self.assertEqual(created.status_code, 201)
         part_id = created.data['id']
         self.assertEqual(created.data['stock_record_count'], 0)
-        self.assertEqual(created.data['codes'][0], {'id': ANY, 'brand': 'ACME', 'code': 'ABC-123', 'kind': 'alias', 'ref_type': 'unknown', 'reference_source': ''})
+        self.assertEqual(next(code for code in created.data['codes'] if code['code'] == 'ABC-123'),  # the list has no defined order
+                         {'id': ANY, 'brand': 'ACME', 'code': 'ABC-123', 'kind': 'alias', 'ref_type': 'unknown', 'reference_source': ''})
         part = Part.objects.get(pk=part_id)
-        self.assertEqual(part.name, 'FILTRO DE ACEITE')
+        self.assertEqual(part.name, 'APLICACIÓN: VEHÍCULO DIÉSEL')  # S10: a line's name is its description (a name sent with one is dropped)
         self.assertEqual(part.sku, 'FILTRO-001')
         self.assertNotIn('brand', created.data)
         self.assertEqual(part.description, 'APLICACIÓN: VEHÍCULO DIÉSEL')
@@ -78,7 +80,7 @@ class ManagementTests(APITestCase):
         updated = self.client.patch(f'/api/v1/management/catalog/{part_id}/', {'name': 'Filtro actualizado', 'active': False, 'codes': [{'brand': 'ACME', 'code': 'ABC-123'}, {'brand': 'OTHER', 'code': 'NEW'}]}, format='json')
         self.assertEqual(updated.status_code, 200)
         self.assertEqual(updated.data['id'], part_id)
-        self.assertEqual(updated.data['name'], 'FILTRO ACTUALIZADO')
+        self.assertEqual(updated.data['name'], 'APLICACIÓN: VEHÍCULO DIÉSEL')
         self.assertEqual(updated.data['stock_record_count'], 1)
         self.assertEqual(part.codes.get(code='ABC-123').pk, code_id)
         self.assertFalse(part.codes.filter(code='SECOND').exists())
@@ -92,14 +94,14 @@ class ManagementTests(APITestCase):
         self.assertEqual(part.codes.filter(is_main=False).count(), 2)
 
     def test_duplicate_catalog_codes_are_rejected_without_partial_writes(self):
-        part = Part.objects.create(sku='ORIGINAL', name='Original')
+        part = make_line(sku='ORIGINAL', name='Original')
         PartCode.objects.create(part=part, brand='ACME', code='ABC')
         payload = {'sku': 'DUPLICADO', 'name': 'Duplicado', 'codes': [{'brand': 'acme', 'code': 'abc'}]}
         self.assertEqual(self.client.post('/api/v1/management/catalog/', payload, format='json').status_code, 400)
         self.assertEqual(Part.objects.count(), 1)
         payload['codes'] = [{'brand': 'NEW', 'code': 'CODE'}, {'brand': ' new ', 'code': ' code '}]
         self.assertEqual(self.client.post('/api/v1/management/catalog/', payload, format='json').status_code, 400)
-        other = Part.objects.create(sku='OTRO', name='Otro')
+        other = make_line(sku='OTRO', name='Otro')
         response = self.client.patch(f'/api/v1/management/catalog/{other.pk}/', {'name': 'No guardar', 'codes': [{'brand': 'NEW', 'code': 'NEW'}, {'brand': 'ACME', 'code': 'ABC'}]}, format='json')
         self.assertEqual(response.status_code, 400)
         other.refresh_from_db()
@@ -139,7 +141,7 @@ class ManagementTests(APITestCase):
         item.reserved_quantity = 2
         item.save()
         ledger_before = list(StockEntry.objects.values())
-        part = Part.objects.create(sku='IDENTIFICADO', name='Identificado')
+        part = make_line(sku='IDENTIFICADO', name='Identificado')
         url = f'/api/v1/management/inventory/{item.pk}/'
         # S6: the item hangs from its new product's line (rule 4); a line in preparación never counts it, whatever status is asked.
         self.assertEqual(self.client.patch(url, {'matching_status': 'matched'}, format='json').data['matching_status'], 'pending')
@@ -227,13 +229,10 @@ class ManagementTests(APITestCase):
         self.assertEqual(self.client.patch(f"{url}{distinct.data['id']}/", {'brand': ''}, format='json').status_code, 400)
         self.assertEqual(PartCode.objects.filter(is_main=False).count(), 2)
 
-    def test_legacy_compatibility_relations_are_preserved_without_becoming_alternos(self):
+    def test_an_alterno_is_a_reference_and_the_storefront_lists_it(self):
         part = Part.objects.create(sku='FIRST')
-        replacement = Part.objects.create(sku='SECOND')
-        legacy = Alternate.objects.create(part=part, replacement=replacement)
         self.assertEqual(self.client.get('/api/v1/management/alternates/').data['count'], 0)
         self.client.post('/api/v1/management/alternates/', {'part': str(part.pk), 'code': 'SUPPLIER-CODE'}, format='json')
-        self.assertTrue(Alternate.objects.filter(pk=legacy.pk).exists())
         self.account.roles.add(Role.objects.get(code='client_business'))  # a supplier-only member sees only its own SKUs
         self.client.force_authenticate(self.user)
         result = self.client.get('/api/v1/catalog/?search=SUPPLIER-CODE').data['results'][0]
@@ -253,7 +252,7 @@ class ManagementTests(APITestCase):
         self.assertNotIn('token', profile)
 
     def test_superuser_can_search_catalog_stock_and_alterno_codes(self):
-        part = Part.objects.create(sku='FILTRO ORIGINAL', name='Filtro original', active=False)
+        part = make_line(sku='FILTRO ORIGINAL', name='Filtro original', active=False)
         alternate = PartCode.objects.create(part=part, brand='ACME', code='ABC-123')
         SupplierItem.objects.create(supplier=self.account, supplier_invent_id='stable-123', part=part, codigo='ABC-123', brand='ACME', source='upload', reported_quantity=7, reserved_quantity=2, matching_status='matched')
         catalog = self.client.get('/api/v1/management/catalog/?search=ABC-123')
@@ -274,7 +273,7 @@ class ManagementTests(APITestCase):
         self.assertEqual(self.client.get('/api/v1/management/alternates/?search=ACME').data['count'], 1)
 
     def test_grid_sorting_is_whitelisted_and_stable(self):
-        parts = [Part.objects.create(sku=sku, name=sku) for sku in ['C-SKU', 'A-SKU', 'B-SKU']]
+        parts = [make_line(sku=sku, name=sku) for sku in ['C-SKU', 'A-SKU', 'B-SKU']]
         for index, part in enumerate(parts):
             for n in range(index):
                 SupplierItem.objects.create(supplier=self.account, supplier_invent_id=f'{part.sku}-{n}', part=part, codigo=part.sku, brand='X', source='upload',

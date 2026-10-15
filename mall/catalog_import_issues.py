@@ -139,7 +139,9 @@ def normalized_row(issue, submitted):
 
 
 def row_group(issue, values):
-    fields = {field: values[field] for field in ['name', 'description', 'category', 'subcategory'] if values[field]}
+    fields = {field: values[field] for field in ['description', 'category', 'subcategory'] if values[field]}
+    if values['name'] and not values['description'] and values['name'] != values['sku']:
+        fields['description'] = values['name']  # S10: a line's name is its description; NOMBRE fills a row with no DESCRIPCION
     if values['active']:
         fields['active'] = values['active'] in ['SI', 'TRUE', '1']
     codes = {(values['brand'], values['code']): issue.row} if values['code'] else {}

@@ -4,8 +4,7 @@ GET lists the matching pass's state and the cases of one status (and, from S6, o
 current fingerprint (409 when it changed): approve and dismiss for every kind, and from S6 separar_referencia (line and variant cases),
 merge and keep_apart (merge cases); `line` names a line by id (approve a variant onto it, choose the line of a declared code, the line a
 merge keeps), and target_sku is still accepted where a SKU names it. The legacy kinds (supplier, catalog, catalog_reference, seed)
-keep their decisions until S10."""
-from django.db import transaction
+and statuses (unmatched, resolved) are gone: S10's 0086 turned those cases into S6 kinds."""
 from django.db.models import Count
 from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
@@ -15,11 +14,9 @@ from rest_framework.exceptions import NotFound, ValidationError, APIException
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from .management import IsSuperuser
-from .matching_models import MatchingQueue, MatchingCase, MatchingDecision
+from .matching_models import MatchingQueue, MatchingCase
 from .matching_queue import enqueue_matching, matching_work
-from .matching_engine import apply_item, apply_family, part_row
-from .line_merge import KEEP_APART_METHODS, keep_apart
-from .lines import lines_by_codigo, on_storefront
+from .lines import lines_by_codigo
 from .models import CatalogImportJob
 from . import reference_matching
 
@@ -46,8 +43,8 @@ def case_result(case):
             'created_at': case.created_at, 'item_id': str(case.item_id) if case.item_id else None}
 
 
-CASE_STATUSES = ['review', 'unmatched', 'applied', 'dismissed']
-CASE_KINDS = [*reference_matching.KINDS, 'supplier', 'catalog', 'catalog_reference', 'seed']
+CASE_STATUSES = list(reference_matching.STATUSES)
+CASE_KINDS = list(reference_matching.KINDS)
 ACTIONS = ['approve', 'dismiss', 'separar_referencia', 'merge', 'keep_apart']
 
 
@@ -60,13 +57,13 @@ class MatchingLineResponse(serializers.Serializer):
 
 class MatchingCaseResponse(serializers.Serializer):
     id = serializers.UUIDField()
-    kind = serializers.CharField(help_text='reference, code_change, variant, line o merge (S6); supplier, catalog, catalog_reference o seed (antes de S6).')
+    kind = serializers.CharField(help_text='reference, code_change, variant, line o merge.')
     sources = serializers.ListField(child=serializers.DictField())
     candidates = serializers.ListField(child=serializers.DictField())
     target_sku = serializers.CharField(allow_blank=True)
     method = serializers.CharField(allow_blank=True)
     reason = serializers.CharField(allow_blank=True)
-    status = serializers.CharField(help_text='review, applied o dismissed (unmatched y resolved antes de S6).')
+    status = serializers.CharField(help_text='review, applied o dismissed.')
     ai = serializers.DictField(help_text='Propuesta de IA en caché (target_sku, confidence, reason) o {error}; vacío si no se analizó.')
     fingerprint = serializers.CharField(help_text='Envíalo al revisar; si los datos cambiaron, la revisión responde 409.')
     supplier_name = serializers.CharField(allow_blank=True)
@@ -184,53 +181,9 @@ class MatchingReview(APIView):
             raise NotFound()
         if case.fingerprint != data['fingerprint']:
             raise MatchingConflict()
-        if case.kind in reference_matching.KINDS:
-            return self.decide(request, case, data)
-        if data['action'] not in ('approve', 'dismiss') and not (case.kind == 'catalog' and data['action'] in ('merge', 'keep_apart')):
+        if case.kind not in reference_matching.KINDS:  # none after 0086 (S10)
             raise ValidationError('Esta acción no aplica a este caso.')
-        action = {'merge': 'approve', 'keep_apart': 'dismiss'}.get(data['action'], data['action'])
-        if case.status in ['applied', 'dismissed']:
-            if (action == 'approve' and case.status == 'applied' and (not data.get('target_sku') or data['target_sku'] == case.target_sku)) or (action == 'dismiss' and case.status == 'dismissed'):
-                return Response(case_result(case))
-            raise MatchingConflict()
-        if action == 'dismiss':
-            with transaction.atomic():
-                locked = MatchingCase.objects.select_for_update().get(pk=case.pk)
-                if locked.fingerprint != data['fingerprint'] or locked.status not in ['review', 'unmatched']:
-                    raise MatchingConflict()
-                locked.status = 'dismissed'
-                locked.decided_by, locked.decided_at = request.user, timezone.now()
-                locked.save(update_fields=['status', 'decided_by', 'decided_at', 'updated_at'])
-                evidence = {'sources': case.sources, 'candidates': case.candidates, 'fingerprint': case.fingerprint}
-                if locked.kind == 'catalog' and locked.method in KEEP_APART_METHODS:
-                    # Mantener separados (S2b): the lines of a compact_duplicate or shared_oem_number case never merge on their own.
-                    lines = [row.get('id') for row in [*case.sources, *case.candidates] if row.get('id')]
-                    evidence['separated'] = keep_apart(lines, actor=request.user, case=locked, reason=locked.method)
-                MatchingDecision.objects.create(case=locked, actor=request.user, action='dismissed', evidence=evidence)
-        else:
-            target_sku = data.get('target_sku') or case.target_sku
-            try:
-                with matching_work():
-                    if case.kind == 'catalog_reference':
-                        target = next((c for c in case.candidates if c['sku'] == target_sku), None)
-                        if not target:
-                            raise ValidationError('Selecciona uno de los SKU propuestos por sus referencias.')
-                        apply_family(case, actor=request.user, selected_target=target)
-                    elif case.kind == 'catalog':
-                        if target_sku != case.target_sku:
-                            raise ValidationError('Revisa el SKU padre propuesto para esta familia.')
-                        apply_family(case, actor=request.user)
-                    else:
-                        part = chosen_line(data) or next(iter(lines_by_codigo(target_sku)), None)
-                        if not on_storefront(part):
-                            raise ValidationError('Selecciona un SKU activo del catálogo interno.')
-                        target = next((c for c in case.candidates if c['id'] == str(part.pk)), part_row(part))
-                        apply_item(case, target, actor=request.user)
-            except ValidationError as error:
-                raise MatchingConflict(error.detail)
-            enqueue_matching()
-        case.refresh_from_db()
-        return Response(case_result(case))
+        return self.decide(request, case, data)
 
     def decide(self, request, case, data):
         """An S6 case (mall.reference_matching.decide). The same decision repeated returns the case unchanged."""

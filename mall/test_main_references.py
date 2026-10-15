@@ -9,12 +9,12 @@ from rest_framework.test import APITestCase
 
 from . import references
 from .catalog_grouping import merge_catalog_parts
-from .catalog_identity import mark_exact_matches, prefer_oem
+from .catalog_identity import prefer_oem
 from .lines import bulk_create_lines, create_line
 from .matching_engine import part_row
 from .matching_models import MatchingCase
 from .models import CatalogIdentityChange, Part, Reference
-from .test_factories import Fresh, make_library_number, make_line, make_reference, make_user
+from .test_factories import Fresh, line_fields, make_code, make_library_number, make_line, make_reference, make_user
 
 INVARIANTS = {  # plan Appendix C, C2
     'I1': "SELECT count(*) FROM mall_part p WHERE p.estado <> 'unificada' AND (SELECT count(*) FROM mall_partcode r "
@@ -70,7 +70,7 @@ class MainOfEveryLineTests(TestCase):
     def test_bulk_lines_get_their_mains_in_bulk(self):
         holder = make_line('HOLDER')
         make_reference(holder, 'BULK-2', brand='ACME')
-        lines = bulk_create_lines([Part(sku=' bulk-1 '), Part(sku='BULK-2'), Part(sku='BULK-3', is_OEM=True)])
+        lines = bulk_create_lines([Part(sku=' bulk-1 '), Part(sku='BULK-2'), Part(**line_fields(dict(sku='BULK-3', is_OEM=True)))])
         mains = {line.sku: main(line) for line in lines}
         self.assertEqual({sku: (ref.code, ref.tipo, ref.estado) for sku, ref in mains.items()},
                          {'BULK-1': ('BULK-1', 'otro', 'declarado'), 'BULK-2': ('BULK-2', 'otro', 'disputa'), 'BULK-3': ('BULK-3', 'oem', 'declarado')})
@@ -103,14 +103,14 @@ class MainOfEveryLineTests(TestCase):
 class SetMainTests(TestCase):
     def setUp(self):
         self.actor = make_user('main-root', superuser=True)
-        self.line = make_line('OLD-1', name='OLD-1')
+        self.line = make_line('OLD-1', description='TAMBOR')
         self.oem = make_reference(self.line, '12345-67890', brand='TOYOTA', tipo='oem', source='CATÁLOGO TOYOTA')
 
     def test_the_codigo_follows_the_main_and_the_old_main_stays(self):
         old = main(self.line)
         references.set_main(self.line, self.oem, actor=self.actor, reason='prueba')
         line = Part.objects.get(pk=self.line.pk)
-        self.assertEqual((line.sku, line.name, line.tipo, line.is_OEM), ('12345-67890', '12345-67890', 'OEM', True))
+        self.assertEqual((line.sku, line.name, line.tipo, line.is_OEM), ('12345-67890', 'TAMBOR', 'OEM', True))  # S10: name is the description
         self.assertEqual(main(line).pk, self.oem.pk)
         self.assertEqual(alternos(line), [('', 'OLD-1')])
         old.refresh_from_db()
@@ -129,7 +129,7 @@ class SetMainTests(TestCase):
             references.set_main(self.line, ref, open_case=True)
         self.assertEqual(refused.exception.line.pk, merged.pk)
         case = MatchingCase.objects.get(pk=refused.exception.case.pk)
-        self.assertEqual((case.kind, case.method, case.target_sku), ('catalog', 'main_codigo', 'TAKEN-1'))
+        self.assertEqual((case.kind, case.guard, case.target_sku), ('merge', references.MAIN_CASE_METHOD, 'TAKEN-1'))  # S10: a merge case
         self.assertEqual(Part.objects.get(pk=self.line.pk).sku, 'OLD-1')
 
     def test_only_a_live_reference_of_the_line_can_be_the_main(self):
@@ -176,43 +176,43 @@ class ShimTests(TestCase):
         self.assertEqual((main(line).code, alternos(line)), ('REN-2', [('', 'REN-1')]))
         self.assertEqual(broken_invariants(), {})
 
-    def test_is_oem_written_alone_retypes_the_main_and_prefers_a_branded_oem_of_the_codigo(self):
+    def test_tipo_written_alone_retypes_the_main_and_prefers_a_branded_oem_of_the_codigo(self):
         line = make_line('17801-30070')
         branded = make_reference(line, '17801-30070', brand='TOYOTA', tipo='oem', source='CATÁLOGO')
-        line.is_OEM = True
-        line.save(update_fields=['is_OEM'])
+        line.tipo = 'OEM'
+        line.save(update_fields=['tipo'])
         line.refresh_from_db()
-        self.assertEqual((line.tipo, main(line).pk), ('OEM', branded.pk))
+        self.assertEqual((line.tipo, line.is_OEM, main(line).pk), ('OEM', True, branded.pk))
         plain = make_line('PLAIN-1')
-        plain.is_OEM = True
-        plain.save(update_fields=['is_OEM'])
+        plain.tipo = 'OEM'
+        plain.save(update_fields=['tipo'])
         self.assertEqual((main(plain).tipo, main(plain).brand), ('oem', ''))
-        plain.is_OEM = False
-        plain.save(update_fields=['is_OEM'])
+        plain.tipo = 'UNKNOWN'
+        plain.save(update_fields=['tipo'])
         self.assertEqual((main(plain).tipo, Part.objects.get(pk=plain.pk).tipo), ('otro', 'UNKNOWN'))
         self.assertEqual(broken_invariants(), {})
 
     def test_a_merge_by_old_code_retires_the_main_and_bringing_the_line_back_revives_it(self):
         line, target = make_line('MERGED-1'), make_line('TARGET-1')
         first = main(line)
-        line.merged_into = target
-        line.save(update_fields=['merged_into'])
+        line.merged_into, line.estado = target, 'unificada'
+        line.save(update_fields=['merged_into', 'estado'])
         self.assertIsNone(main(line))
         self.assertEqual(Reference.all_objects.get(pk=first.pk).estado, 'retirada')
-        line.merged_into, line.estado, line.active = None, 'publicada', True
-        line.save(update_fields=['merged_into', 'estado', 'active'])
+        line.merged_into, line.estado = None, 'publicada'
+        line.save(update_fields=['merged_into', 'estado'])
         self.assertEqual(main(line).pk, first.pk)  # the same row comes back, brand and tipo as they were
         self.assertEqual(broken_invariants(), {})
 
     def test_an_insert_of_the_mains_key_updates_the_main(self):
         line = make_line('90915-YZZE1')
         first = main(line)
-        ref = Reference.objects.create(part=line, code='90915-YZZE1', ref_type='oem', reference_source='CATÁLOGO')
+        ref = make_code(part=line, code='90915-YZZE1', ref_type='oem', reference_source='CATÁLOGO')
         self.assertEqual(ref.pk, first.pk)
         first.refresh_from_db()
         line.refresh_from_db()
-        self.assertEqual((first.is_main, first.tipo, first.reference_source, line.tipo, line.is_OEM), (True, 'oem', 'CATÁLOGO', 'OEM', True))
-        alias = Reference.objects.create(part=line, code='90915YZZE1', ref_type='unknown')  # another spelling, an alias: no downgrade
+        self.assertEqual((first.is_main, first.tipo, references.source_text(first), line.tipo, line.is_OEM), (True, 'oem', 'CATÁLOGO', 'OEM', True))
+        alias = make_code(part=line, code='90915YZZE1', ref_type='unknown')  # another spelling, an alias: no downgrade
         self.assertEqual((alias.pk, Reference.objects.get(pk=first.pk).tipo, Reference.objects.get(pk=first.pk).printed_forms),
                          (first.pk, 'oem', ['90915YZZE1']))
         other = make_line('OTHER-ADOPT')
@@ -232,16 +232,6 @@ class EnsureMainsTests(TestCase):
         self.assertEqual(references.ensure_mains(), {'status': 'ok', 'lines': 3, 'failed': 0, 'cases': 0})
         self.assertEqual(main(lines[0]).code, 'ENS-RENAMED')
         self.assertEqual(broken_invariants(), {})
-
-
-class MarkTests(Fresh, TestCase):
-    def test_mark_exact_matches_is_retired_and_the_number_goes_on_its_line(self):
-        line = make_line('90915-YZZE1', description='FILTRO ACEITE TOY')
-        number = make_library_number('TOYOTA', '90915-YZZE1', citation='LISTA 2026')  # S4: the line carries it (its brandless main)
-        self.assertEqual(mark_exact_matches(), [])
-        line.refresh_from_db()
-        self.assertEqual((number.part_id, number.is_main, line.tipo, main(line).brand), (line.pk, False, 'UNKNOWN', ''))
-        self.assertFalse(CatalogIdentityChange.objects.filter(part=line).exists())
 
 
 class MergeTests(TestCase):

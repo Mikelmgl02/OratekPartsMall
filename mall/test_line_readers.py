@@ -276,9 +276,9 @@ class CatalogToolReaderTests(TestCase):
 
     def test_the_oem_list_is_the_librarys_references_and_a_dispute_unmarks_no_line(self):
         from . import references
-        from .catalog_identity import disputed_codes, exact_items, exact_listed
+        from .catalog_identity import disputed_codes, exact_listed
         ref = make_library_number('MITSUBISHI', 'MR453383', source_kind='price_list', citation='LISTA')
-        self.assertEqual((exact_items(), [row.pk for row in exact_listed('MR-453383')], disputed_codes()), ({}, [ref.pk], set()))
+        self.assertEqual(([row.pk for row in exact_listed('MR-453383')], disputed_codes()), ([ref.pk], set()))
         references.update(ref, estado='disputa', dispute_note='OTRO EJE')
         self.assertEqual((exact_listed('MR-453383'), disputed_codes()), ([], {'MR453383'}))
         self.assertEqual(Part.objects.get(pk=ref.part_id).tipo, 'OEM')  # S4: a dispute is the Reference's estado; no line is unmarked
@@ -297,34 +297,9 @@ class CatalogToolReaderTests(TestCase):
             item.refresh_from_db()
             self.assertEqual((item.part_id, item.matching_status), (line.pk, 'pending'))
 
-    def test_a_matching_review_targets_a_line_on_sale(self):
-        from rest_framework.test import APIClient
-        from .matching_engine import item_row, save_case
-        supplier = make_supplier('PROVEEDOR CASO')
-        item = make_variant(supplier, 'C-1', 'ZZ-SIN-SKU-1', 1, actor=self.root)
-        case = save_case(key=f'supplier:{item.pk}', kind='supplier', sources=[item_row(item)], candidates=[], item=item, status='unmatched')
-        client = APIClient()
-        client.force_authenticate(self.root)
-        for line in hidden('ZZ-SIN-SKU-9', 'ZZ').values():
-            response = client.post(f'/api/v1/management/matching/{case.pk}/', {'action': 'approve', 'target_sku': line.sku,
-                                                                              'fingerprint': case.fingerprint}, format='json')
-            self.assertEqual(response.status_code, 409, line.estado)
-            self.assertIn('Selecciona un SKU activo', str(response.data))
-
-
 class LibraryReaderTests(TestCase):
     """The OEM library links a number to the catalog's lines; the OEM review and Productos nuevos read the lines on sale, and every
     line where it asks who already holds a code."""
-
-    def test_the_name_links_are_retired(self):
-        from .lines import set_estado
-        from .oem_links import refresh_name_links
-        from .oem_reference_models import PartOEMLink
-        make_library_number('TOYOTA', '17801-30071')
-        line = make_line('17801-30071-KSM', description='FILTRO AIRE TOY HILUX')
-        set_estado(line, 'rechazada', reason='not_a_part')
-        set_estado(line, 'publicada')
-        self.assertEqual((refresh_name_links(apply=False)['skus'], PartOEMLink.objects.count()), (0, 0))  # S4: nothing links by name
 
     def test_the_oem_finder_learns_from_lines_on_sale_and_every_codigo_stays_taken(self):
         from .catalog_suffixes import SuffixTable

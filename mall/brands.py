@@ -113,8 +113,7 @@ def set_familia(brand, familia):
 def rekey(old, new, *, reason):
     """Move the codes that carry the spelling `old` to `new` (Reference.brand), retired ones too, so every brand a code carries stays
     a brand or an alias. A code already held under `new` stays where it is: when both are live and on two lines it opens a merge case
-    (the two lines may be one part, MatchingCase kind catalog_reference, reviewed in Coincidencias), otherwise it is only listed. OEM
-    alternos are saved one by one so the OEM library mirror follows them; the rest move in one UPDATE. Returns {'moved', 'kept':
+    (the two lines may be one part, reviewed in Casos de coincidencia), otherwise it is only listed. They move in one UPDATE. Returns {'moved', 'kept':
     [{id, code, part}], 'cases': [case ids]}."""
     from .matching_queue import enqueue_matching
     from .models import Reference
@@ -133,12 +132,10 @@ def rekey(old, new, *, reason):
             continue
         kept.append({'id': row.pk, 'code': row.code, 'part': str(row.part_id)})
         if other.part_id != row.part_id and 'retirada' not in (row.estado, other.estado):
-            cases.append(open_merge_case(row, other, old, new, reason))
-    Reference.all_objects.filter(pk__in=[row.pk for row in moving if row.ref_type != 'oem']).update(brand=new)
-    for row in moving:
-        if row.ref_type == 'oem':
-            row.brand = new
-            row.save(update_fields=['brand'])
+            case = open_merge_case(row, other, old, new, reason)
+            if case is not None:
+                cases.append(case)
+    Reference.all_objects.filter(pk__in=[row.pk for row in moving]).update(brand=new)
     from .search_document import refresh
     refresh({row.part_id for row in moving})  # the brands in their lines' Search Documents (S7)
     enqueue_matching()  # codes are matched by (code, brand): the matching index reads the new spelling
@@ -146,15 +143,21 @@ def rekey(old, new, *, reason):
 
 
 def open_merge_case(code, other, old, new, reason):
-    """A catalog_reference case asking whether the line holding `code` (brand `old`) is the line holding the same code under `new`."""
-    from .matching_engine import part_row, save_case
+    """A merge case (route caso) asking whether the line holding `code` (brand `old`) is the line holding the same code under `new`:
+    Unificar merges them, Mantener separadas keeps them apart (until S10 a legacy catalog_reference case). A merge case these lines
+    already have, decided or not, is returned as it is; lines kept apart get none. Returns the case id, or None."""
     from .models import Part
-    source, target = (Part.objects.prefetch_related('codes').get(pk=pk) for pk in (code.part_id, other.part_id))
-    case = save_case(key=f'brand-merge:{code.pk}:{new}'[:240], kind='catalog_reference', sources=[part_row(source)],
-                     candidates=[part_row(target)], target=target.sku, method='catalog_reference',
-                     reason=f'{reason}: el código {code.code} queda como {old} en {source.sku} y como {new} en {target.sku}. '
-                            'Si son el mismo repuesto, agrúpalos; si no, mantenlos separados.')
-    return str(case.pk)
+    from .reference_matching import merge_case_spec, open_case
+    from .references import covering_case
+    existing = covering_case([code.part_id, other.part_id])
+    if existing is not None:
+        return str(existing.pk)
+    source, target = (Part.objects.get(pk=pk) for pk in (code.part_id, other.part_id))
+    spec = merge_case_spec([target, source], evidence={'regla': 'brand_merge', 'codes': [{'brand': new, 'code': code.code}],
+                                                      'old': old, 'new': new},
+                           reason=f'{reason}: el código {code.code} queda como {old} en {source.sku} y como {new} en {target.sku}. '
+                                  'Si son el mismo repuesto, unifícalos; si no, mantenlos separados.')
+    return str(open_case(spec).pk) if spec is not None else None
 
 
 @transaction.atomic

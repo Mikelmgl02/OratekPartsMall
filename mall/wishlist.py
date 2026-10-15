@@ -53,11 +53,11 @@ class WishlistList(generics.ListAPIView):
         query = saved(self.request.user, self.scope)
         search = self.request.query_params.get('search', '').strip()
         if search:
-            query = query.filter(Q(part__sku__icontains=search) | Q(part__name__icontains=search) |
-                                 Q(part__description__icontains=search) | Q(part__category__icontains=search) |
-                                 Q(part__subcategory__icontains=search) | Q(live_q('part__codes__'), part__codes__code__icontains=search) |
+            query = query.filter(Q(part__sku__icontains=search) |
+                                 Q(part__description__icontains=search) | Q(part__part_type__grupo__nombre__icontains=search) |
+                                 Q(part__part_type__name__icontains=search) | Q(live_q('part__codes__'), part__codes__code__icontains=search) |
                                  Q(live_q('part__codes__'), part__codes__brand__icontains=search)).distinct()
-        return query.select_related('part').prefetch_related('part__codes', 'part__images').order_by('-saved_at', '-id')
+        return query.select_related('part__part_type__grupo').prefetch_related('part__codes', 'part__images').order_by('-saved_at', '-id')
 
     def list(self, request, *args, **kwargs):
         rows = list(self.paginate_queryset(self.get_queryset()))

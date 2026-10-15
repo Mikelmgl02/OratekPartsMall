@@ -1,7 +1,6 @@
 'use client';
 import { ArrowRight, Search } from 'lucide-react';
 import { PartPicker } from './admin-catalog-editors';
-import { UppercaseInput } from './uppercase-field';
 import { batchLabels, CASE_KINDS, caseKindLabels, caseStatusLabel } from '@/lib/line-types';
 import type { CaseAction, CaseDecision, CaseRow, MatchingCase } from '@/lib/line-types';
 
@@ -30,7 +29,7 @@ export const decisionDone: Record<string, string> = {
   keep_apart: 'Las líneas OEM se mantendrán separadas y no se volverán a proponer juntas.',
 };
 export const refList = (refs: Code[]) => refs.map(ref => [ref.brand, ref.code].filter(Boolean).join(': ')).join(' · ');
-export const isOpen = (item: MatchingCase) => ['review', 'unmatched'].includes(item.status);
+export const isOpen = (item: MatchingCase) => item.status === 'review';
 export const isKnownKind = (item: MatchingCase) => (CASE_KINDS as string[]).includes(item.kind);
 // The lines a case decides between: its own lines (S6), else the candidates (and, for a merge, the sources too), once each.
 export function caseLines(item: MatchingCase): CaseRow[] {
@@ -145,19 +144,3 @@ export function CaseCard({ item, busy, line, onLine, searching, onSearch, pickin
   </>;
 }
 
-// A case from before S6 (supplier, catalog, catalog_reference, seed): a free SKU for a supplier item, the proposed parent for a family.
-export function LegacyCaseCard({ item, busy, target, onTarget, onDecide }: { item: MatchingCase; busy: boolean; target: string; onTarget: (value: string) => void;
-    onDecide: (decision: CaseDecision, message: string) => void }) {
-  return <>
-    {item.sources.map(source => <p key={source.id || source.sku}><strong>{source.sku}</strong>{source.supplier_invent_id && <small> · ID {source.supplier_invent_id}</small>}<br/>{source.description || 'SIN DESCRIPCIÓN'}{!!source.references?.length && <small><br/>REFERENCIAS DECLARADAS: {refList(source.references)}</small>}</p>)}
-    <p>{item.reason}</p>
-    {item.ai.reason && <div className="notice"><strong>PROPUESTA IA: {item.ai.target_sku}</strong><p>{item.ai.reason}</p></div>}
-    {item.ai.error && <div className="notice error">{item.ai.error}</div>}
-    {isOpen(item) && <>
-      <label>SKU interno de destino{item.kind === 'catalog' ? <strong> {item.target_sku} · {item.candidates[0]?.id ? 'EXISTENTE' : 'CREAR PADRE'}</strong> : <UppercaseInput aria-label={`Destino para ${item.sources[0]?.sku}`} value={target} onChange={event => onTarget(event.target.value)} placeholder="SKU INTERNO"/>}</label>
-      {!!item.candidates.length && <div className="admin-toolbar-actions">{item.candidates.map(candidate => <button className="button soft small" key={candidate.sku} title={candidate.description} onClick={() => onTarget(candidate.sku)}><strong>{candidate.sku}</strong><small>{candidate.description}</small>{!!candidate.codes?.length && <small>REFERENCIAS: {refList(candidate.codes)}</small>}</button>)}</div>}
-      <div className="admin-toolbar-actions"><button className="button primary small" disabled={busy || !target} onClick={() => onDecide({ action: 'approve', target_sku: target }, 'Coincidencia aprobada y guardada para próximas cargas.')}>Confirmar coincidencia</button>
-        <button className="button soft small" disabled={busy} onClick={() => onDecide({ action: 'dismiss', target_sku: target }, 'Propuesta descartada. No se repetirá mientras sus datos sean iguales.')}>Mantener separado</button></div>
-    </>}
-  </>;
-}

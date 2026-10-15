@@ -14,9 +14,11 @@ alternos only on SKUs already marked OEM: on any other SKU reconcile_identities 
 outside the OEM finder's canary and review. Nothing is overwritten: a code owned by another SKU, a different stored measurement or
 another subgrupo is reported and left alone. Re-running a file changes nothing.
 
-The aftermarket codes an item prints (its own code and the competitor codes) are also filed under each of its OEM numbers as
-OEMCrossReference rows, whether or not a SKU carries the number, and every SKU linked to the item, duplicates included, is tied to
-those numbers (PartOEMLink, source catalog) when the makes agree. A number the catalog prints for two or more different parts (an
+The aftermarket codes an item prints (its own code and the competitor codes) are read under each of its OEM numbers, whether or not
+a SKU carries the number, and every SKU linked to the item, duplicates included, is tied to those numbers when the makes agree. From
+inventory refactor S10 neither is stored as a row of its own (OEMCrossReference and PartOEMLink are archived): both go, in memory, to
+the merge pass's rules (mall.merge_pass.join_numbers): 3f groups and merges or cases the numbers' lines, and 3e makes each code whose
+numbers sit on one line that line's Reference with a catalogo source per citation. A number the catalog prints for two or more different parts (an
 inner and an outer joint of one drive shaft, a row the extract misread) says nothing about which part replaces it: it files no codes
 and ties no SKU, and a SKU matched to an item only through such numbers is tied to none of the item's numbers. Variants of one part
 (GWT-116A and GWT-116AH, ATE 24.0108-0111.1 and its PowerDisc 24.0308-0111.1) count as one. A drive-shaft assembly number listed for
@@ -25,18 +27,16 @@ shafts), or a number linked to a SKU sold as a whole shaft (EJE COMPLETO, SEMIEJ
 Mazda, Ford or Kia, name the joint (owner, 2026-10-14), and Mitsubishi's MR series names joints as well as shafts: only such a SKU
 makes one of them a shaft. The catalog's own item code is filed even
 without a digit (ASVA FDWH-FOCMF); a competitor code needs one. A printed number the library does not hold whose twin spelling it
-holds (16100-87795-000 and 16100-87795: mall.refactor.s0_normalize_numbers) is filed under the twin, and in the GM family under the
-make's own canonical spelling when another make of the family holds it. That tool ran on the OEM table before S4 and refuses to
-write once S4 moved the library to References (the table is frozen; twins left over are S9's).
+holds (16100-87795-000 and 16100-87795, which S0 made one) is filed under the twin, and in the GM family under the make's own
+canonical spelling when another make of the family holds it.
 Whether a number is printed for other parts too is decided per printed spelling, as before the twins became one, so the kept number
 holds what each spelling files and a replace after the merge changes nothing.
 The name links
 of S2a's time are retired with S4 (a number a SKU's codigo names sits on that SKU, or rule 3 proposes it in S6). Codes an OEM number carries to the
 SKU are not copied onto it as company alternos (alternos step 2c); a SKU matched only through shared numbers gets none either, so
 only an item whose codes no number can carry (no OEM number printed, or only shared or assembly ones) still writes them on the SKU.
-These rows are derived from the
-extracts and the importer only adds to them: after changing these rules, empty OEMCrossReference and the catalog links and re-run
-every extract. A corrected extract of one catalog replaces what the old one filed with mall.supplier_catalog_replace.
+The importer only adds to what earlier
+imports wrote. A corrected extract of one catalog replaces what the old one filed with mall.supplier_catalog_replace.
 """
 import argparse
 import json
@@ -365,7 +365,7 @@ class CatalogImport:
             from . import references
             from .models import Reference
             from .oem_links import chunks
-            from .oem_reference_models import manufacturer_name
+            from .oem_reference import manufacturer_name
             printed, candidates = set(), set()
             for item in self.items:
                 for o in item.get('oem', []):
@@ -495,7 +495,7 @@ class CatalogImport:
         as stored)."""
         from . import references
         from .models import Reference
-        from .oem_reference_models import manufacturer_name
+        from .oem_reference import manufacturer_name
         from .oem_links import chunks
         wanted, found = {(manufacturer_name(manufacturer), number): (manufacturer, number) for manufacturer, number in keys}, {}
         # By the compact number, as the library keys it: a short number's clave is its printed spelling (OPEL 5 69 036).
@@ -508,25 +508,31 @@ class CatalogImport:
         return found
 
     def write_cross_references(self, apply):
-        """Every aftermarket code under each OEM number of its item, whether or not a SKU carries the number. A dry run counts the codes
-        of a number the library does not hold yet as new."""
-        from .oem_links import store_cross_references
+        """Every aftermarket code under each OEM number of its item, whether or not a SKU carries the number, as rows for the merge
+        pass's rules (self.xref_rows: pk, number Reference id, brand, code, compact code, citations; mall.merge_pass.join_numbers runs on
+        them once every extract is planned). From S10 nothing is stored here: the codes become References (3e) or merge cases (OD15)
+        there. A code without a brand, or without a digit unless it is the catalog's own item code, names nothing. A dry run counts the
+        codes of a number the library does not hold yet too."""
+        from .oem_reference import citation_list, manufacturer_name
         rows, rc = self.oem_rows(), self.report['counts']
         refs = self.library_ids(set(rows))
-        entries, pending, bare = {}, set(), set()
+        found, pending = {}, set()
         for key, row in rows.items():
             for (brand, code), cites in row['cross'].items():
+                brand, code = manufacturer_name(brand), ' '.join(str(code or '').upper().split())
                 filed = self.filed_key(brand, code)
-                if filed and not re.search(r'\d', filed):
-                    bare.add((' '.join(brand.upper().split()), filed))
+                if not brand or len(brand) > 120 or not filed or len(code) > 120:
+                    continue
                 if key in refs:
-                    entries[(refs[key], brand, code)] = sorted(cites)
-                elif filed:
-                    pending.add((key, brand.strip().upper(), filed))
-        counts = store_cross_references(entries, apply=apply, bare=bare)
-        self.filed_numbers = {ref_id for ref_id, _, _ in entries}  # S9: the numbers whose groups the merge pass looks at again (3f)
-        rc['cross_reference_new'] = counts['new'] + len(pending)
-        rc['cross_reference_present'] = counts['present'] + counts['cited']
+                    entry = found.setdefault((refs[key], brand, filed), {'code': code, 'citations': []})
+                    entry['citations'] = citation_list(entry['citations'], *sorted(cites))
+                else:
+                    pending.add((key, brand, filed))
+        self.xref_rows = [(f'{self.catalog["key"]}:{index}', ref_id, brand, entry['code'], number, entry['citations'])
+                          for index, ((ref_id, brand, number), entry) in enumerate(sorted(found.items(), key=lambda pair: (str(pair[0][0]), pair[0][1:])))]
+        self.filed_numbers = {ref_id for ref_id, _, _ in found}  # the numbers whose groups the merge pass looks at again (3f)
+        rc['cross_reference_rows'] = len(found) + len(pending)
+
 
     # ------------------------------------------------------------------ alternos and technical sheets
     def owned_elsewhere(self, code, pid):
@@ -563,7 +569,8 @@ class CatalogImport:
     def sheet(self, part, item, apply, target=None):
         """Classify an unclassified SKU into target (the subgrupo its description names, else the item's), add missing template fields
         and store the absent values. A SKU already in any subgrupo the item's product type accepts keeps it."""
-        from .technical_data import bind_part_types, grupo_nombre
+        from .lines import set_subgrupo
+        from .technical_data import grupo_nombre, part_type_for
         from .technical_models import PartSpecification, TechnicalField, TechnicalTemplate
         from .technical_api import specification
         rc, target = self.report['counts'], target or TAXONOMY.get(item['product_type'])
@@ -574,18 +581,13 @@ class CatalogImport:
             if (fold(grupo_nombre(part.part_type)), fold(part.part_type.name)) not in compatible(item['product_type']):
                 rc['specs_other_subgroup'] += 1
                 return
-        elif part.category or part.subcategory:
-            rc['specs_partial_classification'] += 1
-            return
         else:
             rc['subgroups_assigned'] += 1
             self.note('subgroup_assigned', {'sku': part.sku, 'subgroup': f'{target[0]} / {target[1]}'})
             if not apply:
                 rc['specs_new'] += len({s['key'] for s in specs})
                 return
-            part.category, part.subcategory = target
-            bind_part_types([part])
-            part.save(update_fields=['category', 'subcategory', 'part_type'])
+            part.save(update_fields=set_subgrupo(part, part_type_for(*target)))
         # A dry run reads the template and the stored values too, so a re-run reports present values instead of new ones.
         template = (TechnicalTemplate.objects.select_for_update().get(pk=part.part_type_id) if apply
                     else TechnicalTemplate.objects.filter(pk=part.part_type_id).first())
@@ -661,7 +663,7 @@ class CatalogImport:
             with transaction.atomic():
                 # Lock the SKU row alone: PostgreSQL cannot lock the nullable side of the part_type join; part_type loads lazily.
                 part = (Part.objects.select_for_update() if apply else Part.objects).get(pk=pid)
-                if not part.active or part.merged_into_id:
+                if part.estado != 'publicada' or part.merged_into_id:
                     continue
                 carried = self.link_numbers(pid, n, item, cite)
                 if not codes:
@@ -676,7 +678,7 @@ class CatalogImport:
                         if xr.get('brand') and xr.get('code'):
                             self.add_code(pid, xr['code'], xr['brand'], 'company', citation(self.catalog, xr.get('page')), apply, 'cross_ref')
                 if not duplicate:
-                    if part.is_OEM:  # sister OEM numbers; reconcile_identities never touches a main already marked OEM
+                    if part.tipo == 'OEM':  # sister OEM numbers on a line whose main is an OEM number
                         groups = {g for g in map(self.make_group, self.finder.parsed[self.fid[str(pid)]]['makes']) if g}
                         for o in item.get('oem', []):
                             if not groups or self.make_group(o['manufacturer']) in groups:
@@ -700,18 +702,13 @@ class CatalogImport:
         return tied
 
     def write_catalog_links(self, apply):
-        from .oem_links import store_catalog_links
+        """The ties write_links collected (self.catalog_links), as (SKU line id, number Reference id) pairs for the merge pass's rules
+        (self.link_rows: mall.merge_pass.join_numbers reads them as which SKU a group's catalog item is). From S10 nothing is stored."""
         rc = self.report['counts']
         refs = self.library_ids({key for _, key in self.catalog_links})
-        entries, pending = {}, 0
-        for (pid, key), cites in self.catalog_links.items():
-            if key in refs:
-                entries[(pid, refs[key])] = sorted(cites)
-            else:
-                pending += 1  # dry run: the number itself is new
-        counts = store_catalog_links(entries, apply=apply)
-        rc['catalog_link_new'] = counts['new'] + pending
-        rc['catalog_link_present'] = counts['present'] + counts['cited']
+        self.link_rows = sorted({(pid, refs[key]) for pid, key in self.catalog_links if key in refs})
+        rc['catalog_links'] = len(self.catalog_links)
+
 
     @staticmethod
     def make_group(make):
@@ -765,29 +762,41 @@ def build_indexes(finder, imported=()):
     return {'raw': raw, 'oem': oem, 'codes': codes, 'skus': skus, 'claims': {}, 'shafts': shaft_numbers(finder.table)}
 
 
+def own_number(sku, table):
+    """The OEM number a SKU's own code names, compact: the whole code ('16100-29155') or the code before trailing brand and neutral
+    tags ('16100-79445-NPW'). Blank for a retired SKU and when the trailing tokens are a variant, an unknown token or an alternate
+    number: those do not name the bare part."""
+    from .catalog_suffixes import LIFECYCLE_RE, strip_tags
+    sku = str(sku or '').strip().upper()
+    if not sku or LIFECYCLE_RE.search(sku):
+        return ''
+    base, _, chain_class = strip_tags(sku, table=table)
+    key = compact(base) if chain_class in ('bare', 'tag') else ''
+    return key if len(key) >= 5 and re.search(r'\d', key) else ''
+
+
 def shaft_numbers(table=None):
     """Compact OEM numbers of whole drive shafts: those a live SKU sold as one (EJE COMPLETO, SEMIEJE, subgrupo SEMIEJES) names with
-    its own code, carries as an OEM alterno or is linked to. A CV catalog lists them for its joints, but the joint does not replace
-    the shaft (is_assembly)."""
+    its own code or carries as an OEM Reference. A CV catalog lists them for its joints, but the joint does not replace the shaft
+    (is_assembly)."""
+    from .catalog_suffixes import suffix_table
     from .lines import storefront_lines
     from .models import Reference
-    from .oem_links import chunks, name_key
-    from .oem_reference_models import PartOEMLink
+    from .oem_links import chunks
+    table = table or suffix_table()
     shafts, numbers = [], set()
-    for pk, sku, description, subcategory in storefront_lines().values_list('pk', 'sku', 'description', 'subcategory'):
-        if SHAFT_RE.search(fold(description)) or fold(subcategory) == 'SEMIEJES':
+    for pk, sku, description, subgrupo in storefront_lines().values_list('pk', 'sku', 'description', 'part_type__name'):
+        if SHAFT_RE.search(fold(description)) or fold(subgrupo or '') == 'SEMIEJES':
             shafts.append(pk)
-            numbers.add(name_key(sku, table))
+            numbers.add(own_number(sku, table))
     for chunk in chunks(shafts):
-        numbers.update(compact(code) for code in PartOEMLink.objects.filter(part_id__in=chunk, reference__isnull=False).values_list('reference__code', flat=True))
-        numbers.update(compact(code) for code in Reference.objects.filter(part_id__in=chunk, ref_type='oem').values_list('code', flat=True))
+        numbers.update(compact(code) for code in Reference.objects.filter(part_id__in=chunk, tipo='oem').values_list('code', flat=True))
     return numbers - {''}
 
 
 def run(paths, *, apply=False, report_path=None, stdout=None):
     from .catalog_suffixes import suffix_table
     from .oem_finder import OEMFinder, load_snapshot, matching_lock
-    from .oem_links import refresh_name_links
     stdout = stdout or sys.stdout
     started = time.monotonic()
     datasets = [json.load(open(path, encoding='utf-8')) for path in paths]
@@ -795,7 +804,7 @@ def run(paths, *, apply=False, report_path=None, stdout=None):
     def execute():
         finder = OEMFinder(load_snapshot(), suffix_table())
         indexes = build_indexes(finder, catalog_citations(datasets))
-        reports, filed = [], set()
+        reports, filed, rows, links = [], set(), [], []
         for data in datasets:
             job = CatalogImport(data, finder, indexes)
             job.plan()
@@ -804,6 +813,8 @@ def run(paths, *, apply=False, report_path=None, stdout=None):
             job.write_links(apply)
             job.write_catalog_links(apply)
             filed |= getattr(job, 'filed_numbers', set())
+            rows += getattr(job, 'xref_rows', [])
+            links += getattr(job, 'link_rows', [])
             report = job.report
             report['counts'] = dict(report['counts'])
             report['reasons'] = dict(report['reasons'])
@@ -815,29 +826,30 @@ def run(paths, *, apply=False, report_path=None, stdout=None):
                          f"alternos de marca {c.get('brand_code_new', 0)} (+{c.get('cross_ref_new', 0)} de competidores, "
                          f"{c.get('brand_code_conflict', 0) + c.get('cross_ref_conflict', 0)} en conflicto) · alternos OEM {c.get('oem_alterno_new', 0)} · "
                          f"subgrupos asignados {c.get('subgroups_assigned', 0)} · medidas {c.get('specs_new', 0)} "
-                         f"({c.get('specs_conflict', 0)} en conflicto) · equivalencias de posventa {c.get('cross_reference_new', 0)} nuevas · "
-                         f"vínculos de SKU por catálogo {c.get('catalog_link_new', 0)} nuevos\n")
+                         f"({c.get('specs_conflict', 0)} en conflicto) · equivalencias de posventa leídas {c.get('cross_reference_rows', 0)} · "
+                         f"vínculos de SKU por catálogo {c.get('catalog_links', 0)}\n")
         # S9, rule 3f: the groups the filed numbers now belong to merge on their own only when every line is in referencia without
-        # variants, otherwise a merge case opens; the codes now on one line become References (mall.merge_pass.join_numbers).
+        # variants, otherwise a merge case opens; the codes now on one line become References (3e; mall.merge_pass.join_numbers).
         if apply and filed:
             from .merge_pass import join_numbers
-            reports[-1]['merge_pass'] = join_numbers(filed)
-            stdout.write(f"Unificación por catálogo (3f): {reports[-1]['merge_pass']}\n")
-        # The name links are retired with S4: a number a SKU's codigo names sits on that SKU, or rule 3 proposes it (S6).
-        return reports, refresh_name_links(apply=apply)
+            reports[-1]['merge_pass'] = join_numbers(filed, rows=rows, links=links)
+            stdout.write(f"Unificación por catálogo (3f) y referencias (3e): {reports[-1]['merge_pass']}\n")
+        return reports, rows, links
 
     if apply:
         with matching_lock() as acquired:
             if not acquired:
                 stdout.write('El análisis de coincidencias está en curso; vuelve a intentarlo cuando termine.\n')
                 return None
-            reports, names = execute()
+            reports, rows, links = execute()
     else:
-        reports, names = execute()
-    result = {'mode': 'apply' if apply else 'dry_run', 'seconds': round(time.monotonic() - started, 1), 'catalogs': reports, 'name_links': names}
+        reports, rows, links = execute()
+    result = {'mode': 'apply' if apply else 'dry_run', 'seconds': round(time.monotonic() - started, 1), 'catalogs': reports}
     if report_path:
         with open(report_path, 'w', encoding='utf-8') as handle:
             json.dump(result, handle, ensure_ascii=False, indent=1, default=str)
+    # What the import read for its numbers, in memory only (S10: no table keeps it): the caller, and its tests, can look.
+    result['rows'], result['links'] = rows, links
     return result
 
 

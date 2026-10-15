@@ -37,8 +37,8 @@ from .lines import all_lines, storefront_lines
 from .matching_engine import NO_CODE_EVIDENCE
 from .matching_models import MatchingCase
 from .models import Part, SupplierItem
+from .reference_matching import converted_q
 from .new_products import PLACED_REASON, ai_fill, duplicate_checks, lock_accounts
-from .sku_proposal_models import SkuProposal
 from .sku_proposals import PLACEHOLDER_BRANDS, catalog_owners, clean, merge_references, vehicle_makes
 from .sku_review_models import SkuReviewRun, SkuReviewVerdict
 
@@ -68,7 +68,7 @@ PROTECTED_WORDS = {'LH', 'RH', 'L', 'R', 'IZQ', 'IZQUIERDO', 'IZQUIERDA', 'DER',
                    'TRASERO', 'TRASERA', 'SUP', 'SUPERIOR', 'INF', 'INFERIOR', 'INT', 'INTERIOR', 'INTERNO', 'INTERNA', 'EXT', 'EXTERIOR', 'EXTERNO',
                    'EXTERNA', 'ANT', 'ANTERIOR', 'POST', 'POSTERIOR', 'CENTRAL', 'MEDIO', 'MAYOR', 'MENOR', 'ALTO', 'ALTA', 'BAJO', 'BAJA',
                    'CONDUCTOR', 'PASAJERO', 'COPILOTO'}
-REJECT_REASONS = dict(SkuProposal.REJECT_REASONS)
+REJECT_REASONS = dict(Part.REASONS)
 PLACEHOLDER_DESCRIPTION = re.compile(r'^(?:|S/?D|SIN DESC(?:RIPCION|RIPCIÓN)?|N/?A|-+|\.+|X+)$')
 BADLY_CREATED = re.compile(r'\bMAL CREAD[OA]\b')   # the supplier says the item itself was created wrong (a mistyped code)
 NO_LONGER_USED = re.compile(r'^NO USO\b')
@@ -139,7 +139,8 @@ def siblings(line, item_ids):
         if not placeholder(description) and len(found) < SIBLINGS:
             found.append({'codigo': codigo, 'descripcion': clean(description)[:120], 'marca': clean(brand)})
     for sku, description, category, subcategory in (storefront_lines().filter(sku__contains=number)
-                                                   .values_list('sku', 'description', 'category', 'subcategory').order_by('sku')[:3]):
+                                                   .values_list('sku', 'description', 'part_type__grupo__nombre', 'part_type__name')
+                                                   .order_by('sku')[:3]):
         found.append({'codigo': sku, 'descripcion': clean(description)[:120], 'catalogo': True,
                       **({'tipo': f'{category} / {subcategory}'} if category and subcategory else {})})
     return found
@@ -180,13 +181,13 @@ def word_hints(line, hints=None):
     (unmatched, or dismissed because the item was placed on this line; an administrator's own dismissal keeps its hints out); an item
     placed since has none, and `hints` (a Hints) asks the engine for them (MatchIndex.hints). Retired and merged SKUs are left out."""
     ids, cased = [], set()
-    placed = Q(status='unmatched') | Q(status='dismissed', reason=PLACED_REASON)
-    for item_id, rows in (MatchingCase.objects.filter(placed, item__part_id=line.pk, kind='supplier', method=NO_CODE_EVIDENCE)
+    placed = Q(status='review') | Q(status='dismissed', reason=PLACED_REASON)  # unmatched before 0086 (S10): review
+    for item_id, rows in (MatchingCase.objects.filter(placed, converted_q(), item__part_id=line.pk, method=NO_CODE_EVIDENCE)
                           .order_by('key').values_list('item_id', 'candidates')):
         cased.add(item_id)
         ids += [row['id'] for row in rows if row.get('id') and row['id'] not in ids]
     if hints is not None:
-        legacy = set(MatchingCase.objects.filter(item__part_id=line.pk, kind='supplier').values_list('item_id', flat=True))
+        legacy = set(MatchingCase.objects.filter(converted_q(), item__part_id=line.pk).values_list('item_id', flat=True))
         for item in items_of(line):
             if item.pk not in cased and item.pk not in legacy:
                 ids += [row['id'] for row in hints.hints(item) if row['id'] not in ids]
@@ -237,16 +238,13 @@ DECIDED = {'publicada': 'approved', 'unificada': 'linked', 'rechazada': 'rejecte
 
 def decision_examples():
     """Recent decisions of the administrators, as the AI's policy examples: what they approved, linked or rejected and why (the lines
-    decided from Productos nuevos, newest first, then the proposals decided before S6)."""
+    decided from Productos nuevos, newest first; the proposals decided before S6 were archived with their table in S10)."""
     from .models import Reference
     main_brand = Reference.objects.filter(part_id=OuterRef('pk'), is_main=True).values('brand')[:1]
     rows = [(sku, description, brand or '', DECIDED[estado], reason if estado == 'rechazada' else '', at) for sku, description, brand, estado, reason, at in
             all_lines().filter(origen='proveedor', estado__in=list(DECIDED), decided_at__isnull=False).exclude(description='')
             .annotate(main_brand=Subquery(main_brand)).order_by('-decided_at')
             .values_list('sku', 'description', 'main_brand', 'estado', 'decision_reason', 'decided_at')[:DECISION_EXAMPLES * 2]]
-    rows += list(SkuProposal.objects.filter(status__in=['approved', 'linked', 'rejected']).exclude(description='').order_by('-decided_at')
-                 .values_list('sku', 'description', 'brand', 'status', 'reject_reason', 'decided_at')[:DECISION_EXAMPLES * 2])
-    rows.sort(key=lambda row: row[5], reverse=True)
     return [[sku, clean(description)[:80], brand, status, reason] for sku, description, brand, status, reason, _ in rows
             if not placeholder(description)][:DECISION_EXAMPLES]
 

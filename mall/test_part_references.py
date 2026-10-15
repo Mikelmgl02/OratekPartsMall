@@ -11,6 +11,7 @@ from .serializers import InventorySerializer
 from .services import ingest_inventory
 from .matching_worker import analyze_ambiguous
 from .supplier_import import read_supplier_excel, _workbook_response
+from .test_factories import make_code
 
 
 class PartReferenceTests(APITestCase):
@@ -22,8 +23,8 @@ class PartReferenceTests(APITestCase):
         self.client.force_authenticate(self.admin)
         self.desc = 'DISCO DELANTERO HYUNDAI ACCENT 256 MM 11-16'
         self.master = Part.objects.create(sku='RN11002V', description=self.desc)
-        self.ref = PartCode.objects.create(part=self.master, code='51712-1R000', brand='HYUNDAI', kind='oem', reference_source='CATÁLOGO VERIFICADO')
-        PartCode.objects.create(part=self.master, code='51712-0U000', brand='KIA', kind='oem')
+        self.ref = make_code(part=self.master, code='51712-1R000', brand='HYUNDAI', kind='oem', reference_source='CATÁLOGO VERIFICADO')
+        make_code(part=self.master, code='51712-0U000', brand='KIA', kind='oem')
 
     def ingest(self, code='D-HYU-1R', refs=None, **kwargs):
         data = dict(update_id=code, supplier_invent_id='STABLE-1', codigo=code, brand='AFTERMARKET',
@@ -58,7 +59,7 @@ class PartReferenceTests(APITestCase):
 
     def test_a_declared_code_another_line_holds_is_listed_with_it_and_holds_nothing(self):
         other = Part.objects.create(sku='OTHER-MASTER', description=self.desc)
-        PartCode.objects.create(part=other, code='OTHER-OEM', kind='oem')
+        make_code(part=other, code='OTHER-OEM', kind='oem')
         item = self.ingest(code=self.master.sku, brand='', refs=[{'code': 'OTHER-OEM'}, {'code': '51712-1R000', 'brand': 'HYUNDAI'}])
         self.assertEqual((item.part, item.matching_status), (self.master, 'matched'))  # its own code links it; a declared one never holds it
         cases = self.cases(item)
@@ -101,7 +102,7 @@ class PartReferenceTests(APITestCase):
         self.assertEqual(response.status_code, 200, response.data)
         self.ref.refresh_from_db()
         self.assertEqual(self.ref.kind, 'manufacturer')
-        self.assertEqual(self.ref.reference_source, 'https://example.invalid/catalog')
+        self.assertEqual(references.source_text(self.ref), 'https://example.invalid/catalog')
         response = self.client.patch(url, {'codes':[dict(code=self.ref.code, brand=self.ref.brand)]}, format='json')
         self.assertEqual(response.status_code, 200, response.data)
         self.ref.refresh_from_db()
@@ -142,8 +143,8 @@ class PartReferenceTests(APITestCase):
     @patch('mall.matching_worker.call_provider')
     def test_ai_ranks_a_line_case_with_its_declared_references_without_applying_them(self, provider, config):
         other = Part.objects.create(sku='OTHER-DISC', description=self.desc)
-        PartCode.objects.create(part=other, code='51712-1R000', brand='MANDO', kind='manufacturer')
-        PartCode.objects.create(part=self.master, code='51712-1R000', brand='MANDO-2', kind='manufacturer')
+        make_code(part=other, code='51712-1R000', brand='MANDO', kind='manufacturer')
+        make_code(part=self.master, code='51712-1R000', brand='MANDO-2', kind='manufacturer')
         item = self.ingest(code='51712-1R000', brand='', refs=[{'code': '51712-0U000'}])  # brandless on two lines: a line case
         case = MatchingCase.objects.get(item=item, kind='line')
         provider.return_value = {'suggestions':[dict(source_sku=item.codigo, target_sku=self.master.sku, confidence=.99, reason='REVISAR')]}

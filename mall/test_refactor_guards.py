@@ -218,10 +218,10 @@ REFERENCE_RELATIONS = {'codes', 'alternos', 'reemplaza', 'internal_references', 
 # Reference.objects or a line's codes, which leave retired rows out; S10 removes the alias and this list. catalog_search.py's fourth is
 # no join: codes__contains on the Search Document's own codes column (S7).
 LEGACY_ALLOWED = {
-    'catalog_assistant.py': 2, 'catalog_classification.py': 2, 'catalog_grouping_suggestions.py': 4, 'catalog_identity.py': 2,
-    'catalog_search.py': 4, 'matching_engine.py': 4, 'models.py': 1, 'oem_finder.py': 2, 'oem_links.py': 9, 'refactor/snapshot.py': 3,
-    'serializers.py': 2, 'services.py': 6, 'sku_proposals.py': 2, 'supplier_catalog_replace.py': 2, 'wishlist.py': 4,
-}
+    'catalog_assistant.py': 2, 'catalog_classification.py': 4, 'catalog_identity.py': 2,
+    'catalog_search.py': 4, 'management.py': 1, 'matching_engine.py': 4, 'models.py': 1, 'oem_finder.py': 2, 'oem_links.py': 9,
+    'refactor/snapshot.py': 3, 'serializers.py': 2, 'services.py': 6, 'sku_proposals.py': 2, 'supplier_catalog_replace.py': 2, 'wishlist.py': 4,
+}  # S10: catalog_classification's two and management's one more are prefetch_related('codes__sources') (the JSON's reference_source)
 BULK_METHODS = {'bulk_create', 'bulk_update'}
 BULK_CHOKE_POINTS = {Path('lines.py'), Path('references.py')}
 # Bulk writes of lines elsewhere, reviewed: none since S5 moved the catalog assistant's taxonomy writes to mall.lines.bulk_update_lines.

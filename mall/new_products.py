@@ -250,22 +250,20 @@ def joined(line, item, *, prepared=False):
     return line
 
 
-LEGACY_OPEN = ('unmatched', 'review')
-
-
-PLACED_BEFORE = 'colocado'  # evidence key: what placed() overwrote, so python -m mall.refactor.s6_new_products --rollback reopens it
+PLACED_BEFORE = 'colocado'  # evidence key: the status and reason placed() overwrote
 
 
 def placed(items):
-    """The legacy supplier cases (kind supplier) of items placed on a line outside the catalog: an unmatched one (D1: no code
-    evidence) or one waiting for review becomes dismissed, 'Colocado en Productos nuevos' (plan A5), keeping its status and reason in
-    evidence['colocado'] (the S6 rollback gives them back to an item it takes off that line); one an administrator dismissed stays as
-    it was."""
+    """The legacy supplier cases of items placed on a line outside the catalog (line cases from S10's 0086, reference_matching.
+    converted_q): one waiting for review (D1: no code evidence) becomes dismissed, 'Colocado en Productos nuevos' (plan A5), keeping its
+    status and reason in evidence['colocado']; one an administrator dismissed stays as it was."""
+    from .reference_matching import converted_q
     MatchingCase = _models()[4]
     ids = [item.pk for item in items]
     if not ids:
         return
-    for case in MatchingCase.objects.filter(item_id__in=ids, kind='supplier', status__in=LEGACY_OPEN).only('pk', 'status', 'reason', 'evidence'):
+    for case in (MatchingCase.objects.filter(converted_q(), item_id__in=ids, kind='line', status='review')
+                 .only('pk', 'status', 'reason', 'evidence')):
         MatchingCase.objects.filter(pk=case.pk).update(status='dismissed', reason=PLACED_REASON, evidence={
             **(case.evidence or {}), PLACED_BEFORE: {'status': case.status, 'reason': case.reason}})
 
@@ -397,10 +395,13 @@ def settle(target, item_ids, user, action, *, source=None):
     item_ids = list(item_ids)
     if not item_ids:
         return 0
-    legacy = {case.item_id: case for case in MatchingCase.objects.select_for_update().filter(item_id__in=item_ids, kind='supplier').order_by('pk')}
+    from .reference_matching import converted_q
+    legacy = {case.item_id: case for case in MatchingCase.objects.select_for_update().filter(converted_q(), item_id__in=item_ids)
+              .order_by('pk')}
     MatchingCase.objects.filter(pk__in=[case.pk for case in legacy.values()]).exclude(status='applied').update(status='applied',
                                                                                                               target_sku=target.sku)
-    blocking = MatchingCase.objects.filter(item_id=OuterRef('pk'), status='review').exclude(kind__in=(CASE_KIND, 'supplier'))
+    blocking = (MatchingCase.objects.filter(item_id=OuterRef('pk'), status='review').exclude(kind=CASE_KIND)
+                .exclude(pk__in=[case.pk for case in legacy.values()]))
     now = timezone.now()
     count = (SupplierItem.objects.filter(pk__in=item_ids, part_id=target.pk, reference__isnull=False, matching_status='pending',
                                          codigo_pendiente__isnull=True, brand_pendiente__isnull=True)

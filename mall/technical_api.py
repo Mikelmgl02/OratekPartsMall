@@ -28,8 +28,8 @@ UNITS = {'mm': ('length', '1'), 'cm': ('length', '10'), 'm': ('length', '1000'),
 
 
 class PartTypeSerializer(serializers.ModelSerializer):
-    """A subgrupo as {category, name}: category is its grupo's nombre (the FK, S5). Sending another category moves the subgrupo to that
-    grupo, found or created; its lines' grupo text follows (mall.lines.project_subgrupos)."""
+    """A subgrupo as {category, name}: category is its grupo's nombre (the FK, S5; from S10 the only record). Sending another category
+    moves the subgrupo to that grupo, found or created; its lines' Search Documents follow (mall.lines.project_subgrupos)."""
     category = UppercaseCharField(max_length=120, help_text='El grupo del subgrupo.')
     name = UppercaseCharField(max_length=120)
     part_count = serializers.IntegerField(read_only=True, default=0)
@@ -41,9 +41,8 @@ class PartTypeSerializer(serializers.ModelSerializer):
         validators = []
 
     def to_representation(self, instance):
-        data = super().to_representation(instance)
-        data['category'] = grupo_nombre(instance)
-        return data
+        return {'id': str(instance.pk), 'category': grupo_nombre(instance), 'name': instance.name,
+                'part_count': getattr(instance, 'part_count', 0), 'field_count': getattr(instance, 'field_count', 0)}
 
     def validate(self, data):
         for key in ('category', 'name'):
@@ -51,8 +50,7 @@ class PartTypeSerializer(serializers.ModelSerializer):
                 data[key] = normalized_label(data[key])
         category = data.get('category', grupo_nombre(self.instance) if self.instance else '')
         name = data.get('name', getattr(self.instance, 'name', ''))
-        # The subgrupos of that grupo by its FK, and until 0082 one with no grupo yet under that text.
-        duplicates = PartType.objects.filter(Q(grupo__nombre__iexact=category) | Q(grupo__isnull=True, category__iexact=category), name__iexact=name)
+        duplicates = PartType.objects.filter(grupo__nombre__iexact=category, name__iexact=name)
         if self.instance:
             duplicates = duplicates.exclude(pk=self.instance.pk)
         if duplicates.exists():
@@ -61,9 +59,10 @@ class PartTypeSerializer(serializers.ModelSerializer):
 
     @staticmethod
     def with_grupo(data):
-        if 'category' in data:
-            data['grupo'] = grupo_for(data['category'])
-            data['category'] = data['grupo'].nombre
+        """The grupo the category names (found or created) instead of the text, which is no column of the subgrupo from S10."""
+        category = data.pop('category', None)
+        if category is not None:
+            data['grupo'] = grupo_for(category)
         return data
 
     @transaction.atomic
@@ -82,8 +81,7 @@ class PartTypeSerializer(serializers.ModelSerializer):
         try:
             with transaction.atomic():
                 instance = super().update(instance, self.with_grupo(data))
-                # Until S10 the lines' grupo and subgrupo text follow their subgrupo (the import and filter APIs still read it).
-                project_subgrupos([instance])
+                project_subgrupos([instance])  # its lines' Search Documents read its grupo and name
         except IntegrityError:
             raise ValidationError('Este subgrupo ya existe.')
         return instance
@@ -94,13 +92,13 @@ class PartTypeList(generics.ListCreateAPIView):
     serializer_class = PartTypeSerializer
     filter_backends = [filters.SearchFilter, StableOrdering]
     search_fields = ['grupo__nombre', 'name']
-    # category orders by the text, which until S10 is the grupo's nombre.
     ordering_fields = ['category', 'name', 'part_count', 'field_count']
+    ordering_aliases = {'category': 'grupo__nombre'}  # the grid's column: its grupo's nombre
     # Meta.ordering is ignored on GROUP BY queries; pages need an explicit, unique order. Two counted relations need distinct counts.
     # part_count: the subgrupo's lines in the catalog (mall.lines.catalog_lines: publicada and retirada).
     queryset = (PartType.objects.select_related('grupo')
                 .annotate(part_count=Count('parts', filter=catalog_q(prefix='parts__'), distinct=True),
-                          field_count=Count('template__fields', distinct=True)).order_by('category', 'name', 'id'))
+                          field_count=Count('template__fields', distinct=True)).order_by('grupo__nombre', 'name', 'id'))
 
 
 class PartTypeDetail(generics.RetrieveUpdateAPIView):

@@ -12,6 +12,7 @@ from .models import (
     Role, StockEntry, User,
 )
 from .services import ingest_inventory
+from .test_factories import make_line
 
 
 class CatalogPartialImportTests(APITestCase):
@@ -188,7 +189,7 @@ class CatalogPartialImportTests(APITestCase):
         self.assertTrue(Part.objects.filter(sku='CORRECTED-6-12').exists())
 
     def test_repair_is_idempotent_and_does_not_change_stock_or_internal_ids(self):
-        existing = Part.objects.create(sku='STOCKED', name='OLD NAME')
+        existing = make_line(sku='STOCKED', name='OLD NAME')
         old_code = PartCode.objects.create(part=existing, code='STOCKED-ALT')
         other = Part.objects.create(sku='OTHER')
         PartCode.objects.create(part=other, code='OWNED-BY-OTHER')

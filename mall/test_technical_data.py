@@ -9,6 +9,8 @@ from .catalog_grouping import merge_catalog_parts
 from .catalog_import import save_plan
 from .models import (Account, Membership, Application, Grupo, ItemApplication, Part, PartSpecification, PartType,
                      Role, TechnicalTemplate, User)
+from .technical_data import part_type_for
+from .test_factories import make_line
 
 
 class TechnicalDataTests(APITestCase):
@@ -19,7 +21,7 @@ class TechnicalDataTests(APITestCase):
         buyer.roles.add(Role.objects.get(code='client_business'))
         Membership.objects.create(user=self.user, account=buyer)
         self.client.force_authenticate(self.root)
-        self.part = Part.objects.create(sku='TEST-DISC', category='FRENOS', subcategory='DISCOS')
+        self.part = make_line(sku='TEST-DISC', category='FRENOS', subcategory='DISCOS')
         self.type = self.part.part_type
         self.template_url = f'/api/v1/management/part-types/{self.type.pk}/template/'
         self.sheet_url = f'/api/v1/management/catalog/{self.part.pk}/technical/'
@@ -41,9 +43,9 @@ class TechnicalDataTests(APITestCase):
         return Application.objects.create(make='HYUNDAI', model='ACCENT', year_from=2011, year_to=2016, **overrides)
 
     def test_grid_sorting_and_template_field_counts(self):
-        other = PartType.objects.create(category='ARRANQUE', name='MOTORES')
+        other = part_type_for('ARRANQUE', 'MOTORES')
         for sku in ('TEST-DISC-2', 'TEST-DISC-3'):
-            Part.objects.create(sku=sku, category='FRENOS', subcategory='DISCOS')
+            make_line(sku=sku, category='FRENOS', subcategory='DISCOS')
         rows = self.client.get('/api/v1/management/part-types/', {'ordering': '-part_count'}).data['results']
         self.assertEqual([(row['name'], row['part_count'], row['field_count']) for row in rows[:2]], [('DISCOS', 3, 4), ('MOTORES', 0, 0)])
         self.assertEqual(self.client.get('/api/v1/management/part-types/', {'ordering': 'category'}).data['results'][0]['id'], str(other.pk))
@@ -53,12 +55,12 @@ class TechnicalDataTests(APITestCase):
         self.assertEqual(years, sorted(years, reverse=True))
 
     def test_subgroup_identity_normalizes_and_is_scoped_to_group(self):
-        same = Part.objects.create(sku='SAME', category=' frenos ', subcategory=' discos ')
-        other = Part.objects.create(sku='OTHER', category='TRANSMISIÓN', subcategory='DISCOS')
+        same = make_line(sku='SAME', category=' frenos ', subcategory=' discos ')
+        other = make_line(sku='OTHER', category='TRANSMISIÓN', subcategory='DISCOS')
         self.assertEqual(same.part_type_id, self.type.pk)
         self.assertNotEqual(other.part_type_id, self.type.pk)
         self.assertEqual(TechnicalTemplate.objects.count(), 2)
-        blank = Part.objects.create(sku='BLANK', category='FRENOS')
+        blank = make_line(sku='BLANK', category='FRENOS')
         self.assertIsNone(blank.part_type_id)
 
     def test_import_creates_and_reuses_type_in_batches(self):
@@ -70,7 +72,7 @@ class TechnicalDataTests(APITestCase):
         self.assertEqual(part.part_type.name, 'PASTILLAS')
 
     def test_template_fields_are_specific_to_type(self):
-        other = Part.objects.create(sku='FILTER', category='FILTROS', subcategory='ACEITE')
+        other = make_line(sku='FILTER', category='FILTROS', subcategory='ACEITE')
         response = self.client.get(f'/api/v1/management/catalog/{other.pk}/technical/')
         self.assertEqual(response.data['template']['fields'], [])
         bad = self.save_sheet(values={'made_up': {'value': '1'}})
@@ -137,11 +139,11 @@ class TechnicalDataTests(APITestCase):
 
     def test_part_type_pages_are_ordered_by_group_name_and_id(self):
         grupos = [Grupo.objects.create(nombre=f'GRUPO {index}') for index in range(3)]
-        PartType.objects.bulk_create([PartType(grupo=grupos[index % 3], category=f'GRUPO {index % 3}', name=f'SUBGRUPO {54 - index:02d}')
+        PartType.objects.bulk_create([PartType(grupo=grupos[index % 3], name=f'SUBGRUPO {54 - index:02d}')
                                       for index in range(55)])
-        Part.objects.create(sku='TEST-DISC-2', category='FRENOS', subcategory='DISCOS')
-        Part.objects.create(sku='TEST-DISC-OLD', category='FRENOS', subcategory='DISCOS', active=False, merged_into=self.part)
-        expected = [str(pk) for pk in PartType.objects.order_by('category', 'name', 'id').values_list('id', flat=True)]
+        make_line(sku='TEST-DISC-2', category='FRENOS', subcategory='DISCOS')
+        make_line(sku='TEST-DISC-OLD', category='FRENOS', subcategory='DISCOS', active=False, merged_into=self.part)
+        expected = [str(pk) for pk in PartType.objects.order_by('grupo__nombre', 'name', 'id').values_list('id', flat=True)]
         with warnings.catch_warnings():
             warnings.simplefilter('error', UnorderedObjectListWarning)
             pages = [self.client.get('/api/v1/management/part-types/', {'page': page}) for page in (1, 2, 1)]
@@ -184,8 +186,8 @@ class TechnicalDataTests(APITestCase):
         response = self.client.get(url)
         self.assertEqual(len(response.data['applications']), 1)
         self.assertNotIn('source', response.data['applications'][0])
-        self.part.active = False
-        self.part.save(update_fields=['active'])
+        self.part.estado = 'retirada'
+        self.part.save(update_fields=['estado'])
         self.assertEqual(self.client.get(url).status_code, 404)
 
     def test_applications_validate_years_duplicates_and_protect_used_identity(self):
@@ -217,7 +219,7 @@ class TechnicalDataTests(APITestCase):
         # subgrupo refuses the merge (guard subgrupo), and the sheet stays on its line.
         from .technical_models import PartType
         other = Part.objects.create(sku='TARGET')
-        Part.objects.filter(pk=other.pk).update(part_type=PartType.objects.create(category='OTRO GRUPO', name='OTRO SUBGRUPO'))
+        Part.objects.filter(pk=other.pk).update(part_type=part_type_for('OTRO GRUPO', 'OTRO SUBGRUPO'))
         self.save_sheet(values={'diameter': {'value': 256}})
         with self.assertRaises(ValidationError):
             merge_catalog_parts(actor=self.root, target_sku=other.sku, source_skus=[self.part.sku])

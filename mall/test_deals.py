@@ -14,6 +14,7 @@ from .quote_draft_models import DealQuotationDraft
 from .request_models import (SupplierRequest, SupplierRequestLine, ClientRequestSubmission,
                              RequestContribution, DealQuotation, DealEvent, DealMessage, DealCommand)
 from . import test_requests as request_tests
+from .test_factories import make_line
 
 
 class DealWorkflowTests(APITestCase):
@@ -181,7 +182,7 @@ class DealWorkflowTests(APITestCase):
                           for pk in [self.item_a.pk, self.item_a2.pk, self.item_b.pk]},
                          {self.item_a.pk: [7, 4, 1], self.item_a2.pk: [2, 0, 0], self.item_b.pk: [6, 6, 0]})
         self.assertEqual(len(large), len(small))
-        old = Part.objects.create(sku='OLD-SKU', active=False, merged_into=self.part)
+        old = make_line(sku='OLD-SKU', active=False, merged_into=self.part)
         SupplierRequestLine.objects.filter(request=order).update(part=old, sku=old.sku)
         self.assertEqual(self.request_state(), (totals, items))
 
@@ -204,7 +205,7 @@ class DealWorkflowTests(APITestCase):
                 self.assertEqual((set(totals), totals['handshaked_quantity'], totals['delivered_quantity']), (keys, *quantities))
 
     def test_request_state_reports_zero_agreed_units_for_lines_quoted_as_unavailable(self):
-        other = Part.objects.create(sku='99999-OTRO', name='OTRO REPUESTO')
+        other = make_line(sku='99999-OTRO', name='OTRO REPUESTO')
         other_item = self.item(self.supplier_a, self.seller_a, 'A-OTRO', '99999-OTRO', 5)
         response = self.submit(self.payload([(self.item_a, 3), (other_item, 2)]))
         order = SupplierRequest.objects.get(pk=response.data['requests'][0]['id']); self.review(order)

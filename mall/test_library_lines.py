@@ -13,7 +13,6 @@ from .lines import LineStateError, catalog_lines, create_line, storefront_lines
 from .models import CatalogMerge, Part, PartType, Reference, ReferenceSource
 from .technical_models import TechnicalTemplate
 from .oem_finder import load_snapshot
-from .oem_reference_models import OEMCrossReference, OEMCrossReferenceRetired, PartOEMLink
 from .test_factories import Fresh, make_line, make_reference, make_user
 
 URL = '/api/v1/management/oem-references/'
@@ -40,7 +39,7 @@ class LibraryNumberTests(Fresh, TestCase):
                          ('16100-79445', 'referencia', 'biblioteca', False, 'OEM', True))
         self.assertEqual((line.description, line.aplicaciones_texto, line.category, line.subcategory),
                          ('BOMBA AGUA', 'HILUX 2005-2015', 'REFRIGERACIÓN', 'BOMBAS DE AGUA'))
-        self.assertEqual(line.part_type, PartType.objects.get(category='REFRIGERACIÓN', name='BOMBAS DE AGUA'))
+        self.assertEqual(line.part_type, PartType.objects.get(grupo__nombre='REFRIGERACIÓN', name='BOMBAS DE AGUA'))
         self.assertTrue(TechnicalTemplate.objects.filter(part_type=line.part_type).exists())  # created with its template
         self.assertEqual((ref.is_main, ref.code, ref.brand, ref.tipo, ref.estado, ref.clave), (True, '16100-79445', 'TOYOTA', 'oem', 'declarado', '1610079445'))
         self.assertEqual({key: ref.detail[key] for key in ('description', 'part_type', 'applications', 'origen')},
@@ -131,13 +130,6 @@ class LibraryNumberTests(Fresh, TestCase):
         plain.refresh_from_db()
         self.assertEqual(plain.estado, 'retirada')
 
-    def test_the_rows_that_hang_from_a_number_protect_it(self):
-        for model in (OEMCrossReference, OEMCrossReferenceRetired, PartOEMLink):
-            self.assertIs(model._meta.get_field('reference').remote_field.on_delete, models.PROTECT, model)
-            self.assertEqual(model._meta.get_field('reference').column, 'ref_id')
-            self.assertEqual(model._meta.get_field('legacy_reference').column, 'reference_id')
-
-
 class BibliotecaTests(Fresh, TestCase):
     def setUp(self):
         super().setUp()
@@ -146,7 +138,7 @@ class BibliotecaTests(Fresh, TestCase):
         self.client.force_authenticate(self.root)
         self.ref, _ = references.add_library_number('TOYOTA', '16100-79445', description='BOMBA AGUA', part_type='BOMBAS DE AGUA',
                                                     source_kind='aftermarket_catalog', citation='GMB 2016', source_detail={'catalog': 'gmb'})
-        OEMCrossReference.objects.create(reference=self.ref, brand='GMB', code='GWT-78A', citations=['GMB 2016 · pág. 4'])
+        references.add(self.ref.part_id, 'GWT-78A', 'GMB', tipo='aftermarket', source='GMB 2016 · pág. 4')  # S9: the code is the line's
 
     def test_rows_keep_the_legacy_values_and_the_filters_take_both(self):
         response = self.client.get(URL)

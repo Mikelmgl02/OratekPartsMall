@@ -22,9 +22,8 @@ class Grupo(models.Model):
         return self.nombre
 
     def save(self, *args, **kwargs):
-        """The nombre is normalized, and a rename reaches the text that follows the grupo until S10, in the same transaction: its subgrupos'
-        category and their lines' grupo text (mall.technical_data.project_grupo). Otherwise a line's next save would look its subgrupo up
-        by the old text and bring the old grupo back. (A queryset update skips this; rename a grupo through save().)"""
+        """The nombre is normalized; a rename reaches the Search Documents of its lines (mall.technical_data.project_grupo), in the same
+        transaction. (A queryset update skips that; the next rebuild repairs them.)"""
         from .technical_data import normalized_label, project_grupo
         self.nombre = normalized_label(self.nombre)
         using = kwargs.get('using') or self._state.db or 'default'
@@ -34,41 +33,31 @@ class Grupo(models.Model):
 
 
 class PartType(models.Model):
-    """A subgrupo: a kind of part within its grupo, with its TechnicalTemplate (1:1). Until S10 `category` keeps the grupo's nombre as
-    text: save() and the writers of mall.technical_data keep the two in step, and the code before S5 only knows the text."""
+    """A subgrupo: a kind of part within its grupo, with its TechnicalTemplate (1:1). From S10 the grupo FK is its only record of the
+    grupo: the column category (the grupo's nombre as text until then) is no longer read or written (legacy_category here, its column
+    kept by db_column; 0086 gives it a database default, step 2 takes it out of the state and 0089 drops it), and category is the grupo's
+    nombre (load it with select_related('grupo'))."""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    grupo = models.ForeignKey(Grupo, on_delete=models.PROTECT, blank=True, related_name='subgrupos', verbose_name='grupo')  # filled by save()
-    category = models.CharField(max_length=120, verbose_name='grupo')
+    grupo = models.ForeignKey(Grupo, on_delete=models.PROTECT, related_name='subgrupos', verbose_name='grupo')
+    legacy_category = models.CharField(max_length=120, blank=True, default='', db_default='', db_column='category', editable=False,
+                                       verbose_name='grupo (texto anterior a S10)')
     name = models.CharField(max_length=120, verbose_name='subgrupo')
 
+    @property
+    def category(self) -> str:
+        return self.grupo.nombre if self.grupo_id else ''
+
     class Meta:
-        ordering = ['category', 'name']
-        constraints = [models.UniqueConstraint(Lower('category'), Lower('name'), name='unique_part_type_group_name'),  # leaves in S10
-                       models.UniqueConstraint(F('grupo'), Lower('name'), name='subgrupo_unique_in_grupo')]
+        ordering = ['grupo__nombre', 'name']
+        constraints = [models.UniqueConstraint(F('grupo'), Lower('name'), name='subgrupo_unique_in_grupo')]
 
     def __str__(self):
-        return f'{self.category} / {self.name}'
-
-    @classmethod
-    def from_db(cls, db, field_names, values):
-        instance = super().from_db(db, field_names, values)
-        instance._loaded_grupo = (instance.__dict__.get('category'), instance.__dict__.get('grupo_id'))  # what save() compares against
-        return instance
-
-    def refresh_from_db(self, using=None, fields=None, from_queryset=None):
-        super().refresh_from_db(using=using, fields=fields, from_queryset=from_queryset)
-        self._loaded_grupo = (self.__dict__.get('category'), self.__dict__.get('grupo_id'))
+        return f'{self.grupo.nombre} / {self.name}' if self.grupo_id else self.name
 
     def save(self, *args, **kwargs):
-        """The grupo and its text move together (mall.technical_data.pair_grupo): a subgrupo saved with only the text, as the code
-        before S5 and old tests write it, finds or creates its grupo."""
-        from .technical_data import pair_grupo
-        pair_grupo(self, using=kwargs.get('using') or self._state.db or 'default')
-        fields = kwargs.get('update_fields')
-        if fields is not None and {'category', 'grupo'} & set(fields):
-            kwargs['update_fields'] = set(fields) | {'category', 'grupo'}
+        from .technical_data import normalized_label
+        self.name = normalized_label(self.name)
         super().save(*args, **kwargs)
-        self._loaded_grupo = (self.__dict__.get('category'), self.__dict__.get('grupo_id'))
 
 
 class TechnicalTemplate(models.Model):

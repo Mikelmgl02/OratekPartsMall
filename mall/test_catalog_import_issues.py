@@ -4,6 +4,7 @@ from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from .models import CatalogImportIssue, CatalogImportJob, Part, PartCode, User
+from .test_factories import make_line
 
 
 class CatalogImportIssueApiTests(APITestCase):
@@ -68,7 +69,7 @@ class CatalogImportIssueApiTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.data['valid'])
         part = Part.objects.get(sku='6-12')
-        self.assertEqual(part.name, 'ABRAZADERA')
+        self.assertEqual(part.name, 'ABRAZADERA INOXIDABLE 1/2')  # S10: the row's DESCRIPCION is the line's text; NOMBRE fills a blank one
         self.assertEqual(response.data['summary']['created_skus'], 1)
         self.assertEqual(response.data['part_id'], str(part.pk))
         self.issue.refresh_from_db()
@@ -127,7 +128,7 @@ class CatalogImportIssueApiTests(APITestCase):
         self.assertEqual(PartCode.objects.get(is_main=False).code, '-ABC')
 
     def test_blank_fields_preserve_existing_metadata_and_correct_copied_date_name(self):
-        existing = Part.objects.create(sku='6-12', name='NOMBRE EXISTENTE', active=False)
+        existing = make_line(sku='6-12', name='NOMBRE EXISTENTE', active=False)
         self.issue.values['description'] = ''
         self.issue.save()
         result = self.client.post(self.detail(), {'values': {'sku': '6-12'}}, format='json')
@@ -139,4 +140,4 @@ class CatalogImportIssueApiTests(APITestCase):
         copied.original['name'] = dict(copied.original['sku'])
         copied.save()
         self.assertTrue(self.client.post(self.detail(copied), {'values': {'sku': '9-16'}}, format='json').data['valid'])
-        self.assertEqual(Part.objects.get(sku='9-16').name, '9-16')
+        self.assertEqual(Part.objects.get(sku='9-16').name, 'ABRAZADERA')  # a NOMBRE that copies the SKU is never the line's text

@@ -12,15 +12,15 @@ from .brand_models import Brand
 from . import new_products
 from .catalog_classification import ClassificationProviderError
 from .category_suggestions import taxonomy
-from .matching_engine import item_row, save_case
+from .matching_engine import item_row
 from .matching_models import MatchingCase
 from .models import Account, Part, Reference, Role, SupplierItem, User
 from .new_products import ai_fill, edit, oem_of, refresh
-from .oem_reference_models import OEMReference
 from .quote_assistant_models import AIUsageRecord
 from .reference_matching import backlog as propose  # the matching worker's backlog stage places the items no line takes
 from .sku_review import DOUBTFUL_OEM, guarded, typo_fix
 from .sku_review_models import SkuReviewRun, SkuReviewVerdict
+from .test_factories import make_legacy_case, make_line
 
 ENABLED = dict(GEMINI_API_KEY='test-key-not-real', SKU_REVIEW_MONTHLY_USD='10', AI_MONTHLY_BUDGET_USD='200')
 USAGE = {'input_tokens': 1200, 'output_tokens': 300, 'thinking_tokens': 0, 'total_tokens': 1500}
@@ -68,7 +68,7 @@ class SkuReviewTests(APITestCase):
         item = SupplierItem.objects.create(supplier=account, supplier_invent_id=invent_id, codigo=codigo, brand=brand, description=description,
                                            source='apiag', **fields)
         if case:
-            save_case(key=f'supplier:{item.pk}', kind='supplier', sources=[item_row(item)], candidates=[], item=item, status=case)
+            make_legacy_case(item, case)
         return item
 
     def line(self, sku):
@@ -99,8 +99,7 @@ class SkuReviewTests(APITestCase):
         apart = self.item(self.other, '2', 'F16-4121020-01AA', 'KAIYI', 'FAROL KAIYI FX11', case=None)
 
         def case(item, status, parts):
-            return save_case(key=f'supplier:{item.pk}', kind='supplier', sources=[item_row(item)], candidates=[part_row(p) for p in parts],
-                             item=item, status=status, method=NO_CODE_EVIDENCE)
+            return make_legacy_case(item, status, candidates=[part_row(p) for p in parts], method=NO_CODE_EVIDENCE)
         hinted = case(found, 'unmatched', [base, *hints[:4]])   # the code-base SKU is a hint too: it is listed once
         case(apart, 'dismissed', [hints[4]])                    # an administrator kept this one apart from its hint
         propose()
@@ -120,14 +119,14 @@ class SkuReviewTests(APITestCase):
         self.assertEqual([c['sku'] for c in candidates(fresh, Hints())], ['HINT-0', 'HINT-1', 'HINT-2'])
 
     def test_rules_settle_known_codes_no_uso_and_placeholder_data_without_the_ai(self):
-        target = Part.objects.create(sku='A-1', name='A-1')
+        target = make_line(sku='A-1', name='A-1')
         self.item(self.dealer, '1', 'A1', 'ACME', 'PIEZA A')                            # the catalog has it under another spelling
         self.item(self.dealer, '2', 'B-2', 'ACME', 'NO USO FILTRO DE CABINA')
         self.item(self.dealer, '3', 'FX11-1234567-01', '', 'SIN DESCRIPCION')          # nothing to recover it from
         self.item(self.dealer, '4', 'FX11-6207118-01A', '', 'MAL CREADO')
-        twin = Part.objects.create(sku='TWIN-A', name='TWIN-A')
+        twin = make_line(sku='TWIN-A', name='TWIN-A')
         Reference.objects.create(part=twin, code='TW-1', brand='ACME')
-        Part.objects.create(sku='TW1', name='TW1')                                  # the same code, spelled as another SKU
+        make_line(sku='TW1', name='TW1')                                  # the same code, spelled as another SKU
         self.item(self.dealer, '5', 'TW 1', 'ACME', 'PIEZA EN DOS SKU')
         propose()
         # A sibling does not rescue a mistyped code (it arrives after the pass: the backlog would give it a line of its own).
@@ -230,7 +229,7 @@ class SkuReviewTests(APITestCase):
         self.assertEqual((glass.description, glass.field_sources['description']['source']), ('NO USO VIDIRO PUERTA', 'supplier'))
 
     def test_a_retired_catalog_owner_leaves_the_choice_to_a_person(self):
-        owner = Part.objects.create(sku='OWN-1', name='OWN-1')
+        owner = make_line(sku='OWN-1', name='OWN-1')
         Reference.objects.create(part=owner, code='ZZ-100', brand='ACME')
         Part.objects.filter(pk=owner.pk).update(active=False, estado='retirada')
         self.item(self.dealer, '1', 'ZZ100', 'ACME', 'PIEZA')
@@ -395,7 +394,7 @@ class SkuReviewTests(APITestCase):
         self.assertEqual(self.client.get(f'/api/v1/management/catalog/proposals/review/{run["id"]}/').status_code, 403)
 
     def test_the_report_feeds_batch_approve_reject_and_link(self):
-        target = Part.objects.create(sku='OLD-1', name='OLD-1')
+        target = make_line(sku='OLD-1', name='OLD-1')
         self.item(self.dealer, '1', 'OLD1', 'ACME', 'PIEZA CONOCIDA')
         self.item(self.dealer, '2', 'GOOD-1', 'ACME', 'BOMBA DE AGUA')
         self.item(self.dealer, '3', 'GOOD-2', 'KAIYI', 'LLAVERO KAIYI')
@@ -422,7 +421,6 @@ class SkuReviewTests(APITestCase):
         keyring = self.line('GOOD-2')
         self.assertEqual((keyring.estado, keyring.is_OEM, self.main('GOOD-2').tipo), ('publicada', False, 'interno'))   # an internal code is no OEM number
         self.assertFalse(Reference.objects.filter(part=keyring, tipo='oem').exists())
-        self.assertFalse(OEMReference.objects.filter(code='GOOD2').exists())
         rejected = self.client.post(bulk, {'action': 'reject', 'proposals': [{'id': row['id'], 'version': row['version'], 'reason': row['reason'], 'note': row['note']} for row in bad]
                                            + [{'id': str(uuid.uuid4()), 'version': 1, 'reason': 'other'}, {'id': 'nope', 'version': 1}, 'x']}, format='json').json()
         self.assertEqual([result['ok'] for result in rejected['results']], [True, False, False, False])

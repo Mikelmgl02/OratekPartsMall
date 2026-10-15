@@ -20,7 +20,7 @@ from .apiag_tokens import ConnectionData, connection_data
 from .lines import all_lines, catalog_lines, phrase, refuse_unificada, stage_estado
 from . import references
 from .models import Account, Invitation, Membership, Part, PartType, Reference, Role, SupplierItem, User
-from .serializers import SupplierItemSerializer
+from .serializers import SupplierItemSerializer, line_keys
 from .media_serializers import PartImageSerializer
 
 
@@ -201,16 +201,18 @@ class UppercaseCharField(serializers.CharField):
         return super().to_internal_value(data).upper()
 
 
-from .reference_serializers import LegacyReferenceKind, MainReferenceSerializer, NonMainReferences, validate_reference_type
+from .reference_serializers import CitationField, LegacyReferenceKind, MainReferenceSerializer, NonMainReferences, validate_reference_type
 
 
 class ManagedCodeSerializer(serializers.Serializer):
+    """One of a line's codes as Inventario edits it. kind and ref_type are the JSON's legacy names for tipo (A2) and reference_source its
+    newest source's citation (S10: derived, no column any more); a write maps them back (mall.references: tipo, a cited source)."""
     id = serializers.IntegerField(read_only=True, help_text='El alterno, para editarlo o retirarlo en management/alternates/.')
     brand = UppercaseCharField(max_length=120, required=False, allow_blank=True, default='')
     code = UppercaseCharField(max_length=120)
     kind = LegacyReferenceKind()
     ref_type = serializers.ChoiceField(choices=Reference.REF_TYPES, required=False)
-    reference_source = serializers.CharField(max_length=500, required=False, allow_blank=True)
+    reference_source = CitationField()
 
     def to_internal_value(self, data):
         result = super().to_internal_value(data)
@@ -242,25 +244,20 @@ def validate_code_mapping(*, part, brand, code):
 
 
 class ManagedPartSerializer(serializers.ModelSerializer):
+    """A line as Inventario reads and writes it. From S10 name, category, subcategory, is_OEM and active are no columns: the JSON keeps
+    them, derived (line_keys), and a write maps them (name: the description when none is sent; category and subcategory: the subgrupo
+    they name; active: publicada or retirada; is_OEM is read only, the main Reference's tipo decides it)."""
     images = PartImageSerializer(many=True, read_only=True)
     identity = serializers.SerializerMethodField()
     main = serializers.SerializerMethodField(help_text='La referencia principal de la línea: su código es el SKU (null mientras no tiene una).')
     main_reference = ManagedCodeSerializer(required=False, write_only=True)
-
-    def get_identity(self, obj) -> dict:
-        from .catalog_identity import identity_status
-        return identity_status(obj)
-
-    @extend_schema_field(MainReferenceSerializer(allow_null=True))
-    def get_main(self, obj):
-        main = references.main_in(obj.codes.all())  # prefetched by the lists: no query per row
-        return {'id': main.pk, 'code': main.code, 'brand': main.brand, 'tipo': main.tipo, 'estado': main.estado} if main else None
-
     sku = UppercaseCharField(max_length=200)
-    name = UppercaseCharField(max_length=200, required=False, allow_blank=True)
+    name = UppercaseCharField(max_length=200, required=False, allow_blank=True, help_text='La descripción (la línea no tiene nombre desde S10).')
     description = UppercaseCharField(required=False, allow_blank=True)
-    category = UppercaseCharField(max_length=120, required=False, allow_blank=True)
-    subcategory = UppercaseCharField(max_length=120, required=False, allow_blank=True)
+    category = UppercaseCharField(max_length=120, required=False, allow_blank=True, help_text='El grupo de su subgrupo.')
+    subcategory = UppercaseCharField(max_length=120, required=False, allow_blank=True, help_text='Su subgrupo.')
+    is_OEM = serializers.BooleanField(read_only=True, help_text='La referencia principal es OEM (tipo OEM).')
+    active = serializers.BooleanField(required=False, help_text='Publicada (true) o retirada (false).')
     codes = ManagedCodeSerializer(many=True, required=False)
     part_type = serializers.PrimaryKeyRelatedField(queryset=PartType.objects.select_related('grupo'), required=False, allow_null=True)
     stock_record_count = serializers.IntegerField(read_only=True, default=0)
@@ -270,8 +267,22 @@ class ManagedPartSerializer(serializers.ModelSerializer):
         model = Part
         fields = ['id', 'sku', 'is_OEM', 'tipo', 'name', 'description', 'category', 'subcategory', 'part_type', 'active', 'estado', 'origen', 'codes', 'stock_record_count', 'merged_count', 'images', 'identity', 'main', 'main_reference']
         # estado and origen are the line's lifecycle (mall.lines): `active` still turns a line publicada or retirada here. tipo mirrors
-        # the main Reference (mall.references.set_main); is_OEM still marks or unmarks the main as OEM until S10.
+        # the main Reference (mall.references.set_main).
         read_only_fields = ['id', 'tipo', 'estado', 'origen', 'stock_record_count', 'merged_count']
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data.update(line_keys(instance))
+        return data
+
+    def get_identity(self, obj) -> dict:
+        from .catalog_identity import identity_status
+        return identity_status(obj)
+
+    @extend_schema_field(MainReferenceSerializer(allow_null=True))
+    def get_main(self, obj):
+        main = references.main_in(obj.codes.all())  # prefetched by the lists: no query per row
+        return {'id': main.pk, 'code': main.code, 'brand': main.brand, 'tipo': main.tipo, 'estado': main.estado} if main else None
 
     def validate_sku(self, sku):
         if len(sku) > 120:
@@ -294,13 +305,21 @@ class ManagedPartSerializer(serializers.ModelSerializer):
     def validate(self, data):
         if 'brand' in self.initial_data:
             raise serializers.ValidationError({'brand': 'El SKU interno no lleva marca. La marca es opcional en cada código equivalente.'})
+        name = data.pop('name', None)
+        if name and not (data.get('description') or getattr(self.instance, 'description', '')):
+            data['description'] = name  # a line has no name from S10: the name it is given is its description when it has none
+        text = {key: data.pop(key) for key in ('category', 'subcategory') if key in data}
         if 'part_type' in data:
             from .technical_data import grupo_nombre
             part_type = data['part_type']
             expected = {'category': grupo_nombre(part_type) if part_type else '', 'subcategory': part_type.name if part_type else ''}
-            if any(key in data and data[key] != value for key, value in expected.items()):
+            if any(text[key] != value for key, value in expected.items() if key in text):
                 raise serializers.ValidationError('El grupo y subgrupo deben corresponder al tipo de repuesto seleccionado.')
-            data.update(expected)
+        elif text:
+            from .technical_data import classification, text_subgrupo
+            current = classification(self.instance) if self.instance is not None else ('', '')
+            pair = (text.get('category', current[0]), text.get('subcategory', current[1]))
+            data['part_type'] = text_subgrupo(*pair)
         return data
 
     def validate_codes(self, codes):
@@ -325,13 +344,16 @@ class ManagedPartSerializer(serializers.ModelSerializer):
         actor = self.actor()
         keep = []
         for code in codes:
-            extra = {key: value for key, value in code.items() if key not in ('brand', 'code')}
-            entry, _ = references.add(part, code['code'], code['brand'], ref_type=extra.get('ref_type'), source=extra.get('reference_source', ''),
-                                      actor=actor)
+            ref_type, source = code.get('ref_type'), code.get('reference_source', '')
+            entry, _ = references.add(part, code['code'], code['brand'], ref_type=ref_type, source=source, actor=actor)
             keep.append(entry.pk)
             if entry.is_main:
                 continue
-            changes = {key: value for key, value in {**extra, 'code': code['code']}.items() if getattr(entry, key) != value}
+            changes = {}
+            if entry.code != code['code']:
+                changes['code'] = code['code']
+            if ref_type and references.tipo_of(ref_type) != entry.tipo:
+                changes['tipo'] = references.tipo_of(ref_type)
             if changes:
                 references.update(entry, actor=actor, **changes)
         references.retire(part.codes.exclude(pk__in=keep).exclude(is_main=True), actor=actor, reason='Quitada al editar los códigos del SKU')
@@ -339,20 +361,20 @@ class ManagedPartSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         codes = validated_data.pop('codes', [])
         main = validated_data.pop('main_reference', None)
-        validated_data.setdefault('estado', 'publicada' if validated_data.get('active', True) else 'retirada')  # unless a caller chose one
+        active = validated_data.pop('active', True)
+        validated_data.setdefault('estado', 'publicada' if active else 'retirada')  # unless a caller chose one
         from .lines import LineStateError, create_line
         try:
             with transaction.atomic():
-                # Its codigo is its main Reference (S2b): brandless, OEM when is_OEM; a key another line holds refuses the SKU.
+                # Its codigo is its main Reference (S2b): brandless, otro; a key another line holds refuses the SKU.
                 # A codigo a line in referencia has promotes that line (S4); main_reference's brand names the make when several share it.
                 part = create_line(validated_data.pop('sku'), actor=self.actor(), strict=True, library_brand=(main or {}).get('brand', ''),
                                    **validated_data)
                 self.save_codes(part, codes)
                 from .catalog_identity import classify_company_main, company_reference, prefer_oem
-                if not part.is_OEM and company_reference(part.sku):
+                if part.tipo != 'OEM' and company_reference(part.sku):
                     classify_company_main(part, self.actor())
-                return prefer_oem(part, actor=getattr(self.context.get('request'), 'user', None), selected=main,
-                                  confirm_current='is_OEM' not in validated_data)
+                return prefer_oem(part, actor=getattr(self.context.get('request'), 'user', None), selected=main, confirm_current=True)
         except LineStateError as error:  # several makes share the codigo in the Biblioteca: the brand picks one
             raise serializers.ValidationError({'sku': str(error)})
         except IntegrityError:
@@ -361,26 +383,21 @@ class ManagedPartSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         codes = validated_data.pop('codes', None)
         main = validated_data.pop('main_reference', None)
+        active = validated_data.pop('active', None)
         try:
             with transaction.atomic():
                 instance = Part.objects.select_for_update().get(pk=instance.pk)
                 if instance.merged_into_id:
                     raise serializers.ValidationError('Este SKU ya fue unificado. Modifica el SKU principal.')
-                if 'active' in validated_data and validated_data['active'] != instance.active:
+                if active is not None and active != (instance.estado == 'publicada'):
                     if instance.estado not in ('publicada', 'retirada'):
                         raise serializers.ValidationError({'active': f'Esta línea está {phrase(instance.estado)}: solo una línea '
                                                                      'publicada o retirada se activa o desactiva aquí.'})
                     # A person publishes or retires it: the decision is recorded as mall.lines.set_estado records it, saved below.
                     user = getattr(self.context.get('request'), 'user', None)
-                    stage_estado(instance, 'publicada' if validated_data['active'] else 'retirada',
-                                 user=user if getattr(user, 'is_authenticated', False) else None)
+                    stage_estado(instance, 'publicada' if active else 'retirada', user=user if getattr(user, 'is_authenticated', False) else None)
                 old_sku = instance.sku
-                old_is_oem = instance.is_OEM
                 new_sku = validated_data.pop('sku', old_sku)
-                explicit_oem = 'is_OEM' in validated_data
-                # The flag describes this exact main code, not every alternate.
-                if new_sku != old_sku:
-                    validated_data.setdefault('is_OEM', False)
                 if new_sku != old_sku:
                     # A rename is a new main (S2b): the Reference of the new code (found on the line, or added) becomes the main and
                     # the codigo follows it; the old main stays one of the line's codes.
@@ -390,16 +407,15 @@ class ManagedPartSerializer(serializers.ModelSerializer):
                         references.set_main(instance, renamed, actor=self.actor(), reason='Editar SKU')
                     except references.MainConflict as error:
                         raise serializers.ValidationError({'sku': error.message})
-                flag_edit = 'is_OEM' in validated_data
-                if new_sku != old_sku and (not explicit_oem or validated_data['is_OEM'] == instance.is_OEM):
-                    validated_data.pop('is_OEM')  # unless sent, the new main decides it: an OEM alterno made main stays OEM
                 instance = super().update(instance, validated_data)
                 if codes is not None:
                     self.save_codes(instance, codes)
                 from .catalog_identity import classify_company_main, company_reference, prefer_oem
-                if not instance.is_OEM and company_reference(instance.sku):
+                if instance.tipo != 'OEM' and company_reference(instance.sku):
                     classify_company_main(instance, self.actor())
-                # Explicit flag-only edits should not rename the SKU as a side effect.
+                # An edit that sends the OEM flag (read only since S10, but the grid still sends it) never renames the SKU as a side
+                # effect; any other runs the OEM preference.
+                flag_edit = 'is_OEM' in getattr(self, 'initial_data', {})
                 if main or not flag_edit or codes is not None:
                     instance = prefer_oem(instance, actor=getattr(self.context.get('request'), 'user', None), selected=main,
                                           confirm_current=codes is not None and not flag_edit)
@@ -411,7 +427,7 @@ class ManagedPartSerializer(serializers.ModelSerializer):
 
 class ManagedInventorySerializer(SupplierItemSerializer):
     supplier_name = serializers.CharField(source='supplier.name', read_only=True)
-    part_name = serializers.CharField(source='part.name', read_only=True, default=None)
+    part_name = serializers.CharField(source='part.description', read_only=True, default=None, help_text='La descripción de la línea.')
     part_sku = serializers.CharField(source='part.sku', read_only=True, default=None)
     # The estado of the item's line (S6, additive): Existencias shows "En preparación" when it is not publicada; null with no line.
     line_estado = serializers.CharField(source='part.estado', read_only=True, default=None)
@@ -491,16 +507,18 @@ class InventoryMatchSerializer(ManagedInventorySerializer):
 
 
 class ManagedAlternateSerializer(serializers.ModelSerializer):
-    """One Reference of a line, as the Alternos screen edits it; mall.references writes it and DELETE retires it."""
+    """One Reference of a line, as the Alternos screen edits it; mall.references writes it and DELETE retires it. kind and ref_type
+    are the JSON's legacy names for tipo and reference_source its newest source's citation (S10); a write maps them back."""
     kind = LegacyReferenceKind()
     ref_type = serializers.ChoiceField(choices=Reference.REF_TYPES, required=False)
+    reference_source = CitationField()
 
     def to_internal_value(self, data):
         return validate_reference_type(data, super().to_internal_value(data), self.instance)
 
     code = UppercaseCharField(max_length=120)
     brand = UppercaseCharField(max_length=120, required=False, allow_blank=True, default='')
-    part_name = serializers.CharField(source='part.name', read_only=True)
+    part_name = serializers.CharField(source='part.description', read_only=True, help_text='La descripción de la línea.')
     part_sku = serializers.CharField(source='part.sku', read_only=True)
 
     class Meta:
@@ -558,31 +576,34 @@ class ManagedAlternateSerializer(serializers.ModelSerializer):
 
 
 class CatalogSearch(filters.SearchFilter):
-    """The search fields, a live Reference of the line (its code or brand: a retired one finds nothing), or an OEM number the SKU
-    reaches or an aftermarket code filed under one (mall.oem_links.search_q). Every term must match one of them."""
+    """The search fields, or a live Reference of the line (its code or brand: a retired one finds nothing; from S9 an aftermarket code
+    whose numbers sit on the line is one of its References, and from S10 nothing else reaches a line). Every term must match one of
+    them; a term that reads as a code (4+ letters or digits) also matches a Reference by its compact form (16100 39315)."""
 
     def filter_queryset(self, request, queryset, view):
         from functools import reduce
         from operator import and_, or_
-        from .oem_links import search_q
+        from .oem_links import MIN_SEARCH
+        from .oem_reference import compact
         terms = self.get_search_terms(request)
         if not terms:
             return queryset
         lookups = [self.construct_search(str(field), queryset) for field in self.get_search_fields(view, request) or []]
-        matched = queryset.filter(reduce(and_, (reduce(or_, (Q(**{lookup: term}) for lookup in lookups),
-                                                       Q(pk__in=Reference.objects.filter(Q(code__icontains=term) | Q(brand__icontains=term))
-                                                         .values('part_id')))
-                                                for term in terms)))
-        library = search_q(' '.join(terms))
-        # The line's own columns and pk__in subqueries (codes and the library alike) keep every row unique: no join, no distinct.
-        return matched | queryset.filter(library) if library is not None else matched
+
+        def codes(term):
+            match = Q(code__icontains=term) | Q(brand__icontains=term)
+            return match | references.compact_match_q(compact(term), exact=False) if len(compact(term)) >= MIN_SEARCH else match
+        # The line's own columns and pk__in subqueries keep every row unique: no join, no distinct.
+        return queryset.filter(reduce(and_, (reduce(or_, (Q(**{lookup: term}) for lookup in lookups),
+                                                    Q(pk__in=Reference.objects.filter(codes(term)).values('part_id')))
+                                             for term in terms)))
 
 
 def catalog_queryset(lines=None):
     """The Inventario grid's rows, the catalog's lines (mall.lines.catalog_lines: publicada and retirada) unless others are given,
     with their supplier stock rows counted."""
-    return (catalog_lines() if lines is None else lines).annotate(stock_record_count=Count('supplier_items', distinct=True)).prefetch_related(
-        'codes', 'images').order_by('sku', 'id')
+    return ((catalog_lines() if lines is None else lines).annotate(stock_record_count=Count('supplier_items', distinct=True))
+            .select_related('part_type__grupo').prefetch_related('codes__sources', 'images').order_by('sku', 'id'))
 
 
 def with_merged_counts(parts):
@@ -598,8 +619,10 @@ def with_merged_counts(parts):
 class CatalogList(SuperuserMixin, generics.ListCreateAPIView):
     serializer_class = ManagedPartSerializer
     filter_backends = [CatalogSearch, StableOrdering]
-    search_fields = ['sku', 'name', 'description']  # and the line's live References' codes and brands (CatalogSearch)
+    search_fields = ['sku', 'description']  # and the line's live References' codes and brands (CatalogSearch)
     ordering_fields = ['sku', 'name', 'description', 'category', 'subcategory', 'active', 'is_OEM', 'stock_record_count']
+    # The grid's columns S10 took off the line: name is its description, category and subcategory its subgrupo's.
+    ordering_aliases = {'name': 'description', 'category': 'part_type__grupo__nombre', 'subcategory': 'part_type__name'}
     queryset = catalog_queryset()
 
     def paginate_queryset(self, queryset):
@@ -619,7 +642,7 @@ class CatalogList(SuperuserMixin, generics.ListCreateAPIView):
         if value is not None:
             if value.lower() not in ['true', 'false']:
                 raise serializers.ValidationError({'is_OEM': 'Usa true o false.'})
-            queryset = queryset.filter(is_OEM=value.lower() == 'true')
+            queryset = queryset.filter(tipo='OEM') if value.lower() == 'true' else queryset.exclude(tipo='OEM')
         return queryset
 
 
@@ -705,6 +728,7 @@ class CatalogBulkEdit(SuperuserMixin, APIView):
                             errors.append({'id': part.pk, 'sku': part.sku, 'detail': f'{pair[0]} / {pair[1]} no es un grupo / subgrupo del catálogo.'})
                             continue
                         fields['category'], fields['subcategory'] = match
+                # The OEM flag sent as it is (read only): a batch edit is a flag edit, so it never renames a SKU to an OEM code.
                 serializer = ManagedPartSerializer(part, data={**fields, 'is_OEM': part.is_OEM}, partial=True, context={'request': request})
                 if not serializer.is_valid():
                     errors.append({'id': part.pk, 'sku': part.sku, 'detail': flat_error(serializer.errors)})
@@ -756,7 +780,7 @@ class CatalogDetail(SuperuserMixin, generics.RetrieveUpdateAPIView):
 class InventoryList(SuperuserMixin, generics.ListAPIView):
     serializer_class = ManagedInventorySerializer
     filter_backends = [filters.SearchFilter, StableOrdering]
-    search_fields = ['codigo', 'brand', 'supplier_invent_id', 'supplier__name', 'part__sku', 'part__name']
+    search_fields = ['codigo', 'brand', 'supplier_invent_id', 'supplier__name', 'part__sku', 'part__description']
     ordering_fields = ['supplier__name', 'codigo', 'brand', 'part__sku', 'supplier_invent_id', 'available', 'reserved_quantity', 'matching_status']
     # available mirrors SupplierItem.available_quantity (never below zero) so the grid can sort by it.
     queryset = (SupplierItem.objects.select_related('supplier', 'part')
@@ -773,10 +797,11 @@ class InventoryDetail(SuperuserMixin, generics.RetrieveUpdateAPIView):
 class AlternateList(SuperuserMixin, generics.ListCreateAPIView):
     serializer_class = ManagedAlternateSerializer
     filter_backends = [filters.SearchFilter, StableOrdering]
-    search_fields = ['part__sku', 'part__name', 'code', 'brand']
+    search_fields = ['part__sku', 'part__description', 'code', 'brand']
     ordering_fields = ['part__sku', 'code', 'brand', 'ref_type']
+    ordering_aliases = {'ref_type': 'tipo'}  # the legacy column name of a Reference's tipo
     # A line's main Reference is its SKU (S2b): it changes in Editar SKU, so the Alternos grid neither lists nor edits it.
-    queryset = Reference.objects.filter(is_main=False).select_related('part').order_by('part__sku', 'code', 'brand', 'id')
+    queryset = Reference.objects.filter(is_main=False).select_related('part').prefetch_related('sources').order_by('part__sku', 'code', 'brand', 'id')
 
 
 class AlternateDetail(SuperuserMixin, generics.RetrieveUpdateDestroyAPIView):

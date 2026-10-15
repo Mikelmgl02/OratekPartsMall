@@ -11,6 +11,7 @@ from .category_suggestions import classify_categories, local_category, category_
 from .catalog_assistant_models import CatalogAssistantJob, CategorySuggestionCache
 from .catalog_classification import ClassificationProviderError
 from .models import Part, PartType, User, CatalogMerge
+from .technical_data import part_type_for
 
 
 def row(sku='TEST', description='TACO HYU ACCENT 12-16', **extra):
@@ -79,21 +80,21 @@ class CategoryEngineTests(TestCase):
             with override_settings(GEMINI_MODEL='different-model'):
                 classify_categories([row()],instructions='MI CLASIFICACION')
             self.assertEqual(provider.call_count,3)
-            PartType.objects.create(category='OTRO',name='CUSTOM')
+            part_type_for('OTRO', 'CUSTOM')
             classify_categories([row()],instructions='MI CLASIFICACION')
             self.assertEqual(provider.call_count,4)
 
     def test_taxonomy_reads_each_subgrupos_grupo_by_its_fk(self):
         """S5: an existing subgrupo enters the choices under its grupo's nombre (the FK), whatever its text says, and wins over a rule's
         spelling of the same pair."""
-        custom = PartType.objects.create(category='OTRO', name='CUSTOM')
-        PartType.objects.filter(pk=custom.pk).update(category='TEXTO VIEJO')
-        rule = PartType.objects.create(category='Frenos', name='Pastillas de freno')
+        custom = part_type_for('OTRO', 'CUSTOM')
+        PartType.objects.filter(pk=custom.pk).update(legacy_category='TEXTO VIEJO')  # the old text column: never read (S10)
+        rule = part_type_for('Frenos', 'Pastillas de freno')
         choices = taxonomy()
         self.assertIn(('OTRO', 'CUSTOM'), choices)
         self.assertNotIn(('TEXTO VIEJO', 'CUSTOM'), choices)
         self.assertIn(('FRENOS', rule.name), choices)
-        self.assertEqual([pair for pair in choices if pair[1].upper() == 'PASTILLAS DE FRENO'], [('FRENOS', 'Pastillas de freno')])
+        self.assertEqual([pair for pair in choices if pair[1].upper() == 'PASTILLAS DE FRENO'], [('FRENOS', 'PASTILLAS DE FRENO')])
 
     def test_no_description_and_no_key_leave_unknowns_for_review(self):
         with override_settings(GEMINI_API_KEY=''),patch('mall.category_suggestions.category_provider') as provider:
@@ -167,7 +168,7 @@ class FastCategoryApiTests(APITestCase):
         last=self.action(job,mode='classify',batch_index=1)
         self.assertEqual(last.data['offset'],200)
         self.assertEqual(last.data['count'],205)
-        self.assertFalse(Part.objects.exclude(category='').exists())
+        self.assertFalse(Part.objects.filter(part_type__isnull=False).exists())
         for expected in [200,5,0]:
             with CaptureQueriesContext(connection) as queries:
                 applied=self.action(job,mode='apply_category',category='FRENOS',subcategory='PASTILLAS DE FRENO')
@@ -184,7 +185,7 @@ class FastCategoryApiTests(APITestCase):
         Part.objects.filter(sku='PAD-0002').update(description='EDITED SINCE ANALYSIS')
         response=self.action(job,mode='apply_category',category='FRENOS',subcategory='PASTILLAS DE FRENO')
         self.assertEqual(response.status_code,409)
-        self.assertFalse(Part.objects.exclude(category='').exists())
+        self.assertFalse(Part.objects.filter(part_type__isnull=False).exists())
 
     def test_low_confidence_excluded_and_failed_provider_releases_claim(self):
         job=self.start()

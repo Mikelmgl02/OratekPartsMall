@@ -7,11 +7,12 @@ from django.test import TestCase, override_settings
 from rest_framework.test import APITestCase
 
 from . import catalog_suffixes as cs
-from .catalog_identity import company_reference, reconcile_identities
+from .catalog_identity import classify_company_main, company_reference
 from .catalog_suffix_models import CatalogCodeSuffix, CatalogCodeSuffixChange
 from .catalog_suffixes import (LEGACY_COMPANY_SUFFIXES, SuffixTable, chain_summary, classify, classify_chain, company_suffixes,
                                description_head, strip_tags, suffix_table, tokenize_chain)
 from .models import Part, User
+from .test_factories import make_line
 
 BASE = '/api/v1/management/catalog/suffixes/'
 RELABEL_NIGHT = datetime(2026, 10, 7, 2, 50, tzinfo=dt_timezone.utc)  # 21:50 on Oct 6 in Panama
@@ -215,12 +216,12 @@ class SuffixServiceTests(Fresh, TestCase):
         self.assertEqual(suffix_table().source, 'fixture')
         self.assertEqual(company_suffixes(), LEGACY_COMPANY_SUFFIXES)
 
-    def test_reconcile_uses_company_codes_from_the_table(self):
-        part = Part.objects.create(sku='ABC-123456-ACMECO', name='ABC-123456-ACMECO')
+    def test_a_company_main_uses_company_codes_from_the_table(self):
+        part = make_line(sku='ABC-123456-ACMECO', description='ABC-123456-ACMECO')
         CatalogCodeSuffix.objects.create(token='ACMECO', cls='TAG', tag_kind='company_code', attribution='brand: ACME CO',
                                          creates_company_reference=True, status='owner_confirmed', owner_confirmed=True)
-        reconcile_identities()
-        self.assertTrue(part.codes.filter(code='ABC-123456', brand='ACME CO', ref_type='company').exists())
+        classify_company_main(part)
+        self.assertTrue(part.codes.filter(code='ABC-123456', brand='ACME CO', tipo='aftermarket').exists())
 
 
 class SuffixAPITests(Fresh, APITestCase):

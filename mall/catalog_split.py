@@ -30,9 +30,11 @@ from . import references
 from .management import IsSuperuser, ManagedPartSerializer, catalog_queryset, with_merged_counts
 from .media_serializers import PartImageSerializer
 from .lines import all_lines, catalog_lines
-from .line_merge import (METHODS, SERVICE_ACCOUNT, Owners, code_returns, main_row, merge_history, pair, rehome_catalog_links,  # noqa: F401
+from .line_merge import (METHODS, SERVICE_ACCOUNT, Owners, code_returns, main_row, merge_history, pair,  # noqa: F401
                          separated_pairs, split_line)
 from .models import CatalogIdentityChange, CatalogMerge, ItemApplication, Part, PartSpecification, SupplierItem
+from .reference_serializers import CitationField
+from .serializers import line_keys
 
 MAX_RESTORE = 200
 
@@ -57,14 +59,14 @@ def separation_warnings(families):
 # ---------------------------------------------------------------- what each row most likely belonged to
 def split_plan(target):
     """The canonical SKU, its retired SKUs and every alterno, stock row and photo it holds, each with its suggested owner."""
-    children = list(Part.objects.filter(merged_into=target).order_by('sku'))
+    children = list(Part.objects.filter(merged_into=target).select_related('part_type__grupo').order_by('sku'))
     history, merges = merge_history(target, children)
     owners = Owners(children, history, target)
     for child in children:
         entry = history.get(str(child.pk), {})
         child.merged_at, child.merged_by = entry.get('merged_at'), entry.get('merged_by', '')
         child.automatic, child.method, child.snapshot = entry.get('automatic', False), entry.get('method', ''), entry.get('codes')
-    codes = list(target.codes.filter(is_main=False).order_by('code', 'brand', 'pk'))  # the target's main is its SKU (S2b): it stays
+    codes = list(target.codes.filter(is_main=False).prefetch_related('sources').order_by('code', 'brand', 'pk'))  # the target's main is its SKU (S2b): it stays
     by_id = {str(child.pk): child for child in children}
     rows = {code.pk: code for code in codes}
     mains = {row.pk: pk for pk, row in ((pk, main_row(child, rows, history)) for pk, child in by_id.items()) if row is not None}
@@ -116,14 +118,20 @@ def split_catalog_part(*, actor, target_id, restore, reason=''):
 
 # ---------------------------------------------------------------- API
 class SplitPartSerializer(serializers.Serializer):
+    # name, category, subcategory, is_OEM and active are the keys from before S10, read from the description, subgrupo, tipo and estado.
     id = serializers.UUIDField()
     sku = serializers.CharField()
-    name = serializers.CharField()
+    name = serializers.CharField(read_only=True)
     description = serializers.CharField()
-    category = serializers.CharField()
-    subcategory = serializers.CharField()
-    is_OEM = serializers.BooleanField()
-    active = serializers.BooleanField()
+    category = serializers.CharField(read_only=True)
+    subcategory = serializers.CharField(read_only=True)
+    is_OEM = serializers.BooleanField(read_only=True)
+    active = serializers.BooleanField(read_only=True)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data.update(line_keys(instance))
+        return data
 
 
 class SplitTargetSerializer(SplitPartSerializer):
@@ -147,8 +155,8 @@ class SplitCodeSerializer(serializers.Serializer):
     id = serializers.IntegerField()
     brand = serializers.CharField()
     code = serializers.CharField()
-    ref_type = serializers.CharField()
-    reference_source = serializers.CharField()
+    ref_type = serializers.CharField(read_only=True, help_text='Del tipo de la referencia (S10).')
+    reference_source = CitationField(read_only=True, help_text='La cita de su fuente más reciente (S10).')
     suggested = serializers.CharField(help_text='El SKU agrupado del que probablemente vino; vacío si se queda.')
     alias_of = serializers.CharField(help_text='El SKU agrupado cuyo código es este alterno: nunca pasa a otro SKU.')
     alias_returns = serializers.BooleanField(help_text='Si ese SKU se separa, el código vuelve con él (verdadero) o se retira (falso).')
@@ -202,8 +210,6 @@ class SplitSummarySerializer(serializers.Serializer):
     aliases_removed = serializers.IntegerField()
     items_moved = serializers.IntegerField()
     images_moved = serializers.IntegerField()
-    links_moved = serializers.IntegerField()
-    links_shared = serializers.IntegerField()
     target_retired = serializers.BooleanField()
     mains_returned = serializers.IntegerField(help_text='SKU restaurados con su código principal de antes (S2b).')
     references_revived = serializers.IntegerField(help_text='Referencias que la unificación absorbió y vuelven de retiradas.')

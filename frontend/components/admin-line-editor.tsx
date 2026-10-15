@@ -56,7 +56,6 @@ export function LineEditor({ line: initial, initialTab = 'general', onClose, onS
 
 type Status = { kind: 'error' | 'success'; text: string } | null;
 function LineGeneral({ line, onChanged, status, onStatus }: { line: OEMLine; onChanged: (line: OEMLine, text: string) => void; status: Status; onStatus: (status: Status) => void }) {
-  const [name, setName] = useState(line.name || '');
   const [description, setDescription] = useState(line.description || '');
   const [aplicaciones, setAplicaciones] = useState(line.aplicaciones_texto || '');
   const [subgrupo, setSubgrupo] = useState(line.subgrupo?.id ?? '');
@@ -64,7 +63,7 @@ function LineGeneral({ line, onChanged, status, onStatus }: { line: OEMLine; onC
   const setError = (text: string) => onStatus(text ? { kind: 'error', text } : null);
   const [rejecting, setRejecting] = useState(false); const [reason, setReason] = useState<RejectReason>('duplicate'); const [note, setNote] = useState('');
   const locked = line.estado === 'unificada';
-  const changes = Object.fromEntries(([['name', name, line.name || ''], ['description', description, line.description || ''], ['aplicaciones_texto', aplicaciones, line.aplicaciones_texto || ''],
+  const changes = Object.fromEntries(([['description', description, line.description || ''], ['aplicaciones_texto', aplicaciones, line.aplicaciones_texto || ''],
     ['subgrupo', subgrupo, line.subgrupo?.id ?? '']] as const).filter(([, value, before]) => value !== before).map(([key, value]) => [key, key === 'subgrupo' ? value || null : value]));
   async function recover(caught: unknown) {
     setError(message(caught));
@@ -106,7 +105,6 @@ function LineGeneral({ line, onChanged, status, onStatus }: { line: OEMLine; onC
     </section>
     {status && <div className={`notice ${status.kind}`} role={status.kind === 'error' ? 'alert' : 'status'}>{status.text}</div>}
     <form className="stack-form" autoComplete="off" onSubmit={save} aria-label="Datos de la línea OEM">
-      <label>Nombre del repuesto (opcional)<UppercaseInput name="part_label" value={name} disabled={locked} maxLength={200} onChange={event => setName(event.target.value)} placeholder="Ej.: Disco de freno delantero"/></label>
       <label>Descripción<UppercaseTextarea aria-label="Descripción" name="part_details" value={description} disabled={locked} rows={3} onChange={event => setDescription(event.target.value)} placeholder="Características, aplicación o medidas del repuesto"/></label>
       <label>Aplicaciones<UppercaseTextarea aria-label="Aplicaciones" value={aplicaciones} disabled={locked} rows={3} onChange={event => setAplicaciones(event.target.value)} placeholder="Una aplicación por línea: TOYOTA HILUX 2005-2015"/></label>
       <SubgrupoSelect value={subgrupo} onChange={setSubgrupo}/>
@@ -136,15 +134,14 @@ function CreateLine({ onCreated }: { onCreated: (line: OEMLine, text: string) =>
     event.preventDefault(); setError(''); setBusy(true);
     const form = new FormData(event.currentTarget);
     try {
-      const created = await request<ManagedPart>(`${base}/catalog`, { method: 'POST', body: JSON.stringify({ sku: form.get('internal_sku'), name: form.get('part_label'),
+      const created = await request<ManagedPart>(`${base}/catalog`, { method: 'POST', body: JSON.stringify({ sku: form.get('internal_sku'),
         description: form.get('part_details'), active: form.has('active'), codes: [], ...(subgrupo ? { part_type: subgrupo } : {}) }) });
       const line = await request<OEMLine>(`${base}/lines/${created.id}`);
       onCreated(line, `SKU ${line.sku} creado. Agrega sus otras referencias.`);
     } catch (caught) { setError(message(caught)); } finally { setBusy(false); }
   }
   return <form autoComplete="off" className="stack-form catalog-editor" onSubmit={submit} aria-label="Crear SKU">
-    <div className="form-row"><label>SKU principal (MAIN)<UppercaseInput name="internal_sku" required maxLength={120} placeholder="Ej.: 58411-1R000"/></label>
-      <label>Nombre del repuesto (opcional)<UppercaseInput name="part_label" maxLength={200} placeholder="Ej.: Disco de freno delantero"/></label></div>
+    <div className="form-row"><label>SKU principal (MAIN)<UppercaseInput name="internal_sku" required maxLength={120} placeholder="Ej.: 58411-1R000"/></label></div>
     <p className="form-footnote">El código del SKU es su referencia principal. Su tipo (OEM, aftermarket u otro), su marca y las demás referencias se completan en la pestaña Referencias al guardarlo.</p>
     <label>Descripción<UppercaseTextarea aria-label="Descripción" name="part_details" rows={3} placeholder="Características, aplicación o medidas del repuesto"/></label>
     <SubgrupoSelect value={subgrupo} onChange={setSubgrupo}/>

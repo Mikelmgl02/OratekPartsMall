@@ -5,6 +5,7 @@ from rest_framework.test import APITestCase
 
 from .catalog_grouping import merge_catalog_parts
 from .models import Account, Membership, Part, PartCode, Role, StockEntry, SupplierItem, User, WishlistItem
+from .test_factories import make_line
 
 
 @override_settings(CATALOG_LOW_STOCK_THRESHOLD=5, CATALOG_HIGH_STOCK_THRESHOLD=20)
@@ -18,7 +19,7 @@ class WishlistTests(APITestCase):
         self.account.roles.add(Role.objects.get(code='client_business'))
         for user in [self.user, self.other]:
             Membership.objects.create(user=user, account=self.account)
-        self.part = Part.objects.create(sku='58411-1R000', description='TAMBOR HYU ACCENT 11-16', category='FRENOS', subcategory='TAMBORES')
+        self.part = make_line(sku='58411-1R000', description='TAMBOR HYU ACCENT 11-16', category='FRENOS', subcategory='TAMBORES')
         self.client.force_authenticate(self.user)
 
     def detail(self, part=None):
@@ -76,7 +77,7 @@ class WishlistTests(APITestCase):
 
     def test_inactive_items_remain_removable_but_cannot_be_saved(self):
         self.client.put(self.detail())
-        self.part.active = False
+        self.part.estado = 'retirada'
         self.part.save()
         row = self.client.get(self.url).data['results'][0]
         self.assertFalse(row['available'])

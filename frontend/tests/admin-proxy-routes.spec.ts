@@ -205,7 +205,7 @@ test('the proxy forwards what the S8 screens read and write: every estado, a lot
   // Inventario's estado tabs and its re-read of rows in any estado; the queue's filters; Marcas' tipo filter; the line panel's subgrupos.
   const every = 'referencia,preparacion,publicada,rechazada,retirada,unificada';
   for (const path of [`/api/management/lines?page=1&estado=${every}&tipo=AFTERMARKET&search=A&ordering=-variant_count`, '/api/management/lines?page=1&estado=unificada',
-    '/api/management/cases?status=dismissed&kind=reference&route=caso&page=1', '/api/management/cases?status=unmatched&page=1', '/api/management/merges?page=1&since=2026-10-14',
+    '/api/management/cases?status=dismissed&kind=reference&route=caso&page=1', '/api/management/merges?page=1&since=2026-10-14',
     '/api/management/brands?page=1&tipo=none', '/api/management/grupos']) {
     const response = await page.request.get(path);
     expect(response.status(), `${path}: ${await response.text()}`).toBe(200);

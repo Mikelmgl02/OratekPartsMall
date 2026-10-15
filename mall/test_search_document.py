@@ -10,7 +10,6 @@ from django.utils import timezone
 from . import lines, references, search_document
 from .brand_models import Brand, BrandAlias
 from .models import Part, Reference, SearchDocument, SearchDocumentRebuild, SupplierItem
-from .oem_reference_models import OEMCrossReference, PartOEMLink
 from .technical_data import part_type_for
 from .test_factories import make_line, make_supplier, make_user
 
@@ -68,16 +67,6 @@ class DocumentContentTests(TestCase):
         self.assertEqual((doc['brand'], doc['grupo'], doc['subgrupo']), ('TOYOTA', 'FILTROS', 'FILTROS DE AIRE'))
         plain = make_line('PLAIN-1', description='FILTRO TOY YARIS')
         self.assertEqual(search_document.documents([plain])[str(plain.pk)]['text'], 'FILTRO TOY YARIS TOYOTA')
-
-    def test_reach_holds_the_aftermarket_codes_filed_under_the_lines_numbers_and_no_catalog_link(self):
-        number = references.add_library_number('TOYOTA', '16100-29155', source_kind='aftermarket_catalog', citation='CATÁLOGO GMB 2016')[0]
-        OEMCrossReference.objects.create(reference=number, brand='GMB', code='GWT-78A', number='GWT78A')
-        pump = make_line('BOMBA-AGUA', description='BOMBA DE AGUA')
-        PartOEMLink.objects.create(part=pump, reference=number, source='catalog')
-        self.assertEqual(search_document.documents([pump])[str(pump.pk)]['reach'], '')  # S9: a catalog link reaches nothing
-        references.add(pump, '16100-29155', 'TOYOTA', tipo='oem')  # the number on the line (it absorbs its line in referencia)
-        doc = search_document.documents([pump])[str(pump.pk)]
-        self.assertEqual(doc['reach'], ' GWT78A ')  # the number itself is one of the line's codes
 
     def test_no_supplier_item_data_is_in_a_document(self):
         supplier = make_supplier('PROVEEDOR CALIDAD')
@@ -207,7 +196,7 @@ class RefreshHookTests(TestCase):
 
     def subgrupo_of(self, line):
         part_type = part_type_for('FRENOS', 'DISCOS')
-        Part.objects.filter(pk=line.pk).update(part_type=part_type, category='OTRO', subcategory='OTRO')
+        Part.objects.filter(pk=line.pk).update(part_type=part_type)
         return part_type
 
     def test_a_brand_alias_refreshes_the_documents_whose_text_names_it(self):
@@ -240,22 +229,6 @@ class RefreshHookTests(TestCase):
         self.assertNotIn(str(inside.pk), search_document.connection_pending())
         self.assertEqual(search_document.word_pattern('S/M'), '(^|[^A-Z0-9])S[^A-Z0-9]+M([^A-Z0-9]|$)')
         self.assertIsNone(search_document.word_pattern('.'))
-
-    def test_aftermarket_codes_and_sku_links_refresh_the_lines_that_reach_them(self):
-        from .oem_links import store_catalog_links, store_cross_references
-        number = references.add_library_number('TOYOTA', '16100-29155', source_kind='aftermarket_catalog', citation='CATÁLOGO GMB 2016')[0]
-        holder = Reference.objects.get(pk=number.pk).part
-        pump = make_line('BOMBA-2', description='BOMBA DE AGUA')
-        PartOEMLink.objects.create(part=pump, reference=number, source='catalog')
-        fresh_hooks()
-        store_cross_references({(number.pk, 'GMB', 'GWT-78A'): ['CATÁLOGO GMB 2016']})
-        self.assertEqual(search_document.connection_pending(), {str(holder.pk)})  # S9: the linked pump reaches nothing through the link
-        other = make_line('BOMBA-3', description='BOMBA DE AGUA')
-        fresh_hooks()
-        store_catalog_links({(other.pk, number.pk): ['CATÁLOGO GMB 2016']})
-        self.assertEqual(search_document.connection_pending(), {str(other.pk)})
-        search_document.write([other.pk])
-        self.assertEqual(SearchDocument.objects.get(line=other).reach, '')
 
     def test_the_biblioteca_cross_reference_routes_refresh_the_lines_that_reach_the_number(self):
         from rest_framework.test import APIClient

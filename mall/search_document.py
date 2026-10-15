@@ -13,12 +13,11 @@ What a document holds (plan §3 S7):
               References in an exclusive estado (verificado, declarado, inferido), with their other printed spellings; never a retired one,
               a non-main code in disputa, or a supplier's interno code
     compact   the same codes without separators: a code search compares them whole (' KEY ') or contained ('KEY')
-    reach     the aftermarket codes filed under the line's own numbers (OEMCrossReference), compact, which the legacy search
-              (mall.oem_links.search_q) reaches too; from S9 a SKU's catalog and name links (PartOEMLink) are no longer read (the merge
-              pass put a catalog item's numbers on its SKU's line, and the codes on one line became its References)
     internal  {supplier id: [codes]}: the interno codes of each supplier (not the main), read only within that supplier's own catalog
-    text      the description, name, grupo, subgrupo, the main's brand and every public Reference's brand, then the canonical brand of each
+    text      the description, grupo, subgrupo, the main's brand and every public Reference's brand, then the canonical brand of each
               alias word in them (TOY → TOY TOYOTA), so "filtro aceite toyota" finds the rows the catalog wrote as TOY
+(reach, the aftermarket codes filed under the line's numbers, left with S10: those codes are archived, and S9 made every one whose
+numbers sit on one line that line's Reference, so codes holds it.)
     brand     the main's brand; grupo, subgrupo: its subgrupo's names
 Everything is folded as a search word is (mall.catalog_search.fold: upper case, no accents). Stock and the supplier items' calidades are
 never in it: availability and the calidad filter read the items live.
@@ -27,10 +26,8 @@ Callers. Part.save and Reference.save (every line or Reference written one by on
 promote_line, set_subgrupo through the line's save; mall.references.add, update, retire, revive), mall.references._bump (set_main, move,
 retype_main, absorb_into), references.bulk_create, mall.lines.bulk_create_lines, bulk_update_lines and project_subgrupos (the catalog
 import's save_plan, the assistant's bulk taxonomy, a subgrupo or grupo renamed: technical_api, Grupo.save), mall.line_merge.merge_lines
-and split_line, mall.brands.rekey, rename and merge; refresh_reach() for what reach reads (the aftermarket codes and SKU links the
-catalog import, the catalog replace, the Biblioteca and absorb write: mall.oem_links, mall.supplier_catalog_replace,
-mall.oem_reference_views, mall.line_merge); a BrandAlias saved or deleted anywhere (the brand routes, references.ensure_brand, the Django
-admin) through its signal (alias_changed, mall.apps). A write that skips all of them is repaired by the next rebuild.
+and split_line, mall.brands.rekey, rename and merge; a BrandAlias saved or deleted anywhere (the brand routes, references.ensure_brand,
+the Django admin) through its signal (alias_changed, mall.apps). A write that skips all of them is repaired by the next rebuild.
 
 Writes are serialized (LOCK, a transaction-level advisory lock taken before a document is computed): a document is always computed from
 what was committed when its writer got the lock, so the rebuild never writes back an older document over a fresher one."""
@@ -53,7 +50,7 @@ BATCH = 1000              # documents recomputed and written per transaction by 
 CHUNK = 2000              # line ids per query
 KEEP_RUNS = 100           # rebuild records kept
 EXCLUSIVE = ('verificado', 'declarado', 'inferido')
-FIELDS = ('codes', 'compact', 'reach', 'internal', 'text', 'brand', 'grupo', 'subgrupo')
+FIELDS = ('codes', 'compact', 'internal', 'text', 'brand', 'grupo', 'subgrupo')
 LOCK = 724631115          # pg_advisory_xact_lock taken by every document write (724631109-724631114 are taken: plan §1.6.5)
 PENDING = '_search_document_pending'  # the connection's set of line ids waiting for the commit
 TOKEN = re.compile(r'[A-Z0-9]+')
@@ -124,33 +121,24 @@ def text_of(texts, aliases):
 
 def _line_rows(line_filter):
     from .lines import storefront_lines
-    return storefront_lines().filter(line_filter).values_list(
-        'pk', 'sku', 'name', 'description', 'category', 'subcategory', 'part_type_id', 'part_type__name', 'part_type__grupo__nombre')
+    return storefront_lines().filter(line_filter).values_list('pk', 'sku', 'description', 'part_type__name', 'part_type__grupo__nombre')
 
 
 def _gather(line_filter):
     """{line id: values} for the lines on sale the filter (a Q on Part) names; each kind of row read once."""
     from .models import Reference
-    from .oem_reference_models import OEMCrossReference
     lines = {str(row[0]): row for row in _line_rows(line_filter)}
     if not lines:
         return {}
     ids = list(lines)
     refs = defaultdict(list)
-    held = defaultdict(set)  # line id -> ids of its live References (the numbers whose aftermarket codes it reaches)
     for chunk in chunks(ids):
         for row in (Reference.all_objects.filter(part_id__in=chunk).exclude(estado='retirada').order_by('-is_main', 'pk')
                     .values_list('part_id', 'pk', 'code', 'brand', 'tipo', 'estado', 'is_main', 'supplier_id', 'printed_forms')):
             refs[str(row[0])].append(row)
-            held[str(row[0])].add(row[1])
-    numbers = {ref_id for line in held.values() for ref_id in line}
-    crossed = defaultdict(list)  # Reference id -> compact aftermarket codes filed under it
-    for chunk in chunks(numbers, 5000):
-        for ref_id, number in OEMCrossReference.objects.filter(reference_id__in=chunk).values_list('reference_id', 'number').order_by('pk'):
-            crossed[ref_id].append(number)
     aliases = Aliases()
     found = {}
-    for pk, (_, sku, name, description, category, subcategory, part_type, subgrupo_name, grupo_nombre) in lines.items():
+    for pk, (_, sku, description, subgrupo_name, grupo_nombre) in lines.items():
         codes, internal, brands, main_brand = [fold(sku)], defaultdict(list), [], ''
         for _, ref_id, code, brand, tipo, estado, is_main, supplier_id, printed in refs.get(pk, []):
             forms = [fold(form) for form in [code, *(printed or [])] if form]
@@ -161,17 +149,12 @@ def _gather(line_filter):
                 brands.append(brand)
             elif tipo == 'interno' and estado in EXCLUSIVE and supplier_id:
                 internal[str(supplier_id)] += [*forms, *(compact(form) for form in forms)]
-        reach = []
-        for ref_id in sorted(held.get(pk, ())):
-            reach += crossed.get(ref_id, [])
         compacts = [compact(code) for code in codes]
-        held_compact = set(compacts)
-        grupo, subgrupo = (grupo_nombre or '', subgrupo_name) if part_type else (category, subcategory)  # the FK (S5), else the text
+        grupo, subgrupo = grupo_nombre or '', subgrupo_name or ''  # its subgrupo (the FK: S5, the only record from S10)
         found[pk] = {
             'codes': padded(codes), 'compact': padded(compacts),
-            'reach': padded(number for number in reach if number not in held_compact),
             'internal': {supplier: list(dict.fromkeys(values)) for supplier, values in sorted(internal.items())},
-            'text': text_of([description, name, grupo, subgrupo, main_brand, *brands], aliases),
+            'text': text_of([description, grupo, subgrupo, main_brand, *brands], aliases),
             'brand': main_brand[:120], 'grupo': fold(grupo)[:120], 'subgrupo': fold(subgrupo)[:120]}
     return found
 
@@ -291,17 +274,6 @@ def alias_changed(sender, instance, raw=False, using=None, **kwargs):
             refresh_text_containing([instance.alias])
     except DatabaseError:  # no document table (before 0085): the S7 rebuild writes every document anyway
         logger.warning('Search documents not refreshed for the alias %s.', instance.alias)
-
-
-def refresh_reach(ref_ids=(), part_ids=()):
-    """refresh() for the lines whose reach follows these References (ids): the lines they sit on (an aftermarket code filed or retired
-    under a number, a number's rows moved by absorb), plus part_ids. SKU links are no longer read from S9."""
-    from .models import Reference
-    lines = {str(getattr(pk, 'pk', pk)) for pk in part_ids if pk}
-    ids = {getattr(pk, 'pk', pk) for pk in ref_ids if pk}
-    for chunk in chunks(ids):
-        lines |= {str(pk) for pk in Reference.all_objects.filter(pk__in=chunk).values_list('part_id', flat=True)}
-    return refresh(lines)
 
 
 # --- the rebuild and its check -------------------------------------------------------------------------------------------------------

@@ -22,17 +22,16 @@ from rest_framework.exceptions import APIException, NotFound, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import new_products, references
+from . import new_products, references, sku_proposals
 from .lines import all_lines, prepared_by_rule_7, prepared_q
 from .list_ordering import StableOrdering
 from .management import IsSuperuser
 from .models import Part, Reference, SupplierItem
-from .sku_proposal_models import SkuProposal
 from .technical_data import grupo_nombre
 
 PREVIEW_ITEMS = 5
 MAX_BULK = 100
-STATUS_LABELS = dict(SkuProposal.STATUSES)
+STATUS_LABELS = dict(sku_proposals.STATUSES)
 REASON_LABELS = dict(Part.REASONS)
 STATUSES = tuple(STATUS_LABELS)
 

@@ -1,7 +1,9 @@
 from rest_framework.test import APITestCase
 
 from .models import Part, PartCode, PartType, User
+from .technical_data import part_type_for
 from .technical_models import PartSpecification, TechnicalField
+from .test_factories import make_code
 
 URL = '/api/v1/management/catalog/'
 
@@ -14,7 +16,7 @@ class InlineCatalogEditTests(APITestCase):
         self.root = User.objects.create_superuser('inline-root', 'inline-root@example.invalid', 'Example938!')
         self.client.force_authenticate(self.root)
         self.part = Part.objects.create(sku='BOMBA-1', description='BOMBA AGUA')
-        PartCode.objects.create(part=self.part, brand='TOYOTA', code='16100-29155', ref_type='oem', reference_source='CATÁLOGO TOYOTA')
+        make_code(part=self.part, brand='TOYOTA', code='16100-29155', ref_type='oem', reference_source='CATÁLOGO TOYOTA')
 
     def patch(self, **data):
         return self.client.patch(f'{URL}{self.part.pk}/', data, format='json')
@@ -38,7 +40,7 @@ class InlineCatalogEditTests(APITestCase):
         self.assertEqual(self.part.subcategory, 'DISCOS DE FRENO')
 
     def test_the_taxonomy_lists_rule_and_existing_subgroups_for_superusers_only(self):
-        PartType.objects.create(category='ESPECIALES', name='PIEZAS A MEDIDA')
+        part_type_for('ESPECIALES', 'PIEZAS A MEDIDA')
         pairs = {(row['category'], row['subcategory']) for row in self.client.get(f'{URL}taxonomy/').json()['results']}
         self.assertIn(('FRENOS', 'DISCOS DE FRENO'), pairs)
         self.assertIn(('ESPECIALES', 'PIEZAS A MEDIDA'), pairs)

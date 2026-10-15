@@ -14,6 +14,23 @@ class LegacyReferenceKind(serializers.ChoiceField):
         return {'unknown': 'alias', 'company': 'manufacturer'}.get(value, value)
 
 
+class CitationField(serializers.CharField):
+    """reference_source in the JSON (inventory refactor S10: no column any more): read, a Reference's newest live source's citation
+    (mall.references.source_text: prefetch_related('sources') for a list); written, a source mall.references cites."""
+    def __init__(self, **kwargs):
+        kwargs.setdefault('max_length', 500)
+        kwargs.setdefault('required', False)
+        kwargs.setdefault('allow_blank', True)
+        super().__init__(**kwargs)
+
+    def get_attribute(self, instance):
+        from .models import Reference
+        if isinstance(instance, Reference):
+            from .references import source_text
+            return source_text(instance)
+        return super().get_attribute(instance)
+
+
 def validate_reference_type(initial, data, instance=None):
     if 'kind' in initial and 'ref_type' in initial:
         old = {'alias': 'unknown', 'manufacturer': 'company'}.get(initial['kind'], initial['kind'])

@@ -2,7 +2,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 from drf_spectacular.utils import extend_schema_field
-from .models import Account, Membership, Part, PartCode, StockEntry, SupplierItem
+from .models import Account, Membership, Part, Reference, StockEntry, SupplierItem
 from .media_serializers import PartImageSerializer
 from .reference_serializers import NonMainReferences
 
@@ -46,12 +46,27 @@ class AccountSerializer(serializers.ModelSerializer):
         model = Account
         fields = ['id', 'name', 'roles', 'capabilities', 'permission', 'apiag_connected']
 
+def line_keys(line):
+    """The keys the JSON keeps for a line from before S10 (inventory refactor S10): name is its description, category and subcategory
+    its subgrupo's grupo and name, is_OEM and active its tipo and estado. Load the line with select_related('part_type__grupo')."""
+    from .technical_data import classification
+    grupo, subgrupo = classification(line)
+    return {'name': line.description or '', 'category': grupo, 'subcategory': subgrupo, 'is_OEM': line.tipo == 'OEM',
+            'active': line.estado == 'publicada'}
+
+
 class PartCodeSerializer(serializers.ModelSerializer):
-    # tipo (oem, aftermarket, otro) and estado (verificado, declarado, inferido, disputa) from S7, beside the legacy kind and ref_type:
-    # the storefront labels OEM and Aftermarket codes and hides the ones in disputa.
+    # tipo (oem, aftermarket, otro) and estado (verificado, declarado, inferido, disputa) from S7, beside the legacy kind and ref_type
+    # (derived from tipo, S10): the storefront labels OEM and Aftermarket codes and hides the ones in disputa.
     kind = serializers.CharField(read_only=True)
+    ref_type = serializers.SerializerMethodField()
+
+    def get_ref_type(self, obj) -> str:
+        from .references import legacy_ref_type
+        return legacy_ref_type(obj.tipo)
+
     class Meta:
-        model = PartCode
+        model = Reference
         fields = ['brand', 'code', 'kind', 'ref_type', 'tipo', 'estado']
         list_serializer_class = NonMainReferences  # the line's main is its codigo (S2b): code lists leave it out
 
@@ -81,6 +96,11 @@ class PartSerializer(serializers.ModelSerializer):
     # S7 (additive): the main Reference's brand (the part's maker; '' when the codigo has none), the line's tipo (OEM, AFTERMARKET,
     # UNKNOWN) and estado (publicada on the storefront). sku is the main Reference's code, so it holds 120 characters at most.
     sku = serializers.CharField(max_length=120, read_only=True)
+    # The line's keys from before S10, derived (line_keys): name is its description, category and subcategory its subgrupo's.
+    is_OEM = serializers.SerializerMethodField(help_text='La referencia principal es OEM (tipo OEM).')
+    name = serializers.SerializerMethodField(help_text='La descripción.')
+    category = serializers.SerializerMethodField(help_text='El grupo de su subgrupo.')
+    subcategory = serializers.SerializerMethodField(help_text='Su subgrupo.')
     brand = serializers.SerializerMethodField(help_text='La marca de la referencia principal ("" si no tiene).')
     codes = PartCodeSerializer(many=True, read_only=True)
     images = PartImageSerializer(many=True, read_only=True)
@@ -100,6 +120,18 @@ class PartSerializer(serializers.ModelSerializer):
             from .oem_links import equivalents_for
             by_part = equivalents_for([obj.pk])
         return by_part.get(str(obj.pk), [])
+
+    def get_is_OEM(self, obj) -> bool:
+        return obj.tipo == 'OEM'
+
+    def get_name(self, obj) -> str:
+        return obj.description or ''
+
+    def get_category(self, obj) -> str:
+        return line_keys(obj)['category']
+
+    def get_subcategory(self, obj) -> str:
+        return line_keys(obj)['subcategory']
 
     @extend_schema_field(CatalogAvailabilitySerializer)
     def get_availability(self, obj):

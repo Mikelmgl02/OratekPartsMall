@@ -1,6 +1,6 @@
 """The OEM line's lifecycle (inventory refactor S1): the only writer of Part.estado, origen and the decision fields, and the querysets
-the readers take lines from, each with an explicit estado decision. From S5 it also writes a line's subgrupo (set_subgrupo: part_type
-and, until S10, the grupo and subgrupo text that follow it). From S6 prepare, publish and reject are the transitions of Productos
+the readers take lines from, each with an explicit estado decision. From S5 it also writes a line's subgrupo (set_subgrupo: its
+part_type, the only record of its grupo and subgrupo from S10). From S6 prepare, publish and reject are the transitions of Productos
 nuevos (a line in preparación: mall.new_products), and create_line makes a line whose main is a supplier's interno code.
 
     referencia   a number of the OEM library with no product yet (S4)
@@ -10,9 +10,8 @@ nuevos (a line in preparación: mall.new_products), and create_line makes a line
     retirada     taken off the catalog; it keeps its codes reserved
     unificada    merged into another line (merged_into); its codigo is frozen
 
-"Live" means any estado but unificada. Until S10 `active` mirrors estado == 'publicada': Part.save() keeps the pair in step (via
-pair_lifecycle), queryset writers set both, and migration 0072 adds the CHECK. Old code that only knows `active` keeps working: a
-line it retires becomes retirada, one it reactivates publicada.
+"Live" means any estado but unificada. estado is the lifecycle's only record: from S10 `active` only mirrors estado == 'publicada'
+for the readers that still name it (0086's trigger, then 0089's generated column) and nothing writes it.
 
 Readers: storefront_lines() for what customers see, catalog_lines() for the admin grid (publicada and retirada by default),
 lines_by_codigo() for a SKU string, all_lines() where every estado counts (a writer addressing the exact row, a code another line
@@ -36,7 +35,8 @@ CATALOG = ('publicada', 'retirada')
 LIVE = tuple(estado for estado in ESTADOS if estado != 'unificada')
 PHRASES = {'referencia': 'en referencia', 'preparacion': 'en preparación', 'publicada': 'publicada', 'rechazada': 'rechazada',
            'retirada': 'retirada', 'unificada': 'unificada en otra'}
-PAIRED = {'active', 'estado', 'merged_into'}  # a write of any of these writes estado and active together
+# The columns S10 retires (name, category, subcategory, legacy_brand) or turns into mirrors (active, is_OEM): no writer passes them.
+RETIRED_FIELDS = ('name', 'category', 'subcategory', 'legacy_brand', 'active', 'is_OEM')
 MAX_CHAIN = 10  # merged_into is depth 1 (I6); a longer chain is followed this far at most
 
 
@@ -68,14 +68,13 @@ def codigo_key(codigo):
 # --- readers --------------------------------------------------------------------------------------------------------------------------
 
 def storefront_lines(queryset=None):
-    """The lines customers see: publicada. Until S10 it also asks for active and no merge, which the 0072 CHECKs make the same thing,
-    so a database not yet backfilled (estado still at its default) shows nothing it did not show before."""
+    """The lines customers see: publicada (and not merged, which line_unificada_iff_merged makes the same thing)."""
     return _lines(queryset).filter(storefront_q())
 
 
 def storefront_q(prefix=''):
     """storefront_lines as a Q, through a relation when prefix names one ('part__')."""
-    return Q(**{f'{prefix}estado': 'publicada', f'{prefix}active': True, f'{prefix}merged_into__isnull': True})
+    return Q(**{f'{prefix}estado': 'publicada', f'{prefix}merged_into__isnull': True})
 
 
 def catalog_lines(estados=CATALOG, queryset=None):
@@ -105,8 +104,8 @@ def all_lines(queryset=None):
 
 
 def on_storefront(line):
-    """Whether a loaded line is on sale (storefront_lines, in Python): publicada, and until S10 active and not merged as well."""
-    return line is not None and line.estado == 'publicada' and line.active and not line.merged_into_id
+    """Whether a loaded line is on sale (storefront_lines, in Python): publicada and not merged."""
+    return line is not None and line.estado == 'publicada' and not line.merged_into_id
 
 
 def refuse_unificada(line):
@@ -142,10 +141,10 @@ def lines_by_codigos(codigos, *, include=(), queryset=None):
     targets = canonical_lines([row for row in rows if row.merged_into_id])
     extra = [estado for estado in include if estado not in CATALOG]
     rank = {'publicada': 0, 'retirada': 1, 'unificada': 2, **{estado: 3 + i for i, estado in enumerate(extra)}}
-    rows = [(effective_estado(row), row) for row in rows]
+    rows = [(row.estado, row) for row in rows]
     for estado, row in sorted(((e, r) for e, r in rows if e in wanted), key=lambda pair: (rank[pair[0]], pair[1].sku, str(pair[1].pk))):
         line = targets.get(row.pk) if estado == 'unificada' else row
-        if line is None or (estado == 'unificada' and effective_estado(line) not in (*CATALOG, *include)):
+        if line is None or (estado == 'unificada' and line.estado not in (*CATALOG, *include)):
             continue
         bucket = found.setdefault(codigo_key(row.sku), [])
         if all(line.pk != other.pk for other in bucket):
@@ -229,69 +228,7 @@ def same_line(a, b):
     return first is not None and first == second
 
 
-def effective_estado(line):
-    """A line's estado, read through its pair while the database may still be out of step (a merged line is unificada, an inactive
-    publicada line retirada): what estado becomes once mall.refactor.s1_lifecycle or 0072 has run."""
-    repaired = repaired_estado(line.active, line.merged_into_id, line.estado)
-    return repaired[0] if repaired else line.estado
-
-
 # --- writers --------------------------------------------------------------------------------------------------------------------------
-
-def repaired_estado(active, merged, estado):
-    """The (estado, active) a stored row belongs at once its pair is put in step, or None when that needs a person (an active line in
-    referencia, preparacion or rechazada, or an estado the lifecycle does not know). Old writers only know `active` and
-    `merged_into`, so those win: a merged line is unificada, a line they retire is retirada, one they reactivate publicada.
-    The tighten migration 0072 repeats this rule on historical models, and mall.refactor.s1_lifecycle backfills with it."""
-    if estado not in ESTADOS:
-        return None
-    if merged:
-        return 'unificada', False
-    if estado == 'unificada':
-        return ('publicada' if active else 'retirada'), bool(active)
-    if active:
-        return ('publicada', True) if estado in CATALOG else None
-    return ('retirada' if estado == 'publicada' else estado), False
-
-
-def pair_lifecycle(line):
-    """Put an unsaved change of estado, active or merged_into in step before it is written (Part.save and the bulk writers call it).
-    merged_into forces unificada; a line no longer merged follows active; otherwise whichever of the two changed since the line was
-    loaded (or since its defaults, for a new line) wins, estado when both did. A field deferred at load and assigned since counts as
-    changed. A stored pair out of step with neither changed follows active, as repaired_estado does. active alone never moves a line
-    in referencia, preparacion or rechazada (LineStateError): only set_estado does, as only a person can say which estado it takes."""
-    if line.merged_into_id is not None:
-        line.estado, line.active = 'unificada', False
-        return line
-    if hasattr(line, '_lifecycle'):
-        (loaded_active, loaded_estado), tracked = line._lifecycle, True
-    elif line._state.adding:
-        (loaded_active, loaded_estado), tracked = (True, 'publicada'), True
-    else:
-        (loaded_active, loaded_estado), tracked = (None, None), False
-    values = line.__dict__  # read before line.estado or line.active may load a deferred field
-
-    def changed(name, loaded):
-        if loaded is None:  # deferred at load: changed when it has been assigned since without being read
-            return tracked and name in values
-        return values.get(name, loaded) != loaded
-
-    estado_changed, active_changed = changed('estado', loaded_estado), changed('active', loaded_active)
-    if line.estado == 'unificada':
-        line.estado = 'publicada' if line.active else 'retirada'
-    elif not estado_changed and (active_changed or line.active != (line.estado == 'publicada')):
-        if line.estado in CATALOG:
-            line.estado = 'publicada' if line.active else 'retirada'
-        elif line.active:
-            raise LineStateError(f'Esta línea está {phrase(line.estado)}: cambia su estado (mall.lines.set_estado), no «activo».')
-    line.active = line.estado == 'publicada'
-    return line
-
-
-def loaded_pair(line):
-    """(active, estado) as the line holds them, without loading a deferred one (None then): what pair_lifecycle compares against."""
-    return line.__dict__.get('active'), line.__dict__.get('estado')
-
 
 def validate_codes(estado, origen):
     if estado not in ESTADOS:
@@ -317,6 +254,9 @@ def create_line(sku, *, estado='publicada', origen='catalogo', decided_by=None, 
     from . import references
     from .models import Part
     validate_codes(estado, origen)
+    retired = sorted(set(fields) & set(RETIRED_FIELDS))
+    if retired:  # S10: the description is the line's text, its subgrupo its classification, estado and tipo its state
+        raise TypeError(f'create_line() no admite {", ".join(retired)} desde S10 (usa description, part_type, estado, main_tipo).')
     if estado == 'unificada' or fields.get('merged_into') or fields.get('merged_into_id'):
         raise LineStateError('Una línea nueva no nace unificada: agrupa una existente.')
     if promote and estado in CATALOG:
@@ -345,7 +285,7 @@ def create_line(sku, *, estado='publicada', origen='catalogo', decided_by=None, 
 
 def bulk_create_lines(lines, *, batch_size=500, actor=None, mains=True):
     """Insert unsaved Parts in bulk (no signals, as Part.objects.bulk_create): each codigo trimmed and upper case like Part.save,
-    estado and active in step, tipo and is_OEM in step, origen and estado checked, created_at stamped; then each live line's main
+    origen and estado checked, created_at stamped; then each live line's main
     Reference in bulk (mall.references.bulk_mains: brandless, its tipo from the line, disputa when another line holds the key), unless
     mains=False: a caller that inserts each line's main itself right after (S4's referencia lines, whose main is their library number).
     Returns the lines."""
@@ -355,14 +295,12 @@ def bulk_create_lines(lines, *, batch_size=500, actor=None, mains=True):
     for line in lines:
         validate_codes(line.estado, line.origen)
         line.sku = codigo_key(line.sku)
-        pair_lifecycle(line)
-        references.pair_line_tipo(line)
+        line.active, line.is_OEM = line.estado == 'publicada', line.tipo == 'OEM'  # mirrors only (0086's trigger writes them)
         line.created_at = line.created_at or now
     Part.objects.bulk_create(lines, batch_size=batch_size)
     if mains:
         references.bulk_create(references.bulk_mains(lines, actor=actor), batch_size=batch_size, actor=actor)
     for line in lines:
-        line._lifecycle = loaded_pair(line)
         line._identity = {name: line.__dict__.get(name) for name in Part.IDENTITY}
     from .search_document import refresh
     refresh(lines)  # bulk writes fire no save(): the Search Documents follow here (S7)
@@ -370,36 +308,36 @@ def bulk_create_lines(lines, *, batch_size=500, actor=None, mains=True):
 
 
 def bulk_update_lines(lines, fields, *, batch_size=500):
-    """Part.objects.bulk_update for loaded lines: when the fields include active, estado or merged_into, each line's pair is put in
-    step first and both columns are written; likewise tipo and is_OEM. updated_at is stamped. A codigo or tipo written here moves the
-    line's main after it (mall.references.ensure_main), as Part.save does. Returns the number of rows matched."""
+    """Part.objects.bulk_update for loaded lines: estado and origen checked when written, a subgrupo change refused on a line with a
+    technical sheet (mall.technical_data.refuse_subgrupo_change), updated_at stamped. A codigo or tipo written here moves the line's main
+    after it (mall.references.ensure_main), as Part.save does. Returns the number of rows matched."""
     from . import references
     from .models import Part
+    from .technical_data import refuse_subgrupo_change
     lines, fields, now = list(lines), list(dict.fromkeys(fields)), timezone.now()
-    if PAIRED & set(fields):
+    retired = sorted(set(fields) & set(RETIRED_FIELDS))
+    if retired:
+        raise TypeError(f'bulk_update_lines() no escribe {", ".join(retired)} desde S10.')
+    if {'estado', 'merged_into'} & set(fields):
         for line in lines:
-            pair_lifecycle(line)
             validate_codes(line.estado, line.origen)
-        fields = list(dict.fromkeys([*fields, 'active', 'estado']))
-    if {'tipo', 'is_OEM'} & set(fields):
-        for line in lines:
-            references.pair_line_tipo(line, getattr(line, '_identity', None))
-        fields = list(dict.fromkeys([*fields, 'tipo', 'is_OEM']))
+    if 'part_type' in fields:
+        refuse_subgrupo_change(lines)
     for line in lines:
         line.updated_at = now
+        line.active, line.is_OEM = line.estado == 'publicada', line.tipo == 'OEM'  # mirrors only (0086's trigger writes them)
     count = Part.objects.bulk_update(lines, [*fields, 'updated_at'], batch_size=batch_size) if lines else 0
-    identity = {'sku', 'tipo', 'is_OEM', 'merged_into'} & set(fields)
+    identity = {'sku', 'tipo', 'merged_into'} & set(fields)
     for line in lines:
-        line._lifecycle = loaded_pair(line)
         if identity:
-            references.ensure_main(line, line_wins='sku' not in fields and bool({'tipo', 'is_OEM'} & set(fields)))
+            references.ensure_main(line, line_wins='sku' not in fields and 'tipo' in fields)
         line._identity = {name: line.__dict__.get(name) for name in Part.IDENTITY}
     from .search_document import refresh
     refresh(lines)  # bulk writes fire no save(): the Search Documents follow here (S7)
     return count
 
 
-PROMOTED_FIELDS = ('name', 'description', 'category', 'subcategory', 'part_type', 'part_type_id', 'aplicaciones_texto')
+PROMOTED_FIELDS = ('description', 'part_type', 'part_type_id', 'aplicaciones_texto')
 
 
 def referencia_lines(codigo):
@@ -460,7 +398,7 @@ def promote_line(line, *, estado='publicada', user=None, **fields):
 
 
 def stage_estado(line, estado, *, user=None, reason='', note='', at=None):
-    """Move a loaded line to another estado without saving it, and return the fields to write: active in step (on save), version + 1,
+    """Move a loaded line to another estado without saving it, and return the fields to write: version + 1,
     changed_at stamped, and the decision recorded when someone made it (user) or when it is a rejection, which needs one of REASONS.
     Merging (unificada) and Separar SKU (leaving it) go through their own tools. set_estado saves it; a writer that saves the line
     itself (the part API) stages the move and saves the fields with its own."""
@@ -548,38 +486,27 @@ def reject(line, *, user, reason, note='', at=None):
     return set_estado(line, 'rechazada', user=user, reason=reason, note=note, at=at)
 
 
-SUBGRUPO_FIELDS = ['part_type', 'category', 'subcategory']
+SUBGRUPO_FIELDS = ['part_type']
 
 
-def set_subgrupo(lines, part_type, *, grupo='', subgrupo=''):
-    """Give loaded lines (a Part or several) a subgrupo without saving them, and return the fields to write. Until S10 the text columns
-    category and subcategory are the subgrupo's: its grupo's nombre and its name (mall.technical_data). With no subgrupo (None) they hold
-    the partial classification given, normalized: a grupo typed without a subgrupo yet, blank by default. A writer that resolves text
-    goes through mall.technical_data.bind_part_types, which calls this."""
+def set_subgrupo(lines, part_type):
+    """Give loaded lines (a Part or several) a subgrupo (a PartType, or None) without saving them, and return the fields to write. From
+    S10 the subgrupo is the line's only classification: its grupo and subgrupo are the PartType's (mall.technical_data.classification);
+    a writer that starts from text resolves it first (mall.technical_data.text_subgrupo, subgrupos_for)."""
     from .models import Part
-    from .technical_data import grupo_nombre, normalized_label
     lines = [lines] if isinstance(lines, Part) else list(lines)
-    text = (grupo_nombre(part_type), part_type.name) if part_type is not None else (normalized_label(grupo), normalized_label(subgrupo))
     for line in lines:
         line.part_type = part_type
-        line.category, line.subcategory = text
     return list(SUBGRUPO_FIELDS)
 
 
 def project_subgrupos(part_types):
     """After a subgrupo moved to another grupo or was renamed, or its grupo was renamed (mall.technical_data.project_grupo): its lines'
-    text follows it (one UPDATE per subgrupo). Returns how many lines changed."""
+    Search Documents read the new names (S7). Returns how many lines are refreshed."""
     from .models import Part
-    from .technical_data import grupo_nombre
     from .search_document import refresh
-    count = 0
-    for part_type in part_types:
-        changed = (Part.objects.filter(part_type=part_type).exclude(category=grupo_nombre(part_type), subcategory=part_type.name)
-                   .update(category=grupo_nombre(part_type), subcategory=part_type.name))
-        if changed:  # their Search Documents' grupo and subgrupo follow (S7)
-            refresh(Part.objects.filter(part_type=part_type).values_list('pk', flat=True))
-        count += changed
-    return count
+    ids = list(Part.objects.filter(part_type__in=[getattr(part_type, 'pk', part_type) for part_type in part_types]).values_list('pk', flat=True))
+    return refresh(ids)
 
 
 def touch_visible(lines, at=None):
@@ -607,7 +534,7 @@ class LineVersionConflict(APIException):
         self.version = line.version
 
 
-EDIT_FIELDS = ('description', 'name', 'aplicaciones_texto', 'part_type')
+EDIT_FIELDS = ('description', 'aplicaciones_texto', 'part_type')
 
 
 def edited_text(text):
@@ -642,7 +569,7 @@ def _locked_line(line_id, expected_version):
 
 def edit_line(line_id, *, user, expected_version, **fields):
     """An administrator's edit of a line (any estado but unificada), checked against the version they read (LineVersionConflict, 409):
-    description and name (upper case, single spaces), aplicaciones_texto (as written, line by line: edited_text) and part_type (the subgrupo, a PartType or None:
+    description (upper case, single spaces), aplicaciones_texto (as written, line by line: edited_text) and part_type (the subgrupo, a PartType or None:
     set_subgrupo; a line with a technical sheet keeps its subgrupo, as Part.save refuses). Each field that changed is theirs from now on
     (field_sources[field] = admin), the version moves and changed_at is stamped. Returns the line."""
     from django.db import transaction
@@ -652,7 +579,7 @@ def edit_line(line_id, *, user, expected_version, **fields):
     with transaction.atomic():
         line = _locked_line(line_id, expected_version)
         changed, names = [], []
-        for name in ('description', 'name', 'aplicaciones_texto'):
+        for name in ('description', 'aplicaciones_texto'):
             if name in fields:
                 tidy = edited_text if name == 'aplicaciones_texto' else (lambda text: ' '.join(str(text or '').split()).upper())
                 value = tidy(fields[name])

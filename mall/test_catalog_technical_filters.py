@@ -3,6 +3,7 @@ import json
 from rest_framework.test import APITestCase
 
 from .models import Account, Membership, Part, PartSpecification, Role, SupplierItem, TechnicalField, User
+from .test_factories import make_line
 
 
 class CatalogTechnicalFilterTests(APITestCase):
@@ -15,7 +16,7 @@ class CatalogTechnicalFilterTests(APITestCase):
         buyer.roles.add(Role.objects.get(code='client_business'))
         Membership.objects.create(user=self.user, account=buyer)
         self.client.force_authenticate(self.user)
-        self.parts = {sku: Part.objects.create(sku=sku, category='FRENOS', subcategory='DISCOS') for sku in ['A', 'B', 'C', 'EMPTY', 'ZERO']}
+        self.parts = {sku: make_line(sku=sku, category='FRENOS', subcategory='DISCOS') for sku in ['A', 'B', 'C', 'EMPTY', 'ZERO']}
         self.kind = self.parts['A'].part_type
         self.fields = {key: TechnicalField.objects.create(template=self.kind.template, key=key, label=key.upper(), **options) for key, options in {
             'diameter': {'kind': 'number', 'unit': 'mm'}, 'thickness': {'kind': 'number', 'unit': 'mm'},
@@ -64,7 +65,7 @@ class CatalogTechnicalFilterTests(APITestCase):
         for index in range(55):
             part = Part.objects.create(sku=f'MATCH-{index:02}', part_type=self.kind)
             PartSpecification.objects.create(part=part, field=self.fields['diameter'], number_value=262)
-        hidden = Part.objects.create(sku='HIDDEN', part_type=self.kind, active=False)
+        hidden = make_line(sku='HIDDEN', part_type=self.kind, active=False)
         PartSpecification.objects.create(part=hidden, field=self.fields['diameter'], number_value=262)
         first = self.query([self.rule()], include_facets='1').data
         second = self.query([self.rule()], page='2').data
@@ -83,7 +84,7 @@ class CatalogTechnicalFilterTests(APITestCase):
             self.assertEqual(self.client.get(self.url, {'technical': raw}).status_code, 400)
 
     def test_templates_and_matches_respect_supplier_scope(self):
-        other = Part.objects.create(sku='PAD', category='FRENOS', subcategory='PASTILLAS')
+        other = make_line(sku='PAD', category='FRENOS', subcategory='PASTILLAS')
         TechnicalField.objects.create(template=other.part_type.template, key='width', label='ANCHO', kind='number')
         supplier = Account.objects.create(name='PROVEEDOR')
         supplier.roles.add(Role.objects.get(code='supplier_retail'))

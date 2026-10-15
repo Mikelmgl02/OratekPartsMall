@@ -52,7 +52,7 @@ def basket_data(request, user, account):
     from .catalog_availability import catalog_availability, stock_band
     from .serializers import PartSerializer
     rows = list(BasketItem.objects.filter(user=user, account=account)
-                .select_related('supplier_item__supplier', 'supplier_item__part', 'part')
+                .select_related('supplier_item__supplier', 'supplier_item__part', 'part__part_type__grupo')
                 .prefetch_related('supplier_item__supplier__roles', 'part__codes', 'part__images'))
     parts = list({row.part_id: row.part for row in rows}.values())
     context = {'request': request, 'availability_by_part': catalog_availability(parts), 'equivalents_by_part': equivalents_for([part.pk for part in parts])}

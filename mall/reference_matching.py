@@ -16,10 +16,8 @@ The rules, in order (resolve), for an item without a Reference (new, or waiting 
    (clave, brand), then (clave, ''), then the brands of its familia with the same clave (D3: KAIYI and CHERY are one part only when the
    code itself matches, never by brand alone). A brandless item joins the one line its clave sits on. Its clave on two or more lines, or
    only a Reference in disputa, gives a line case and no Reference.
-2. 3e-lazy (until S9). A branded aftermarket code a supplier catalog files under OEM numbers (OEMCrossReference): when the numbers'
-   References all sit on one line, a new Reference of the code is added there, declarado when the brand is the catalog's own, inferido
-   for a competitor's code and only from a PDF-checked catalog (OD17), with a catalogo source. Two or more lines: a line case, and a
-   merge case for those lines (OD15: a supplier sells the code).
+2. (3e-lazy, the aftermarket codes a supplier catalog filed under OEM numbers, left with S10: S9 made those codes References of the
+   line their numbers sit on, and their table is archived. Such a code is found by rules 1 and 2 now.)
 3. Rule 3 (D2). Trailing TAGs are stripped while each is auto-eligible (mall.catalog_suffixes.auto_eligible: -L, -RH and the other D4
    tokens never are). The base's clave on exactly one live line, the description heads agreeing, no spec_conflict and every stripped
    TAG a known brand suffix (brand_tag): a new Reference for the full code on that line (58411-1R000-GMB on 58411-1R000), its tipo from
@@ -75,6 +73,10 @@ RULE3_ROLES = ('brand', 'house_brand', 'genuine', 'origin', 'neutral')
 # matching engine's VERSION, which would put every dismissed case back in review).
 FINGERPRINT_VERSION = 1
 KINDS = ('reference', 'code_change', 'variant', 'line', 'merge')
+STATUSES = ('review', 'dismissed', 'applied')
+# S10's 0086 turned the cases of the code before S6 into these kinds and statuses, keeping what each was in evidence['s10'] ({'kind',
+# 'status'}): a supplier case became a line case, a catalog, catalog_reference or seed case a merge case, unmatched review and resolved
+# applied (mall.migrations.0086's convert_cases).
 ITEM_KINDS = ('reference', 'code_change', 'variant', 'line')
 HOLDS_STOCK = ('variant', 'code_change')  # open cases that keep their item in review, out of the line's stock
 METHODS = {'line': 'linea', 'variant': 'spec_conflict', 'code_change': 'code_change', 'reference': 'referencia_declarada',
@@ -97,6 +99,11 @@ LoadPlan.__new__.__defaults__ = (None,)  # refresh: the line in preparación who
 def _models():
     from .models import Part, Reference, SupplierItem
     return Part, Reference, SupplierItem
+
+
+def converted_q(kind='supplier', prefix=''):
+    """The cases 0086 converted from a legacy kind (supplier: the items' cases before S6, now line cases)."""
+    return Q(**{f'{prefix}evidence__s10__kind': kind})
 
 
 def _cases():
@@ -131,27 +138,24 @@ def subject_of(item=None, data=None, supplier=None):
 
 class Lookups:
     """The reads resolve makes, cached for one call (or for a whole Excel preview, prefetched): live References by clave, brand
-    spellings and familias, the catalogs' aftermarket codes by compact number, the suffix table. It never caches across writes."""
+    spellings and familias, the suffix table. It never caches across writes."""
 
     def __init__(self):
-        self.claves, self.spellings, self.roots, self.tipos, self.numbers, self.names = {}, {}, {}, {}, {}, {}
+        self.claves, self.spellings, self.roots, self.tipos, self.names = {}, {}, {}, {}, {}
         self.table = None
 
     def prefetch(self, codes):
-        """Read every clave these codes (and their bases once TAGs are stripped) may need, and their numbers' aftermarket codes, at
-        once (the Excel preview's 500 rows)."""
-        keys, numbers = set(), set()
+        """Read every clave these codes (and their bases once TAGs are stripped) may need at once (the Excel preview's 500 rows)."""
+        keys = set()
         for code in codes:
             code = references.code_key(code)
             if not code:
                 continue
             keys.add(references.clave(code))
-            numbers.add(compact(code))
             base = strip_eligible(code, self)[0]
             if base:
                 keys.add(references.clave(base))
         self._load_claves(keys - set(self.claves))
-        self._load_numbers(numbers - set(self.numbers))
         return self
 
     def _load_claves(self, keys):
@@ -165,16 +169,6 @@ class Lookups:
             for row in rows:
                 self.claves[row.clave].append(row)
 
-    def _load_numbers(self, numbers):
-        from .oem_reference_models import OEMCrossReference
-        numbers = sorted(number for number in numbers if number)
-        for number in numbers:
-            self.numbers.setdefault(number, [])
-        for start in range(0, len(numbers), 2000):
-            rows = (OEMCrossReference.objects.filter(number__in=numbers[start:start + 2000])
-                    .select_related('reference__part').order_by('pk'))
-            for row in rows:
-                self.numbers[row.number].append(row)
 
     def by_clave(self, key):
         """The live References of a clave (any supplier and estado but retirada), on live lines."""
@@ -182,13 +176,6 @@ class Lookups:
             self._load_claves({key})
         return [row for row in self.claves[key] if references.is_live(row.part)]
 
-    def cross(self, number):
-        """The catalogs' aftermarket rows filed under a compact number ([] for a code with no letter or digit: '.' has no number)."""
-        if not number:
-            return []
-        if number not in self.numbers:
-            self._load_numbers({number})
-        return self.numbers.get(number, [])
 
     def canonical(self, spelling):
         """mall.brands.resolve, cached."""
@@ -243,7 +230,7 @@ class Lookups:
 
 
 def compact(code):
-    """A code's letters and digits only: how the catalogs file an aftermarket code (OEMCrossReference.number)."""
+    """A code's letters and digits only (an aftermarket code as the catalogs file it)."""
     import re
     return re.sub(r'[^A-Z0-9]', '', (code or '').upper())
 
@@ -457,42 +444,7 @@ def rule_1_2(subject, brand, lookups):
     return found
 
 
-def rule_3e(subject, brand, lookups):
-    """3e-lazy: a branded aftermarket code the catalogs file under OEM numbers, or None."""
-    number = compact(subject.code)
-    if not brand or not number:
-        return None
-    printed = ' '.join(subject.code.split())
-    short = not references.oem_like(number)
-    rows = [row for row in lookups.cross(number) if lookups.canonical(row.brand) == brand
-            and (not short or ' '.join((row.code or '').upper().split()) == printed)]
-    refs = [row.reference for row in rows if row.reference.estado in references.LIVE and references.is_live(row.reference.part)]
-    if not refs:
-        return None
-    citations = sorted({citation for row in rows for citation in (row.citations or [])})
-    numbers = sorted({(ref.brand, ref.code) for ref in refs})
-    evidence = {'numbers': [{'brand': maker, 'code': code} for maker, code in numbers], 'citations': citations[:20]}
-    lines = sorted({ref.part for ref in refs}, key=lambda line: (line.sku, str(line.pk)))
-    if len(lines) > 1:
-        resolution = line_case_for(subject, refs, 'lineas', '3e', evidence, lines=lines)
-        # The case is about the lines (its key and fingerprint); the codes that brought them together are gathered in its evidence.
-        merge = merge_case_spec(lines, evidence={**evidence, 'codes': [{'code': subject.code, 'brand': brand}], 'regla': '3e'},
-                                reason='Los catálogos ponen un código que un proveedor vende en los números OEM de varias líneas: si son el '
-                                       'mismo repuesto, unifícalas.')
-        return resolution._replace(cases=resolution.cases + ((merge,) if merge else ()))
-    catalogs = [catalog_of(citation) for citation in citations]
-    own = any(catalog_brand == brand for _, catalog_brand, _ in catalogs)
-    checked = any(ok for _, _, ok in catalogs)
-    if not own and not checked:
-        return line_case_for(subject, refs, 'catalogo', '3e', evidence, lines=lines)
-    line = lines[0]
-    cited = next((citation for citation in citations if catalog_of(citation)[1] == brand), None) if own else \
-        next((citation for citation in citations if catalog_of(citation)[2]), None)
-    new = {'line': line, 'code': subject.code, 'brand': brand, 'tipo': 'aftermarket', 'estado': 'declarado' if own else 'inferido',
-           'source': cited or (citations[0] if citations else ''), 'citations': citations, 'rule': '3e'}
-    status, conflict = item_status(line, subject.description)
-    cases = (variant_case(subject, line, None),) if conflict else ()
-    return Resolution('new_reference_on_line', '3e', None, line, new, status, cases, evidence)
+
 
 
 def rule_3(subject, brand, lookups):
@@ -537,7 +489,7 @@ def resolve(subject, lookups=None):
     brand = effective_brand(subject, lookups)
     if not has_code(subject.code):  # nothing to look up, and no line can be made of it: it waits in a line case (I10)
         return refused_case(subject, 'sin_codigo', 'El artículo no tiene código.')
-    for rule in (rule_1_2, rule_3e, rule_3):
+    for rule in (rule_1_2, rule_3):
         found = rule(subject, brand, lookups)
         if found is not None:
             return found
@@ -548,17 +500,14 @@ def resolve(subject, lookups=None):
 
 def internal_code(item):
     """Whether Revisión IA (or a person) said the item's code is the supplier's internal code: its line outside the catalog (a new
-    product, in preparación or rechazada) has the supplier's interno code as its main (from S6: new_products.make_interno, ai_fill), or
-    before S6 its proposal said so (SkuProposal.internal_code, frozen history)."""
+    product, in preparación or rechazada) has the supplier's interno code as its main (from S6: new_products.make_interno, ai_fill).
+    (What a proposal said before S6, SkuProposal.internal_code, is archived with it in S10.)"""
     if item is None or not getattr(item, 'pk', None):
         return False
     _, Reference, _ = _models()
-    if getattr(item, 'part_id', None) and Reference.all_objects.filter(
-            part_id=item.part_id, is_main=True, tipo='interno', supplier_id=item.supplier_id, part__estado__in=('preparacion', 'rechazada'),
-            estado__in=references.LIVE).exists():
-        return True
-    from .sku_proposal_models import SkuProposalItem
-    return SkuProposalItem.objects.filter(item_id=item.pk, proposal__internal_code=True).exists()
+    return bool(getattr(item, 'part_id', None)) and Reference.all_objects.filter(
+        part_id=item.part_id, is_main=True, tipo='interno', supplier_id=item.supplier_id, part__estado__in=('preparacion', 'rechazada'),
+        estado__in=references.LIVE).exists()
 
 
 def placement_of(subject, lookups, *, interno=False):
@@ -613,7 +562,7 @@ def enter_preparacion(line, *, item=None, actor=None):
 def joined(item, line, *, prepared=False):
     """After a variant was hung on `line`, a line outside the catalog: mall.new_products.joined counts it there (a line in preparación
     takes version + 1, changed_at and its description from the items, unless rule 7 just moved it there; a rechazada one takes it with no
-    notice, OD13) and settles the variant's legacy supplier cases."""
+    notice, OD13)."""
     from .lines import CATALOG
     if line is None or line.estado in CATALOG:
         return
@@ -994,6 +943,9 @@ def open_case(spec, *, item=None, status='review'):
     if spec['kind'] == 'merge' and case.fingerprint == fingerprint and 'codes' in fields['evidence']:
         known = list((case.evidence or {}).get('codes') or [])  # every code that brought these lines together, once each
         fields['evidence'] = {**fields['evidence'], 'codes': known + [row for row in fields['evidence']['codes'] if row not in known]}
+    for kept in ('catalog_rows', 's10'):  # the catalog rows a merge case waits on (mall.merge_pass.keep_case_rows), what 0086 converted
+        if kept in (case.evidence or {}) and kept not in fields['evidence']:
+            fields['evidence'] = {**fields['evidence'], kept: case.evidence[kept]}
     if case.fingerprint != fingerprint:
         for name, value in fields.items():
             setattr(case, name, value)
@@ -1254,25 +1206,14 @@ def tag_base_candidates(lookups=None):
 
 
 def covered(line_ids):
-    """Whether a case already asks about these lines, decided or not: a merge case listing them all, or a legacy catalog or
-    catalog_reference case whose rows name them all."""
+    """Whether a merge case already lists all these lines, decided or not (from S10 the legacy catalog cases are merge cases: 0086)."""
     from .references import covering_case
-    MatchingCase, _ = _cases()
-    ids = sorted({str(pk) for pk in line_ids})
-    merge = MatchingCase.objects.filter(kind='merge')
-    for pk in ids:
-        merge = merge.filter(lines__pk=pk)
-    if merge.exists() or covering_case(ids) is not None:
-        return True
-    legacy = MatchingCase.objects.filter(kind='catalog_reference')
-    for pk in ids:
-        legacy = legacy.filter(Q(sources__contains=[{'id': pk}]) | Q(candidates__contains=[{'id': pk}]))
-    return legacy.exists()
+    return covering_case(sorted({str(pk) for pk in line_ids})) is not None
 
 
 def open_reference_merge_cases(*, dry_run=False):
     """The worker's catalog stage (it replaced the automatic merges of reconcile_catalog_references): one merge case per group
-    merge_candidates finds, unless a case already covers those lines (a legacy catalog case, decided or not, or a merge case) or they
+    merge_candidates finds, unless a merge case already covers those lines (decided or not) or they
     are kept apart. Never merges anything. Returns the specs (dry_run) or how many cases were opened."""
     MatchingCase, _ = _cases()
     specs, seen = [], set()
@@ -1580,7 +1521,7 @@ def decide_item(case, action, item, chosen, lines, holder, actor):
 
 
 def remember_choice(item, line, actor):
-    """A person's choice is remembered as before S6: a proveedor source on the Reference the item hangs from (and the legacy mapping)."""
+    """A person's choice is remembered: a proveedor source on the Reference the item hangs from (mall.matching_engine.remember)."""
     from .matching_engine import remember
     item.refresh_from_db(fields=['reference', 'part'])
     remember(item, line, actor)

@@ -14,6 +14,7 @@ from .catalog_import import load_job_groups, replace_job_groups
 from .classification_models import CatalogClassificationState, CatalogClassificationSuggestion
 from .models import Account, CatalogImportJob, Membership, Part, PartCode, Role, StockEntry, User
 from .services import ingest_inventory
+from .test_factories import make_line
 
 
 @override_settings(GEMINI_API_KEY='classification-test-key', GEMINI_MODEL='gemini-3.5-flash-lite')
@@ -128,7 +129,7 @@ class CatalogClassificationTests(APITestCase):
         self.assertEqual(Part.objects.count(), 1)
 
     def test_reviewed_grouping_and_categories_preserve_catalog_ids_stock_and_ledger(self):
-        existing = Part.objects.create(sku='58411-1R000', name='DISCO OEM', description='ORIGINAL', category='EXISTENTE')
+        existing = make_line(sku='58411-1R000', description='ORIGINAL', category='EXISTENTE', subcategory='VARIOS')
         old_code = PartCode.objects.create(part=existing, code='OLD-CODE')
         supplier = Account.objects.create(name='Proveedor IA')
         supplier.roles.add(Role.objects.get(code='supplier_retail'))
@@ -154,7 +155,7 @@ class CatalogClassificationTests(APITestCase):
         imported = self.client.post(f'/api/v1/management/catalog/import/jobs/{job.pk}/', {'batch_index': 0}, format='json')
         self.assertEqual(imported.status_code, 200, imported.data)
         existing.refresh_from_db()
-        self.assertEqual(existing.name, 'DISCO OEM')
+        self.assertEqual(existing.name, 'ORIGINAL')  # S10: name is the description
         self.assertEqual(existing.description, 'ORIGINAL')
         self.assertEqual(existing.category, 'FRENOS')
         self.assertEqual(existing.subcategory, 'DISCOS')
@@ -184,7 +185,7 @@ class CatalogClassificationTests(APITestCase):
         self.assertEqual(result.status_code, 409)
 
     def test_applying_a_partial_review_keeps_remaining_ai_progress_and_blank_category(self):
-        Part.objects.create(sku='KEEP-000000', category='MOTOR', subcategory='FILTROS')
+        make_line(sku='KEEP-000000', category='MOTOR', subcategory='FILTROS')
         skus = ['KEEP-000000', *[f'PART-{index:06}' for index in range(54)]]
         job = self.stage(skus)
         with patch('mall.catalog_classification.call_provider', side_effect=self.provider):

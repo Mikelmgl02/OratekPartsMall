@@ -1,6 +1,6 @@
 """Database-backed matching worker. No browser session or AI call holds stock locks.
 
-A pass (inventory refactor S6): every live line keeps its main (references.ensure_mains, until S10); catalog references open merge
+A pass (inventory refactor S6): every live line keeps its main (references.ensure_mains); catalog references open merge
 cases, never merges (mall.reference_matching.open_reference_merge_cases); the items without a Reference are resolved again and placed
 (the backlog: a line case whose lines became one attaches, a load whose place() failed gets its line in Productos nuevos) and every
 attached item keeps its own cases (a waiting code change, its declared codes); cases the catalog settled meanwhile are closed; the AI
@@ -160,7 +160,7 @@ def _process_queue(*, force=False, use_ai=True):
                        'supplier_total': SupplierItem.objects.count(),
                        'supplier_already_matched': SupplierItem.objects.filter(matching_status='matched').count(),
                        'supplier_examined': 0, 'ai_eligible': 0, 'ai_status': 'disabled'}
-            # Until S10 every live line keeps a main Reference on its codigo, whatever path made or renamed it (plan §1.6.7).
+            # Every live line keeps a main Reference on its codigo, whatever path made or renamed it (plan §1.6.7).
             from .references import ensure_mains
             from . import reference_matching
             summary['mains_ensured'] = ensure_mains(actor=actor)['lines']
@@ -171,14 +171,12 @@ def _process_queue(*, force=False, use_ai=True):
             summary['placed_items'] = backlog['placed']
             summary['line_cases'] = backlog['line_cases']
             summary['place_failed'] = backlog['failed']
-            # The legacy supplier cases (before S6) of items matched since; the S6 cases the catalog settled meanwhile.
-            MatchingCase.objects.filter(kind='supplier', item__matching_status='matched', status__in=['review', 'unmatched']).update(status='resolved')
+            # The cases the catalog settled meanwhile (S10's 0086 turned the legacy supplier cases into line cases: they close here too).
             summary['cases_settled'] = reference_matching.recheck_cases(actor=actor)
             stage('ai')
             with no_cut():  # one request, already paid for once it answers: its suggestions are saved whole
                 summary['ai_analyzed'] = analyze_ambiguous(AI_LIMIT, stats=summary) if use_ai else 0
             summary['review'] = MatchingCase.objects.filter(status='review').count()
-            summary['unmatched'] = MatchingCase.objects.filter(status='unmatched').count()
             summary['oem_skus'] = storefront_lines().filter(is_OEM=True).count()
             summary['non_oem_skus'] = storefront_lines().filter(is_OEM=False).count()
         with no_cut():  # the stop deadline never lands between the last stage and the pass's record

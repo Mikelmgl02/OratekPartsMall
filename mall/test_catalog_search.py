@@ -4,6 +4,7 @@ from rest_framework.test import APITestCase
 
 from .brand_models import Brand, BrandAlias
 
+from .test_factories import make_line
 from .models import Account, Membership, Part, PartCode, Role, SupplierItem, User
 from . import references
 from .references import add_library_number
@@ -23,7 +24,7 @@ class CatalogSearchTests(APITestCase):
         self.client.force_authenticate(self.user)
 
     def part(self, sku, description, **fields):
-        return Part.objects.create(sku=sku, description=description, **fields)
+        return make_line(sku, description=description, **fields)
 
     def skus(self, search, **params):
         response = self.client.get(self.url, {'search': search, **params})
@@ -99,7 +100,7 @@ class CatalogSearchTests(APITestCase):
 
     def test_suggestions_preview_the_first_results_of_the_search(self):
         for index in range(8):
-            self.part(f'DISCO-{index}', 'DISCO FRENO', category='FRENOS' if index < 3 else '')
+            self.part(f'DISCO-{index}', 'DISCO FRENO', **({'category': 'FRENOS', 'subcategory': 'DISCOS'} if index < 3 else {}))
         self.part('51750-J9000', 'DISCO CUBO')
         response = self.client.get(self.suggest, {'search': 'disco freno'})
         self.assertEqual(response.status_code, 200)

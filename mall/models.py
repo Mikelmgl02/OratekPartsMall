@@ -56,15 +56,16 @@ class Invitation(models.Model):
         verbose_name_plural = 'invitaciones'
 
 class Part(models.Model):
-    # The OEM line's lifecycle (inventory refactor S1; mall.lines is its writer and the readers' querysets). Until S10 `active` is
-    # kept equal to estado == 'publicada' (save() below; a CHECK from 0072) and merged_into is set exactly on unificada lines.
+    # The OEM line's lifecycle (inventory refactor S1; mall.lines is its writer and the readers' querysets). merged_into is set exactly
+    # on unificada lines. `active` mirrors estado == 'publicada' and `is_OEM` mirrors tipo == 'OEM' for the readers that still name
+    # them: from S10 nothing writes either (0086's trigger keeps the columns in step; 0089 makes them generated columns).
     ESTADOS = [('referencia', 'Referencia'), ('preparacion', 'En preparación'), ('publicada', 'Publicada'), ('rechazada', 'Rechazada'),
                ('retirada', 'Retirada'), ('unificada', 'Unificada')]
     ORIGENES = [('catalogo', 'Catálogo'), ('biblioteca', 'Biblioteca OEM'), ('proveedor', 'Proveedor')]
     REASONS = [('duplicate', 'Ya existe en el catálogo'), ('not_a_part', 'No es un repuesto'), ('bad_data', 'Datos del proveedor incorrectos'),
                ('other', 'Otro motivo')]  # SkuProposal.REJECT_REASONS
     # The line's tipo mirrors its main Reference (inventory refactor S2b: oem → OEM, aftermarket → AFTERMARKET, interno and otro →
-    # UNKNOWN; mall.references.set_main writes both). Until S10 is_OEM is kept equal to tipo == 'OEM' (save() below; a CHECK from 0076).
+    # UNKNOWN; mall.references.set_main writes it).
     TIPOS = [('OEM', 'OEM'), ('AFTERMARKET', 'Posventa'), ('UNKNOWN', 'Sin clasificar')]
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False, verbose_name='ID')
     # The codigo is unique among the catalog's lines (publicada and retirada: line_codigo_unique_catalog, from 0079, inventory refactor
@@ -72,15 +73,21 @@ class Part(models.Model):
     # ACURA and HONDA); a unificada line's codigo is frozen and left out, since the References' uniqueness already stops its reuse.
     sku = models.CharField(max_length=200, db_index=True, verbose_name='SKU interno')
     is_OEM = models.BooleanField(default=False, db_index=True, verbose_name='El SKU principal es OEM')
-    name = models.CharField(max_length=200, blank=True, default='', verbose_name='nombre')
+    # S10 contract, step 1 (0086): nothing reads or writes the columns name, category, subcategory or legacy_brand any more. The first
+    # three are legacy_* here (their columns kept by db_column) so the names are free for the properties below; a database default fills
+    # them all for the inserts, until step 2 takes them out of the state and step 3 (0089) drops them.
+    legacy_name = models.CharField(max_length=200, blank=True, default='', db_default='', db_column='name', editable=False,
+                                   verbose_name='nombre (anterior a S10)')
     description = models.TextField(blank=True, verbose_name='descripción')
     tipo = models.CharField(max_length=12, choices=TIPOS, default='UNKNOWN', db_default='UNKNOWN', db_index=True, verbose_name='tipo')
-    category = models.CharField(max_length=120, blank=True, default='', verbose_name='categoría')
-    subcategory = models.CharField(max_length=120, blank=True, default='', verbose_name='subcategoría')
+    legacy_category = models.CharField(max_length=120, blank=True, default='', db_default='', db_column='category', editable=False,
+                                       verbose_name='categoría (anterior a S10)')
+    legacy_subcategory = models.CharField(max_length=120, blank=True, default='', db_default='', db_column='subcategory', editable=False,
+                                          verbose_name='subcategoría (anterior a S10)')
     part_type = models.ForeignKey('PartType', on_delete=models.PROTECT, null=True, blank=True, related_name='parts')
     technical_revision = models.PositiveIntegerField(default=0, editable=False)
     applications = models.ManyToManyField('Application', through='ItemApplication', related_name='parts', blank=True)
-    legacy_brand = models.CharField(max_length=120, blank=True, default='', editable=False, verbose_name='marca histórica')
+    legacy_brand = models.CharField(max_length=120, blank=True, default='', db_default='', editable=False, verbose_name='marca histórica')
     active = models.BooleanField(default=True, verbose_name='activo')
     merged_into = models.ForeignKey('self', on_delete=models.PROTECT, null=True, blank=True,
                                     related_name='merged_parts', editable=False, verbose_name='SKU unificado')
@@ -100,60 +107,55 @@ class Part(models.Model):
     changed_at = models.DateTimeField(null=True, blank=True, editable=False, verbose_name='último cambio visible',
                                       help_text='Solo cambios que una persona ve (mall.lines.touch_visible), no los rellenos de la IA.')
     def __str__(self):
-        return f"{self.sku} · {self.name}" if self.name and self.name != self.sku else self.sku
-    IDENTITY = ('sku', 'is_OEM', 'tipo', 'estado', 'merged_into_id')  # what the S2b shim compares against (mall.references.follow_line)
+        return self.sku
+    # What the JSON and the readers named before S10, derived (plan §3 S10.3): name is the description, category and subcategory the
+    # subgrupo's grupo and name (load the line with select_related('part_type__grupo') for a list).
+    @property
+    def name(self) -> str:
+        return self.description or ''
+    @property
+    def category(self) -> str:
+        from .technical_data import classification
+        return classification(self)[0]
+    @property
+    def subcategory(self) -> str:
+        from .technical_data import classification
+        return classification(self)[1]
+    IDENTITY = ('sku', 'tipo', 'estado', 'merged_into_id')  # what the S2b shim compares against (mall.references.follow_line)
     # What its Search Document reads (S7): a save of any of these refreshes it (mall.search_document.refresh).
-    SEARCHED = {'sku', 'name', 'description', 'category', 'subcategory', 'part_type', 'estado', 'active', 'merged_into'}
+    SEARCHED = {'sku', 'description', 'part_type', 'estado', 'merged_into'}
     @classmethod
     def from_db(cls, db, field_names, values):
         instance = super().from_db(db, field_names, values)
-        instance._lifecycle = (instance.__dict__.get('active'), instance.__dict__.get('estado'))  # what save() compares against
         instance._identity = {name: instance.__dict__.get(name) for name in cls.IDENTITY}
         return instance
     def refresh_from_db(self, using=None, fields=None, from_queryset=None):
-        loaded = dict(zip(('active', 'estado'), getattr(self, '_lifecycle', (None, None))))
         identity = dict(getattr(self, '_identity', {}))
         super().refresh_from_db(using=using, fields=fields, from_queryset=from_queryset)
-        for name in loaded:
-            if fields is None or name in fields:
-                loaded[name] = self.__dict__.get(name)
         for name in self.IDENTITY:
             if fields is None or name in fields or name.removesuffix('_id') in fields:
                 identity[name] = self.__dict__.get(name)
-        self._lifecycle = (loaded['active'], loaded['estado'])
         self._identity = identity
     def save(self, *args, **kwargs):
         self.sku = self.sku.strip().upper()
         fields = kwargs.get('update_fields')
         adding = self._state.adding
         before = dict(getattr(self, '_identity', {})) if not adding else {}
-        # estado and active stay in step (whichever changed since load wins; merged_into forces unificada) and are written together.
-        if fields is None or {'active', 'estado', 'merged_into'} & set(fields):
-            from .lines import pair_lifecycle
-            pair_lifecycle(self)
-            if fields is not None:
-                fields = kwargs['update_fields'] = set(fields) | {'active', 'estado'}
-        # tipo and is_OEM likewise (whichever changed since load wins), so the code that only knows is_OEM keeps working until S10.
-        if fields is None or {'tipo', 'is_OEM'} & set(fields):
-            from .references import pair_line_tipo
-            pair_line_tipo(self, before)
-            if fields is not None:
-                fields = kwargs['update_fields'] = set(fields) | {'tipo', 'is_OEM'}
+        # active and is_OEM only mirror estado and tipo (inventory refactor S10): 0086's trigger writes them in the database, and
+        # this keeps the loaded instance in step without reading a deferred field.
+        if 'estado' in self.__dict__:
+            self.active = self.estado == 'publicada'
+        if 'tipo' in self.__dict__:
+            self.is_OEM = self.tipo == 'OEM'
         if fields:  # a partial save stamps updated_at too (auto_now only writes it when listed); update_fields=[] still saves nothing
             fields = kwargs['update_fields'] = set(fields) | {'updated_at'}
-        if fields is None or {'category', 'subcategory', 'part_type'} & set(fields):
-            from .lines import set_subgrupo
-            from .technical_data import bind_part_types
-            if self._state.adding and self.part_type_id and not (self.category or self.subcategory):
-                set_subgrupo(self, self.part_type)  # a new line given only its subgrupo takes its text
-            bind_part_types([self], using=kwargs.get('using') or self._state.db or 'default')
-            if fields is not None:
-                kwargs['update_fields'] = set(fields) | {'category', 'subcategory', 'part_type'}
+        if not adding and (fields is None or 'part_type' in fields):
+            from .technical_data import refuse_subgrupo_change
+            refuse_subgrupo_change([self], using=kwargs.get('using') or self._state.db or 'default')
         super().save(*args, **kwargs)
-        self._lifecycle = (self.__dict__.get('active'), self.__dict__.get('estado'))  # a deferred one stays unloaded
         # Transition shim until S10 (plan §1.4): a live line keeps one main Reference holding its codigo, whose tipo it mirrors. A line
         # inserted without one gets it here (unless mall.lines.create_line makes it), and so does a line renamed, given its tipo or
-        # brought back from a merge by the code that writes sku, is_OEM or merged_into directly.
+        # brought back from a merge by the code that writes sku, tipo or merged_into directly.
         from .references import follow_line
         follow_line(self, before, adding=adding, fields=fields, using=kwargs.get('using'))
         self._identity = {name: self.__dict__.get(name) for name in self.IDENTITY}
@@ -172,10 +174,12 @@ class Part(models.Model):
                                               name='line_unificada_iff_merged'),
                        models.CheckConstraint(condition=~Q(estado='rechazada') | (~Q(decision_reason='') & Q(decided_at__isnull=False)),
                                               name='line_rejected_has_reason'),
-                       # Transition until S10, when active becomes a generated mirror of estado.
+                       # Transition until 0089 (S10's contract, step 3) makes active a generated mirror of estado; from 0086 a trigger
+                       # writes it, so no writer can break this.
                        models.CheckConstraint(condition=Q(active=True, estado='publicada') | Q(active=False) & ~Q(estado='publicada'),
                                               name='line_active_iff_publicada'),
-                       # From 0076 (S2b's tighten): tipo mirrors the main Reference; is_OEM mirrors tipo until S10.
+                       # From 0076 (S2b's tighten): tipo mirrors the main Reference; is_OEM mirrors tipo (0086's trigger writes it;
+                       # 0089 makes it a generated column and drops line_oem_iff_tipo).
                        models.CheckConstraint(condition=Q(tipo__in=['OEM', 'AFTERMARKET', 'UNKNOWN']), name='line_valid_tipo'),
                        models.CheckConstraint(condition=Q(is_OEM=True, tipo='OEM') | Q(is_OEM=False) & ~Q(tipo='OEM'), name='line_oem_iff_tipo')]
         # The lookups of a codigo in every estado (mall.lines.lines_by_codigos), which unique_sku_case_insensitive served until S4.
@@ -238,6 +242,21 @@ CLAVE = models.Case(
                 then=_COMPACT_CODE),
     default=_regexp_replace(Upper(Trim('code')), r'\s+', ' '), output_field=models.CharField(max_length=120))
 REFERENCE_LIVE = ('verificado', 'declarado', 'inferido', 'disputa')  # every estado but retirada
+
+
+class BrandField(models.CharField):
+    """Reference.brand (inventory refactor S10): the canonical Brand.nombre, '' in Python and in the JSON for "any brand". The database
+    holds NULL for it from 0089, which adds the foreign key to Brand(nombre) ON UPDATE CASCADE (a brand renamed re-keys its References
+    in the same statement): reading turns NULL into '', so every reader keeps seeing ''. Until 0089 converts the rows, '' is written as
+    ''; mall.references.blank_brand_q and branded_q read both. Its migrations see a plain CharField (deconstruct), so they never import
+    this module."""
+
+    def from_db_value(self, value, expression, connection):
+        return '' if value is None else value
+
+    def deconstruct(self):
+        name, _, args, kwargs = super().deconstruct()
+        return name, 'django.db.models.CharField', args, kwargs
 REFERENCE_DELETE_REFUSED = ('Una referencia no se borra: mall.references.retire la retira de su línea (estado retirada) y queda como '
                             'historial.')
 
@@ -271,8 +290,11 @@ class Reference(models.Model):
     # One code of an OEM line (inventory refactor S2a; PartCode until then, and PartCode stays an alias of it until S10). It keeps
     # PartCode's integer ids, its table (mall_partcode) and the line's `codes` relation, which the API, the split payloads and other
     # code depend on. mall.references is its only writer: it creates (build/add), changes (update) and retires (retire) References,
-    # and nothing deletes one. Until S10 ref_type is kept in step with tipo (save() below; a CHECK from 0074) and the JSON keeps
-    # ref_type/kind; brand stays text holding the canonical Brand.nombre, '' meaning any brand.
+    # and nothing deletes one. The JSON keeps ref_type/kind, derived from tipo (mall.references.legacy_ref_type), and reference_source,
+    # the newest source's citation (mall.references.source_texts); from S10 nothing reads or writes the ref_type, reference_source and
+    # oem_reference columns (0086's trigger keeps ref_type in step with tipo for the CHECK until 0089 drops all three). brand is the
+    # canonical Brand.nombre, '' (in Python and the JSON) meaning any brand: BrandField reads NULL as '' (0089 stores NULL there and
+    # adds the foreign key to Brand(nombre)).
     KINDS = [('alias', 'Equivalencia'), ('oem', 'Referencia OEM'), ('manufacturer', 'Referencia de fabricante')]
     TIPOS = [('oem', 'OEM'), ('aftermarket', 'Posventa'), ('interno', 'Código interno del proveedor'), ('otro', 'Otro')]
     ESTADOS = [('verificado', 'Verificada'), ('declarado', 'Declarada'), ('inferido', 'Inferida'), ('disputa', 'En disputa'),
@@ -280,15 +302,19 @@ class Reference(models.Model):
     EXCLUSIVE = ('verificado', 'declarado', 'inferido')  # the estados that hold their key for one line (reference_one_live_line, 0074)
     LIVE = REFERENCE_LIVE
     # What its line's Search Document reads (S7): a save of any of these refreshes it (mall.search_document.refresh).
-    SEARCHED = {'part', 'is_main', 'estado', 'code', 'brand', 'tipo', 'ref_type', 'printed_forms', 'supplier'}
+    SEARCHED = {'part', 'is_main', 'estado', 'code', 'brand', 'tipo', 'printed_forms', 'supplier'}
     part = models.ForeignKey(Part, on_delete=models.PROTECT, related_name="codes", verbose_name='repuesto del catálogo')
-    brand = models.CharField(max_length=120, blank=True, default='', verbose_name='marca opcional')
+    brand = BrandField(max_length=120, null=True, blank=True, default='', verbose_name='marca opcional')
     code = models.CharField(max_length=120, verbose_name='código')
     REF_TYPES = [('unknown', 'SIN CLASIFICAR'), ('oem', 'OEM'), ('company', 'EMPRESA / FABRICANTE')]
-    ref_type = models.CharField(max_length=20, choices=REF_TYPES, default='unknown', db_index=True)
-    reference_source = models.CharField(max_length=500, blank=True, default='', verbose_name='fuente de la equivalencia')
-    # The OEM table row an OEM alterno filed under before S4 (brand as manufacturer, compact code), kept as the signal handlers left it:
-    # from S4 the Reference is the library number itself (uid = that OEMReference's id) and nothing writes this column; S10 drops it.
+    # S10 contract, step 1 (0086): the columns ref_type, reference_source and oem_reference are no longer read or written (ref_type's
+    # database default and trigger, reference_source's default, oem_reference's NULL); the first two are legacy_* here (columns kept by
+    # db_column), ref_type is the property below and a code's citation is in its sources (mall.references.source_text). Step 2 takes
+    # them out of the state and 0089 drops them.
+    legacy_ref_type = models.CharField(max_length=20, choices=REF_TYPES, default='unknown', db_default='unknown', db_index=True,
+                                       db_column='ref_type', editable=False)
+    legacy_reference_source = models.CharField(max_length=500, blank=True, default='', db_default='', db_column='reference_source',
+                                               editable=False, verbose_name='fuente de la equivalencia (anterior a S10)')
     oem_reference = models.ForeignKey('mall.OEMReference', on_delete=models.SET_NULL, null=True, blank=True, related_name='alternos',
                                       verbose_name='referencia OEM')
     # The public id: PostgreSQL fills it for every row, old code's inserts included. From S4 it is the Biblioteca's id of a library
@@ -318,13 +344,14 @@ class Reference(models.Model):
     all_objects = AllReferenceManager()
 
     @property
-    def kind(self):
-        """Compatibility for older import jobs and API clients; one stored type."""
-        return {'unknown': 'alias', 'company': 'manufacturer'}.get(self.ref_type, self.ref_type)
+    def kind(self) -> str:
+        """The JSON's legacy kind (alias, oem, manufacturer), from tipo (plan A2)."""
+        return {'oem': 'oem', 'aftermarket': 'manufacturer'}.get(self.tipo, 'alias')
 
-    @kind.setter
-    def kind(self, value):
-        self.ref_type = {'alias': 'unknown', 'manufacturer': 'company'}.get(value, value)
+    @property
+    def ref_type(self) -> str:
+        """The JSON's legacy ref_type (oem, company, unknown), from tipo (plan A2)."""
+        return {'oem': 'oem', 'aftermarket': 'company'}.get(self.tipo, 'unknown')
 
     class Meta:
         db_table = 'mall_partcode'
@@ -339,9 +366,9 @@ class Reference(models.Model):
             models.CheckConstraint(condition=Q(tipo__in=['oem', 'aftermarket', 'interno', 'otro']), name='reference_valid_tipo'),
             models.CheckConstraint(condition=Q(estado__in=['verificado', 'declarado', 'inferido', 'disputa', 'retirada']),
                                    name='reference_valid_estado'),
-            # Transition until S10, when ref_type goes.
-            models.CheckConstraint(condition=Q(tipo='oem', ref_type='oem') | Q(tipo='aftermarket', ref_type='company')
-                                   | Q(tipo__in=['interno', 'otro'], ref_type='unknown'), name='reference_tipo_matches_ref_type'),
+            # Transition until 0089 drops ref_type (from 0086 a trigger writes it from tipo, so no writer can break this).
+            models.CheckConstraint(condition=Q(tipo='oem', legacy_ref_type='oem') | Q(tipo='aftermarket', legacy_ref_type='company')
+                                   | Q(tipo__in=['interno', 'otro'], legacy_ref_type='unknown'), name='reference_tipo_matches_ref_type'),
             models.CheckConstraint(condition=Q(tipo='interno', supplier__isnull=False) | (~Q(tipo='interno') & Q(supplier__isnull=True)),
                                    name='reference_interno_has_supplier'),
             models.CheckConstraint(condition=~Q(code=''), name='reference_code_set'),
@@ -363,21 +390,13 @@ class Reference(models.Model):
     @classmethod
     def from_db(cls, db, field_names, values):
         instance = super().from_db(db, field_names, values)
-        instance._tipo_pair = (instance.__dict__.get('tipo'), instance.__dict__.get('ref_type'))  # what save() compares against
         instance._search_line = instance.__dict__.get('part_id')  # the line whose Search Document it was in (save() refreshes both)
         return instance
 
     def save(self, *args, **kwargs):
-        self.brand = self.brand.strip().upper()
+        self.brand = (self.brand or '').strip().upper()
         self.code = self.code.strip().upper()
         fields = kwargs.get('update_fields')
-        # tipo and ref_type stay in step (whichever changed since load wins) and are written together, so the code that only knows
-        # ref_type keeps working until S10.
-        if fields is None or {'tipo', 'ref_type'} & set(fields):
-            from .references import pair_tipo
-            pair_tipo(self)
-            if fields is not None:
-                fields = kwargs['update_fields'] = set(fields) | {'tipo', 'ref_type'}
         if self._state.adding and not self.__dict__.pop('_checked', False):
             # Transition shim until S10 (S2b): an insert by code outside mall.references whose key the line's main already holds
             # updates the main instead, and one whose key another line's main holds waits in disputa (mall.references.adopt_insert).
@@ -390,7 +409,6 @@ class Reference(models.Model):
             if fields:  # a partial save stamps updated_at and the version too (update_fields=[] still saves nothing)
                 fields = kwargs['update_fields'] = set(fields) | {'version', 'updated_at'}
         super().save(*args, **kwargs)
-        self._tipo_pair = (self.__dict__.get('tipo'), self.__dict__.get('ref_type'))
         if self.__dict__.pop('_adopted_main', False):
             from .references import sync_line_tipo
             sync_line_tipo(self.part, self)  # the line's tipo mirrors its main (I11)

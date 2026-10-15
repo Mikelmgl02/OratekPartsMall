@@ -273,7 +273,7 @@ class LineList(ErrorBodies, generics.ListAPIView):
     serializer_class = LineSerializer
     pagination_class = LinePagination
     filter_backends = [CatalogSearch, StableOrdering]
-    search_fields = ['sku', 'name', 'description']
+    search_fields = ['sku', 'description']
     ordering_fields = ['sku', 'description', 'estado', 'origen', 'tipo', 'created_at', 'updated_at', 'changed_at', 'version', 'variant_count']
 
     @extend_schema(operation_id='v1_management_lines_list', parameters=LINE_PARAMETERS,
@@ -326,7 +326,8 @@ class LineList(ErrorBodies, generics.ListAPIView):
 class LineEditRequest(serializers.Serializer):
     expected_version = serializers.IntegerField()
     description = serializers.CharField(required=False, allow_blank=True)
-    name = serializers.CharField(required=False, allow_blank=True, max_length=200)
+    name = serializers.CharField(required=False, allow_blank=True, max_length=200,
+                                 help_text='Desde S10 una línea no tiene nombre: es su descripción cuando no se envía description.')
     aplicaciones_texto = serializers.CharField(required=False, allow_blank=True)
     subgrupo = serializers.UUIDField(required=False, allow_null=True, help_text='Id del subgrupo (PartType), o null.')
 
@@ -357,6 +358,9 @@ class LineDetail(ErrorBodies, APIView):
         if unknown:
             raise ValidationError({'detail': f'Solo se pueden cambiar: description, name, aplicaciones_texto y subgrupo.'})
         version = data.pop('expected_version')
+        name = data.pop('name', None)
+        if name is not None and 'description' not in data:  # S10: the name a line is given is its description
+            data['description'] = name
         if 'subgrupo' in data:
             subgrupo = data.pop('subgrupo')
             data['part_type'] = PartType.objects.select_related('grupo').filter(pk=subgrupo).first() if subgrupo else None

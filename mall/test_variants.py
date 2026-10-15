@@ -265,7 +265,7 @@ class InventoryMatchTests(VariantTestCase):
         item.refresh_from_db()
         self.assertEqual((item.part_id, item.reference.tipo, item.matching_status), (self.plain.pk, 'interno', 'matched'))
         source = ReferenceSource.objects.get(reference=item.reference, kind='proveedor', citation__startswith='Código aprendido')
-        self.assertEqual(source.detail['legacy'], 'SupplierCodeMapping')
+        self.assertEqual(source.detail['supplier'], str(item.supplier_id))  # S10: no SupplierCodeMapping row behind it any more
         kept = item.reference_id
         self.assertEqual(self.client.patch(self.url(item), {'matching_status': 'review'}, format='json').status_code, 200)
         item.refresh_from_db()

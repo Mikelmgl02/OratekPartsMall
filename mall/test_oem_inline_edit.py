@@ -2,8 +2,6 @@ from rest_framework.test import APITestCase
 
 from . import references
 from .models import Reference, User
-from .oem_links import store_cross_references
-from .oem_reference_models import OEMCrossReference, OEMCrossReferenceRetired
 
 URL = '/api/v1/management/oem-references/'
 
@@ -52,36 +50,30 @@ class OEMInlineEditTests(APITestCase):
         self.assertEqual(self.client.get(f'{URL}part-types/').json()['results'], ['BOMBAS DE AGUA', 'DISCOS DE FRENO', 'TERM CREM'])
 
     def test_an_alterno_added_by_hand_and_a_retired_catalog_code_that_stays_retired(self):
-        store_cross_references({(self.pump.pk, 'GMB', 'GWP-T41'): ['CATÁLOGO GMB 2016 · pág. 4']})
-        catalog = OEMCrossReference.objects.get(reference=self.pump, number='GWPT41')
+        catalog, _ = references.add(self.pump.part_id, 'GWP-T41', 'GMB', tipo='aftermarket', source='CATÁLOGO GMB 2016 · pág. 4')
         url = f'{URL}{self.pump.uid}/cross-references/'
         added = self.client.post(url, {'brand': 'aisin', 'code': 'wpt-111'}, format='json')
         self.assertEqual(added.status_code, 201, added.content)
         self.assertEqual((added.json()['brand'], added.json()['code'], added.json()['citations']), ('AISIN', 'WPT-111', ['Registro manual · oem-edit-root']))
-        self.assertEqual(OEMCrossReference.objects.get(number='WPT111').reference_id, self.pump.pk)
         # S9 (mall.merge_pass.code_added): the code sits on the number's line only, so it is that line's Reference, declarado by hand.
         hand = Reference.objects.get(brand='AISIN', code='WPT-111')
-        self.assertEqual((hand.part_id, hand.tipo, hand.estado), (self.pump.part_id, 'aftermarket', 'declarado'))
+        self.assertEqual((hand.part_id, hand.tipo, hand.estado, added.json()['id']), (self.pump.part_id, 'aftermarket', 'declarado', hand.pk))
         self.assertEqual(list(hand.sources.values_list('kind', 'citation', 'retirada')), [('admin', 'Registro manual · oem-edit-root', False)])
         refused = [self.client.post(url, body, format='json') for body in ({'brand': 'TOYOTA', 'code': '16100-29160'}, {'brand': 'GMB', 'code': 'BOMBA'})]
         self.assertEqual([response.status_code for response in refused], [400, 400])  # the same make is an OEM number; a code needs a digit
 
-        self.assertEqual(self.client.delete(f'{url}{catalog.pk}/').status_code, 204)
-        self.assertTrue(OEMCrossReferenceRetired.objects.filter(reference=self.pump, brand='GMB', number='GWPT41', retired_by=self.root).exists())
-        counts = store_cross_references({(self.pump.pk, 'GMB', 'GWP-T41'): ['CATÁLOGO GMB 2018 · pág. 9']})  # the catalog prints it again
-        self.assertEqual(counts['new'], 0)
-        self.assertFalse(OEMCrossReference.objects.filter(reference=self.pump, number='GWPT41').exists())
+        self.assertEqual(self.client.delete(f'{url}{catalog.pk}/').status_code, 204)  # S10: retiring it retires the Reference (kept as history)
+        catalog = Reference.all_objects.get(pk=catalog.pk)
+        self.assertEqual((catalog.estado, list(catalog.sources.values_list('retirada', flat=True))), ('retirada', [True]))
         detail = self.client.get(f'{URL}{self.pump.uid}/').json()
         self.assertEqual([(row['brand'], row['code']) for row in detail['cross_references']], [('AISIN', 'WPT-111')])
 
-        back = self.client.post(url, {'brand': 'GMB', 'code': 'GWP-T41'}, format='json')
-        self.assertEqual(back.status_code, 201)
-        self.assertFalse(OEMCrossReferenceRetired.objects.exists())  # adding it by hand brings it back
-        aisin = OEMCrossReference.objects.get(number='WPT111')
-        self.assertEqual(self.client.delete(f'{url}{aisin.pk}/').status_code, 204)  # S9: retiring it retires the source it gave
-        hand.refresh_from_db()
-        # and, left with no live source, the Reference the pass made stops showing (disputa): no line carries the code any more
-        self.assertEqual((hand.estado, list(hand.sources.values_list('retirada', flat=True))), ('disputa', [True]))
+        back = self.client.post(url, {'brand': 'GMB', 'code': 'GWP-T41'}, format='json')  # adding it by hand brings it back
+        self.assertEqual(back.status_code, 201, back.content)
+        self.assertEqual(Reference.objects.get(brand='GMB', code='GWP-T41').part_id, self.pump.part_id)
+        self.assertEqual(self.client.delete(f'{url}{hand.pk}/').status_code, 204)
+        hand = Reference.all_objects.get(pk=hand.pk)
+        self.assertEqual((hand.estado, list(hand.sources.values_list('retirada', flat=True))), ('retirada', [True]))
         self.assertEqual(self.client.delete(f'{url}999999/').status_code, 404)
         self.assertEqual(self.client.post(f'{URL}00000000-0000-4000-8000-000000000001/cross-references/', {'brand': 'AISIN', 'code': 'WPT-1'},
                                           format='json').status_code, 404)

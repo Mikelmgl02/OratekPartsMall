@@ -5,6 +5,7 @@ from rest_framework.test import APITestCase
 
 from .analytics_models import UsageEvent
 from .models import Account, Membership, Part, Role, SupplierItem, User, WishlistItem
+from .test_factories import make_line
 
 
 @override_settings(CATALOG_LOW_STOCK_THRESHOLD=5, CATALOG_HIGH_STOCK_THRESHOLD=20)
@@ -33,10 +34,10 @@ class CatalogScopeTests(APITestCase):
         self.own = self.account('PROVEEDOR PROPIO', 'supplier')
         self.rival = self.account('PROVEEDOR RIVAL', 'supplier')
         self.buyer = self.account('CLIENTE', 'client')
-        self.shared = Part.objects.create(sku='SHARED-1', description='DISCO DE FRENO', category='FRENOS')
-        self.mine = Part.objects.create(sku='MINE-1', description='FILTRO DE ACEITE', category='FILTROS')
-        self.theirs = Part.objects.create(sku='THEIRS-1', description='PASTILLA DE FRENO', category='FRENOS')
-        self.nobody = Part.objects.create(sku='NOBODY-1', description='BUJIA', category='ENCENDIDO')
+        self.shared = make_line(sku='SHARED-1', description='DISCO DE FRENO', category='FRENOS', subcategory='DISCOS')
+        self.mine = make_line(sku='MINE-1', description='FILTRO DE ACEITE', category='FILTROS', subcategory='ACEITE')
+        self.theirs = make_line(sku='THEIRS-1', description='PASTILLA DE FRENO', category='FRENOS', subcategory='PASTILLAS')
+        self.nobody = make_line(sku='NOBODY-1', description='BUJIA', category='ENCENDIDO', subcategory='BUJIAS')
         self.item(self.own, self.shared, 'OWN-SHARED', 2)
         self.item(self.own, self.mine, 'OWN-MINE', 0)
         self.item(self.own, None, 'OWN-PENDING', 9, status='pending')

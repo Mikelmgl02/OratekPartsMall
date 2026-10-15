@@ -1,6 +1,8 @@
 """Public technical-sheet filters, applied to the scoped catalog before pagination."""
 import json
 
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import extend_schema
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
@@ -87,6 +89,8 @@ def apply_technical_filter(query, data):
 
 
 class CatalogTechnicalFilters(APIView):
+    @extend_schema(operation_id='v1_catalog_technical_filters', responses=OpenApiTypes.OBJECT,
+                   description='Los subgrupos con ficha técnica de las líneas que ve el catálogo, con sus campos filtrables.')
     def get(self, request):
         parts = request_scope(request).parts(storefront_lines())
         types = (PartType.objects.filter(pk__in=parts.values('part_type_id'), template__fields__isnull=False)

@@ -229,38 +229,6 @@ test('a stale case says so and stays waiting; Buscar otra línea OEM sends the l
   await expect(card).toBeVisible();  // refused: still waiting
 });
 
-test('a case from before S6 keeps its own card: a SKU is confirmed or kept apart', async ({ page }) => {
-  const legacy = base(8, 'supplier', { sources: [item(8, 'D-HYU-1R', 'GMB', drum, { references: [{ code: '58411-1R000', brand: 'HYUNDAI' }] })], candidates: [L.accent],
-    target_sku: L.accent.sku, reason: 'Coincidencia semántica: requiere confirmar.', ai: { target_sku: L.accent.sku, reason: 'Revisar aplicación antes de agrupar.', confidence: .8 } });
-  const mock = await mockCases(page, [legacy]);
-  await page.setViewportSize({ width: 1440, height: 1000 });
-  const screen = await openCases(page);
-  const card = screen.getByRole('article', { name: 'ARTÍCULO DE PROVEEDOR D-HYU-1R', exact: true });
-  await expect(card.getByText('REFERENCIAS DECLARADAS: HYUNDAI: 58411-1R000')).toBeVisible();
-  await expect(card.getByLabel('Destino para D-HYU-1R')).toHaveValue('58411-1R000');
-  await card.getByRole('button', { name: 'Confirmar coincidencia', exact: true }).click();
-  await expect(screen.getByRole('status').filter({ hasText: 'Coincidencia aprobada' })).toBeVisible();
-  expect(mock.payloads[legacy.id]).toEqual([{ action: 'approve', target_sku: '58411-1R000', fingerprint: legacy.fingerprint }]);
-});
-
-test('a supplier case from before S6 that found no SKU waits under SIN COINCIDENCIA and is decided there', async ({ page }) => {
-  const unmatched = base(9, 'supplier', { status: 'unmatched', sources: [item(9, 'XK-2231', 'KOREA', 'BOMBA AGUA KIA RIO 06-11')], candidates: [], reason: 'Sin coincidencia en el catálogo.' });
-  const mock = await mockCases(page, [unmatched]);
-  await page.setViewportSize({ width: 1440, height: 1000 });
-  const screen = await openCases(page);
-  await expect(screen.getByText('No hay casos por revisar.', { exact: true })).toBeVisible();
-  await screen.getByRole('button', { name: 'SIN COINCIDENCIA', exact: true }).click();
-  expect(mock.queries.at(-1)).toBe('status=unmatched&page=1');
-  const card = screen.getByRole('article', { name: 'ARTÍCULO DE PROVEEDOR XK-2231', exact: true });
-  await expect(card.getByText('SIN COINCIDENCIA', { exact: true })).toBeVisible();
-  await card.getByLabel('Destino para XK-2231').fill('25100-26902');
-  await card.getByRole('button', { name: 'Confirmar coincidencia', exact: true }).click();
-  await expect(screen.getByRole('status').filter({ hasText: 'Coincidencia aprobada' })).toBeVisible();
-  expect(mock.payloads[unmatched.id]).toEqual([{ action: 'approve', target_sku: '25100-26902', fingerprint: unmatched.fingerprint }]);
-  await expect(screen.getByText('No hay casos sin coincidencia.', { exact: true })).toBeVisible();
-  expect(mock.unexpected).toEqual([]);
-});
-
 test('a lote batch is decided together, each case on its own: the one that changed is named', async ({ page }) => {
   const mock = await mockCases(page, [...legacyBatch, cases.keep]);
   await page.setViewportSize({ width: 1440, height: 1000 });

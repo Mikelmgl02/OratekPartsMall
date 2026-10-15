@@ -8,11 +8,11 @@ from rest_framework.exceptions import ValidationError
 from . import lines, new_products
 from .brand_models import Brand, BrandAlias
 from .lines import LineStateError
-from .matching_engine import NO_CODE_EVIDENCE, item_row, save_case
+from .matching_engine import NO_CODE_EVIDENCE, item_row
 from .matching_models import MatchingCase, MatchingDecision
 from .models import Part, Reference, SupplierItem
 from .new_products import PLACED_REASON, PlaceRefused, ProposalConflict
-from .test_factories import make_library_number, make_line, make_reference, make_supplier, make_user
+from .test_factories import make_legacy_case, make_library_number, make_line, make_reference, make_supplier, make_user
 
 
 def seed_brands():
@@ -37,8 +37,7 @@ class Helpers:
         item = SupplierItem.objects.create(supplier=supplier, supplier_invent_id=invent_id, codigo=codigo, brand=brand,
                                            description=description, source='apiag', **fields)
         if case:
-            save_case(key=f'supplier:{item.pk}', kind='supplier', sources=[item_row(item)], candidates=[], item=item, status=case,
-                      method=NO_CODE_EVIDENCE)
+            make_legacy_case(item, case, method=NO_CODE_EVIDENCE)
         return item
 
     def main(self, line):
@@ -185,7 +184,7 @@ class PlaceTests(Helpers, TestCase):
         self.assertEqual((line.estado, line.active, line.decided_by, line.origen), ('publicada', True, self.root, 'proveedor'))
         self.assertTrue(lines.storefront_lines().filter(pk=line.pk).exists())
         self.assertEqual(set(SupplierItem.objects.filter(part=line).values_list('matching_status', flat=True)), {'matched'})
-        self.assertEqual(set(MatchingCase.objects.filter(kind='supplier').values_list('status', 'target_sku')), {('applied', 'P-100')})
+        self.assertEqual(set(MatchingCase.objects.filter(evidence__s10__kind='supplier').values_list('status', 'target_sku')), {('applied', 'P-100')})
         self.assertEqual(MatchingDecision.objects.filter(action='proposal_approved').count(), 2)
         with self.assertRaises(ProposalConflict):
             new_products.publish(line.pk, self.root, line.version)   # decided: a second click refuses

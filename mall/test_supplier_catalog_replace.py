@@ -12,9 +12,9 @@ from . import supplier_catalog_import as sci
 from . import supplier_catalog_replace as scr
 from . import references
 from .models import Part, PartCode, Reference, ReferenceSource
-from .oem_reference_models import OEMCrossReference, OEMCrossReferenceRetired, PartOEMLink
 from .test_oem_finder import Fresh
 from .test_supplier_catalog_import import extract, item
+from .test_factories import make_code
 
 CITE = 'CATÁLOGO DE PRUEBA (2016)'
 
@@ -31,7 +31,9 @@ def catalog_sources(**filters):
 
 class SupplierCatalogReplaceTests(Fresh, TestCase):
     """The old extract read a 4th-column code with the 3rd column's item (AIRTEX AW1, QHL QCP9 on GWT-1A) and filed a number under the
-    wrong item (TOYOTA 16100-33333 on the Nissan pump GWN-2A); the corrected one does not."""
+    wrong item (TOYOTA 16100-33333 on the Nissan pump GWN-2A); the corrected one does not. From S10 what the catalog filed is what its
+    sources back: the library's numbers and the aftermarket References the merge pass's 3e made (a competitor's code only from a
+    PDF-checked catalog, which this test catalog is not)."""
 
     def setUp(self):
         super().setUp()
@@ -52,11 +54,8 @@ class SupplierCatalogReplaceTests(Fresh, TestCase):
         self.addCleanup(os.unlink, self.old)
         self.addCleanup(os.unlink, self.new)
         sci.run([self.old], apply=True, stdout=io.StringIO())
-        shared = OEMCrossReference.objects.get(reference__clave='1610011111', number='AW1')
-        shared.citations = [*shared.citations, 'OTRO CATÁLOGO · pág. 1']
-        shared.save(update_fields=['citations'])
-        self.copied = PartCode.objects.create(part=self.misled, brand='AISIN', code='WPN-002', ref_type='company', reference_source=f'{CITE} · pág. 7')
-        self.kept = PartCode.objects.create(part=self.toyota, brand='AISIN', code='WPT 001', ref_type='company', reference_source=f'{CITE} · pág. 7')
+        self.copied = make_code(part=self.misled, brand='AISIN', code='WPN-002', ref_type='company', reference_source=f'{CITE} · pág. 7')
+        self.kept = make_code(part=self.toyota, brand='AISIN', code='WPT 001', ref_type='company', reference_source=f'{CITE} · pág. 7')
 
     def write(self, data):
         handle = tempfile.NamedTemporaryFile('w', suffix='.json', delete=False, encoding='utf-8')
@@ -65,17 +64,23 @@ class SupplierCatalogReplaceTests(Fresh, TestCase):
         return handle.name
 
     def codes(self):
-        return sorted((row.reference.clave, row.brand, row.number, tuple(row.citations)) for row in OEMCrossReference.objects.select_related('reference'))
+        """The aftermarket References the catalog backs: (line, brand, code, its live citations of the catalog)."""
+        rows = ReferenceSource.objects.filter(kind='catalogo', retirada=False, reference__tipo='aftermarket', citation__startswith=CITE)
+        found = {}
+        for sku, brand, code, citation in rows.values_list('reference__part__sku', 'reference__brand', 'reference__code', 'citation'):
+            found.setdefault((sku, brand, code), []).append(citation)
+        return sorted((*key, tuple(sorted(cited))) for key, cited in found.items())
 
     def state(self):
-        return (self.codes(), sorted(library().values_list('brand', 'clave', 'part__estado')), sorted(OEMCrossReferenceRetired.objects.values_list('number', flat=True)),
-                sorted(PartOEMLink.objects.values_list('part__sku', 'reference__clave', 'source', 'citations')),
+        return (self.codes(), sorted(library().values_list('brand', 'clave', 'part__estado', 'estado')),
                 sorted(catalog_sources().values_list('reference__clave', 'detail')), PartCode.objects.count())
 
     def test_the_old_extract_imported_its_misreadings(self):
-        self.assertIn(('1610033333', 'AISIN', 'WPN002', (f'{CITE} · pág. 7',)), self.codes())
-        self.assertEqual(sorted(PartOEMLink.objects.filter(part=self.misled).values_list('reference__clave', 'source')), [('1610033333', 'catalog')])
         self.assertEqual(library(clave='1610033333').get().part_id, self.misled.pk)  # S4: its codigo carries the number
+        self.assertTrue(catalog_sources(reference__clave='1610033333').exists())  # filed under GWN-2A by the misreading
+        self.assertEqual(self.codes(), [('16100-11111', 'GMB', 'GWT-1A', (f'{CITE} · pág. 5',)),  # 3e: the catalog's own code
+                                        ('16100-11111-G', 'AISIN', 'WPT 001', (f'{CITE} · pág. 7',)),
+                                        ('16100-33333', 'AISIN', 'WPN-002', (f'{CITE} · pág. 7',))])
 
     def test_dry_run_writes_nothing_and_lists_every_change(self):
         before = self.state()
@@ -86,45 +91,37 @@ class SupplierCatalogReplaceTests(Fresh, TestCase):
             with open(os.path.join(directory, 'alternos-review.csv'), encoding='utf-8') as handle:
                 review = list(csv.DictReader(handle))
         self.assertEqual(self.state(), before)
-        # S4: 16100-33333 is one of the misled SKU's codes (its codigo carries it), so it stays, without the catalog's source.
-        self.assertEqual(result['changes'], {'numbers': {'detail': 1, 'drop_source': 1}, 'codes': {'drop_citation': 1, 'recite': 1, 'retire': 3},
-                                             'ties': {'remove': 1}})
-        self.assertEqual(result['import']['cross_reference_new'], 1)  # AIRTEX AW1 under the Nissan number
-        self.assertEqual(sorted((c['accion'], c['numero'], c['codigo']) for c in codes),
-                         [('drop_citation', '1610011111', 'AW1'), ('recite', '1610011111', 'WPT-001'), ('retire', '1610011111', 'QCP9'),
-                          ('retire', '1610033333', 'GWN-2A'), ('retire', '1610033333', 'WPN-002')])
+        # S4: 16100-33333 is one of the misled SKU's codes (its codigo carries it), so it stays, without the catalog's source. The
+        # codes the catalog backs on SKU lines it no longer files there lose its citations (the References stay: a person's codes).
+        self.assertEqual(result['changes'], {'numbers': {'detail': 1, 'drop_source': 1}, 'codes': {'retire': 2}})
+        self.assertEqual(result['import'], {'oem_numbers': 2, 'oem_new': 0, 'cross_reference_rows': 5, 'catalog_links': 1})
+        self.assertEqual(sorted((c['accion'], c['sku'], c['codigo']) for c in codes),
+                         [('retire', '16100-11111-G', 'WPT 001'), ('retire', '16100-33333', 'WPN-002')])
         self.assertEqual([(r['sku'], r['codigo'], r['articulos_del_sku'], r['articulos_que_lo_imprimen']) for r in review],
                          [('16100-33333', 'WPN-002', '', 'GWN-2A')])
 
     def test_apply_leaves_what_the_corrected_extract_files_and_retires_the_rest(self):
         result = scr.run(self.new, apply=True, username='root', stdout=io.StringIO())
         self.assertEqual(result['alternos_to_review'], 1)
-        self.assertEqual(self.codes(), [
-            ('1610011111', 'AIRTEX', 'AW1', ('OTRO CATÁLOGO · pág. 1',)),  # another source still prints it
-            ('1610011111', 'AISIN', 'WPT001', (f'{CITE} · pág. 8',)),
-            ('1610011111', 'GMB', 'GWT1A', (f'{CITE} · pág. 5',)),
-            ('2101022222', 'AIRTEX', 'AW1', (f'{CITE} · pág. 7',)),
-            ('2101022222', 'AISIN', 'WPN002', (f'{CITE} · pág. 7',)),
-            ('2101022222', 'GMB', 'GWN2A', (f'{CITE} · pág. 5',)),
+        self.assertEqual(self.codes(), [  # GWN-2A now prints the Nissan number alone: its numbers sit on one line, and 3e makes it its code
+            ('16100-11111', 'GMB', 'GWT-1A', (f'{CITE} · pág. 5',)),
+            ('21010-22222', 'GMB', 'GWN-2A', (f'{CITE} · pág. 5',)),
         ])
-        retired = OEMCrossReferenceRetired.objects.get(number='QCP9')
-        self.assertEqual((retired.reference.clave, retired.brand, retired.number, retired.retired_by), ('1610011111', 'QHL', 'QCP9', self.root))
         misfiled = library(clave='1610033333').get()  # only the misreading printed it, but it is the misled SKU's own code
         self.assertEqual((misfiled.part_id, misfiled.sources.filter(retirada=False).count()), (self.misled.pk, 0))
-        self.assertFalse(PartOEMLink.objects.filter(part=self.misled).exists())
-        self.assertEqual(list(PartOEMLink.objects.filter(source='catalog').values_list('part__sku', 'reference__clave')), [('16100-11111-G', '1610011111')])
         self.assertEqual(catalog_sources().get(reference__clave='1610011111').detail['pages'], [6])
-        self.assertEqual(set(PartCode.objects.filter(is_main=False, ref_type='company').exclude(detail__has_key='s9').values_list('pk', flat=True)),
+        self.assertEqual(set(PartCode.objects.filter(is_main=False, tipo='aftermarket').exclude(detail__has_key='s9').values_list('pk', flat=True)),
                          {self.copied.pk, self.kept.pk})  # alternos are only reported (S9's 3e turns codes on one line into References)
 
         before = self.state()
         again = scr.run(self.new, apply=True, stdout=io.StringIO())
-        self.assertEqual(again['changes'], {'numbers': {}, 'codes': {}, 'ties': {}})
-        self.assertEqual((again['import']['oem_new'], again['import']['cross_reference_new'], again['import']['catalog_link_new']), (0, 0, 0))
+        self.assertEqual(again['changes'], {'numbers': {}, 'codes': {}})
+        self.assertEqual(again['import']['oem_new'], 0)
         self.assertEqual(self.state(), before)
 
-        sci.run([self.old], apply=True, stdout=io.StringIO())  # the old extract again: the retired code stays retired
-        self.assertNotIn('QCP9', [number for _, _, number, _ in self.codes()])
+        sci.run([self.old], apply=True, stdout=io.StringIO())  # the old extract again: it files the misread number again
+        misfiled = library(clave='1610033333').get()
+        self.assertEqual((misfiled.estado, misfiled.sources.filter(retirada=False).count()), ('declarado', 1))
 
 
 class OwnCodeReplaceTests(Fresh, TestCase):
@@ -138,7 +135,7 @@ class OwnCodeReplaceTests(Fresh, TestCase):
         sci.run([handle.name], apply=True, stdout=io.StringIO())
         result = scr.run(handle.name, stdout=io.StringIO())
         self.assertEqual(result['changes']['codes'], {})  # neither retired nor re-cited
-        self.assertEqual(result['import']['cross_reference_present'], 1)
+        self.assertEqual(result['import']['cross_reference_rows'], 1)
 
 
 class SeveralExtractsReplaceTests(Fresh, TestCase):
@@ -170,9 +167,9 @@ class SeveralExtractsReplaceTests(Fresh, TestCase):
         self.assertEqual(library().count(), 2)
 
     def test_all_the_extracts_together_change_nothing_in_any_order(self):
-        self.assertEqual(scr.run(list(reversed(self.paths)), stdout=io.StringIO())['changes'], {'numbers': {}, 'codes': {}, 'ties': {}})
+        self.assertEqual(scr.run(list(reversed(self.paths)), stdout=io.StringIO())['changes'], {'numbers': {}, 'codes': {}})
         result = scr.run(self.paths, apply=True, stdout=io.StringIO())
-        self.assertEqual(result['changes'], {'numbers': {}, 'codes': {}, 'ties': {}})
+        self.assertEqual(result['changes'], {'numbers': {}, 'codes': {}})
         self.assertEqual(sorted(catalog_sources().values_list('reference__clave', 'detail__catalog')),
                          [('4346060010', 'cv_oem_only'), ('4346069115', 'cv')])  # each number keeps the extract that printed it first
 
@@ -231,8 +228,7 @@ class ShaftRetypeReplaceTests(Fresh, TestCase):
         self.assertTrue(next(row for row in shaft_ref.sources if row.kind == 'aftermarket_catalog').detail['assembly_number_listed_for_component'])
         self.assertIsNone(shaft_ref.updated_by)  # what the import writes: no one's edit
         self.assertEqual((kept.description, kept.part_type), ('JUNTA EXT MIT MONTERO', 'SEMIEJES'))
-        self.assertFalse(OEMCrossReference.objects.filter(reference__clave__in=['MR453384', 'MR980744']).exists())
-        self.assertEqual(scr.run(self.path, stdout=io.StringIO())['changes'], {'numbers': {}, 'codes': {}, 'ties': {}})
+        self.assertEqual(scr.run(self.path, stdout=io.StringIO())['changes'], {'numbers': {}, 'codes': {}})
 
 
 class MazdaJointReplaceTests(Fresh, TestCase):
@@ -246,22 +242,21 @@ class MazdaJointReplaceTests(Fresh, TestCase):
         json.dump(data, handle, ensure_ascii=False)
         handle.close()
         self.addCleanup(os.unlink, handle.name)
-        sci.run([handle.name], apply=True, stdout=io.StringIO())
+        imported = sci.run([handle.name], apply=True, stdout=io.StringIO())
         numbers = ['B00525400', 'G06425500', 'GA2A2560X']
-        self.assertEqual(sorted(OEMCrossReference.objects.filter(code='MZ-10').values_list('reference__clave', flat=True)), numbers)
-        # What the earlier rules filed: each number typed as the shaft, flagged as listed for the joint, without the joint's code.
-        OEMCrossReference.objects.all().delete()
+        filed = dict(Reference.objects.filter(pk__in=[row[1] for row in imported['rows']]).values_list('pk', 'clave'))
+        self.assertEqual(sorted(filed[row[1]] for row in imported['rows'] if row[3] == 'MZ-10'), numbers)  # the joint's code under each
+        # What the earlier rules filed: each number typed as the shaft, flagged as listed for the joint.
         for number in library():
             Reference.objects.filter(pk=number.pk).update(detail={**number.detail, 'description': sci.ASSEMBLY_TEXT[0], 'part_type': sci.ASSEMBLY_TEXT[1]})
         for source in catalog_sources():
             source.detail = {**source.detail, 'assembly_number_listed_for_component': True}
             source.save(update_fields=['detail'])
         result = scr.run(handle.name, stdout=io.StringIO())
-        self.assertEqual((result['changes']['numbers'], result['changes']['codes'], result['import']['cross_reference_new']),
+        self.assertEqual((result['changes']['numbers'], result['changes']['codes'], result['import']['cross_reference_rows']),
                          ({'detail': 3, 'retype': 3}, {}, 3))
         scr.run(handle.name, apply=True, stdout=io.StringIO())
         for ref in library():
             self.assertEqual((ref.detail['description'], ref.detail['part_type']), ('JUNTA HOMOCINÉTICA EXTERIOR', 'JUNTAS HOMOCINÉTICAS'), ref.clave)
             self.assertNotIn('assembly_number_listed_for_component', ref.sources.get(kind='catalogo').detail)
-        self.assertEqual(sorted(OEMCrossReference.objects.filter(code='MZ-10').values_list('reference__clave', flat=True)), numbers)
-        self.assertEqual(scr.run(handle.name, stdout=io.StringIO())['changes'], {'numbers': {}, 'codes': {}, 'ties': {}})
+        self.assertEqual(scr.run(handle.name, stdout=io.StringIO())['changes'], {'numbers': {}, 'codes': {}})

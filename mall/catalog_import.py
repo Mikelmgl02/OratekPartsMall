@@ -268,13 +268,17 @@ def read_excel(raw, *, include_warnings=False, include_recovery=False, include_r
                 continue
             sku = values['sku']
             group = groups.setdefault(sku, {'sku': sku, 'row': number, 'fields': {}, 'codes': {}})
-            for key in ['name', 'description', 'active', 'category', 'subcategory']:
-                if key in values:
-                    if key in group['fields'] and group['fields'][key] != values[key]:
-                        column = next(name for name, field in HEADERS.items() if field == key)
+            fields, origin = dict(values), {}
+            name = fields.pop('name', None)
+            if name and not fields.get('description') and name != sku:  # S10: a line's name is its description: NOMBRE fills a blank one
+                fields['description'], origin['description'] = name, 'NOMBRE'
+            for key in ['description', 'active', 'category', 'subcategory']:
+                if key in fields:
+                    if key in group['fields'] and group['fields'][key] != fields[key]:
+                        column = origin.get(key) or next(header for header, field in HEADERS.items() if field == key)
                         error(number, column, f'Las filas del SKU {sku} tienen datos diferentes en esta columna.')
                     else:
-                        group['fields'][key] = values[key]
+                        group['fields'][key] = fields[key]
             if values.get('brand') and not values.get('code'):
                 error(number, 'CODIGO_ALTERNO', 'Ingresa el código alterno para esta marca.')
             if values.get('code'):
@@ -303,9 +307,9 @@ def current_values(line):
     """The values of a line the file's columns compare against: CATEGORIA and SUBCATEGORIA against its subgrupo by the FK (S5,
     mall.technical_data.classification), or a new line's defaults."""
     if line is None:
-        return {'name': '', 'description': '', 'category': '', 'subcategory': '', 'active': True}
+        return {'description': '', 'category': '', 'subcategory': '', 'active': True}
     category, subcategory = classification(line)
-    return {'name': line.name, 'description': line.description, 'category': category, 'subcategory': subcategory, 'active': line.active}
+    return {'description': line.description, 'category': category, 'subcategory': subcategory, 'active': line.estado == 'publicada'}
 
 
 def build_plan(groups, errors, row_count, *, lock=False, warnings=None, error_sink=None):
@@ -382,12 +386,13 @@ def build_plan(groups, errors, row_count, *, lock=False, warnings=None, error_si
         group['added'] = added
         current = current_values(existing)
         group['promote'] = bool(existing and existing.estado == 'referencia')  # S4: the library's line becomes this SKU (same id)
-        changed = existing and (group['promote'] or any(current[field] != value for field, value in group['fields'].items()))
+        # (a job staged before S10 may still carry NOMBRE as name: no column any more, it changes nothing)
+        changed = existing and (group['promote'] or any(field in current and current[field] != value for field, value in group['fields'].items()))
         action = 'create' if not existing else 'update' if changed or added else 'unchanged'
         group['action'] = action
         summary[{'create': 'created_skus', 'update': 'updated_skus', 'unchanged': 'unchanged_skus'}[action]] += 1
         summary['added_codes'] += len(added)
-        preview.append({'sku': sku, 'name': group['fields'].get('name', current['name']),
+        preview.append({'sku': sku, 'name': group['fields'].get('description', current['description']),  # name is the description (S10)
                         'description': group['fields'].get('description', current['description']),
                         'category': group['fields'].get('category', current['category']),
                         'subcategory': group['fields'].get('subcategory', current['subcategory']),
@@ -403,7 +408,7 @@ def build_plan(groups, errors, row_count, *, lock=False, warnings=None, error_si
     relevant_codes = [entry for entry in codes if any(not brand or not entry.brand or brand == entry.brand
                                                       for brand in relevant_pairs.get(entry.code, set()) | relevant_pairs.get(entry.clave, set()))]
     snapshot = {
-        'parts': sorted((str(part.pk), part.sku, part.name, part.description, part.active, part.category, part.subcategory, str(part.merged_into_id or '')) for part in parts.values()),
+        'parts': sorted((str(part.pk), part.sku, part.description, part.estado, str(part.part_type_id or ''), str(part.merged_into_id or '')) for part in parts.values()),
         'codes': sorted((entry.pk, str(entry.part_id), entry.part.sku, entry.brand, entry.code) for entry in relevant_codes),
     }
     fingerprint = hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode()).hexdigest()
@@ -455,26 +460,38 @@ def save_plan(groups, user=None):
     a key the line already holds joins that Reference's printed_forms, as does a second spelling of one key in the file; a key the line
     retired comes back (references.add), as does a printed code retired on another line while unique_brand_code holds it there (until
     0074); every other new key is built and inserted in bulk."""
+    from .lines import bulk_create_lines, bulk_update_lines, stage_estado
+    from .technical_data import normalized_label, subgrupos_for
     actor = user if getattr(user, 'is_authenticated', False) else None
     new_parts, changed_parts, planned = [], [], []
-    promoted = []
+    promoted, staged = [], set()
+    # CATEGORIA / SUBCATEGORIA name the line's subgrupo (S10: its only classification), found or created; the half the file leaves out
+    # is the line's own subgrupo's (S5). A pair with only one half leaves the subgrupo as it was.
+    pairs = {}
+    for sku, group in groups.items():
+        fields = group['fields']
+        if {'category', 'subcategory'} & set(fields):
+            current = classification(group['existing']) if group['existing'] is not None else ('', '')
+            pairs[sku] = (normalized_label(fields.get('category', current[0])), normalized_label(fields.get('subcategory', current[1])))
+    subgrupos = subgrupos_for(pairs.values())
     for sku, group in groups.items():
         part = group['existing'] or Part(sku=sku)
-        if group['existing'] is not None and {'category', 'subcategory'} & set(group['fields']):
-            part.category, part.subcategory = classification(part)  # the half the file leaves out is the line's subgrupo's (S5)
-        for field, value in group['fields'].items():
-            setattr(part, field, value)
+        if 'description' in group['fields']:
+            part.description = group['fields']['description']
+        if sku in pairs and all(pairs[sku]):
+            part.part_type = subgrupos[pairs[sku]]
+        active = group['fields'].get('active')
         if group['existing'] is None:
+            part.estado = 'retirada' if active is False else 'publicada'
             new_parts.append(part)
         elif group.get('promote') and part.estado == 'referencia':
             promoted.append((part, group))
         elif group['action'] == 'update':
+            # ACTIVO=NO retires a line and ACTIVO=SI publishes it (a line of the catalog: publicada or retirada).
+            if active is not None and part.estado in ('publicada', 'retirada') and part.estado != ('publicada' if active else 'retirada'):
+                staged.update(stage_estado(part, 'publicada' if active else 'retirada', user=actor))
             changed_parts.append(part)
         planned.append((part, group))
-    from .lines import bulk_create_lines, bulk_update_lines, stage_estado
-    from .technical_data import bind_part_types
-    bind_part_types(new_parts + changed_parts + [part for part, _ in promoted])
-    # ACTIVO=NO retires a line and ACTIVO=SI publishes it: the lines' writers keep estado in step with active.
     bulk_create_lines(new_parts, batch_size=500)
     # A new SKU whose codigo a library number's line in referencia holds under another spelling (1610039315 for 16100-39315; the same
     # spelling promoted that line above) gets its main in disputa from the bulk path: it absorbs that line instead (rule 3f, S4).
@@ -483,13 +500,12 @@ def save_plan(groups, user=None):
         chunk = sorted(keyed)[start:start + 2000]
         for key in set(Reference.objects.filter(part__estado='referencia', clave__in=chunk).values_list('clave', flat=True)):
             references.absorb_into_main(keyed[key], actor=actor)
-    bulk_update_lines(changed_parts, ['name', 'description', 'active', 'category', 'subcategory', 'part_type'], batch_size=500)
+    bulk_update_lines(changed_parts, ['description', 'part_type', *sorted(staged)], batch_size=500)
     promote_fields = set()
     for part, group in promoted:  # a library number's line in referencia becomes the file's SKU: published (or retired with ACTIVO=NO)
         promote_fields.update(stage_estado(part, 'retirada' if group['fields'].get('active') is False else 'publicada', user=actor))
     if promoted:
-        bulk_update_lines([part for part, _ in promoted], ['name', 'description', 'category', 'subcategory', 'part_type', *sorted(promote_fields)],
-                          batch_size=500)
+        bulk_update_lines([part for part, _ in promoted], ['description', 'part_type', *sorted(promote_fields)], batch_size=500)
     line_ids = [part.pk for part, group in planned if group['existing'] is not None]
     printed = sorted({code for _, group in planned for _, code in group.get('codes', group.get('added', []))})
     held, retired_here, retired_printed = {}, set(), set()

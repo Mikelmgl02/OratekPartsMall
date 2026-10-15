@@ -8,7 +8,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .management import IsSuperuser, ManagedPartSerializer, UppercaseCharField
-from .lines import LineStateError, all_lines, create_line, on_storefront, storefront_lines
+from .lines import LineStateError, all_lines, create_line, on_storefront, set_subgrupo, storefront_lines
+from .technical_data import classification, text_subgrupo
 from . import line_merge
 from .models import Part, Reference
 from .catalog_families import family_candidates, supplier_base
@@ -61,7 +62,7 @@ def merge_catalog_parts(*, actor, target_sku, source_skus, category='', subcateg
         if not family or not set(source_skus).issubset({row['sku'] for row in family['sources']}):
             raise ValidationError('El código base requiere al menos dos variantes con descripciones compatibles para crear el SKU padre.')
         try:  # its main (S2b); the line in referencia with this codigo, if any, is promoted (S4)
-            target = create_line(target_sku, name=target_sku, description=family['target']['description'], actor=actor, strict=True)
+            target = create_line(target_sku, description=family['target']['description'], actor=actor, strict=True)
         except LineStateError as error:  # two makes' library numbers share the codigo
             raise ValidationError({'detail': str(error)})
         parts[target_sku] = target
@@ -90,13 +91,11 @@ def merge_catalog_parts(*, actor, target_sku, source_skus, category='', subcateg
                                        target_created=created_target, reason='family' if automatic else 'agrupar_sku')
         summary = merge.summary
         target.refresh_from_db()
-    metadata_fields = []
-    for field, value in [('category', category), ('subcategory', subcategory)]:
-        if value and getattr(target, field) != value:
-            setattr(target, field, value)
-            metadata_fields.append(field)
-    if metadata_fields:
-        target.save(update_fields=metadata_fields)
+    if category or subcategory:  # the reviewed grupo / subgrupo names the target's subgrupo; a half left blank stays the target's own
+        current = classification(target)
+        pair = (category or current[0], subcategory or current[1])
+        if pair != current:
+            target.save(update_fields=set_subgrupo(target, text_subgrupo(*pair)))
     from .catalog_identity import company_base_code, prefer_oem
     for source in sources:  # a company-suffix source's company code stays with the target (its codigo came along as a Reference)
         if not source.is_OEM:

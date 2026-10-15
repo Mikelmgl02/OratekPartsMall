@@ -10,6 +10,12 @@ accepting the new ones too (mall.oem_reference.LibraryNumber). Edits write the n
 when that line is in referencia (the number's own line), never a published one. A dispute puts the Reference in disputa (it stops
 holding its key), and no line is unmarked any more. After S4's window the Biblioteca stays read-only for 24 hours (mall.maintenance,
 .maintenance/biblioteca, OD22).
+
+From S10 a number's aftermarket codes are the aftermarket References of its line (in an exclusive estado; the merge pass's own say
+which numbers they were filed under: detail s9 numbers), no longer OEMCrossReference rows, which S10 archives: a code's id is its
+Reference's. Adding one by hand is mall.merge_pass.code_added (the number's line's Reference, or a merge case when the code is on another
+line too: 409 then); retiring one retires its sources and the Reference itself (mall.references.retire), and no import brings it back
+(mall.merge_pass.write_code skips a code retired here; adding it by hand does).
 """
 import uuid
 from collections import Counter
@@ -32,9 +38,11 @@ from .catalog_suffix_models import values
 from .management import IsSuperuser, UppercaseCharField
 from .models import Part, PartType, Reference, ReferenceSource
 from .oem_links import MIN_SEARCH, part_equivalents
-from .oem_links import tables_ready as oem_links_ready
-from .oem_reference_models import (LINK_SOURCES, MANUAL_KINDS, REFERENCE_STATUSES, SOURCE_KINDS, OEMCrossReference, OEMCrossReferenceRetired,
-                                   OEMReference, OEMReferenceSource, citation_list, compact, manufacturer_name)
+from .oem_reference import MANUAL_KINDS, REFERENCE_STATUSES, SOURCE_KINDS, compact, manufacturer_name
+
+# How a SKU was tied to a number besides its OEM alternos before S10 (PartOEMLink, archived): the JSON's via still names them.
+LINK_SOURCES = [('sku_name', 'Nombre del SKU'), ('catalog', 'Catálogo de marca de repuesto')]
+RETIRED_HERE = 'Retirado en la Biblioteca OEM'  # detail.retired.reason of a code retired here (mall.merge_pass.write_code skips it)
 
 REFERENCE_LOCK = 724631112  # pg advisory lock key of supersession edits (matching 724631109, quote assistant 724631110, suffixes 724631111)
 ACTIONS = ['edit', 'add_source', 'remove_source', 'dispute', 'clear_dispute', 'set_superseded_by', 'clear_superseded_by']
@@ -55,15 +63,15 @@ class OEMReferenceUnavailable(APIException):
 
 
 def require_tables():
-    if not orf.tables_ready() or not oem_links_ready():
-        raise OEMReferenceUnavailable()
+    """The library's tables are always there from S4 (its rows are References); kept for the views' order of checks."""
+    return None
 
 
-class OEMReferenceLink(serializers.ModelSerializer):
-    class Meta:
-        model = OEMReference
-        fields = ['id', 'manufacturer', 'code', 'status']
-        read_only_fields = fields
+class OEMReferenceLink(serializers.Serializer):
+    id = serializers.UUIDField(read_only=True)
+    manufacturer = serializers.CharField(read_only=True)
+    code = serializers.CharField(read_only=True)
+    status = serializers.ChoiceField(choices=REFERENCE_STATUSES, read_only=True)
 
 
 class OEMLinkedSKU(serializers.Serializer):
@@ -77,34 +85,45 @@ class OEMLinkedSKU(serializers.Serializer):
     code = serializers.CharField(help_text='Como lo escribe el catálogo.')
 
 
-class OEMCrossReferenceRow(serializers.ModelSerializer):
+class OEMCrossReferenceRow(serializers.Serializer):
+    id = serializers.IntegerField(read_only=True, help_text='La referencia posventa de la línea del número (para retirarla).')
+    brand = serializers.CharField(read_only=True)
+    code = serializers.CharField(read_only=True)
     citations = serializers.ListField(child=serializers.CharField(), read_only=True, help_text='Fuentes que imprimen la equivalencia (catálogo y página).')
 
-    class Meta:
-        model = OEMCrossReference
-        fields = ['id', 'brand', 'code', 'citations']
-        read_only_fields = fields
 
-
-class OEMReferenceSourceRow(serializers.ModelSerializer):
+class OEMReferenceSourceRow(serializers.Serializer):
+    id = serializers.IntegerField(read_only=True)
+    kind = serializers.ChoiceField(choices=SOURCE_KINDS, read_only=True)
     kind_label = serializers.CharField(source='get_kind_display', read_only=True)
-    created_by = serializers.SlugRelatedField(slug_field='username', read_only=True, allow_null=True)
+    citation = serializers.CharField(read_only=True)
     detail = serializers.DictField(read_only=True, help_text='run, rule y rules_version (buscador OEM); part_codes: los alternos del catálogo que la '
                                                              'respaldan; verified (registro manual); approved (búsqueda con IA aprobada).')
+    created_by = serializers.CharField(source='created_by.username', read_only=True, allow_null=True, default=None)
+    created_at = serializers.DateTimeField(read_only=True)
     removable = serializers.BooleanField(read_only=True, help_text='Solo se quitan las fuentes registradas a mano; las demás siguen a los alternos del catálogo.')
 
-    class Meta:
-        model = OEMReferenceSource
-        fields = ['id', 'kind', 'kind_label', 'citation', 'detail', 'created_by', 'created_at', 'removable']
-        read_only_fields = fields
 
-
-class OEMReferenceRow(serializers.ModelSerializer):
+class OEMReferenceRow(serializers.Serializer):
+    id = serializers.UUIDField(read_only=True)
+    manufacturer = serializers.CharField(read_only=True)
+    code = serializers.CharField(read_only=True)
     printed_forms = serializers.ListField(child=serializers.CharField(), read_only=True, help_text='Formas impresas en las fuentes (17801-30070): solo evidencia.')
+    system = serializers.CharField(read_only=True)
+    family = serializers.CharField(read_only=True)
+    part_type = serializers.CharField(read_only=True)
+    description = serializers.CharField(read_only=True)
+    applications = serializers.CharField(read_only=True)
+    status = serializers.ChoiceField(choices=REFERENCE_STATUSES, read_only=True)
     status_label = serializers.CharField(source='get_status_display', read_only=True)
+    dispute_note = serializers.CharField(read_only=True)
+    notes = serializers.CharField(read_only=True)
+    created_at = serializers.DateTimeField(read_only=True)
+    updated_at = serializers.DateTimeField(read_only=True)
+    version = serializers.IntegerField(read_only=True)
     superseded_by = OEMReferenceLink(read_only=True, allow_null=True)
-    created_by = serializers.SlugRelatedField(slug_field='username', read_only=True, allow_null=True)
-    updated_by = serializers.SlugRelatedField(slug_field='username', read_only=True, allow_null=True)
+    created_by = serializers.CharField(source='created_by.username', read_only=True, allow_null=True, default=None)
+    updated_by = serializers.CharField(source='updated_by.username', read_only=True, allow_null=True, default=None)
     source_count = serializers.IntegerField(read_only=True)
     source_kinds = serializers.DictField(child=serializers.IntegerField(), read_only=True, help_text='Fuentes por tipo.')
     linked_skus = OEMLinkedSKU(many=True, read_only=True, help_text=f'Hasta {orf.LINKED_LIMIT} SKU del catálogo que llevan el número.')
@@ -112,23 +131,12 @@ class OEMReferenceRow(serializers.ModelSerializer):
     cross_reference_count = serializers.IntegerField(read_only=True, help_text='Códigos de marcas de repuesto equivalentes al número.')
     cross_reference_preview = OEMCrossReferenceRow(many=True, read_only=True, help_text=f'Los primeros {CROSS_PREVIEW}, por marca y código.')
 
-    class Meta:
-        model = OEMReference
-        fields = ['id', 'manufacturer', 'code', 'printed_forms', 'system', 'family', 'part_type', 'description', 'applications', 'status',
-                  'status_label', 'dispute_note', 'superseded_by', 'notes', 'source_count', 'source_kinds', 'linked_skus', 'linked_count',
-                  'cross_reference_count', 'cross_reference_preview', 'created_by', 'updated_by', 'created_at', 'updated_at', 'version']
-        read_only_fields = fields
-
 
 class OEMReferenceDetail(OEMReferenceRow):
     sources = OEMReferenceSourceRow(many=True, read_only=True)
     supersedes = OEMReferenceLink(many=True, read_only=True, help_text='Números que este reemplaza.')
     cross_references = OEMCrossReferenceRow(many=True, read_only=True, source='cross_reference_rows',
                                             help_text='Todos los códigos de marcas de repuesto equivalentes al número.')
-
-    class Meta(OEMReferenceRow.Meta):
-        fields = OEMReferenceRow.Meta.fields + ['sources', 'supersedes', 'cross_references']
-        read_only_fields = fields
 
 
 class PartOEMNumber(serializers.Serializer):
@@ -212,13 +220,35 @@ class OEMReferenceConflict(serializers.Serializer):
     reference = OEMReferenceDetail()
 
 
+def cross_references(numbers):
+    """{number Reference id: [rows {id, brand, code, citations}]}: the aftermarket References of each number's line in an exclusive
+    estado, those the merge pass filed under other numbers of the line left out (detail s9 numbers), with their live sources' citations;
+    a few queries for a whole page."""
+    from collections import defaultdict
+    by_line = defaultdict(list)
+    for number in numbers:
+        by_line[number.ref.part_id].append(number.ref)
+    rows = list(Reference.objects.filter(part_id__in=list(by_line), tipo='aftermarket', is_main=False, estado__in=references.EXCLUSIVE,
+                                         supplier__isnull=True).order_by('brand', 'clave', 'pk'))
+    citations = defaultdict(list)
+    for ref_id, text in (ReferenceSource.objects.filter(reference__in=rows, retirada=False).exclude(citation='')
+                         .order_by('created_at', 'pk').values_list('reference_id', 'citation')):
+        if text not in citations[ref_id]:
+            citations[ref_id].append(text)
+    out = {number.ref.pk: [] for number in numbers}
+    for row in rows:
+        placed = {compact(code) for code in ((row.detail or {}).get('s9') or {}).get('numbers') or []}
+        for ref in by_line[row.part_id]:
+            if not placed or compact(ref.code) in placed:
+                out[ref.pk].append({'id': row.pk, 'brand': row.brand, 'code': row.code, 'citations': citations.get(row.pk, [])})
+    return out
+
+
 def decorate(numbers, *, all_cross_references=False):
     """Source summary, lines that carry it and aftermarket codes for a page of numbers (LibraryNumbers): a few queries for the whole
     page, none per row."""
     linked = orf.linked_parts([number.ref for number in numbers])
-    codes = {number.ref.pk: [] for number in numbers}
-    for row in OEMCrossReference.objects.filter(reference_id__in=list(codes)).order_by('brand', 'number', 'pk'):
-        codes[row.reference_id].append(row)
+    codes = cross_references(numbers)
     for number in numbers:
         sources = list(number.sources)
         number.source_count, number.source_kinds = len(sources), dict(Counter(source.kind for source in sources))
@@ -278,10 +308,10 @@ def sync_line(line, ref, changes):
         sources['aplicaciones_texto'] = {'source': references.LIBRARY_ORIGIN}
     if 'part_type' in changes:
         mapped = references.library_line_fields(part_type=changes['part_type'])
-        category, subcategory = mapped.get('category', ''), mapped.get('subcategory', '')
-        if (line.category, line.subcategory) != (category, subcategory):
-            line.category, line.subcategory = category, subcategory
-            fields += ['category', 'subcategory', 'part_type']
+        subgrupo = mapped.get('part_type')
+        if line.part_type_id != getattr(subgrupo, 'pk', None):
+            line.part_type = subgrupo
+            fields.append('part_type')
         sources.pop('subgrupo', None)
         if 'subgrupo' in mapped['field_sources']:
             sources['subgrupo'] = mapped['field_sources']['subgrupo']
@@ -461,8 +491,9 @@ class OEMReferenceList(APIView):
                      | Q(detail__part_type__icontains=text))
             if compact(text):  # the compact number (a short one's clave is its printed spelling: OPEL 5 69 036)
                 match |= Q(clave__startswith=compact(text)) | Q(StartsWith(orf.compact_sql('code'), compact(text)))
-            if len(compact(text)) >= MIN_SEARCH:  # an aftermarket code filed under the number (GWT-41A -> TOYOTA 1610039315)
-                match |= Q(pk__in=OEMCrossReference.objects.filter(number__contains=compact(text)).values('reference_id'))
+            if len(compact(text)) >= MIN_SEARCH:  # an aftermarket code of the number's line (GWT-41A -> TOYOTA 1610039315)
+                codes = Reference.objects.filter(references.compact_match_q(compact(text), exact=False), tipo='aftermarket')
+                match |= Q(part_id__in=codes.values('part_id'))
             rows = rows.filter(match)
         if params.get('manufacturer'):
             rows = rows.filter(brand=manufacturer_name(params['manufacturer']))
@@ -663,10 +694,10 @@ class OEMCrossReferenceInput(serializers.Serializer):
 
 
 class OEMReferenceCrossReferences(APIView):
-    """An aftermarket code added by hand to a number (Biblioteca OEM, Alternos): it takes a manual citation, and a code retired before
-    comes back. From S9 (mall.merge_pass.code_added) the code is also a Reference: of the number's line when the code sits on that line
-    only (declarado, with an admin source); when the code puts two or more lines together a merge case lists them and the code waits
-    there (3f: a code typed by hand never merges lines on its own)."""
+    """An aftermarket code added by hand to a number (Biblioteca OEM, Alternos), with a manual citation (mall.merge_pass.code_added): the
+    Reference of the number's line when the code sits on that line only (declarado, with an admin source; one retired here comes back);
+    when the code is on another line too, a merge case lists the lines and the code waits there (3f: a code typed by hand never merges
+    lines on its own), answered 409 with the case."""
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_oem_cross_reference_create', request=OEMCrossReferenceInput, responses={201: OEMCrossReferenceRow},
@@ -685,26 +716,26 @@ class OEMReferenceCrossReferences(APIView):
             ref = locate(pk, lock=True)
             if brand == ref.brand:
                 raise ValidationError({'brand': f'Un código de {brand} es un número OEM, no un alterno de posventa: usa «Reemplazado por» en el detalle.'})
-            OEMCrossReferenceRetired.objects.filter(reference=ref, brand=brand, number=number).delete()
             cite = f'Registro manual · {request.user.username}'
-            row = OEMCrossReference.objects.filter(reference=ref, brand=brand, number=number).first()
-            if row is None:
-                row = OEMCrossReference.objects.create(reference=ref, brand=brand, code=code, citations=[cite])
-                from .search_document import refresh_reach
-                refresh_reach([ref.pk])  # the lines that reach the number find the code (S7)
-            elif cite not in row.citations:
-                row.citations = citation_list(row.citations, cite)
-                row.save(update_fields=['citations', 'updated_at'])
             from .merge_pass import code_added
-            code_added(ref, brand, row.code, cite, actor=request.user)
-        return Response(OEMCrossReferenceRow(row).data, status=201)
+            placed = code_added(ref, brand, code, cite, actor=request.user)
+            if placed['reference'] is None:
+                return Response({'detail': f'{brand} {code} está en otra línea: espera en un caso de unificación (Casos de coincidencia).',
+                                 'case': placed['case']}, status=409)
+            held = Reference.all_objects.get(pk=placed['reference'])
+            ReferenceSource.objects.filter(reference=held, kind='admin', citation=cite, retirada=True).update(
+                retirada=False, retired_by=None, retired_at=None)  # added again by hand: its manual source is live again
+            if held.estado == 'disputa' and not held.is_main:
+                held = references.update(held, estado='declarado', dispute_note='', actor=request.user)
+            citations = list(ReferenceSource.objects.filter(reference=held, retirada=False).exclude(citation='')
+                             .order_by('created_at', 'pk').values_list('citation', flat=True))
+        return Response({'id': held.pk, 'brand': held.brand, 'code': held.code, 'citations': list(dict.fromkeys(citations))}, status=201)
 
 
 class OEMReferenceCrossReference(APIView):
-    """Retire an aftermarket code from a number: every line that carries it stops showing it, and no catalog import files it again.
-    From S9 (mall.merge_pass.retire_citation) the sources it gave the code's Reference are retired, an inferido Reference left with
-    none, or a declarado one the merge pass made from catalog or Biblioteca rows, goes to disputa (so no line shows it), and a merge
-    case lists the lines of an automatic merge the code backed."""
+    """Retire an aftermarket code from a number: the sources it had are retired (mall.merge_pass.retire_citation) and the Reference
+    leaves its line (mall.references.retire: retirada, kept as history), so no line shows it; no catalog import brings it back
+    (mall.merge_pass.write_code skips it), adding it by hand does. code_id is the code's Reference."""
     permission_classes = [IsSuperuser]
 
     @extend_schema(operation_id='v1_management_oem_cross_reference_retire', responses={204: None},
@@ -713,14 +744,15 @@ class OEMReferenceCrossReference(APIView):
         require_tables()
         with transaction.atomic():
             ref = locate(pk, lock=True)
-            row = OEMCrossReference.objects.select_for_update().filter(pk=code_id, reference=ref).first()
+            row = (Reference.objects.select_for_update().filter(pk=code_id, part_id=ref.part_id, tipo='aftermarket', is_main=False)
+                   .first())
             if row is None:
                 raise NotFound('Ese alterno ya no está en el número.')
-            OEMCrossReferenceRetired.objects.update_or_create(reference=ref, brand=row.brand, number=row.number,
-                                                              defaults={'code': row.code, 'citations': row.citations, 'retired_by': request.user})
+            citations = list(row.sources.filter(retirada=False).values_list('citation', flat=True))
             from .merge_pass import retire_citation
-            retire_citation(ref, row.brand, row.code, row.citations, actor=request.user, exclude_row=row)
-            row.delete()
-            from .search_document import refresh_reach
-            refresh_reach([ref.pk])  # the lines that reach the number no longer find the code (S7)
+            retire_citation(row.part_id, row.brand, row.code, citations, actor=request.user)
+            try:
+                references.retire(Reference.all_objects.filter(pk=row.pk), actor=request.user, reason=RETIRED_HERE)
+            except references.ReferenceConflict as error:
+                raise ValidationError({'detail': error.message})
         return Response(status=204)

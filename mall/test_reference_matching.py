@@ -17,7 +17,7 @@ from .line_merge import MergeGuard, merge_lines
 from .lines import create_line
 from .matching_models import MatchingCase
 from .models import Part, Reference, StockEntry, SupplierItem
-from .test_factories import Fresh, make_library_number, make_supplier, make_user
+from .test_factories import Fresh, make_code, make_library_number, make_supplier, make_user
 from .services import ingest_inventory
 
 
@@ -97,7 +97,7 @@ class ResolveTests(Matching, TestCase):
     def test_a_reference_in_disputa_never_takes_a_new_variant(self):
         held = line('77777-12345', 'BOMBA AGUA')
         other = line('OTHER-1', 'BOMBA AGUA')
-        Reference.objects.create(part=other, code='7777712345', brand='', tipo='otro', ref_type='unknown', estado='disputa',
+        make_code(part=other, code='7777712345', brand='', tipo='otro', ref_type='unknown', estado='disputa',
                                  dispute_note='Código duplicado: caso de unificación.')
         Reference.objects.filter(part=held, is_main=True).update(estado='disputa', dispute_note='Código duplicado: caso de unificación.')
         found = rm.resolve(self.subject('77777-12345'))
@@ -108,31 +108,6 @@ class ResolveTests(Matching, TestCase):
         references.add(local, 'LOC-9', '', tipo='interno', supplier=self.supplier)
         self.assertEqual(rm.resolve(self.subject('LOC-9')).line, local)
         self.assertEqual(rm.resolve(self.subject('LOC-9', supplier=self.other)).action, 'no_line')
-
-    def test_3e_lazy_files_a_catalogs_code_on_the_one_line_of_its_numbers(self):
-        from .oem_reference_models import OEMCrossReference
-        pump = line('16100-39315', 'BOMBA AGUA TOYOTA', 'TOYOTA', 'oem')
-        number = references.main_of(pump)
-        gmb = 'GMB Water Pump Catalog 2016 · pág. 5'
-        OEMCrossReference.objects.create(reference=number, brand='GMB', code='GWT-41A', citations=[gmb])
-        OEMCrossReference.objects.create(reference=number, brand='AISIN', code='WPT-111', citations=[gmb])
-        OEMCrossReference.objects.create(reference=number, brand='DENSO', code='DW-1', citations=['Otro Catálogo 2019 · pág. 1'])
-        own = rm.resolve(self.subject('GWT-41A', 'GMB', 'BOMBA AGUA'))
-        self.assertEqual((own.action, own.line, own.new['estado'], own.new['tipo']), ('new_reference_on_line', pump, 'declarado', 'aftermarket'))
-        competitor = rm.resolve(self.subject('WPT-111', 'AISIN', 'BOMBA AGUA'))
-        self.assertEqual((competitor.action, competitor.new['estado']), ('new_reference_on_line', 'inferido'))
-        unchecked = rm.resolve(self.subject('DW-1', 'DENSO', 'BOMBA AGUA'))
-        self.assertEqual((unchecked.action, unchecked.cases[0]['guard']), ('case', 'catalogo'))
-        self.assertEqual(rm.resolve(self.subject('GWT41A', 'GMB')).action, 'no_line')  # a short code keeps its printing
-        # Its numbers on two lines: a line case, and a merge case for the lines (OD15: a supplier sells the code).
-        twin = line('16100-39316', 'BOMBA AGUA TOYOTA', 'TOYOTA', 'oem')
-        OEMCrossReference.objects.create(reference=references.main_of(twin), brand='GMB', code='GWT-41A', citations=[gmb])
-        split = rm.resolve(self.subject('GWT-41A', 'GMB', 'BOMBA AGUA'))
-        self.assertEqual([spec['kind'] for spec in split.cases], ['line', 'merge'])
-        item = self.ingest('GWT-41A', brand='GMB', description='BOMBA AGUA')
-        self.assertIsNone(item.reference_id)
-        merge = MatchingCase.objects.get(kind='merge')
-        self.assertEqual(set(merge.lines.values_list('pk', flat=True)), {pump.pk, twin.pk})
 
     def test_where_a_new_product_line_keeps_its_main(self):
         """Rule 4 (OD6, OD20): interno for brandless or placeholder short codes and the supplier's own name; shared otherwise."""
@@ -455,8 +430,8 @@ class LineMergeTests(Matching, TestCase):
     def test_specs_move_when_the_target_has_no_subgrupo_and_separar_takes_them_back(self):
         from .technical_models import Grupo, PartSpecification, PartType
         grupo = Grupo.objects.create(nombre='FRENOS')
-        discs = PartType.objects.create(grupo=grupo, name='DISCOS DE FRENO', category='FRENOS')
-        pads = PartType.objects.create(grupo=grupo, name='PASTILLAS DE FRENO', category='FRENOS')
+        discs = PartType.objects.create(grupo=grupo, name='DISCOS DE FRENO')
+        pads = PartType.objects.create(grupo=grupo, name='PASTILLAS DE FRENO')
         source = line('SHEET-SRC-1', 'DISCO FRENO')
         Part.objects.filter(pk=source.pk).update(part_type=discs)
         field = self.field(discs)
@@ -529,7 +504,6 @@ class ReviewFixTests(Matching, APITestCase):
                                 format='json')
 
     def test_a_code_with_no_letter_or_digit_waits_in_a_line_case_and_never_stops_the_pass(self):
-        self.assertEqual(rm.Lookups().cross(''), [])
         found = rm.resolve(self.subject('.', 'KAIYI'))
         self.assertEqual((found.action, found.cases[0]['guard']), ('case', 'sin_codigo'))
         item = self.ingest('.', brand='KAIYI', description='TORNILLO')
@@ -582,23 +556,6 @@ class ReviewFixTests(Matching, APITestCase):
         new.refresh_from_db()
         self.assertEqual((fixed.matching_status, new.description, new.version), ('pending', 'BOMBA AGUA TRAS', version + 1))
         self.assertFalse(MatchingCase.objects.filter(kind='variant').exists())
-
-    def test_two_codes_on_the_same_lines_never_rewrite_their_merge_case(self):
-        from .oem_reference_models import OEMCrossReference
-        pump = line('16100-39315', 'BOMBA AGUA TOYOTA', 'TOYOTA', 'oem')
-        twin = line('16100-39316', 'BOMBA AGUA TOYOTA', 'TOYOTA', 'oem')
-        gmb = 'GMB Water Pump Catalog 2016 · pág. 5'
-        for number in (pump, twin):
-            for code in ('GWT-41A', 'GWT-41B'):
-                OEMCrossReference.objects.create(reference=references.main_of(number), brand='GMB', code=code, citations=[gmb])
-        self.ingest('GWT-41A', brand='GMB', description='BOMBA AGUA')
-        case = MatchingCase.objects.get(kind='merge')
-        MatchingCase.objects.filter(pk=case.pk).update(ai={'target_sku': pump.sku})
-        self.ingest('GWT-41B', brand='GMB', description='BOMBA AGUA')
-        self.ingest('GWT-41A', brand='GMB', description='BOMBA AGUA', quantity=6)
-        again = MatchingCase.objects.get(pk=case.pk)
-        self.assertEqual((MatchingCase.objects.filter(kind='merge').count(), again.fingerprint, again.ai), (1, case.fingerprint, {'target_sku': pump.sku}))
-        self.assertEqual({row['code'] for row in again.evidence['codes']}, {'GWT-41A', 'GWT-41B'})
 
     def test_two_spellings_of_one_declared_code_are_one_case(self):
         declared = [{'code': '04465-02220', 'brand': 'TOYOTA'}, {'code': '0446502220', 'brand': 'TOYOTA'}]
