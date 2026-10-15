@@ -87,8 +87,10 @@ test('Separar SKU lists the grouped SKUs, suggests where each row goes and bring
   await expect(dialog.getByLabel('Destino del alterno GT-77')).toHaveValue('');
   await expect(dialog.getByText('Es el código de 58411-08000-K: se retira, el SKU ya lo identifica.')).toBeVisible();
   await expect(dialog.getByText('Es el código de 58411-08000-NP, que sigue agrupado: se queda.')).toBeVisible();
-  await expect(dialog.getByLabel('Destino de GRUPO RAZOR 58411-08000-K')).toHaveValue(ids.k);
-  await expect(dialog.getByLabel('Destino de GRUPO RAZOR 58411-08000-NP')).toHaveValue('');
+  // A supplier's stock follows its Reference (S8): its destination is shown, not chosen.
+  await expect(dialog.getByLabel('Destino de GRUPO RAZOR 58411-08000-K')).toHaveText('Pasa a 58411-08000-K');
+  await expect(dialog.getByLabel('Destino de GRUPO RAZOR 58411-08000-NP')).toHaveText('Se queda en 58411-08000');
+  await expect(dialog.getByRole('combobox', { name: /^Destino de GRUPO RAZOR/ })).toHaveCount(0);
   await dialog.getByLabel('Destino del alterno GT-77').selectOption({ label: 'Pasa a 58411-08000-K' });
   await expect(dialog.getByText('58411-08000-K vuelve a estar activo con 2 alternos, 1 existencia y 0 imágenes; lo demás se queda en 58411-08000.')).toBeVisible();
   const confirm = dialog.getByRole('button', { name: 'Separar 1 SKU' });

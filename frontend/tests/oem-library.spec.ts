@@ -7,16 +7,16 @@ const stamp = '2026-10-07T12:00:00Z';
 const empty = { count: 0, next: null, previous: null, results: [], pending_count: 0 };
 const base = '/api/management/oem-references';
 const ids = { filter: '0e000000-0000-4000-8000-000000000001', mitsubishi: '0e000000-0000-4000-8000-000000000002', honda: '0e000000-0000-4000-8000-000000000003' };
-const kindLabels: Record<OEMSourceKind, string> = {
+const kindLabels: Partial<Record<OEMSourceKind, string>> = {
   price_list: 'Lista de precios de distribuidor', manufacturer_catalog: 'Catálogo del fabricante', aftermarket_catalog: 'Catálogo de marca de repuesto',
   ai_lookup: 'Búsqueda OEM con IA', supplier_declaration: 'Declaración de proveedor', catalog_approval: 'Aprobación en el catálogo', oem_finder: 'Buscador OEM',
   manual: 'Registro manual',
 };
-const statusLabels: Record<OEMReferenceStatus, string> = { verified: 'Verificado', declared: 'Declarado', inferred: 'Inferido', disputed: 'En disputa' };
+const statusLabels: Record<OEMReferenceStatus, string> = { verified: 'Verificado', declared: 'Declarado', inferred: 'Inferido', disputed: 'En disputa', retired: 'Retirada' };
 const compact = (value: string) => value.toUpperCase().replace(/[^0-9A-Z]/g, '');
 
 function source(id: number, kind: OEMSourceKind, citation: string, detail: OEMReferenceSource['detail'] = {}): OEMReferenceSource {
-  return { id, kind, kind_label: kindLabels[kind], citation, detail, created_by: kind === 'manual' ? 'ADMIN' : null, created_at: stamp,
+  return { id, kind, kind_label: kindLabels[kind] ?? kind, citation, detail, created_by: kind === 'manual' ? 'ADMIN' : null, created_at: stamp,
     removable: !['oem_finder', 'catalog_approval', 'ai_lookup'].includes(kind) };
 }
 
@@ -152,9 +152,9 @@ for (const width of [1440, 390]) {
     await expect(dialog.getByText('MR968365', { exact: true })).toBeVisible();
     await expect(dialog.getByText('1780130070', { exact: true })).toHaveCount(0);
     await dialog.getByLabel('Estado', { exact: true }).selectOption('');
-    await dialog.getByLabel('SKU vinculados', { exact: true }).selectOption('false');
+    await dialog.getByLabel('Líneas OEM', { exact: true }).selectOption('false');
     await expect.poll(() => mock.lists.at(-1)?.get('linked')).toBe('false');
-    await dialog.getByLabel('SKU vinculados', { exact: true }).selectOption('');
+    await dialog.getByLabel('Líneas OEM', { exact: true }).selectOption('');
     await dialog.getByLabel('Buscar número OEM', { exact: true }).fill('17801-3');
     await expect.poll(() => mock.lists.at(-1)?.get('q')).toBe('17801-3');
     await expect(dialog.getByText('MR968365', { exact: true })).toHaveCount(0);
@@ -167,7 +167,7 @@ for (const width of [1440, 390]) {
     await expect(sources.getByText('algo:oem-finder:v2:current:2', { exact: true })).toBeVisible();
     await expect(sources.getByText('CORRIDA 2 · REGLA current · v2', { exact: true })).toBeVisible();
     await expect(sources.getByRole('button', { name: /^Quitar fuente/ })).toHaveCount(0);  // automatic sources follow the catalog
-    await expect(detail.getByRole('region', { name: 'SKU vinculados' }).getByText('SKU PRINCIPAL · MAIN OEM', { exact: true })).toBeVisible();
+    await expect(detail.getByRole('region', { name: 'Líneas OEM' }).getByText('SKU PRINCIPAL · MAIN OEM · PUBLICADA', { exact: true })).toBeVisible();
     await expect(detail.getByRole('region', { name: 'Alternos de posventa' }).getByText('Ningún catálogo de marca de repuesto imprime alternos de este número.', { exact: true })).toBeVisible();
     await fitsWidth(page);
     await page.screenshot({ path: `/tmp/motionpartes-oem-reference-${width}.png` });
@@ -179,7 +179,7 @@ for (const width of [1440, 390]) {
     const codes = detail.getByRole('region', { name: 'Alternos de posventa' });
     await expect(codes.getByRole('heading', { name: 'Alternos de posventa (2)', exact: true })).toBeVisible();
     await expect(codes.getByText('GMB GWHO-49A', { exact: true })).toBeVisible();
-    await expect(detail.getByRole('region', { name: 'SKU vinculados' }).getByText('NOMBRE DEL SKU', { exact: true })).toBeVisible();
+    await expect(detail.getByRole('region', { name: 'Líneas OEM' }).getByText('NOMBRE DEL SKU · PUBLICADA', { exact: true })).toBeVisible();
     await fitsWidth(page);
     await detail.getByRole('button', { name: 'Cerrar ventana', exact: true }).click();
     await expect(dialog.getByRole('button', { name: 'Ver TOYOTA 1780130070', exact: true })).toBeVisible();

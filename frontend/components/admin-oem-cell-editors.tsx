@@ -74,7 +74,7 @@ export function OEMAlternosEditor({ data, readOnly = false, stopEditing, context
         {!readOnly && <button type="button" className="codes-editor-remove" aria-label={`Retirar alterno ${entry.brand} ${entry.code}`} disabled={!!busy} onClick={() => { setRetiring(entry); setError(''); }}><X size={13}/></button>}
       </li>)}</ul> : <p className="codes-editor-empty">Ningún catálogo imprime alternos de este número.</p>}
     {retiring && <div className="oem-retire" role="alert">
-      <p>¿Retirar {retiring.brand} {retiring.code}? {linked ? `Lo dejan de ver ${linked === 1 ? 'el SKU vinculado' : `los ${linked} SKU vinculados`}` : 'Ningún SKU lo muestra todavía'}, y la importación de catálogos no lo vuelve a agregar.</p>
+      <p>¿Retirar {retiring.brand} {retiring.code}? {linked ? `Lo dejan de ver ${linked === 1 ? 'la línea OEM vinculada' : `las ${linked} líneas OEM vinculadas`}` : 'Ninguna línea OEM lo muestra todavía'}, y la importación de catálogos no lo vuelve a agregar.</p>
       <div><button type="button" className="button soft small danger-text" disabled={!!busy} onClick={() => void retire(retiring)}>{busy === `retire:${retiring.id}` ? <LoaderCircle className="spin" size={13}/> : null}Retirar</button>
         <button type="button" className="button text small" disabled={!!busy} onClick={() => setRetiring(null)}>Cancelar</button></div>
     </div>}

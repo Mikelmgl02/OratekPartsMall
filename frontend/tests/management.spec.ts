@@ -210,7 +210,7 @@ test('superuser previews Excel imports, fixes errors, and imports grouped SKUs a
   expect(await page.getByRole('dialog').evaluate(dialog => dialog.scrollWidth > dialog.clientWidth)).toBe(false);
   await page.screenshot({ path: '/tmp/motionpartes-excel-import-mobile.png' });
   await page.getByRole('button', { name: /^(Confirmar importación|Importar sin IA)$/ }).click();
-  await expect(page.getByText('Importación completada: 1 SKU nuevos, 1 SKU actualizados y 2 alternos nuevos.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Importación completada: 1 SKU nuevos (líneas OEM), 1 SKU actualizados y 2 referencias nuevas.', { exact: true })).toBeVisible();
   const after = await (await page.request.get(`/api/management/catalog/${existing.id}`)).json();
   expect(after.id).toBe(existing.id); expect(after.name).toBe('NOMBRE ACTUALIZADO'); expect(after.description).toBe('CONSERVAR');
   expect(after.codes).toEqual([{ code: `${existingSku}-OLD`, brand: '' }]);

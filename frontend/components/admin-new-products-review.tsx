@@ -207,7 +207,7 @@ function ReviewCard({ row, onOpen }: { row: ReviewVerdictRow; onOpen: () => void
       {suggestions.internal_code && !current.internal_code && <span className="hint">¿CÓDIGO INTERNO, NO OEM? {percent(suggestions.internal_code.confidence)}</span>}
       {current.internal_code && <span className={written.includes('internal_code') ? 'ai' : ''}>CÓDIGO INTERNO · NO OEM</span>}
       {suggestions.description?.drafted && <span className="hint">¿{suggestions.description.value}? (de un artículo con el mismo número)</span>}
-      {suggestions.duplicate_of && <span className="hint">¿IGUAL A {suggestions.duplicate_of.sku}?</span>}
+      {suggestions.duplicate_of && <span className="hint">¿IGUAL A {suggestions.duplicate_of.kind === 'proposal' ? 'EL PRODUCTO NUEVO' : 'LA LÍNEA OEM'} {suggestions.duplicate_of.sku}?</span>}
       {(row.applied.kept ?? []).length > 0 && <span>SE RESPETÓ LO QUE EDITASTE</span>}
       {row.signals.map(signal => signalLabels[signal] && <span key={signal} className="signal">{signalLabels[signal]}</span>)}
       {row.stock > 0 && <span className="signal">{number(row.stock)} EN EXISTENCIA</span>}

@@ -110,7 +110,7 @@ export function catalogContextMenu(params: GetContextMenuItemsParams<OEMLine, Ca
     { name: merged ? `Separar SKU agrupados (${merged})` : 'Separar SKU agrupados', icon: menuIcon('unlinked'), disabled: !merged,
       tooltip: merged ? undefined : 'Esta línea OEM no tiene SKU agrupados.', action: () => params.context.onSplit({ id: line.id, sku: line.sku }) },
     { name: 'Marcar referencia principal…', icon: menuIcon('tick'), disabled: !live || line.reference_count < 2,
-      tooltip: !live ? 'Una línea unificada no cambia de referencia principal.' : line.reference_count < 2 ? 'La línea solo tiene su referencia principal.' : undefined,
+      tooltip: !live ? 'Una línea OEM unificada no cambia de referencia principal.' : line.reference_count < 2 ? 'La línea OEM solo tiene su referencia principal.' : undefined,
       action: () => params.context.onMain(line) },
     ...(defaults.length ? ['separator' as const, ...defaults] : []),
   ];

@@ -11,13 +11,13 @@ import { ApiError, request } from '@/lib/types';
 import { useGridEdits } from '@/lib/use-grid-edits';
 import { OEMAlternosEditor, OEMGridContext, OEMStatusEditor } from './admin-oem-cell-editors';
 import { OEMManualSourceKind, OEMReference, OEMReferenceAction, OEMReferenceConflict, OEMReferenceDetail, OEMReferencePage, OEMReferenceSource, OEMReferenceStatus,
-  OEMSourceKind, isLink, linkedViaLabels, manualSourceKinds, referenceStatusHints, referenceStatusLabels, sourceKindLabels } from '@/lib/oem-reference-types';
+  OEMSourceKind, filterSourceKinds, isLink, linkedViaLabels, manualSourceKinds, referenceStatusHints, referenceStatusLabels, sourceKindLabels } from '@/lib/oem-reference-types';
 
 const base = '/api/management/oem-references';
 const number = (value: number) => value.toLocaleString('es-PA');
 const stamp = (value: string) => new Date(value).toLocaleString('es-PA', { timeZone: 'America/Panama' });
-const statuses = Object.keys(referenceStatusLabels) as OEMReferenceStatus[];
-const plural: Record<OEMReferenceStatus, string> = { verified: 'VERIFICADOS', declared: 'DECLARADOS', inferred: 'INFERIDOS', disputed: 'EN DISPUTA' };
+const statuses = (Object.keys(referenceStatusLabels) as OEMReferenceStatus[]).filter(status => status !== 'retired');  // a retired number leaves the library
+const plural: Record<OEMReferenceStatus, string> = { verified: 'VERIFICADOS', declared: 'DECLARADOS', inferred: 'INFERIDOS', disputed: 'EN DISPUTA', retired: 'RETIRADOS' };
 const fieldNames: Record<string, string> = { manufacturer: 'Fabricante', code: 'Número OEM', citation: 'Cita', kind: 'Tipo de fuente', verified: 'Comprobado',
   description: 'Descripción', part_type: 'Tipo de pieza', applications: 'Aplicaciones', notes: 'Notas', note: 'Motivo', source_id: 'Fuente', source: 'Fuente' };
 function flat(value: unknown): string {
@@ -104,7 +104,7 @@ function libraryColumns(wide: boolean, edit: OEMEdit | null = null): ColDef<OEMR
       cellRenderer: CrossCell, tooltipValueGetter: ({ data }) => data?.cross_reference_preview.map(code => `${code.brand} ${code.code}`).join(' · '),
       valueGetter: ({ data }) => data?.cross_reference_count ?? 0, valueSetter: () => false, cellClassRules: cue, editable: true, cellEditor: OEMAlternosEditor,
       cellEditorPopup: true, cellEditorPopupPosition: 'under', cellEditorParams: { readOnly: !editing }, suppressKeyboardEvent: keepKeys },
-    { colId: 'linked', headerName: 'SKU vinculados', flex: 1, minWidth: 200, cellRenderer: LinkedCell, tooltipValueGetter: ({ data }) => data?.linked_skus.map(sku => sku.sku).join(' · ') },
+    { colId: 'linked', headerName: 'Líneas OEM', flex: 1, minWidth: 200, cellRenderer: LinkedCell, tooltipValueGetter: ({ data }) => data?.linked_skus.map(sku => sku.sku).join(' · ') },
     // The part type, one of the library's (a paste of anything else is ignored; a new type is written in the number's detail), or blank.
     { colId: 'family', headerName: title('Familia / tipo de pieza'), flex: 1, minWidth: 190, cellRenderer: FamilyCell, valueGetter: ({ data }) => data?.part_type ?? '',
       cellDataType: false, cellClassRules: cue, editable,
@@ -188,8 +188,8 @@ export function OEMLibraryPanel() {
           <label className="suffix-search"><Search size={16}/><span className="sr-only">Buscar número OEM</span><UppercaseInput value={search} onChange={e => setSearch(e.target.value)} placeholder="NÚMERO, FORMA IMPRESA, DESCRIPCIÓN, TIPO O CÓDIGO DE REPUESTO" aria-label="Buscar número OEM"/></label>
           <label>FABRICANTE<select aria-label="Fabricante" value={manufacturer} onChange={e => filter(() => setManufacturer(e.target.value))}><option value="">TODOS</option>{Object.keys(counts?.manufacturer ?? {}).sort().map(name => <option key={name} value={name}>{name} ({number(counts!.manufacturer[name])})</option>)}</select></label>
           <label>ESTADO<select aria-label="Estado" value={status} onChange={e => filter(() => setStatus(e.target.value))}><option value="">TODOS</option>{statuses.map(key => <option key={key} value={key}>{referenceStatusLabels[key]}</option>)}</select></label>
-          <label>FUENTE<select aria-label="Fuente" value={sourceKind} onChange={e => filter(() => setSourceKind(e.target.value))}><option value="">TODAS</option>{(Object.keys(sourceKindLabels) as OEMSourceKind[]).map(key => <option key={key} value={key}>{sourceKindLabels[key]}</option>)}</select></label>
-          <label>SKU VINCULADOS<select aria-label="SKU vinculados" value={linked} onChange={e => filter(() => setLinked(e.target.value))}><option value="">TODOS</option><option value="true">CON SKU</option><option value="false">SIN SKU</option></select></label>
+          <label>FUENTE<select aria-label="Fuente" value={sourceKind} onChange={e => filter(() => setSourceKind(e.target.value))}><option value="">TODAS</option>{filterSourceKinds.map(key => <option key={key} value={key}>{sourceKindLabels[key]}</option>)}</select></label>
+          <label>LÍNEAS OEM<select aria-label="Líneas OEM" value={linked} onChange={e => filter(() => setLinked(e.target.value))}><option value="">TODOS</option><option value="true">CON LÍNEA OEM</option><option value="false">SIN LÍNEA OEM</option></select></label>
           <button type="button" className={`inventory-edit-toggle${editing ? ' selected' : ''}`} aria-pressed={editing} onClick={toggleEditing}><PencilLine size={15} aria-hidden="true"/>{editing ? 'Editando celdas' : 'Editar celdas'}</button>
         </div>
         {editing && <p className="inventory-edit-hint">{partTypes ? 'Escribe sobre una celda punteada o haz doble clic; también puedes pegar desde Excel. Tipo de pieza y descripción se guardan juntos al soltar y las celdas que cambian destellan; si otra persona cambió el número, se recarga sin guardar. Esc cancela, Ctrl+Z deshace. Doble clic en Alternos para agregar o retirar códigos, y en Estado para marcar o quitar una disputa.' : 'Cargando tipos de pieza…'}
@@ -308,9 +308,9 @@ function ReferenceDetail({ id, initialNotice = '', onOpen, onChanged }: { id: st
         </form>
         <p>Las fuentes del catálogo, del buscador OEM y de las búsquedas con IA siguen a sus alternos: se retiran desde el inventario.</p>
       </section>
-      <section className="suffix-editor-section" aria-label="SKU vinculados"><h4>SKU vinculados ({number(row.linked_count)})</h4>
-        {row.linked_count ? <ul className="oem-ref-skus">{row.linked_skus.map(sku => <li key={sku.id}><strong>{sku.sku}</strong><span>{[linkedViaLabels[sku.via], sku.code !== sku.sku ? `COMO ${sku.code}` : '', sku.is_OEM ? 'MAIN OEM' : '', sku.active ? '' : 'INACTIVO'].filter(Boolean).join(' · ')}</span></li>)}</ul>
-          : <p>Ningún SKU del catálogo lleva este número: ni como SKU principal, ni como alterno, ni por su nombre o un catálogo.</p>}
+      <section className="suffix-editor-section" aria-label="Líneas OEM"><h4>Líneas OEM ({number(row.linked_count)})</h4>
+        {row.linked_count ? <ul className="oem-ref-skus">{row.linked_skus.map(sku => <li key={sku.id}><strong>{sku.sku}</strong><span>{[linkedViaLabels[sku.via], sku.code !== sku.sku ? `COMO ${sku.code}` : '', sku.is_OEM ? 'MAIN OEM' : '', sku.active ? 'PUBLICADA' : 'NO PUBLICADA'].filter(Boolean).join(' · ')}</span></li>)}</ul>
+          : <p>Ninguna línea OEM del catálogo lleva este número: ni como su SKU, ni como una referencia, ni por su nombre o un catálogo.</p>}
         {row.linked_count > row.linked_skus.length && <p>Se muestran {number(row.linked_skus.length)} de {number(row.linked_count)}.</p>}
       </section>
       <section className="suffix-editor-section" aria-label="Alternos de posventa"><h4>Alternos de posventa ({number(row.cross_references.length)})</h4>

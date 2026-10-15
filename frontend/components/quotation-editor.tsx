@@ -652,7 +652,7 @@ export default function QuotationEditor({ deal, draft, draftPath, disabled, onSe
       valueFormatter: params => params.value === null || params.value === undefined ? 'Revisar artículo' : String(params.value),
       tooltipValueGetter: params => {
         const value = params.data && stock.current[params.data.order_line_id];
-        return value ? `Reportadas: ${value.reported_quantity} · Reservadas: ${value.reserved_quantity}` : 'El código o el vínculo con el SKU cambió. Confirma la equivalencia en Inventario.';
+        return value ? `Reportadas: ${value.reported_quantity} · Reservadas: ${value.reserved_quantity}` : 'El código de este artículo cambió, o su código nuevo espera la revisión de MotionPartes: mientras tanto no cuenta en las existencias. Confírmalo en Inventario.';
       },
       cellClass: params => {
         const value = params.data && stock.current[params.data.order_line_id];

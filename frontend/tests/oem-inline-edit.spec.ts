@@ -139,7 +139,7 @@ test('the Alternos popup reads and copies without Editar celdas, adds and retire
   await page.keyboard.press('Enter');
   await expect(popup.getByRole('button', { name: /^WPT-111/ })).toBeVisible();
   await popup.getByRole('button', { name: 'Retirar alterno GMB GWT-41A' }).click();
-  await expect(popup.getByRole('alert')).toContainText('Lo dejan de ver los 2 SKU vinculados');
+  await expect(popup.getByRole('alert')).toContainText('Lo dejan de ver las 2 líneas OEM vinculadas');
   await popup.getByRole('button', { name: 'Retirar', exact: true }).click();
   await expect(popup.getByRole('button', { name: /^GWT-41A/ })).toHaveCount(0);
   await popup.getByRole('button', { name: 'Cerrar alternos' }).click();

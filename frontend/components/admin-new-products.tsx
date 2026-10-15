@@ -7,6 +7,8 @@ import Modal from './modal';
 import ServerGrid from './server-grid';
 import PartTypePicker from './part-type-picker';
 import { PartPicker } from './admin-catalog-editors';
+import ReferencesEditor from './admin-references-editor';
+import type { OEMLine } from '@/lib/line-types';
 import { UppercaseInput } from './uppercase-field';
 import NewProductsReview from './admin-new-products-review';
 import { ApiError, request } from '@/lib/types';
@@ -100,7 +102,7 @@ export default function AdminNewProducts({ onCount, onChanged }: { onCount: (cou
   const approve = useCallback(async (row: Proposal) => {
     if (inFlight.current) return;
     inFlight.current = true; setBusy(row.id); setError(''); setNotice('');
-    try { const result = await request<Proposal>(`${base}/${row.id}`, { method: 'POST', body: JSON.stringify({ action: 'approve', expected_version: row.version }) }); changed(`SKU ${result.part?.sku ?? row.sku} creado y vinculado a ${row.item_count} ${row.item_count === 1 ? 'artículo' : 'artículos'}.`); }
+    try { const result = await request<Proposal>(`${base}/${row.id}`, { method: 'POST', body: JSON.stringify({ action: 'approve', expected_version: row.version }) }); changed(`SKU ${result.part?.sku ?? row.sku} publicado y vinculado a ${row.item_count} ${row.item_count === 1 ? 'artículo' : 'artículos'}.`); }
     catch (error) { setError(errorText(error)); setRevision(value => value + 1); }
     finally { setBusy(''); inFlight.current = false; }
   }, [changed]);
@@ -113,7 +115,7 @@ export default function AdminNewProducts({ onCount, onChanged }: { onCount: (cou
       const result = await request<BulkResult>(`${base}/bulk`, { method: 'POST', body: JSON.stringify({ action: 'approve', proposals: rows.map(row => ({ id: row.id, version: row.version })) }) });
       const failed = result.results.filter(entry => !entry.ok);
       const done = result.done ?? result.approved;
-      changed(`${done} ${done === 1 ? 'SKU creado' : 'SKU creados'}.${failed.length ? ` ${failed.length} no se aprobaron: ${failed.map(entry => `${rows.find(row => row.id === entry.id)?.sku ?? entry.id} (${entry.message})`).join('; ')}` : ''}`);
+      changed(`${done} ${done === 1 ? 'SKU publicado' : 'SKU publicados'}.${failed.length ? ` ${failed.length} no se aprobaron: ${failed.map(entry => `${rows.find(row => row.id === entry.id)?.sku ?? entry.id} (${entry.message})`).join('; ')}` : ''}`);
     } catch (error) { setError(errorText(error)); }
     finally { setBusy(''); inFlight.current = false; }
   }
@@ -159,23 +161,11 @@ function Source({ source }: { source?: FieldSource }) {
   return <small className={`field-source${source.source === 'ai' ? ' ai' : ''}`} title={source.note || undefined}>{sourceLabels[source.source]}{source.by ? ` por ${source.by}` : ''}{confidence}</small>;
 }
 
-// One per line, as the Excel REFERENCIAS column writes them (mall.part_references.parse_reference_cell): OEM:TOYOTA:16100-39315,
-// EMPRESA:GMB:GWT-41A, TOYOTA:16100-39315 or just the code. The type prefix keeps an OEM or company alterno what it is.
-const typePrefix: Record<string, string> = { oem: 'OEM:', company: 'EMPRESA:' };
-const referenceLines = (proposal: Proposal) => proposal.references.map(ref => `${typePrefix[ref.ref_type ?? ''] ?? ''}${ref.brand ? `${ref.brand}:` : ''}${ref.code}`).join('\n');
-function parseReferences(text: string) {
-  return text.split(/[\n;]+/).map(line => line.trim()).filter(Boolean).map(line => {
-    const [prefix, ...rest] = line.split(':');
-    const kind = ({ OEM: 'oem', EMPRESA: 'company', COMPANY: 'company' } as Record<string, string>)[prefix.trim().toUpperCase()];
-    const parts = kind ? rest : [prefix, ...rest];
-    const reference = parts.length > 1 ? { brand: parts[0].trim(), code: parts.slice(1).join(':').trim() } : { code: (parts[0] ?? '').trim() };
-    return kind ? { ...reference, ref_type: kind } : reference;
-  });
-}
-
 export function ProposalDetail({ id, onClose, onSaved, onDone }: { id: string; onClose: () => void; onSaved: () => void; onDone: (text: string) => void }) {
   const [proposal, setProposal] = useState<Proposal | null>(null);
-  const [form, setForm] = useState({ sku: '', description: '', oem_code: '', oem_brand: '', references: '', internal_code: false });
+  const [form, setForm] = useState({ sku: '', description: '', oem_code: '', oem_brand: '', internal_code: false });
+  // The product is a line in preparación (S6): its References are edited one by one in the References editor (plan S8.9).
+  const [line, setLine] = useState<OEMLine | null>(null); const [lineError, setLineError] = useState('');
   const [partType, setPartType] = useState<{ id: string; category: string; name: string } | null>(null);
   const [mode, setMode] = useState<'' | 'link' | 'reject'>(''); const [part, setPart] = useState('');
   const [reason, setReason] = useState('duplicate'); const [note, setNote] = useState('');
@@ -183,12 +173,14 @@ export function ProposalDetail({ id, onClose, onSaved, onDone }: { id: string; o
   const [owners, setOwners] = useState<{ id: string; sku: string; active: boolean }[]>([]);   // the catalog SKUs an approval was refused for
   const load = useCallback((data: Proposal) => {
     setProposal(data); setPartType(data.part_type); setOwners([]);   // fresh data: the server's catalog_match says it from now on
-    setForm({ sku: data.sku, description: data.description, oem_code: data.oem?.code ?? '', oem_brand: data.oem?.brand ?? '', references: referenceLines(data), internal_code: data.internal_code });
+    setForm({ sku: data.sku, description: data.description, oem_code: data.oem?.code ?? '', oem_brand: data.oem?.brand ?? '', internal_code: data.internal_code });
   }, []);
   useEffect(() => { let cancelled = false; request<Proposal>(`${base}/${id}`).then(data => { if (!cancelled) load(data); }).catch(error => { if (!cancelled) setError(errorText(error)); }); return () => { cancelled = true; }; }, [id, load]);
+  const lineVersion = proposal?.version;
+  useEffect(() => { let cancelled = false; setLineError(''); request<OEMLine>(`/api/management/lines/${id}`).then(data => { if (!cancelled) setLine(data); }).catch(error => { if (!cancelled) setLineError(errorText(error)); }); return () => { cancelled = true; }; }, [id, lineVersion]);
   const pending = proposal?.status === 'pending';
   const dirty = !!proposal && (form.sku !== proposal.sku || form.description !== proposal.description || form.oem_code !== (proposal.oem?.code ?? '')
-    || form.oem_brand !== (proposal.oem?.brand ?? '') || form.references !== referenceLines(proposal) || (partType?.id ?? null) !== (proposal.part_type?.id ?? null)
+    || form.oem_brand !== (proposal.oem?.brand ?? '') || (partType?.id ?? null) !== (proposal.part_type?.id ?? null)
     || form.internal_code !== proposal.internal_code);
   async function call<T>(run: () => Promise<T>) {
     setBusy(true); setError('');
@@ -207,7 +199,6 @@ export function ProposalDetail({ id, onClose, onSaved, onDone }: { id: string; o
     if (form.description !== proposal.description) changes.description = form.description;
     if (form.oem_code !== (proposal.oem?.code ?? '') || form.oem_brand !== (proposal.oem?.brand ?? '')) Object.assign(changes, { oem_code: form.oem_code, oem_brand: form.oem_brand });
     if ((partType?.id ?? null) !== (proposal.part_type?.id ?? null)) changes.part_type = partType?.id ?? null;
-    if (form.references !== referenceLines(proposal)) changes.references = parseReferences(form.references);
     if (form.internal_code !== proposal.internal_code) changes.internal_code = form.internal_code;
     const data = await call(() => request<Proposal>(`${base}/${proposal.id}`, { method: 'PATCH', body: JSON.stringify({ expected_version: proposal.version, ...changes }) }));
     if (data) { load(data); onSaved(); }
@@ -219,7 +210,7 @@ export function ProposalDetail({ id, onClose, onSaved, onDone }: { id: string; o
     if (dirty) { current = await save(); if (!current) return; }
     const body = { action, expected_version: current.version, ...(action === 'link' ? { part: target } : {}), ...(action === 'reject' ? { reason, note } : {}) };
     const data = await call(() => request<Proposal>(`${base}/${current!.id}`, { method: 'POST', body: JSON.stringify(body) }));
-    if (data) onDone(action === 'approve' ? `SKU ${data.part?.sku} creado y vinculado.` : action === 'link' ? `Artículos vinculados a ${data.part?.sku}.` : `Propuesta ${data.sku} rechazada.`);
+    if (data) onDone(action === 'approve' ? `SKU ${data.part?.sku} publicado y vinculado.` : action === 'link' ? `Artículos vinculados a ${data.part?.sku}.` : `Propuesta ${data.sku} rechazada.`);
   }
   return <Modal title={`Producto nuevo · ${proposal?.sku ?? ''}`} onClose={onClose} wide drawer className="side-panel">
     {!proposal && !error && <div className="loading"><LoaderCircle className="spin"/>Cargando…</div>}
@@ -233,7 +224,7 @@ export function ProposalDetail({ id, onClose, onSaved, onDone }: { id: string; o
       {pending && proposal.earlier && <div className="notice new-product-earlier" role="note">Este producto ya se vinculó antes al SKU <strong>{proposal.earlier.sku}</strong>: lo más probable es que estos artículos vayan ahí.
         <button type="button" className="button primary small" disabled={busy} onClick={() => decide('link', proposal.earlier!.id)}>Vincular a {proposal.earlier.sku}</button></div>}
       {pending && proposal.ai_review && <AiVerdict review={proposal.ai_review} current={form.description} onUseDescription={value => setForm({ ...form, description: value })}/>}
-      <p className="modal-description">{pending ? 'Revisa y completa lo que falte. Al aprobar se crea el SKU con las reglas de «Crear SKU» y se vinculan sus artículos.' : `${proposal.status_label}${proposal.decided_by ? ` por ${proposal.decided_by}` : ''}${proposal.part ? ` · SKU ${proposal.part.sku}` : ''}${proposal.reject_reason_label ? ` · ${proposal.reject_reason_label}` : ''}${proposal.reject_note ? `: ${proposal.reject_note}` : ''}.`}</p>
+      <p className="modal-description">{pending ? 'Revisa y completa lo que falte. Al aprobar, esta línea OEM en preparación se publica como SKU y sus artículos se vinculan.' : `${proposal.status_label}${proposal.decided_by ? ` por ${proposal.decided_by}` : ''}${proposal.part ? ` · SKU ${proposal.part.sku}` : ''}${proposal.reject_reason_label ? ` · ${proposal.reject_reason_label}` : ''}${proposal.reject_note ? `: ${proposal.reject_note}` : ''}.`}</p>
       <fieldset disabled={!pending || busy}>
         <label>SKU propuesto <Source source={proposal.field_sources.sku}/><UppercaseInput value={form.sku} onChange={event => setForm({ ...form, sku: event.target.value })}/></label>
         <label>Descripción <Source source={proposal.field_sources.description}/><UppercaseInput value={form.description} onChange={event => setForm({ ...form, description: event.target.value })}/></label>
@@ -244,9 +235,10 @@ export function ProposalDetail({ id, onClose, onSaved, onDone }: { id: string; o
         <label className="admin-checkbox new-product-internal"><input type="checkbox" checked={form.internal_code} onChange={event => setForm({ ...form, internal_code: event.target.checked,
           ...(event.target.checked ? { oem_code: '', oem_brand: '' } : { oem_code: proposal.oem?.code ?? '', oem_brand: proposal.oem?.brand ?? '' }) })}/>
           Código interno del proveedor, no es un número OEM (mercancía, herramientas…) <Source source={proposal.field_sources.internal_code}/></label>
-        <label>Alternos (uno por línea; OEM:MARCA:CÓDIGO, EMPRESA:MARCA:CÓDIGO, MARCA:CÓDIGO o solo el código) <Source source={proposal.field_sources.references}/>
-          <textarea rows={3} value={form.references} onChange={event => setForm({ ...form, references: event.target.value.toUpperCase() })}/></label>
       </fieldset>
+      <section className="new-product-references" aria-label="Referencias de la línea OEM"><h3>Referencias <Source source={proposal.field_sources.references}/></h3>
+        {line ? <ReferencesEditor line={line} onLine={next => { setLine(next); onSaved(); }}/> : lineError ? <div className="notice error" role="alert">{lineError}</div>
+          : <div className="loading"><LoaderCircle className="spin" size={16}/>Cargando referencias…</div>}</section>
       <h3>Artículos del proveedor</h3>
       <div className="table-scroll"><table className="new-product-items"><thead><tr><th>Proveedor</th><th>ID</th><th>Código</th><th>Marca</th><th>Descripción</th><th>Disponibles</th><th>Origen</th></tr></thead>
         <tbody>{proposal.items.map(item => <tr key={item.id}><td>{item.supplier_name}</td><td>{item.supplier_invent_id}</td><td><strong>{item.codigo}</strong></td><td>{item.brand}</td>
@@ -258,7 +250,7 @@ export function ProposalDetail({ id, onClose, onSaved, onDone }: { id: string; o
           <label>Nota (opcional)<textarea rows={2} value={note} onChange={event => setNote(event.target.value)}/></label>
           <div className="admin-row-actions"><button type="button" className="button soft small danger-text" disabled={busy} onClick={() => decide('reject')}>Rechazar propuesta</button><button type="button" className="button text small" onClick={() => setMode('')}>Cancelar</button></div></div>}
         {!mode && <div className="admin-row-actions new-product-actions">
-          <button type="button" className="button primary" disabled={busy || !form.sku.trim()} onClick={() => decide('approve')}>{busy ? <LoaderCircle className="spin" size={16}/> : <Check size={16}/>}{dirty ? 'Guardar y aprobar' : 'Aprobar y crear SKU'}</button>
+          <button type="button" className="button primary" disabled={busy || !form.sku.trim()} onClick={() => decide('approve')}>{busy ? <LoaderCircle className="spin" size={16}/> : <Check size={16}/>}{dirty ? 'Guardar y aprobar' : 'Aprobar y publicar SKU'}</button>
           {dirty && <button type="button" className="button soft" disabled={busy} onClick={save}>Guardar cambios</button>}
           <button type="button" className="button soft" disabled={busy} onClick={() => setMode('link')}>Vincular a SKU existente</button>
           <button type="button" className="button text danger-text" disabled={busy} onClick={() => setMode('reject')}>Rechazar</button></div>}
@@ -274,7 +266,7 @@ function AiVerdict({ review, current, onUseDescription }: { review: AiReview; cu
   return <div className={`notice review-ai-verdict ${review.stale ? 'stale' : review.verdict}`} role="note">
     <div><strong>Revisión IA: {aiPill(review)}</strong>{review.stale && <small> La propuesta cambió desde la revisión.</small>}
       <ul>{review.reasons.map(reason => <li key={reason}>{reason}</li>)}</ul>
-      {review.suggestions.duplicate_of && <small>Posiblemente igual a {review.suggestions.duplicate_of.sku}: decídelo tú.</small>}
+      {review.suggestions.duplicate_of && <small>Posiblemente igual a {review.suggestions.duplicate_of.kind === 'proposal' ? 'el producto nuevo' : 'la línea OEM'} {review.suggestions.duplicate_of.sku}: decídelo tú.</small>}
       {review.link_part && <small>El catálogo ya tiene este código como {review.link_part.sku}.</small>}
       {review.suggestions.internal_code && <small>La IA cree que su código es interno, no un número OEM ({Math.round(review.suggestions.internal_code.confidence * 100)} %): márcalo si es así.</small>}
       {review.suggestions.part_type && <small>Grupo/subgrupo sugerido: {review.suggestions.part_type.category} / {review.suggestions.part_type.name} ({Math.round(review.suggestions.part_type.confidence * 100)} %).</small>}</div>

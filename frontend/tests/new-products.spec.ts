@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test';
 import { signedOutInbox } from './inbox-route';
 import type { Proposal } from '../lib/new-product-types';
+import type { Reference } from '../lib/line-types';
+import { makeLine, makeReference } from './lines-route';
 
 // Administración → Inventario → Productos nuevos. Server-rendered administration needs a session token; the screen's API calls are mocked.
 const kaiyiId = '11111111-1111-4111-8111-111111111111';
@@ -24,6 +26,21 @@ test('Productos nuevos lists the proposed SKUs and approves, edits, rejects and 
   const posts: { path: string; body: unknown }[] = [], patches: unknown[] = [];
   let conflict = false;
   await page.route('**/api/**', route => { if (signedOutInbox(route)) return; return route.fulfill({ json: emptyPage }); });   // the rest of the inventory screen
+  // Each product is a line in preparación (S6) with the same id: its References editor reads and writes management/lines/<id>.
+  const lineRefs: Record<string, Reference[]> = {};
+  const refWrites: unknown[] = [];
+  await page.route(/\/api\/management\/lines\/[0-9a-f-]{36}(\/references)?$/, route => {
+    const parts = new URL(route.request().url()).pathname.split('/'), id = parts[4], row = rows.find(entry => entry.id === id)!;
+    const line = makeLine(1, row.sku, row.description, { id, estado: row.status === 'pending' ? 'preparacion' : 'publicada', origen: 'proveedor' });
+    lineRefs[id] ??= [makeReference(1, line, row.sku, { is_main: true, brand: row.brand }), ...row.references.map((ref, index) => makeReference(index + 2, line, ref.code, { brand: ref.brand, tipo: ref.ref_type === 'oem' ? 'oem' : 'otro' }))];
+    if (parts[5] !== 'references') return route.fulfill({ json: { ...line, reference_count: lineRefs[id].length } });
+    if (route.request().method() === 'GET') return route.fulfill({ json: lineRefs[id] });
+    const body = route.request().postDataJSON() as { code: string; brand: string; tipo: Reference['tipo'] };
+    refWrites.push(body);
+    const added = makeReference(50 + lineRefs[id].length, line, body.code, { brand: body.brand, tipo: body.tipo });
+    lineRefs[id].push(added);
+    return route.fulfill({ status: 201, json: { added: true, reference: added } });
+  });
   await page.route(/\/api\/management\/catalog\/proposals(?:\?.*)?$/, route => {
     const status = new URL(route.request().url()).searchParams.get('status') || 'pending';
     const shown = rows.filter(row => status === 'all' || row.status === status);
@@ -76,7 +93,7 @@ test('Productos nuevos lists the proposed SKUs and approves, edits, rejects and 
   await expect(page.getByRole('alert').filter({ hasText: 'cambió mientras la revisabas' })).toBeVisible();
   conflict = false;
   await page.getByRole('button', { name: 'Aprobar 025CHA-1502606' }).click();
-  await expect(page.getByRole('status').filter({ hasText: 'SKU 025CHA-1502606 creado y vinculado a 1 artículo.' })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'SKU 025CHA-1502606 publicado y vinculado a 1 artículo.' })).toBeVisible();
   await expect.poll(() => posts.at(-1)).toEqual({ path: kaiyiId, body: { action: 'approve', expected_version: 1 } });
   await expect(page.locator(`.ag-row[row-id="${kaiyiId}"]`)).toHaveCount(0);
 
@@ -93,27 +110,31 @@ test('Productos nuevos lists the proposed SKUs and approves, edits, rejects and 
   await expect(drawer).toBeHidden();
   expect(patches).toEqual([{ expected_version: 1, description: 'CLIP DE COVER DE MOTOR', oem_code: '90467-10188', oem_brand: 'TOYOTA' }]);   // only what changed
   await expect.poll(() => posts.at(-1)).toEqual({ path: wurthId, body: { action: 'approve', expected_version: 2 } });
-  await expect(page.getByRole('status').filter({ hasText: 'SKU 90467-10188 creado y vinculado.' })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'SKU 90467-10188 publicado y vinculado.' })).toBeVisible();
 
-  // Rejecting, and approving several at once. A product linked before offers its SKU; typed alternos keep their type when saved.
+  // Rejecting, and approving several at once. A product linked before offers its SKU; its References are added one by one with their tipo.
   rows = [...rows, proposal('33333333-3333-4333-8333-333333333333', 'A-1', 'ACME', null, { catalog_match: [{ id: 'part-9', sku: 'A1-ACME', code: 'A-1', active: true }] }),
     proposal('44444444-4444-4444-8444-444444444444', 'B-1', 'ACME', null),
     proposal('55555555-5555-4555-8555-555555555555', 'GWT-41A', 'GMB', null, { earlier: { id: 'part-1', sku: '16100-39315' },
       references: [{ brand: 'TOYOTA', code: '16100-39315', ref_type: 'oem' }] })];
-  await page.getByRole('button', { name: /^Por revisar/ }).click();
+  await page.getByRole('button', { name: /^En preparación/ }).click();
   await page.getByRole('button', { name: 'Todos' }).click();
-  await page.getByRole('button', { name: /^Por revisar/ }).click();
+  await page.getByRole('button', { name: /^En preparación/ }).click();
   await expect(page.locator('.ag-row[row-id="55555555-5555-4555-8555-555555555555"]').first().getByText('Ya existe como 16100-39315')).toBeVisible();
   await page.getByRole('button', { name: 'Ver detalle de GWT-41A' }).click();
   const gmb = page.getByRole('dialog', { name: 'Producto nuevo · GWT-41A' });
   await expect(gmb.getByRole('note')).toContainText('ya se vinculó antes al SKU 16100-39315');
-  const alternos = gmb.getByLabel(/^Alternos/);
-  await expect(alternos).toHaveValue('OEM:TOYOTA:16100-39315');
-  await alternos.fill('OEM:TOYOTA:16100-39315\nEMPRESA:AISIN:WPT-111');
-  await gmb.getByRole('button', { name: 'Guardar cambios' }).click();
-  await expect.poll(() => patches.at(-1)).toEqual({ expected_version: 1, references: [{ brand: 'TOYOTA', code: '16100-39315', ref_type: 'oem' }, { brand: 'AISIN', code: 'WPT-111', ref_type: 'company' }] });
+  const references = gmb.getByRole('region', { name: 'Referencias de la línea OEM' });
+  await expect(references.getByRole('listitem', { name: 'Referencia 16100-39315' })).toContainText('OEM · TOYOTA');
+  await references.getByLabel('Código de la nueva referencia').fill('wpt-111');
+  await references.getByLabel('Marca de la nueva referencia').fill('aisin');
+  await references.getByLabel('Tipo de la nueva referencia').selectOption('aftermarket');
+  await references.getByRole('button', { name: 'Agregar referencia', exact: true }).click();
+  await expect(references.getByRole('listitem', { name: 'Referencia WPT-111' })).toContainText('AFTERMARKET · AISIN');
+  expect(refWrites).toEqual([{ code: 'WPT-111', brand: 'AISIN', tipo: 'aftermarket', estado: 'declarado' }]);
+  await expect(gmb.getByLabel(/^Alternos/)).toHaveCount(0);  // the References editor replaced the text field
   await gmb.getByRole('button', { name: 'Vincular a 16100-39315' }).click();
-  await expect.poll(() => posts.at(-1)).toEqual({ path: '55555555-5555-4555-8555-555555555555', body: { action: 'link', expected_version: 2, part: 'part-1' } });
+  await expect.poll(() => posts.at(-1)).toEqual({ path: '55555555-5555-4555-8555-555555555555', body: { action: 'link', expected_version: 1, part: 'part-1' } });
   await expect(gmb).toBeHidden();
   await page.getByRole('button', { name: 'Ver detalle de A-1' }).click();
   await expect(page.getByRole('dialog').getByRole('note')).toContainText('Este código ya está en el catálogo');   // its items belong to that SKU
@@ -127,7 +148,7 @@ test('Productos nuevos lists the proposed SKUs and approves, edits, rejects and 
   await expect(page.getByRole('group', { name: 'Seleccionadas' })).toContainText('1 propuesta seleccionada');
   await page.getByRole('button', { name: 'Aprobar seleccionadas' }).click();
   await expect.poll(() => posts.at(-1)).toEqual({ path: 'bulk', body: { action: 'approve', proposals: [{ id: '44444444-4444-4444-8444-444444444444', version: 1 }] } });
-  await expect(page.getByRole('status').filter({ hasText: '1 SKU creado.' })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: '1 SKU publicado.' })).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });

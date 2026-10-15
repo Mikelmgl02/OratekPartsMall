@@ -171,7 +171,7 @@ function BatchDetail({ batchKey, onBack, onDecided }: { batchKey: string; onBack
   return <div className="matching-batch" aria-label={`Lote ${batchKey}`} role="region">
     <div className="admin-toolbar-actions"><button type="button" className="button text small" onClick={onBack}>← Todos los lotes</button>
       <strong>{batchLabels[batchKey] ?? batchKey}</strong>{data && <span>{number(data.count)} por revisar · {number(data.counts.applied ?? 0)} aplicados · {number(data.counts.dismissed ?? 0)} descartados</span>}</div>
-    {merges && <p className="form-footnote">Unificar conserva juntas las líneas de cada caso (o las une, si están separadas) en la línea que el caso propone; Mantener separadas las separa con Separar SKU y no se vuelven a proponer juntas. Cada caso se decide por separado: uno que cambió queda sin decidir con su motivo.</p>}
+    {merges && <p className="form-footnote">Unificar conserva juntas las líneas OEM de cada caso (o las une, si están separadas) en la línea OEM que el caso propone; Mantener separadas las separa con Separar SKU y no se vuelven a proponer juntas. Cada caso se decide por separado: uno que cambió queda sin decidir con su motivo.</p>}
     {error && <div className="notice error" role="alert">{error}</div>}
     {result && !!result.failed.length && <div className="notice error" role="alert"><div><strong>Sin decidir:</strong><ul>{result.failed.map(row => <li key={row.id}>{titles.get(row.id) ?? row.id}: {row.detail}</li>)}</ul></div></div>}
     {!data && !error && <div className="loading"><LoaderCircle className="spin" size={18}/>Cargando el lote…</div>}
@@ -211,7 +211,7 @@ function MergeDigest({ revision, onSplit }: { revision: number; onSplit: (target
   return <>
     <p className="form-footnote">Las líneas OEM que el análisis unificó solo (piezas idénticas: mismo código con otra grafía, marcas socias, un número que reemplaza a otro). Si una no es la misma pieza, Separar SKU la devuelve con sus códigos, existencias e imágenes, y no se vuelve a unificar sola.</p>
     <div className="inventory-filters">
-      <div className="catalog-search admin-search"><Search size={19}/><label className="sr-only" htmlFor="merge-digest-search">Buscar unificaciones</label><UppercaseInput id="merge-digest-search" value={search} onChange={event => setSearch(event.target.value)} placeholder="SKU de la línea o de una línea unificada…"/></div>
+      <div className="catalog-search admin-search"><Search size={19}/><label className="sr-only" htmlFor="merge-digest-search">Buscar unificaciones</label><UppercaseInput id="merge-digest-search" value={search} onChange={event => setSearch(event.target.value)} placeholder="SKU de la línea OEM o de una línea OEM unificada…"/></div>
       <label className="inventory-filter-select"><span>Desde</span><input type="date" aria-label="Unificaciones desde" value={since} onChange={event => { setSince(event.target.value); setPage(1); }}/></label>
     </div>
     {error && <div className="notice error" role="alert">{error}</div>}

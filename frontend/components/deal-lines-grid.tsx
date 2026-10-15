@@ -33,7 +33,7 @@ function TextCell({ value }: Cell) {
 function StockCell({ data }: Cell) {
   if (!data) return null;
   const stock = stockOf(data);
-  if (!stock) return <div className="admin-grid-stack"><strong className="stock-shortfall">Revisar artículo</strong><small>El código o el vínculo con el SKU cambió. Confirma la equivalencia en Inventario.</small></div>;
+  if (!stock) return <div className="admin-grid-stack"><strong className="stock-shortfall">Revisar artículo</strong><small>El código de este artículo cambió, o su código nuevo espera la revisión de MotionPartes: mientras tanto no cuenta en las existencias. Confírmalo en Inventario.</small></div>;
   return <div className="admin-grid-stack">
     <strong>{stock.available_quantity} <span className={stock.shortfall ? 'stock-shortfall' : 'stock-sufficient'}>· {stock.shortfall ? `Faltan ${stock.shortfall} unidades` : 'Existencias suficientes'}</span></strong>
     <small>Reportadas: {stock.reported_quantity} · Reservadas: {stock.reserved_quantity}{stock.held_for_deal ? ` (${stock.held_for_deal} para esta orden)` : ''}</small>

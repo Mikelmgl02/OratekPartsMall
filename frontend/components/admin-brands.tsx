@@ -149,7 +149,7 @@ function BrandEditor({ brand, onClose, onSaved }: { brand: Brand | null; onClose
           {!current.aliases.length && <li className="admin-grid-muted">Sin alias.</li>}</ul>
         <div className="brand-alias-add"><UppercaseInput aria-label="Nuevo alias" value={alias} maxLength={120} onChange={event => setAlias(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); void addAlias(); } }} placeholder="EJ.: TOY"/>
           <button type="button" className="button soft small" disabled={!!busy || !alias.trim()} onClick={() => void addAlias()}>{busy === 'alias' ? <LoaderCircle size={14} className="spin"/> : <Plus size={14}/>}Agregar alias</button></div>
-        <p className="form-footnote">Los códigos que ya llevan ese alias como marca pasan al nombre de la marca; si eso repite un código en dos líneas, se abre un caso de unificación.</p>
+        <p className="form-footnote">Los códigos que ya llevan ese alias como marca pasan al nombre de la marca; si eso repite un código en dos líneas OEM, se abre un caso de unificación.</p>
       </section>
       <section className="brand-merge" aria-label="Unir con otra marca">
         <strong>Unir con otra marca</strong>

@@ -19,7 +19,7 @@ export type BulkResult = { action?: 'approve' | 'reject' | 'link'; done?: number
 export type Verdict = 'good' | 'bad' | 'unsure';
 export type ReviewTab = Verdict | 'stale' | 'decided';
 export type ReviewSuggestions = { part_type?: { category: string; name: string; confidence: number }; description?: { value: string; confidence: number; drafted?: boolean };
-  internal_code?: { confidence: number }; duplicate_of?: { kind: 'proposal' | 'part'; id: string; sku: string; descripcion: string } };
+  internal_code?: { confidence: number }; duplicate_of?: { kind: 'proposal' | 'part' | 'line'; id: string; sku: string; descripcion: string } };   // part and line: an OEM line (S8)
 export type AiReview = { verdict: Verdict; confidence: number; reasons: string[]; reason: string; suggestions: ReviewSuggestions; stale: boolean; run: string;
   link_part: { id: string; sku: string } | null; created_at: string };
 export type ReviewRunSummary = { id: string; search: string; only_unreviewed: boolean; created_by: string; created_at: string; finished_at: string | null; model: string;
@@ -37,6 +37,7 @@ export type ActionableRow = { id: string; version: number; sku: string; descript
 
 export const verdictLabels: Record<Verdict | 'stale', string> = { good: 'BUENA', bad: 'MALA', unsure: 'DUDOSA', stale: 'CAMBIÓ' };
 
-export const proposalStatusLabels: Record<ProposalStatus, string> = { pending: 'Por revisar', approved: 'Aprobados', linked: 'Vinculados', rejected: 'Rechazados', resolved: 'Resueltos' };
+// The tabs by the line's estado (S6: a product is a line in preparación; approving publishes it, linking unifies it into another).
+export const proposalStatusLabels: Record<ProposalStatus, string> = { pending: 'En preparación', approved: 'Publicados', linked: 'Unificados', rejected: 'Rechazados', resolved: 'Resueltos' };
 export const rejectReasons = { duplicate: 'Ya existe en el catálogo', not_a_part: 'No es un repuesto', bad_data: 'Datos del proveedor incorrectos', other: 'Otro motivo' };
 export const sourceLabels: Record<FieldSource['source'], string> = { supplier: 'del proveedor', oem_library: 'de la biblioteca OEM', admin: 'editado', ai: 'propuesto por IA' };

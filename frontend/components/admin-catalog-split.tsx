@@ -161,8 +161,10 @@ function SplitEditor({ target, onBack, onBusyChange, onSaved }: { target: Target
         <div className="split-section"><h3>Existencias de proveedores</h3>
           {plan.items.length ? <div className="split-rows">{plan.items.map(item => <div className="split-row" key={item.id}>
             <div className="split-row-main"><strong>{item.supplier_name} · {item.codigo}{item.brand ? ` · ${item.brand}` : ''}</strong><small>{item.description || 'Sin descripción'} · {item.available_quantity.toLocaleString('es-PA')} disponibles</small>{hint(item.suggested)}</div>
-            {destination(`item:${item.id}`, item.suggested, `Destino de ${item.supplier_name} ${item.codigo}`)}
+            {/* A variant hangs from a Reference and goes with it (plan S8.9): its destination is read, never chosen. */}
+            <span className="split-locked" role="status" aria-label={`Destino de ${item.supplier_name} ${item.codigo}`}>{owner(`item:${item.id}`, item.suggested) ? `Pasa a ${sku(owner(`item:${item.id}`, item.suggested))}` : `Se queda en ${main.sku}`}</span>
           </div>)}</div> : <p>{main.sku} no tiene existencias de proveedores.</p>}
+          {!!plan.items.length && <p className="form-footnote">Cada existencia sigue a la referencia de la que cuelga: va con su código cuando ese código pasa a otro SKU.</p>}
         </div>
         {!!plan.images.length && <div className="split-section"><h3>Imágenes</h3><div className="split-images">{plan.images.map((image, index) => <figure className="split-image" key={image.id}>
           {/* eslint-disable-next-line @next/next/no-img-element */}

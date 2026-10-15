@@ -33,7 +33,7 @@ export function DispCell({ line }: { line: Line }) {
   const stock = stockOf(line);
   const state = !stock ? 'unknown' : stock.available_quantity >= line.quantity ? 'enough' : stock.available_quantity > 0 ? 'short' : 'none';
   return <span className={`order-disp ${state}`} title={stock ? `Reportadas: ${units(stock.reported_quantity)} · Reservadas: ${units(stock.reserved_quantity)}${stock.held_for_deal ? ` (${units(stock.held_for_deal)} para esta orden)` : ''}`
-    : 'El código o su vínculo con el SKU cambió: confirma la equivalencia en Inventario.'}>
+    : 'El código de este artículo cambió, o su código nuevo espera la revisión de MotionPartes (no cuenta en las existencias hasta aprobarse): confírmalo en Inventario.'}>
     <strong>{stock ? units(stock.available_quantity) : '?'}</strong>{stock ? stock.shortfall > 0 && <small>faltan {units(stock.shortfall)}</small> : <small>revisar</small>}
   </span>;
 }

@@ -203,7 +203,7 @@ export default function CatalogImport({ onClose, onSaved }: { onClose: () => voi
     </div>;
   }
   return <Modal title="Importar Excel" onClose={() => { if (!operating.current && !classificationBusy) onClose(); }} wide>
-    <p className="modal-description">Importa SKU y sus alternos al inventario interno. Usa una fila por código alterno y repite el SKU para agregar más códigos al mismo repuesto.</p>
+    <p className="modal-description">Importa SKU y sus referencias al inventario interno: cada SKU es una línea OEM y su código es su referencia principal. Usa una fila por código alterno y repite el SKU para agregar más referencias a la misma línea.</p>
     <a className="button soft small import-template" href="/templates/inventario-interno.xlsx" download><Download size={16}/>Descargar plantilla Excel</a>
     {!pendingJob && <form className="stack-form catalog-import-form" autoComplete="off" onSubmit={review}>
       <div className="stack-form"><label htmlFor={fileId}>Archivo Excel</label><div className="import-file-picker"><input ref={fileInput} id={fileId} className="sr-only" aria-label="Archivo Excel" type="file" accept=".xlsx" required disabled={!!busy || classificationBusy} tabIndex={-1} autoComplete="off" onChange={event => { setFile(event.target.files?.[0] || null); setPreview(null); setError(''); setRecoveryValues({}); setSkippedRows([]); setRecoveryDirty(false); }}/><button type="button" className="button soft small" disabled={!!busy || classificationBusy} onClick={() => fileInput.current?.click()}>Seleccionar archivo</button><span aria-live="polite">{file?.name || 'Ningún archivo seleccionado'}</span></div></div>
@@ -247,7 +247,7 @@ export default function CatalogImport({ onClose, onSaved }: { onClose: () => voi
       {!preview.valid && !pendingErrorCount && <div className="notice error" role="alert">No se pudo preparar el archivo. Revisa los errores indicados y vuelve a cargarlo.</div>}
       {preview.valid && <>
         <div className="import-summary"><span><strong>{preview.summary.created_skus}</strong> SKU nuevos</span><span><strong>{preview.summary.updated_skus}</strong> SKU por actualizar</span><span><strong>{preview.summary.added_codes}</strong> alternos nuevos</span><span><strong>{preview.summary.unchanged_skus}</strong> SKU sin cambios</span></div>
-        <p className="form-footnote">Los campos vacíos conservan los datos actuales de los SKU existentes. Se agregan los alternos nuevos y se conservan los ya registrados.</p>
+        <p className="form-footnote">Los campos vacíos conservan los datos actuales de los SKU existentes. Los alternos nuevos se agregan como referencias de la línea OEM y las ya registradas se conservan; un código que ya es de otra línea OEM no se mueve: se unifican en Casos de coincidencia.</p>
         {pendingJob && progress?.completed_batches === 0 && <CatalogClassification key={`${pendingJob}:${classificationRevision}`} jobId={pendingJob} disabled={!!busy || recoveryDirty} onBusyChange={setClassificationBusy} onStatusChange={setClassificationStatus} onUpdated={setPreview}/>}
         {progress && <div className="import-progress">
           <h3>Importación por lotes</h3>

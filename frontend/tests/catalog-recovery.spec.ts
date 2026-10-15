@@ -104,7 +104,7 @@ test('reviewed uppercase date correction survives reload and saves the recovered
   const persisted = await (await page.request.get(`/api/management/catalog/import/jobs/${corrected.job_id}`)).json();
   expect(persisted.recovery_rows).toEqual(corrected.recovery_rows);
   await page.getByRole('button', { name: /^(Confirmar importación|Importar sin IA)$/ }).click();
-  await expect(page.getByText('Importación completada: 1 SKU nuevos, 0 SKU actualizados y 0 alternos nuevos.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Importación completada: 1 SKU nuevos (líneas OEM), 0 SKU actualizados y 0 referencias nuevas.', { exact: true })).toBeVisible();
   const saved = await (await page.request.get(`/api/management/catalog?search=${sku}`)).json();
   expect(saved.count).toBe(1);
   expect(saved.results[0]).toMatchObject({ sku, name: sku, description: 'ABRAZADERA DE PRUEBA', codes: [] });
@@ -136,7 +136,7 @@ test('explicitly excluded date row stays deferred after reload and is reported o
   expect(restored.skipped_rows).toEqual([3]);
   expect(restored.recovery_rows).toEqual(reviewed.recovery_rows);
   await page.getByRole('button', { name: /^Importar filas válidas(?: sin IA)?$/ }).click();
-  await expect(page.getByText(/Importación completada: 1 SKU nuevos, 0 SKU actualizados y 0 alternos nuevos\. 1 fila pendiente de corregir en «Errores de importación»\./)).toBeVisible();
+  await expect(page.getByText(/Importación completada: 1 SKU nuevos \(líneas OEM\), 0 SKU actualizados y 0 referencias nuevas\. 1 fila pendiente de corregir en «Errores de importación»\./)).toBeVisible();
   const completed = await (await page.request.get(`/api/management/catalog/import/jobs/${reviewed.job_id}`)).json();
   expect(completed).toMatchObject({ imported: true, status: 'completed', skipped_rows: [3], skipped_row_count: 1, pending_error_count: 1 });
   const issues = await (await page.request.get(`/api/management/catalog/import/issues?job=${reviewed.job_id}`)).json();
