@@ -5,6 +5,8 @@ import type { CustomCellRendererProps } from 'ag-grid-react';
 import { ArrowUpRight, BadgeCheck, ClipboardCheck, FilePen, History, TriangleAlert } from 'lucide-react';
 import DealStatusBadge from './deal-status';
 import type { StockItem } from '@/lib/types';
+import { variantFactsText } from '@/lib/line-types';
+import type { Variant } from '@/lib/line-types';
 import type { SupplierRequestListItem } from '@/lib/request-types';
 import { receiptHint } from '@/lib/deal-types';
 import { supplierOrderHref, supplierRequestsHref } from '@/lib/supplier-navigation';
@@ -16,11 +18,20 @@ const right = (extra?: string) => ['ag-right-aligned-cell', ...(extra ? [extra] 
 // Column order matters to the import spec, which reads cells by position (Disponibles is the fourth). No pinned columns: a pinned
 // column splits each grid row into separate row elements.
 type InventoryCell = CustomCellRendererProps<StockItem, unknown, { openLedger: (item: StockItem) => void }>;
+// A code change waiting for review (S6, rule 5b): the item keeps selling under its code, out of the clients' catalog, until it is approved.
+const pendingCode = (data: StockItem) => data.codigo_pendiente || data.brand_pendiente ? [data.codigo_pendiente || data.codigo, data.brand_pendiente].filter(Boolean).join(' · ') : '';
 function ItemCell({ data }: InventoryCell) {
-  return data ? <div className="admin-grid-stack"><strong>{data.codigo}</strong><small>{data.brand}{data.description ? ` · ${data.description}` : ''}</small></div> : null;
+  if (!data) return null;
+  const pending = pendingCode(data);
+  return <div className="admin-grid-stack"><strong>{data.codigo}</strong>{pending ? <small className="stock-code-pending" title="Tu carga cambió el código de este artículo: MotionPartes lo revisa antes de aplicarlo.">CÓDIGO NUEVO EN REVISIÓN: {pending}</small>
+    : <small>{data.brand}{data.description ? ` · ${data.description}` : ''}</small>}</div>;
+}
+function VariantCell({ data }: InventoryCell) {
+  const text = data ? variantFactsText(data as Variant) : '';
+  return data ? <span className={text ? 'admin-grid-text' : 'admin-grid-muted'}>{text || '—'}</span> : null;
 }
 function MatchCell({ data }: InventoryCell) {
-  return data ? <span className={`status ${data.matching_status}`}>{data.matching_status === 'matched' ? 'Vinculado' : data.matching_status === 'review' ? 'Por revisar' : 'Pendiente'}</span> : null;
+  return data ? <span className={`status ${data.matching_status}`} title={pendingCode(data) ? 'Código nuevo en revisión' : undefined}>{data.matching_status === 'matched' ? 'Vinculado' : data.matching_status === 'review' ? 'Por revisar' : 'Pendiente'}</span> : null;
 }
 // apiag-cloud items: units per sucursal (their sum is the item's stock); manual records have none.
 function BranchCell({ data }: InventoryCell) {
@@ -43,6 +54,7 @@ export const inventoryColumns: ColDef<StockItem>[] = [
   { colId: 'branches', headerName: 'Por sucursal', width: 220, cellRenderer: BranchCell,
     tooltipValueGetter: ({ data }) => data?.branch_stock?.map(row => `${row.nombre}: ${number(row.disponible)}`).join(' · ') },
   { colId: 'match', headerName: 'Coincidencia', width: 150, cellRenderer: MatchCell },
+  { colId: 'variant', headerName: 'Calidad / garantía', width: 220, cellRenderer: VariantCell, tooltipValueGetter: ({ data }) => data ? variantFactsText(data as Variant) : '' },
   { colId: 'history', headerName: 'Historial', width: 170, cellRenderer: LedgerCell, suppressHeaderMenuButton: true, resizable: false },
 ];
 

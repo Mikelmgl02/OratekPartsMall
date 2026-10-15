@@ -144,3 +144,16 @@ export function asManagedPart(line: OEMLine): ManagedPart {
     images: line.images, active: line.estado === 'publicada', stock_record_count: line.variant_count, merged_count: line.merged_count,
     identity: { ref_type: line.main?.tipo === 'oem' ? 'oem' : line.main?.tipo === 'aftermarket' ? 'company' : 'unknown', brand: line.brand } };
 }
+// What a supplier import row will do (mall.supplier_import's preview, S6): a code change that waits for review, and how its item is placed
+// (resolucion: attach, new_reference_on_line, case, no_line, or the rule that kept it, such as pendiente).
+export type ImportRowPlan = { codigo_pendiente?: string | null; brand_pendiente?: string | null; resolucion?: string; regla?: string } & VariantFacts;
+// The case or review a row opens, as the preview names it ('' when it opens none).
+export function importRowCase(row: ImportRowPlan & { matching_status?: string; part_sku?: string | null }) {
+  if (row.codigo_pendiente || row.brand_pendiente || row.resolucion === 'pendiente') return `CÓDIGO NUEVO EN REVISIÓN: ${[row.codigo_pendiente, row.brand_pendiente].filter(Boolean).join(' · ')}`.replace(/: $/, '');
+  if (row.resolucion === 'case') return 'ABRE UN CASO: ELEGIR LÍNEA OEM (EL CÓDIGO ESTÁ EN VARIAS)';
+  if (row.resolucion === 'no_line') return 'VA A PRODUCTOS NUEVOS';
+  if (row.matching_status === 'review') return 'ABRE UN CASO: VARIANTE EN REVISIÓN';
+  return '';
+}
+export const variantFactsText = (row: VariantFacts) => [row.calidad ? calidadLabels[row.calidad] : '', row.condicion ? condicionLabels[row.condicion] : '',
+  row.garantia ? `GARANTÍA ${row.garantia}` : '', row.unidades_por_empaque ? `${row.unidades_por_empaque} POR EMPAQUE` : ''].filter(Boolean).join(' · ');

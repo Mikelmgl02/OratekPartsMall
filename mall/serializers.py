@@ -124,11 +124,12 @@ class SupplierItemSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 class SupplierStockSerializer(SupplierItemSerializer):
-    """The supplier's own inventory rows: plus the units per sucursal of an apiag-cloud item (prefetched as `branch_stock`)."""
+    """The supplier's own inventory rows: plus the units per sucursal of an apiag-cloud item (prefetched as `branch_stock`) and what the
+    supplier said about the variant (S3.2; S8's inventory grid shows it: '' or null when unknown)."""
     branch_stock = serializers.SerializerMethodField()
 
     class Meta(SupplierItemSerializer.Meta):
-        fields = SupplierItemSerializer.Meta.fields + ['branch_stock']
+        fields = SupplierItemSerializer.Meta.fields + ['branch_stock', 'calidad', 'condicion', 'garantia', 'unidades_por_empaque', 'material', 'origen']
         read_only_fields = fields
 
     @extend_schema_field({'type': 'array', 'items': {'type': 'object', 'properties': {

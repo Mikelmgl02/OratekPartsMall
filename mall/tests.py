@@ -54,6 +54,11 @@ class FoundationTests(APITestCase):
         self.assertEqual(ids(matching_status='matched'), ['stable-1'])
         self.assertEqual(ids(matching_status='unmatched'), ['stable-2'])
         self.assertEqual(self.client.get(url, {'matching_status': 'other'}).status_code, 400)
+        # What the supplier said about each variant (S3.2) comes back with its row (S8's inventory grid).
+        self.ingest(update_id='c', supplier_invent_id='stable-1', codigo='abc', quantity=10, calidad='genuino', garantia='6 MESES', unidades_por_empaque=2)
+        row = next(row for row in self.client.get(url).data['results'] if row['supplier_invent_id'] == 'stable-1')
+        self.assertEqual({key: row[key] for key in ('calidad', 'condicion', 'garantia', 'unidades_por_empaque')},
+                         {'calidad': 'original', 'condicion': '', 'garantia': '6 MESES', 'unidades_por_empaque': 2})
 
     def test_ledger_adjustments_and_idempotency(self):
         self.assertEqual(self.ingest().status_code, 200)

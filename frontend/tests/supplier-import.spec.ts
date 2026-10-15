@@ -423,3 +423,33 @@ test('the import proxy forwards the confirmed-order answers to the API', async (
   const plain = await request.post(url, { headers, data: { batch_index: 0 } });
   expect(plain.status()).toBe(404);  // no answers: the API looks the account up and this one is not the caller's
 });
+
+test('a code change waiting for review shows on its item, with what the supplier said about it, and the preview names the case each row opens', async ({ page }) => {
+  await supplier(page);
+  // S6: the item still sells under FE-ONE while FE-ONE-B waits; S3.2: its calidad, garantía and empaque (S8's inventory grid).
+  const items = [{ ...stockItem(), matching_status: 'review', codigo_pendiente: 'FE-ONE-B', brand_pendiente: null, calidad: 'oes', garantia: '6 MESES', unidades_por_empaque: 2 },
+    { ...stockItem(newItemId, '00045', 5), matching_status: 'matched' }];
+  const job = importJob({ rejectedRows: 0 });
+  job.preview = [
+    { ...job.preview[0], matching_status: 'review', codigo_pendiente: 'FE-ONE-B', brand_pendiente: null, resolucion: 'pendiente', calidad: 'original' },
+    { ...job.preview[1], resolucion: 'no_line', references: [{ brand: 'TOYOTA', code: '90915-YZZE1' }] },
+  ] as unknown as typeof job.preview;
+  await page.route(`${root}/**`, async route => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === `${root}/import` && route.request().method() === 'POST') return route.fulfill({ json: job });
+    return route.fulfill({ status: 404, json: { detail: 'Ruta de prueba desconocida.' } });
+  });
+  await page.route(new RegExp(`${root}(?:\\?.*)?$`), route => route.fulfill({ json: { ...emptyPage, count: items.length, results: items } }));
+  await openPanel(page);
+  const changed = page.getByRole('row').filter({ hasText: 'supplier-id-lowercase' });
+  await expect(changed).toContainText('CÓDIGO NUEVO EN REVISIÓN: FE-ONE-B');
+  await expect(changed).toContainText('OES (EQUIPO ORIGINAL) · GARANTÍA 6 MESES · 2 POR EMPAQUE');
+  await expect(changed).toContainText('Por revisar');
+  await expect(page.getByRole('row').filter({ hasText: '00045' })).not.toContainText('EN REVISIÓN');
+  const dialog = await upload(page);
+  await expect(dialog.getByRole('row').filter({ hasText: 'supplier-id-lowercase' })).toContainText('CÓDIGO NUEVO EN REVISIÓN: FE-ONE-B');
+  await expect(dialog.getByRole('row').filter({ hasText: 'supplier-id-lowercase' })).toContainText('ORIGINAL');
+  const fresh = dialog.getByRole('row').filter({ hasText: '00045' });
+  await expect(fresh).toContainText('VA A PRODUCTOS NUEVOS');
+  await expect(fresh).toContainText('REFERENCIAS DECLARADAS (SE REVISAN COMO CASOS): TOYOTA: 90915-YZZE1');
+});
