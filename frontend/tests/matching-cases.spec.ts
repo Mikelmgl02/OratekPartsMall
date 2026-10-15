@@ -40,7 +40,7 @@ const cases = {
 const legacyBatch = [5, 7, 8].map(n => base(n, 'merge', { supplier_name: '', lines: [line(20 + n, `0411${n}-22152-AS`, 'JUEGO EMPAQUES'), line(30 + n, `0411${n}-22152`, 'JUEGO EMPAQUES')],
   target_sku: `0411${n}-22152`, route: 'lote', batch_key: 'legacy-auto-merge', fingerprint: fp(n), reason: 'Unificación automática anterior que las reglas nuevas no harían.' }));
 const digest: MergeDigestRow[] = [
-  { id: uuid(4, 1), created_at: '2026-10-14T22:30:00Z', reason: 'Duplicado compacto', target: { id: L.seal.id, sku: '04111-22152', description: 'JUEGO EMPAQUES MOTOR TOY 4AFE', estado: 'publicada' },
+  { id: uuid(4, 1), created_at: '2026-10-14T22:30:00Z', reason: 'compact_duplicate', target: { id: L.seal.id, sku: '04111-22152', description: 'JUEGO EMPAQUES MOTOR TOY 4AFE', estado: 'publicada' },
     sources: [{ id: L.sealAs.id, sku: '0411122152', still_merged: true }, { id: uuid(2, 40), sku: '04111 22152', still_merged: false }], split: `catalog/${L.seal.id}/split` },
   { id: uuid(4, 2), created_at: '2026-10-13T10:00:00Z', reason: '', target: { id: L.lampR.id, sku: '81550-0K010', description: 'FARO', estado: 'retirada' },
     sources: [{ id: uuid(2, 41), sku: '81550-0K010-X', still_merged: false }], split: `catalog/${L.lampR.id}/split` },
@@ -273,6 +273,7 @@ test('the automatic merges list each line and the ones it joined, and Separar SK
   const first = rows.getByRole('listitem', { name: 'Unificación en 04111-22152' });
   await expect(first).toContainText('0411122152');
   await expect(first).toContainText('04111 22152 · SEPARADA');
+  await expect(first).toContainText('Mismo código con otra grafía');
   await expect(rows.getByRole('listitem', { name: 'Unificación en 81550-0K010' })).toContainText('Ya se separaron todas.');
   await expect(rows.getByRole('listitem', { name: 'Unificación en 81550-0K010' })).toContainText('RETIRADA');
   await screen.getByLabel('Unificaciones desde').fill('2026-10-14');

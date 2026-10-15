@@ -187,3 +187,27 @@ test('the proxy forwards the S7 routes: OEM lines, References, cases, merges, Ma
     expect(await response.text()).not.toContain('La ruta solicitada no existe');
   }
 });
+
+test('the proxy forwards what the S8 screens read and write: every estado, a lote batch by its key, the digest by date and the Grupos subgrupo writes', async ({ page }) => {
+  test.skip(!process.env.E2E_ADMIN_TOKEN, 'A disposable superuser token is required.');
+  await page.context().addCookies([{ name: 'partsmall_session', value: process.env.E2E_ADMIN_TOKEN!, url: origin, httpOnly: true, sameSite: 'Strict' }]);
+  // Inventario's estado tabs and its re-read of rows in any estado; the queue's filters; Marcas' tipo filter; the line panel's subgrupos.
+  const every = 'referencia,preparacion,publicada,rechazada,retirada,unificada';
+  for (const path of [`/api/management/lines?page=1&estado=${every}&tipo=AFTERMARKET&search=A&ordering=-variant_count`, '/api/management/lines?page=1&estado=unificada',
+    '/api/management/cases?status=dismissed&kind=reference&route=caso&page=1', '/api/management/merges?page=1&since=2026-10-14',
+    '/api/management/brands?page=1&tipo=none', '/api/management/grupos']) {
+    const response = await page.request.get(path);
+    expect(response.status(), `${path}: ${await response.text()}`).toBe(200);
+  }
+  // A lote batch by its key answers itself (200, or 404 once it holds no case), never the proxy's 404.
+  const batch = await page.request.get('/api/management/cases/batches/legacy-auto-merge');
+  expect([200, 404], await batch.text()).toContain(batch.status());
+  expect(await batch.text()).not.toContain('La ruta solicitada no existe');
+  // Grupos y subgrupos adds and moves subgrupos through part-types: bodies the backend refuses before it writes anything.
+  const zero = '00000000-0000-4000-8000-000000000000';
+  for (const [method, path] of [['POST', '/api/management/part-types'], ['PATCH', `/api/management/part-types/${zero}`]] as const) {
+    const response = await page.request.fetch(path, { method, data: {}, headers: { Origin: origin } });
+    expect([400, 404], `${method} ${path}: ${await response.text()}`).toContain(response.status());
+    expect(await response.text()).not.toContain('La ruta solicitada no existe');
+  }
+});

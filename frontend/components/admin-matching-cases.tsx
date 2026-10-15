@@ -19,6 +19,8 @@ const VIEWS: { key: View; slug: string; label: string; Icon: typeof ListChecks }
   { key: 'merges', slug: 'unificaciones', label: 'Unificaciones automáticas', Icon: GitMerge },
 ];
 const STATUSES = [['review', 'POR REVISAR'], ['applied', 'APLICADOS'], ['dismissed', 'DESCARTADOS']] as const;
+// Why the matching service merged (CatalogMerge.summary.reason): the rule names it records; free text from older merges shows as written.
+const mergeReasons: Record<string, string> = { compact_duplicate: 'Mismo código con otra grafía (con o sin guiones o espacios).' };
 
 // The Matching Cases queue (plan S8.4): every case the matching engine could not decide alone, by kind, decided one at a time on its card
 // (management/cases/<id> with the case's fingerprint); the lote batches decided together (management/cases/batches/<key>, each case on its
@@ -223,7 +225,7 @@ function MergeDigest({ revision, onSplit }: { revision: number; onSplit: (target
         <div className="merge-digest-head"><strong>{row.target.sku}</strong>{row.target.estado !== 'publicada' && <span className="pill">{lineEstadoLabels[row.target.estado] ?? row.target.estado}</span>}<small>{day(row.created_at)}</small></div>
         {row.target.description && <p>{row.target.description}</p>}
         <p className="merge-digest-sources">{row.sources.map(source => <span key={source.id} className={source.still_merged ? '' : 'split-back'}>{source.sku}{source.still_merged ? '' : ' · SEPARADA'}</span>)}</p>
-        {row.reason && <small>{row.reason}</small>}
+        {row.reason && <small>{mergeReasons[row.reason] ?? row.reason}</small>}
         <div className="admin-toolbar-actions">{back === row.sources.length ? <span className="form-footnote">Ya se separaron todas.</span>
           : <button type="button" className="button soft small" aria-label={`Separar SKU de ${row.target.sku}`} onClick={() => onSplit({ id: row.target.id, sku: row.target.sku })}><Ungroup size={14} aria-hidden="true"/>Separar SKU</button>}</div>
       </li>;
