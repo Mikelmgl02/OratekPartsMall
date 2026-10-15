@@ -47,10 +47,12 @@ class AccountSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'roles', 'capabilities', 'permission', 'apiag_connected']
 
 class PartCodeSerializer(serializers.ModelSerializer):
+    # tipo (oem, aftermarket, otro) and estado (verificado, declarado, inferido, disputa) from S7, beside the legacy kind and ref_type:
+    # the storefront labels OEM and Aftermarket codes and hides the ones in disputa.
     kind = serializers.CharField(read_only=True)
     class Meta:
         model = PartCode
-        fields = ['brand', 'code', 'kind', 'ref_type']
+        fields = ['brand', 'code', 'kind', 'ref_type', 'tipo', 'estado']
         list_serializer_class = NonMainReferences  # the line's main is its codigo (S2b): code lists leave it out
 
 class PartEquivalentSerializer(serializers.Serializer):
@@ -76,10 +78,19 @@ class PartListSerializer(serializers.ListSerializer):
 
 
 class PartSerializer(serializers.ModelSerializer):
+    # S7 (additive): the main Reference's brand (the part's maker; '' when the codigo has none), the line's tipo (OEM, AFTERMARKET,
+    # UNKNOWN) and estado (publicada on the storefront). sku is the main Reference's code, so it holds 120 characters at most.
+    sku = serializers.CharField(max_length=120, read_only=True)
+    brand = serializers.SerializerMethodField(help_text='La marca de la referencia principal ("" si no tiene).')
     codes = PartCodeSerializer(many=True, read_only=True)
     images = PartImageSerializer(many=True, read_only=True)
     availability = serializers.SerializerMethodField()
     equivalents = serializers.SerializerMethodField()
+
+    def get_brand(self, obj) -> str:
+        from .references import main_in
+        main = main_in(obj.codes.all())  # prefetched by the lists: no query per row
+        return main.brand if main is not None else ''
 
     @extend_schema_field(PartEquivalentSerializer(many=True))
     def get_equivalents(self, obj):
@@ -99,7 +110,9 @@ class PartSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Part
-        fields = ['id', 'sku', 'is_OEM', 'name', 'description', 'category', 'subcategory', 'part_type', 'codes', 'equivalents', 'availability', 'images']
+        fields = ['id', 'sku', 'is_OEM', 'name', 'description', 'category', 'subcategory', 'part_type', 'codes', 'equivalents', 'availability', 'images',
+                  'brand', 'tipo', 'estado']
+        read_only_fields = ['tipo', 'estado']
         list_serializer_class = PartListSerializer
 
 class SupplierItemSerializer(serializers.ModelSerializer):
@@ -179,9 +192,10 @@ class StockEntrySerializer(serializers.ModelSerializer):
         fields = ['id', 'item', 'kind', 'quantity', 'direction', 'balance_type', 'reserved_delta', 'reserved_direction', 'reported_after', 'reserved_after', 'reference', 'created_at']
 
 class OfferItemSerializer(serializers.ModelSerializer):
+    # S7 (additive): what the supplier says about the variant (S3.2, '' or null when unknown) and the line's Reference it hangs from.
     class Meta:
         model = SupplierItem
-        fields = ['id', 'codigo', 'brand', 'description']
+        fields = ['id', 'codigo', 'brand', 'description', 'calidad', 'condicion', 'garantia', 'unidades_por_empaque', 'reference']
         read_only_fields = fields
 
 class OfferSerializer(serializers.Serializer):

@@ -238,7 +238,8 @@ class ManagementTests(APITestCase):
         self.client.force_authenticate(self.user)
         result = self.client.get('/api/v1/catalog/?search=SUPPLIER-CODE').data['results'][0]
         self.assertEqual(result['sku'], part.sku)
-        self.assertEqual(result['codes'], [{'brand': '', 'code': 'SUPPLIER-CODE', 'kind': 'alias', 'ref_type': 'unknown'}])
+        self.assertEqual(result['codes'], [{'brand': '', 'code': 'SUPPLIER-CODE', 'kind': 'alias', 'ref_type': 'unknown', 'tipo': 'otro',
+                                            'estado': 'declarado'}])  # tipo and estado from S7
         self.assertNotIn('alternates', result)
 
     def test_anonymous_access_is_denied_and_profile_is_authenticated(self):

@@ -42,6 +42,7 @@ def filter_values(params, own=None):
         values['supplier'] = [UUID(value) for value in values['supplier']]
     except (ValueError, AttributeError):
         raise ValidationError('El filtro de proveedor no es válido.')
+    values.update(variant_filter_values(params))
     values['availability'] = params.get('availability', '')
     if values['availability'] and values['availability'] not in AVAILABILITY_LABELS:
         raise ValidationError('El filtro de existencias no es válido.')
@@ -69,6 +70,7 @@ def apply_filters(query, values, omit=None):
             query = query.alias(**{f'_{key}': expression()}).filter(**{f'_{key}__in': values[key]})
     if omit != 'supplier' and values['supplier']:
         query = query.filter(pk__in=eligible_items().filter(supplier_id__in=values['supplier']).values('part_id'))
+    query = apply_variant_filters(query, values, omit)
     band = values['availability'] if omit != 'availability' else ''
     if band:
         query = with_stock_units(query, values.get('own')).filter(stock_band_q(band))
@@ -86,6 +88,7 @@ def catalog_facets(base, values):
     stock_scope = with_stock_units(apply_filters(base, values, omit='availability'), values.get('own')).order_by()
     counts = stock_scope.aggregate(**{value: Count('pk', distinct=True, filter=stock_band_q(value)) for value in AVAILABILITY_LABELS})
     facets['availability'] = [{'value': value, 'label': label, 'count': counts[value]} for value, label in AVAILABILITY_LABELS.items()]
+    facets.update(variant_facets(base, values))
     if values.get('own') is not None:
         facets['supplier'] = []
         return facets
@@ -100,3 +103,50 @@ def catalog_facets(base, values):
         facets['supplier'].extend({'value': str(supplier.pk), 'label': supplier.name, 'count': 0} for supplier in selected)
         facets['supplier'].sort(key=lambda option: (option['label'], option['value']))
     return facets
+
+
+# --- Marca and Calidad (inventory refactor S7) -----------------------------------------------------------------------------------------
+# brand: the line's main Reference's brand (its maker), any spelling of it (mall.brands.resolve); calidad: a matched item of the line
+# (from a live supplier, or the own ones in a supplier's view) of that calidad. Both read the catalog live, whatever
+# CATALOG_SEARCH_SOURCE says. Their facets list the brands with lines (the most lines first, BRAND_FACET_LIMIT at most) and the three
+# calidades.
+CALIDAD_LABELS = dict(SupplierItem.CALIDADES)
+BRAND_FACET_LIMIT = 50
+
+
+def variant_filter_values(params):
+    from .brands import resolve
+    brands = [value for value in dict.fromkeys(params.getlist('brand')) if value.strip()]
+    calidades = list(dict.fromkeys(params.getlist('calidad')))
+    if len(brands) > 100 or any(len(value) > 120 for value in brands):
+        raise ValidationError('El filtro de marca no es válido.')
+    if any(value not in CALIDAD_LABELS for value in calidades):
+        raise ValidationError('El filtro de calidad no es válido: usa original, oes o alternativo.')
+    return {'brand': list(dict.fromkeys(resolve(value) for value in brands)), 'calidad': calidades}
+
+
+def main_brand_lines(brands):
+    from .models import Reference
+    return Reference.objects.filter(is_main=True, brand__in=brands).values('part_id')
+
+
+def apply_variant_filters(query, values, omit=None):
+    if omit != 'brand' and values.get('brand'):
+        query = query.filter(pk__in=main_brand_lines(values['brand']))
+    if omit != 'calidad' and values.get('calidad'):
+        query = query.filter(pk__in=eligible_items(values.get('own')).filter(calidad__in=values['calidad']).values('part_id'))
+    return query
+
+
+def variant_facets(base, values):
+    from .models import Reference
+    scope = apply_filters(base, values, omit='brand').order_by().values('pk')
+    rows = (Reference.objects.filter(is_main=True, part_id__in=scope).exclude(brand='').values('brand')
+            .annotate(count=Count('part_id', distinct=True)).order_by('-count', 'brand')[:BRAND_FACET_LIMIT])
+    brands = [{'value': row['brand'], 'label': row['brand'], 'count': row['count']} for row in rows]
+    present = {row['value'] for row in brands}
+    brands += [{'value': value, 'label': value, 'count': 0} for value in values.get('brand', []) if value not in present]
+    scope = apply_filters(base, values, omit='calidad').order_by().values('pk')
+    counts = dict(eligible_items(values.get('own')).filter(part_id__in=scope).exclude(calidad='').values('calidad')
+                  .annotate(count=Count('part_id', distinct=True)).values_list('calidad', 'count'))
+    return {'brand': brands, 'calidad': [{'value': value, 'label': label, 'count': counts.get(value, 0)} for value, label in CALIDAD_LABELS.items()]}

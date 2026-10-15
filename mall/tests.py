@@ -97,11 +97,12 @@ class FoundationTests(APITestCase):
         self.assertEqual({item['codigo'] for item in offers[0]['items']}, {'58411-1R000-G', '58-1R0', 'D-HYU-1R'})
         self.assertEqual({item['brand'] for item in offers[0]['items']}, {'GENERIC', 'OTHER', 'OEM'})
         self.assertEqual(len({item['id'] for item in offers[0]['items']}), 3)
-        self.assertEqual(set(offers[0]['items'][0]), {'id', 'codigo', 'brand', 'description'})
+        self.assertEqual(set(offers[0]['items'][0]), {'id', 'codigo', 'brand', 'description', 'calidad', 'condicion', 'garantia',
+                                                      'unidades_por_empaque', 'reference'})  # the variant data from S7
         search = self.client.get('/api/v1/catalog/?search=58-1R0').data
         self.assertEqual(search['count'], 1)
         self.assertEqual(search['results'][0]['sku'], '58411-1R000')
-        self.assertNotIn('brand', search['results'][0])
+        self.assertEqual(search['results'][0]['brand'], '')  # from S7 the main code's brand; this SKU's main has none
         self.assertEqual(StockEntry.objects.count(), 4)
 
     def test_code_changes_inside_the_same_sku_keep_the_mapping_and_ledger(self):

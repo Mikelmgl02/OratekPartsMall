@@ -122,6 +122,16 @@ SPECTACULAR_SETTINGS = {"TITLE": "MotionPartes API", "VERSION": "0.1.0", "COMPON
     "LedgerDirectionEnum": [("credit", "Crédito"), ("debit", "Débito")],
     "SupplierItemSourceEnum": [("upload", "Carga manual"), ("apiag", "apiag-cloud")], "InventorySourceEnum": ["upload", "apiag"],
     "ReferenceKindEnum": ["alias", "oem", "manufacturer"],
+    # The inventory refactor's lines, References and brands (S7 routes, the storefront's tipo and estado). Labels as in their models.
+    "LineEstadoEnum": [("referencia", "Referencia"), ("preparacion", "En preparación"), ("publicada", "Publicada"), ("rechazada", "Rechazada"),
+                       ("retirada", "Retirada"), ("unificada", "Unificada")],
+    "LineTipoEnum": [("OEM", "OEM"), ("AFTERMARKET", "Posventa"), ("UNKNOWN", "Sin clasificar")],
+    "ReferenceTipoEnum": [("oem", "OEM"), ("aftermarket", "Posventa"), ("interno", "Código interno del proveedor"), ("otro", "Otro")],
+    "ReferenceEstadoEnum": [("verificado", "Verificada"), ("declarado", "Declarada"), ("inferido", "Inferida"), ("disputa", "En disputa"),
+                            ("retirada", "Retirada")],
+    "ReferenceLiveEstadoEnum": [("verificado", "Verificada"), ("declarado", "Declarada"), ("inferido", "Inferida"), ("disputa", "En disputa")],
+    "BrandTipoEnum": [("vehiculo", "Marca de vehículo"), ("repuesto", "Marca de repuestos")],
+    "MatchingCaseActionEnum": ["approve", "dismiss", "separar_referencia", "merge", "keep_apart"],
     "DealActionEnum": ["quote", "accept", "request_adjustment", "return_quote"], "MatchingReviewActionEnum": ["approve", "dismiss"],
     "MatchingStateEnum": ["running", "retrying", "waiting_import", "queued", "completed", "idle"],
     # Private pricing (supplier-only). MembershipPermissionEnum carries the Membership.permission labels.

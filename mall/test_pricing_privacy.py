@@ -398,11 +398,13 @@ class PricingPrivacyTests(APITestCase):
         self.assertEqual(set(self.client.get('/api/v1/accounts/').data['results'][0]), {'id', 'name', 'roles', 'capabilities', 'permission', 'apiag_connected'})
         part = self.client.get('/api/v1/catalog/').data['results'][0]
         self.assertEqual(set(part), {'id', 'sku', 'is_OEM', 'name', 'description', 'category', 'subcategory', 'part_type', 'codes', 'equivalents',
-                                     'availability', 'images'})  # equivalents: catalog codes reached through OEM numbers, no supplier data
+                                     'availability', 'images', 'brand', 'tipo', 'estado'})  # equivalents: catalog codes reached through OEM
+        # numbers, no supplier data; brand (the main code's), tipo and estado are the line's own (S7)
         self.assertEqual(set(part['availability']), {'status', 'supplier_count', 'updated_at'})
         offers = self.client.get(f'/api/v1/catalog/{self.part.pk}/suppliers/').data
         self.assertEqual({key for offer in offers for key in offer}, {'supplier_id', 'supplier_name', 'in_stock', 'items'})
-        self.assertEqual({key for offer in offers for item in offer['items'] for key in item}, {'id', 'codigo', 'brand', 'description'})
+        self.assertEqual({key for offer in offers for item in offer['items'] for key in item},
+                         {'id', 'codigo', 'brand', 'description', 'calidad', 'condicion', 'garantia', 'unidades_por_empaque', 'reference'})  # S7: no price
 
     def test_pricing_models_stay_out_of_admin_and_management_serializers(self):
         for model in [SupplierPricingSettings, PricingAuditEvent, DealQuotationDraft, DealQuotationDraftLine, DealQuotationAudit, DealQuotationLineAudit,

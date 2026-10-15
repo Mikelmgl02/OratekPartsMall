@@ -17,6 +17,14 @@ test('the catalog passes Mis repuestos and the active account on, and nothing it
   expect(forwardedQuery('catalog', new URLSearchParams('account=not-a-uuid')).has('account')).toBe(false);
 });
 
+test('the catalog passes Marca and Calidad on (S7), each value checked', () => {
+  const query = forwardedQuery('catalog', new URLSearchParams('brand=KYB&brand=KYB&brand=TOY&brand=%20&calidad=oes&calidad=nope&calidad=original'));
+  expect(query.getAll('brand')).toEqual(['KYB', 'TOY']);
+  expect(query.getAll('calidad')).toEqual(['oes', 'original']);
+  expect(forwardedQuery('catalog/suggest', new URLSearchParams('calidad=alternativo')).getAll('calidad')).toEqual(['alternativo']);
+  expect(forwardedQuery(`accounts/${account}/inventory`, new URLSearchParams('brand=KYB&calidad=oes')).toString()).toBe('');
+});
+
 test('open-units and one SKU\'s open orders are readable market routes', async ({ request }) => {
   const units = `/api/market/accounts/${account}/open-units`;
   expect((await request.get(units)).status()).toBe(401);  // a session first

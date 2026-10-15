@@ -51,6 +51,11 @@ export function forwardedQuery(route: string, params: URLSearchParams) {
     // Mis repuestos (mall CatalogList.mine_parts): the SKUs in the cesta, the open orders or the favoritos.
     for (const value of new Set(params.getAll('mine'))) if (['cesta', 'ordenes', 'favoritos'].includes(value)) query.append('mine', value);
   }
+  // Marca and Calidad (inventory refactor S7, mall/catalog_filters.py): the main code's brand and a matched article's calidad.
+  if (route === 'catalog' || route === 'catalog/suggest') {
+    for (const value of new Set(params.getAll('brand'))) if (value.trim() && value.length <= 120) query.append('brand', value);
+    for (const value of new Set(params.getAll('calidad'))) if (['original', 'oes', 'alternativo'].includes(value)) query.append('calidad', value);
+  }
   // The active account (a uuid): a supplier-only account sees only its own SKUs (mall/catalog_scope.py).
   if (route === 'catalog' || route === 'catalog/suggest') {
     const account = params.get('account');
