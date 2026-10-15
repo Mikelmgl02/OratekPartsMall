@@ -1,7 +1,9 @@
-"""Revisión IA of Productos nuevos (superusers): start a run, review it batch by batch, read its report, and list the proposals a batch
-action can decide. The decisions themselves go through catalog/proposals/bulk/ (approve, reject, link)."""
+"""Revisión IA of Productos nuevos (superusers): start a run, review it batch by batch, read its report, and list the products a batch
+action can decide. The decisions themselves go through catalog/proposals/bulk/ (approve, reject, link). From inventory refactor S6 a
+product is a line in preparación (mall.new_products) and a verdict hangs from its line; the JSON keeps its keys (proposal is the line's
+id, current its state as the Productos nuevos grid shows it)."""
 from django.db import IntegrityError, transaction
-from django.db.models import OuterRef, Subquery
+from django.db.models import Exists, OuterRef, Prefetch, Subquery
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import serializers
@@ -13,8 +15,10 @@ from . import sku_review
 from .ai_budget import feature_budget, month_spend
 from .catalog_classification import ClassificationConflict, provider_configuration
 from .management import IsSuperuser, UppercaseCharField
+from .models import Reference, SupplierItem
 from .sku_proposal_models import SkuProposal
-from .sku_review_models import SkuReviewRun, SkuReviewVerdict
+from .sku_proposal_views import STATUS_LABELS, codes_of, status_for
+from .sku_review_models import SkuReviewRun
 from .technical_data import grupo_nombre
 
 PAGE = 50
@@ -22,12 +26,23 @@ RECENT_RUNS = 10
 VERDICT_FILTERS = ('good', 'bad', 'unsure', 'stale', 'decided')
 
 
-def state(verdict, proposal):
-    """fresh (the verdict holds), stale (the proposal changed since), superseded (a newer run reviewed it again) or decided (approved,
+def line_status(verdict):
+    """The status the verdict's line has in Productos nuevos ('' when the verdict has no line: a proposal that never became one)."""
+    line = verdict.line
+    if line is None:
+        return ''
+    with_items = getattr(verdict, 'line_has_items', None)
+    if with_items is None:
+        with_items = SupplierItem.objects.filter(part_id=line.pk).exists()
+    return status_for(line.estado, line.origen, with_items)
+
+
+def state(verdict):
+    """fresh (the verdict holds), stale (the line changed since), superseded (a newer run reviewed it again) or decided (approved,
     linked, rejected or resolved since). Only fresh verdicts feed the batch actions."""
-    if proposal.status != 'pending':
+    if line_status(verdict) != 'pending':
         return 'decided'
-    if verdict.proposal_version != proposal.version:
+    if verdict.proposal_version != verdict.line.version:
         return 'stale'
     return 'fresh' if getattr(verdict, 'latest_id', verdict.pk) == verdict.pk else 'superseded'
 
@@ -40,35 +55,53 @@ def run_summary(run):
             'status': 'running' if sku_review.claim_active(run) else 'completed' if run.completed_batches >= total else 'ready'}
 
 
+def oem_json(oem):
+    return {'code': oem.code, 'brand': oem.brand} if oem is not None else None
+
+
+def current(verdict):
+    """The verdict's line as the Productos nuevos grid shows it now."""
+    line, status = verdict.line, line_status(verdict)
+    if line is None:
+        return {'version': None, 'status': 'resolved', 'status_label': STATUS_LABELS['resolved'], 'sku': verdict.evidence.get('sku', ''),
+                'description': verdict.evidence.get('descripcion', ''), 'brand': verdict.evidence.get('marca', ''), 'internal_code': False,
+                'oem': None, 'part_type': None, 'field_sources': {}, 'part': None}
+    main, oem, _ = codes_of(line)
+    part_type = line.part_type
+    part = {'id': str(line.pk), 'sku': line.sku} if status == 'approved' else (
+        {'id': str(line.merged_into_id), 'sku': line.merged_into.sku} if status == 'linked' and line.merged_into_id else None)
+    return {'version': line.version, 'status': status, 'status_label': STATUS_LABELS.get(status, ''), 'sku': line.sku,
+            'description': line.description, 'brand': main.brand if main is not None else '',
+            'internal_code': main is not None and main.tipo == 'interno', 'oem': oem_json(oem),
+            'part_type': {'id': str(part_type.pk), 'category': grupo_nombre(part_type), 'name': part_type.name} if part_type else None,
+            'field_sources': line.field_sources or {}, 'part': part}
+
+
 def verdict_json(verdict):
-    proposal = verdict.proposal
-    part_type = proposal.part_type
     return {
-        'id': str(verdict.pk), 'proposal': str(proposal.pk), 'state': state(verdict, proposal), 'method': verdict.method,
+        'id': str(verdict.pk), 'proposal': str(verdict.line_id or verdict.proposal_id), 'state': state(verdict), 'method': verdict.method,
         'verdict': verdict.verdict, 'reason': verdict.reason, 'reason_label': dict(SkuProposal.REJECT_REASONS).get(verdict.reason, ''),
         'confidence': verdict.confidence, 'reasons': verdict.reasons, 'suggestions': verdict.suggestions, 'applied': verdict.applied,
         'reviewed_version': verdict.proposal_version,
         'link_part': {'id': str(verdict.link_part_id), 'sku': verdict.link_part.sku} if verdict.link_part_id else None,
-        'current': {'version': proposal.version, 'status': proposal.status, 'status_label': proposal.get_status_display(), 'sku': proposal.sku,
-                    'description': proposal.description, 'brand': proposal.brand, 'internal_code': proposal.internal_code,
-                    'oem': {'code': proposal.oem_code, 'brand': proposal.oem_brand} if proposal.oem_code else None,
-                    'part_type': {'id': str(part_type.pk), 'category': grupo_nombre(part_type), 'name': part_type.name} if part_type else None,
-                    'field_sources': proposal.field_sources, 'part': {'id': str(proposal.part_id), 'sku': proposal.part.sku} if proposal.part_id else None},
+        'current': current(verdict),
         'supplier_description': next(iter(verdict.evidence.get('descripciones_de_proveedores') or []), ''),
         'stock': verdict.evidence.get('existencias', 0), 'signals': verdict.evidence.get('senales', []),
     }
 
 
 def verdicts(run):
-    latest = sku_review.given().filter(proposal=OuterRef('proposal')).order_by('-created_at', '-pk').values('pk')[:1]
-    return run.verdicts.select_related('proposal__part_type__grupo', 'proposal__part', 'link_part').annotate(latest_id=Subquery(latest))
+    latest = sku_review.given().filter(line=OuterRef('line')).order_by('-created_at', '-pk').values('pk')[:1]
+    codes = Prefetch('line__codes', to_attr='live_codes', queryset=Reference.objects.order_by('pk'))
+    return (run.verdicts.select_related('line__part_type__grupo', 'line__merged_into', 'link_part').prefetch_related(codes)
+            .annotate(latest_id=Subquery(latest), line_has_items=Exists(SupplierItem.objects.filter(part_id=OuterRef('line_id')))))
 
 
 def counts(rows):
     """Per report tab, plus what the batch actions would take: bad ones to reject (not the ones the catalog already has) and to link."""
     result = {'good': 0, 'bad': 0, 'unsure': 0, 'stale': 0, 'decided': 0, 'link': 0, 'reject': 0}
     for verdict in rows:
-        where = state(verdict, verdict.proposal)
+        where = state(verdict)
         if where != 'fresh':
             result['decided' if where == 'decided' else 'stale'] += 1
             continue
@@ -83,10 +116,10 @@ def counts(rows):
 def selected(rows, wanted):
     """The verdicts of one report tab: fresh ones by verdict, or the stale or decided ones."""
     if wanted == 'stale':
-        return [verdict for verdict in rows if state(verdict, verdict.proposal) in ('stale', 'superseded')]
+        return [verdict for verdict in rows if state(verdict) in ('stale', 'superseded')]
     if wanted == 'decided':
-        return [verdict for verdict in rows if state(verdict, verdict.proposal) == 'decided']
-    return [verdict for verdict in rows if state(verdict, verdict.proposal) == 'fresh' and verdict.verdict == wanted]
+        return [verdict for verdict in rows if state(verdict) == 'decided']
+    return [verdict for verdict in rows if state(verdict) == 'fresh' and verdict.verdict == wanted]
 
 
 def report(run, wanted='good', offset=0):
@@ -98,18 +131,22 @@ def report(run, wanted='good', offset=0):
 
 
 def actionable(run, wanted):
-    """Every fresh pending proposal of a verdict, with the version the batch action must send: approve the good ones, reject the bad
-    ones with their reason, link the bad ones the catalog already has."""
+    """Every fresh line waiting for a decision of a verdict, with the version the batch action must send: approve the good ones,
+    reject the bad ones with their reason, link the bad ones the catalog already has."""
     rows = selected(list(verdicts(run)), 'good' if wanted == 'good' else 'bad')
     if wanted == 'link':
         rows = [verdict for verdict in rows if verdict.link_part_id]
     elif wanted == 'bad':  # the ones the catalog already has are linked or decided one by one, never rejected in batch
         rows = [verdict for verdict in rows if verdict.reason != 'duplicate']
-    return {'verdict': wanted, 'count': len(rows), 'results': [
-        {'id': str(verdict.proposal_id), 'version': verdict.proposal_version, 'sku': verdict.proposal.sku, 'description': verdict.proposal.description,
-         'reason': verdict.reason, 'note': ('Revisión IA: ' + ' '.join(verdict.reasons))[:2000], 'internal_code': verdict.proposal.internal_code,
-         'oem': {'code': verdict.proposal.oem_code, 'brand': verdict.proposal.oem_brand} if verdict.proposal.oem_code else None,
-         'part': str(verdict.link_part_id) if verdict.link_part_id else None} for verdict in rows]}
+    results = []
+    for verdict in rows:
+        main, oem, _ = codes_of(verdict.line)
+        results.append({'id': str(verdict.line_id), 'version': verdict.proposal_version, 'sku': verdict.line.sku,
+                        'description': verdict.line.description, 'reason': verdict.reason,
+                        'note': ('Revisión IA: ' + ' '.join(verdict.reasons))[:2000],
+                        'internal_code': main is not None and main.tipo == 'interno', 'oem': oem_json(oem),
+                        'part': str(verdict.link_part_id) if verdict.link_part_id else None})
+    return {'verdict': wanted, 'count': len(results), 'results': results}
 
 
 class ReviewStart(serializers.Serializer):

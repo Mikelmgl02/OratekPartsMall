@@ -1,6 +1,7 @@
 """The OEM line's lifecycle (inventory refactor S1): the only writer of Part.estado, origen and the decision fields, and the querysets
 the readers take lines from, each with an explicit estado decision. From S5 it also writes a line's subgrupo (set_subgrupo: part_type
-and, until S10, the grupo and subgrupo text that follow it).
+and, until S10, the grupo and subgrupo text that follow it). From S6 prepare, publish and reject are the transitions of Productos
+nuevos (a line in preparación: mall.new_products), and create_line makes a line whose main is a supplier's interno code.
 
     referencia   a number of the OEM library with no product yet (S4)
     preparacion  a new product being prepared from supplier items (Productos nuevos, S6)
@@ -300,12 +301,15 @@ def validate_codes(estado, origen):
 
 
 def create_line(sku, *, estado='publicada', origen='catalogo', decided_by=None, decided_at=None, main_brand='', main_tipo=None,
-                main_source='', actor=None, strict=False, promote=True, library_brand='', **fields):
+                main_source='', actor=None, strict=False, promote=True, library_brand='', main_supplier=None, main_detail=None, **fields):
     """A new line (Part.objects.create) in this estado and from this origen, with its main Reference (S2b): the codigo as code,
     main_brand ('' any brand), main_tipo (the line's when None: oem for is_OEM=True, otro otherwise) and main_source
     (mall.references.ensure_main). A key another line holds refuses the line with strict (ReferenceConflict, so its transaction
     rolls back), else the main waits in disputa for a merge case. Other Part fields pass through. A unificada line is only ever made
     by merging an existing one. Every writer that creates lines goes through here or bulk_create_lines.
+    From S6 the main may be a supplier's own code (main_supplier: tipo interno, scoped to that supplier, OD6/OD20: Productos nuevos,
+    mall.new_products.place); it is always strict, since an interno code never waits in disputa. main_detail goes on the main's
+    detail (the S6 tag its rollback finds).
     From S4 a catalog line (publicada or retirada) whose codigo a line in referencia has (a library number no product carried yet)
     promotes that line instead (promotable, promote): the same id, its References and origen kept, the texts given written over the
     library's. When several makes share the codigo, library_brand (or main_brand) names the one (LineStateError otherwise)."""
@@ -322,11 +326,20 @@ def create_line(sku, *, estado='publicada', origen='catalogo', decided_by=None, 
             with transaction.atomic():
                 target = Part.objects.select_for_update().get(pk=target.pk)
                 return promote_line(target, estado=estado, user=decided_by or (actor if getattr(actor, 'pk', None) else None), **given)
+    if (main_supplier is None) != (main_tipo != 'interno'):
+        raise LineStateError('Un código principal interno lleva su proveedor, y solo uno interno lo lleva.')
     line = Part(sku=sku, estado=estado, origen=origen, decided_by=decided_by, decided_at=decided_at, **fields)
     line._main_followed = True  # the main is made below, with what the caller asked for
     with transaction.atomic():
         line.save(force_insert=True)
-        references.ensure_main(line, brand=main_brand, tipo=main_tipo, source=main_source, actor=actor, strict=strict)
+        if main_supplier is not None:  # mall.references.ensure_main makes public mains only
+            main, _ = references.add(line, line.sku, main_brand, tipo='interno', supplier=main_supplier, source=main_source, actor=actor,
+                                     detail=main_detail)
+            references.set_main(line, main, actor)
+        else:
+            main = references.ensure_main(line, brand=main_brand, tipo=main_tipo, source=main_source, actor=actor, strict=strict)
+            if main_detail and main is not None:
+                references.update(main, detail={**(main.detail or {}), **main_detail}, actor=actor)
     return line
 
 
@@ -473,6 +486,41 @@ def set_estado(line, estado, *, user=None, reason='', note='', at=None):
     """Move a line (already locked by the caller when it matters) to another estado and save it (stage_estado). Returns the line."""
     line.save(update_fields=stage_estado(line, estado, user=user, reason=reason, note=note, at=at))
     return line
+
+
+# --- Productos nuevos (S6): the transitions of a line in preparación ------------------------------------------------------------------
+# A new product is a line in preparación (mall.new_products): a supplier's item no line takes gets one (rule 4), and a line in
+# referencia an item joins moves there (rule 7). A person publishes it, rejects it (it keeps its References and pending items, and the
+# same code joins it again with no notice: OD13) or links it to a catalog line (mall.line_merge.merge_lines makes it unificada).
+
+def prepare(line, *, user=None, at=None):
+    """Rule 7: a line in referencia (a library number no product carried) that a supplier's item joins moves to preparación. A line
+    already in preparación is left as it is; any other estado refuses (LineStateError). The caller holds the line locked. Returns it."""
+    if line.estado == 'preparacion':
+        return line
+    if line.estado != 'referencia' or line.merged_into_id:
+        raise LineStateError(f'Esta línea está {phrase(line.estado)}: solo una línea en referencia pasa a preparación.')
+    return set_estado(line, 'preparacion', user=user, at=at)
+
+
+def publish(line, *, user, at=None):
+    """Productos nuevos' Aprobar: a line in preparación becomes publicada (decided by and at, changed_at, version + 1). Refused
+    (LineStateError) from any other estado, and when another catalog line (publicada or retirada) has its codigo
+    (line_codigo_unique_catalog). The caller holds the line locked and moves its variants (mall.new_products). Returns the line."""
+    if line.estado != 'preparacion' or line.merged_into_id:
+        raise LineStateError(f'Esta línea está {phrase(line.estado)}: solo una línea en preparación se publica desde Productos nuevos.')
+    holder = catalog_lines().filter(sku__iexact=codigo_key(line.sku)).exclude(pk=line.pk).order_by('pk').first()
+    if holder is not None:
+        raise LineStateError(f'El código {codigo_key(line.sku)} ya es el SKU {holder.sku}: vincula ahí sus artículos.')
+    return set_estado(line, 'publicada', user=user, at=at)
+
+
+def reject(line, *, user, reason, note='', at=None):
+    """Productos nuevos' Rechazar: a line in preparación becomes rechazada with one of REASONS and a note. It keeps its References and
+    its pending items (OD13). Returns the line."""
+    if line.estado != 'preparacion' or line.merged_into_id:
+        raise LineStateError(f'Esta línea está {phrase(line.estado)}: solo una línea en preparación se rechaza desde Productos nuevos.')
+    return set_estado(line, 'rechazada', user=user, reason=reason, note=note, at=at)
 
 
 SUBGRUPO_FIELDS = ['part_type', 'category', 'subcategory']

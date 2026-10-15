@@ -1,18 +1,22 @@
 """Revisión IA of Productos nuevos (Administración → Inventario → Productos nuevos → Revisión IA).
 
-The AI reviews pending proposals and an administrator decides: it says which ones can be approved as they are (good), which ones
+From inventory refactor S6 a product waiting for a decision is a line in preparación with items (mall.new_products; the screens still
+call it a proposal): a run's proposal_ids are line ids, a verdict hangs from its line and holds for the line's version, and the fills
+go through mall.new_products.ai_fill (never changed_at; «código interno» makes the main the supplier's own code).
+
+The AI reviews the products waiting for a decision and an administrator decides: it says which ones can be approved as they are (good), which ones
 should be rejected or linked to a SKU the catalog already has (bad) and which ones a person should look at (unsure), and it fills
 what it can from our own data only, never the web: grupo/subgrupo (a pair of the existing vocabulary, taxonomy()), a description
 with obvious typos fixed, and «código interno» for a make brand's merchandise or tools, so approving them never files their codes as
 OEM numbers. A field an administrator set is never touched. Approving or rejecting stays a person's decision, one by one or in batch.
 
-A run freezes the pending proposals it reviews and goes through them batch by batch from the administrator's browser, as Asistente de
+A run freezes the products it reviews and goes through them batch by batch from the administrator's browser, as Asistente de
 inventario does: one claimed batch at a time, the AI called with no lock held, the verdicts saved only if the claim is still the
 run's. Before the AI, rules settle what needs no tokens (a code the catalog already has, a supplier's «NO USO», placeholder data).
 Every AI call is checked against the monthly cap (SKU_REVIEW_MONTHLY_USD and AI_MONTHLY_BUDGET_USD) and recorded as 'sku_review'.
 
-A verdict holds for the proposal's version after the fill. Any change to the proposal (the supplier's items, an administrator's edit)
-moves the version and makes it stale («cambió»); batch actions send the reviewed version, which the decision checks."""
+A verdict holds for the line's version after the fill. Any change to the line (an item joining, an administrator's edit) moves the
+version and makes it stale («cambió»); batch actions send the reviewed version, which the decision checks."""
 import json
 import logging
 import math
@@ -21,7 +25,7 @@ import uuid
 from datetime import timedelta
 
 from django.db import connection, transaction
-from django.db.models import F, Q
+from django.db.models import Exists, F, OuterRef, Q, Subquery
 from django.utils import timezone
 from rest_framework.exceptions import NotFound, ValidationError
 
@@ -29,12 +33,13 @@ from .ai_budget import AssistantDisabled, AssistantLimit, check_monthly, estimat
 from .catalog_classification import (PROVIDER_TIMEOUT, ClassificationConflict, ClassificationProviderError, ClassificationUnavailable,
                                      generate_json, provider_configuration)
 from .category_suggestions import taxonomy
+from .lines import all_lines, storefront_lines
 from .matching_engine import NO_CODE_EVIDENCE
 from .matching_models import MatchingCase
-from .lines import storefront_lines
-from .models import SupplierItem
+from .models import Part, SupplierItem
+from .new_products import PLACED_REASON, ai_fill, duplicate_checks, lock_accounts
 from .sku_proposal_models import SkuProposal
-from .sku_proposals import PLACEHOLDER_BRANDS, ai_fill, catalog_owners, clean, duplicate_checks, vehicle_makes
+from .sku_proposals import PLACEHOLDER_BRANDS, catalog_owners, clean, merge_references, vehicle_makes
 from .sku_review_models import SkuReviewRun, SkuReviewVerdict
 
 logger = logging.getLogger(__name__)
@@ -122,10 +127,10 @@ def code_base(code):
     return re.sub(r'-\d{1,2}$', '', base)
 
 
-def siblings(proposal, item_ids):
+def siblings(line, item_ids):
     """Supplier items and catalog SKUs with the same 7-digit QC/T number under another prefix (F02-3501116-01AA for FX11-3501116-01AA):
     their descriptions and grupo/subgrupo hint at what this one is. The same number can still be another make or another part."""
-    number = sequence(proposal.sku)
+    number = sequence(line.sku)
     if not number:
         return []
     found = []
@@ -140,26 +145,29 @@ def siblings(proposal, item_ids):
     return found
 
 
-def candidates(proposal):
-    """Possibly the same product: other pending proposals and catalog SKUs whose code shares this one's base, then the hints the
-    matching engine left on its items' cases (word_hints)."""
-    base, found = code_base(proposal.sku), []
+def candidates(line):
+    """Possibly the same product (the "posibles duplicados"): other lines in preparación with items and catalog lines on sale whose
+    codigo shares this one's base, then the hints the matching engine left on its items' cases (word_hints)."""
+    base, found = code_base(line.sku), []
     if len(base) >= 5:
+        waiting = Exists(SupplierItem.objects.filter(part_id=OuterRef('pk')))
         found = [{'kind': 'proposal', 'id': str(pk), 'sku': sku, 'descripcion': clean(description)[:120]}
-                 for pk, sku, description in SkuProposal.objects.filter(status='pending', sku__istartswith=base).exclude(pk=proposal.pk)
-                 .values_list('pk', 'sku', 'description').order_by('sku')[:CANDIDATES]]
+                 for pk, sku, description in all_lines().filter(estado='preparacion', sku__istartswith=base).filter(waiting)
+                 .exclude(pk=line.pk).values_list('pk', 'sku', 'description').order_by('sku')[:CANDIDATES]]
         found += [{'kind': 'part', 'id': str(pk), 'sku': sku, 'descripcion': clean(description)[:120]}
                   for pk, sku, description in storefront_lines().filter(sku__istartswith=base)
                   .values_list('pk', 'sku', 'description').order_by('sku')[:CANDIDATES - len(found)]] if len(found) < CANDIDATES else []
     seen = {row['id'] for row in found}
-    return found + [row for row in word_hints(proposal) if row['id'] not in seen][:HINTS]
+    return found + [row for row in word_hints(line) if row['id'] not in seen][:HINTS]
 
 
-def word_hints(proposal):
-    """Catalog SKUs the matching engine found for the proposal's items by description only (the same description or shared rare
-    words) when no code tied them to a SKU: possibly the same product, never evidence. Retired and merged SKUs are left out."""
+def word_hints(line):
+    """Catalog SKUs the matching engine found for the line's items by description only (the same description or shared rare words)
+    when no code tied them to a SKU: possibly the same product, never evidence. Their legacy case is unmatched, or dismissed because
+    the item was placed on this line (an administrator's own dismissal keeps its hints out). Retired and merged SKUs are left out."""
     ids = []
-    for rows in (MatchingCase.objects.filter(item__sku_proposal__proposal=proposal, kind='supplier', status='unmatched', method=NO_CODE_EVIDENCE)
+    placed = Q(status='unmatched') | Q(status='dismissed', reason=PLACED_REASON)
+    for rows in (MatchingCase.objects.filter(placed, item__part_id=line.pk, kind='supplier', method=NO_CODE_EVIDENCE)
                  .order_by('key').values_list('candidates', flat=True)):
         ids += [row['id'] for row in rows if row.get('id') and row['id'] not in ids]
     live = {str(pk): (sku, description) for pk, sku, description in
@@ -167,53 +175,70 @@ def word_hints(proposal):
     return [{'kind': 'part', 'id': pk, 'sku': live[pk][0], 'descripcion': clean(live[pk][1])[:120]} for pk in ids if pk in live]
 
 
-def evidence(proposal, makes):
-    """The compact row the AI sees for one proposal, and the signals the rules and guards read."""
-    rows = list(proposal.items.all())
-    suppliers = sorted({row.item.supplier.name for row in rows})
-    make = '' if proposal.internal_code else makes.get(proposal.brand, '')
+def items_of(line):
+    rows = getattr(line, 'variants_list', None)
+    return rows if rows is not None else list(SupplierItem.objects.filter(part_id=line.pk).select_related('supplier').order_by('pk'))
+
+
+def evidence(line, makes):
+    """The compact row the AI sees for one line, and the signals the rules and guards read."""
+    from .sku_proposal_views import codes_of
+    items = items_of(line)
+    main, oem, _ = codes_of(line)
+    brand, internal = (main.brand, main.tipo == 'interno') if main is not None else ('', False)
+    suppliers = sorted({item.supplier.name for item in items})
+    make = '' if internal else makes.get(brand, '')
     signals = []
-    if placeholder(proposal.description):
+    if placeholder(line.description):
         signals.append('descripcion_de_relleno')
-    if not proposal.brand or proposal.brand in PLACEHOLDER_BRANDS:
+    if not brand or brand in PLACEHOLDER_BRANDS:
         signals.append('sin_marca')
-    if proposal.brand and any(clean(name) == proposal.brand for name in suppliers):
+    if brand and any(clean(name) == brand for name in suppliers):
         signals.append('marca_es_el_proveedor')
-    stock = sum(row.item.available_quantity for row in rows)
+    stock = sum(item.available_quantity for item in items)
     if not stock:
         signals.append('sin_existencias')
-    if NO_LONGER_USED.match(clean(proposal.description)):
+    if NO_LONGER_USED.match(clean(line.description)):
         signals.append('proveedor_ya_no_lo_usa')
-    if BADLY_CREATED.search(clean(proposal.description)):
+    if BADLY_CREATED.search(clean(line.description)):
         signals.append('mal_creado')
+    declared = merge_references([reference for item in items for reference in (item.references or [])])
     return {
-        'sku': proposal.sku, 'marca': proposal.brand, 'es_marca_de_vehiculo': bool(make), 'fabricante': make,
-        'descripcion': clean(proposal.description)[:200], 'descripciones_de_proveedores': sorted({clean(row.item.description)[:120] for row in rows} - {''})[:3],
-        'proveedores': suppliers[:3], 'existencias': stock, 'oem': proposal.oem_code, 'alternos': [ref['code'] for ref in proposal.references[:5]],
-        'senales': signals, 'hermanos': siblings(proposal, [row.item_id for row in rows]), 'candidatos': candidates(proposal),
-        '_largo': len(clean(proposal.description)),
+        'sku': line.sku, 'marca': brand, 'es_marca_de_vehiculo': bool(make), 'fabricante': make,
+        'descripcion': clean(line.description)[:200], 'descripciones_de_proveedores': sorted({clean(item.description)[:120] for item in items} - {''})[:3],
+        'proveedores': suppliers[:3], 'existencias': stock, 'oem': oem.code if oem is not None else '', 'alternos': [ref['code'] for ref in declared[:5]],
+        'senales': signals, 'hermanos': siblings(line, [item.pk for item in items]), 'candidatos': candidates(line),
+        '_largo': len(clean(line.description)),
     }
 
 
+DECIDED = {'publicada': 'approved', 'unificada': 'linked', 'rechazada': 'rejected'}
+
+
 def decision_examples():
-    """Recent decisions of the administrators, as the AI's policy examples: what they approved, rejected and why."""
-    rows = (SkuProposal.objects.filter(status__in=['approved', 'linked', 'rejected']).exclude(description='')
-            .order_by('-decided_at').values_list('sku', 'description', 'brand', 'status', 'reject_reason')[:DECISION_EXAMPLES * 2])
-    return [[sku, clean(description)[:80], brand, status, reason] for sku, description, brand, status, reason in rows
+    """Recent decisions of the administrators, as the AI's policy examples: what they approved, linked or rejected and why (the lines
+    decided from Productos nuevos, newest first, then the proposals decided before S6)."""
+    from .models import Reference
+    main_brand = Reference.objects.filter(part_id=OuterRef('pk'), is_main=True).values('brand')[:1]
+    rows = [(sku, description, brand or '', DECIDED[estado], reason if estado == 'rechazada' else '', at) for sku, description, brand, estado, reason, at in
+            all_lines().filter(origen='proveedor', estado__in=list(DECIDED), decided_at__isnull=False).exclude(description='')
+            .annotate(main_brand=Subquery(main_brand)).order_by('-decided_at')
+            .values_list('sku', 'description', 'main_brand', 'estado', 'decision_reason', 'decided_at')[:DECISION_EXAMPLES * 2]]
+    rows += list(SkuProposal.objects.filter(status__in=['approved', 'linked', 'rejected']).exclude(description='').order_by('-decided_at')
+                 .values_list('sku', 'description', 'brand', 'status', 'reject_reason', 'decided_at')[:DECISION_EXAMPLES * 2])
+    rows.sort(key=lambda row: row[5], reverse=True)
+    return [[sku, clean(description)[:80], brand, status, reason] for sku, description, brand, status, reason, _ in rows
             if not placeholder(description)][:DECISION_EXAMPLES]
 
 
 # --- rules: no tokens ----------------------------------------------------------------------------------------------------------------
 
-def rule_verdict(proposal, row):
+def rule_verdict(line, row):
     """A verdict the rules settle, or None for the AI: a code the catalog already has, a supplier's «NO USO», or placeholder data with
     nothing to recover it from."""
-    owners = [owner for code, brands in duplicate_checks(proposal) for owner in catalog_owners(code, brands)]
-    earlier = getattr(proposal, 'earlier_part', None)
-    if owners or earlier:
+    owners = [owner for code, brands in duplicate_checks(line) for owner in catalog_owners(code, brands) if str(owner[0]) != str(line.pk)]
+    if owners:
         targets = {pk: sku for pk, sku, active in owners if active}
-        if earlier:
-            targets.setdefault(earlier, getattr(proposal, 'earlier_sku', '') or '')
         names = ', '.join(sorted(set(targets.values()) | {sku for _, sku, _ in owners}))
         if len(targets) > 1:  # several SKUs could take its items: a person chooses
             return {'verdict': 'bad', 'reason': 'duplicate', 'confidence': 1.0, 'link_part': None,
@@ -395,7 +420,7 @@ def locked_run(pk):
 
 def review_batch(user, pk, index):
     """Reviews batch `index` of the run (the next one, or a replay of a saved one) and returns nothing: the caller reads the run."""
-    from .sku_proposal_views import proposals
+    from .sku_proposal_views import proposals, status_q
     claim, now, makes = uuid.uuid4(), timezone.now(), vehicle_makes()
     with transaction.atomic():
         run = locked_run(pk)
@@ -407,9 +432,9 @@ def review_batch(user, pk, index):
             raise ClassificationConflict('Un lote de esta revisión está en curso. Espera a que termine para reanudar.')
         ids = run.proposal_ids[index * run.batch_size:(index + 1) * run.batch_size]
         # A newer run already reviewed it as it is now: resuming this one does not review (and pay for) it again.
-        newer = set(SkuReviewVerdict.objects.filter(proposal_id__in=ids, created_at__gt=run.created_at, proposal__version=F('proposal_version'))
-                    .exclude(run=run).values_list('proposal_id', flat=True))
-        found = {str(proposal.pk): proposal for proposal in proposals().filter(pk__in=ids, status='pending').exclude(pk__in=newer)}
+        newer = set(SkuReviewVerdict.objects.filter(line_id__in=ids, created_at__gt=run.created_at, line__version=F('proposal_version'))
+                    .exclude(run=run).exclude(applied__has_key='skipped').values_list('line_id', flat=True))
+        found = {str(line.pk): line for line in proposals().filter(status_q('pending'), pk__in=ids).exclude(pk__in=newer)}
         batch = [found[pk] for pk in ids if pk in found]  # decided since the run began: nothing to review
         seen = {str(proposal.pk): proposal.version for proposal in batch}
         rows = {str(proposal.pk): evidence(proposal, makes) for proposal in batch}
@@ -452,7 +477,10 @@ def save_batch(user, pk, claim, index, batch, seen, rows, decided, asked, review
         run = locked_run(pk)
         if run.claim_id != claim:
             raise ClassificationConflict('Este lote se reanudó desde otra sesión. Actualiza la revisión.')
-        current = {str(proposal.pk): proposal for proposal in SkuProposal.objects.select_for_update().filter(pk__in=list(seen)).order_by('pk')}
+        # The lock order of every writer of a line (plan §1.6.5): its items' supplier Accounts, then the lines; the fills may re-hang items.
+        lock_accounts(SupplierItem.objects.filter(part_id__in=list(seen)).values_list('supplier_id', flat=True))
+        current = {str(line.pk): line for line in all_lines(Part.objects.select_for_update()).filter(pk__in=list(seen)).order_by('pk')}
+        stocked = set(SupplierItem.objects.filter(part_id__in=list(seen)).values_list('part_id', flat=True).distinct())
         asked_index = {str(proposal.pk): position for position, proposal in enumerate(asked)}
         verdicts, counts = [], {'good': 0, 'bad': 0, 'unsure': 0, 'stale': 0}
         for offset, proposal in enumerate(batch):
@@ -465,7 +493,7 @@ def save_batch(user, pk, claim, index, batch, seen, rows, decided, asked, review
                 result = guarded(reviews[asked_index[key]], row, types, known)
                 method = 'ai'
             version, applied = seen[key], {}
-            if locked is None or locked.status != 'pending' or locked.version != seen[key]:
+            if locked is None or locked.estado != 'preparacion' or locked.pk not in stocked or locked.version != seen[key]:
                 counts['stale'] += 1  # changed or decided while the AI read it: the verdict is kept, stale, and nothing is filled
                 applied = {'skipped': 'changed'}
             elif result['fill']:
@@ -475,7 +503,7 @@ def save_batch(user, pk, claim, index, batch, seen, rows, decided, asked, review
                     result = {**result, 'verdict': 'unsure', 'reasons': result['reasons'][:2] + [DOUBTFUL_OEM]}
             counts[result['verdict']] += 1
             verdicts.append(SkuReviewVerdict(
-                run=run, proposal_id=proposal.pk, position=index * run.batch_size + offset, proposal_version=version, method=method,
+                run=run, line_id=proposal.pk, position=index * run.batch_size + offset, proposal_version=version, method=method,
                 verdict=result['verdict'], reason=result['reason'], confidence=result['confidence'], reasons=result['reasons'],
                 suggestions=result['suggestions'], applied=applied, evidence=row, link_part_id=result.get('link_part')))
         SkuReviewVerdict.objects.bulk_create(verdicts)
@@ -503,25 +531,22 @@ def in_flight(now):
 
 
 def eligible(search=''):
-    """The pending proposals a new run would review, in the grid's order (most stock first)."""
-    from .sku_proposal_views import proposals
-    rows = proposals().filter(status='pending')
+    """The products waiting for a decision a new run would review, in the grid's order (most stock first)."""
+    from .sku_proposal_views import proposals, search_q, status_q
+    rows = proposals().filter(status_q('pending'))
     if search:
-        from .sku_proposal_models import SkuProposalItem
-        carried = SkuProposalItem.objects.filter(Q(item__codigo__icontains=search) | Q(item__supplier__name__icontains=search)).values('proposal_id')
-        rows = rows.filter(Q(sku__icontains=search) | Q(description__icontains=search) | Q(oem_code__icontains=search) | Q(pk__in=carried))
+        rows = rows.filter(search_q(search))
     return rows.order_by('-stock_total', 'sku', 'pk')
 
 
 def fresh_ids():
-    """Pending proposals whose latest verdict still holds (same version)."""
-    from django.db.models import OuterRef, Subquery, F
-    latest = given().filter(proposal=OuterRef('pk')).order_by('-created_at', '-pk')
-    return (SkuProposal.objects.filter(status='pending').annotate(reviewed=Subquery(latest.values('proposal_version')[:1]))
+    """Lines waiting for a decision whose latest verdict still holds (same version)."""
+    latest = given().filter(line=OuterRef('pk')).order_by('-created_at', '-pk')
+    return (all_lines().filter(estado='preparacion').annotate(reviewed=Subquery(latest.values('proposal_version')[:1]))
             .filter(reviewed=F('version')).values('pk'))
 
 
 def given():
-    """Verdicts that judged the proposal as it was: not the ones saved stale because it changed while the AI read it. The latest of these
-    is a proposal's current review (the grid's column, fresh_ids, the report's superseded check)."""
+    """Verdicts that judged the line as it was: not the ones saved stale because it changed while the AI read it. The latest of these is
+    a line's current review (the grid's column, fresh_ids, the report's superseded check)."""
     return SkuReviewVerdict.objects.exclude(applied__has_key='skipped')

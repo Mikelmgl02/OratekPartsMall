@@ -386,8 +386,8 @@ class LibraryReaderTests(TestCase):
         self.assertEqual(key_owners(part, '48654-0K040'), [(str(owner.pk), owner.sku)])
 
     def test_productos_nuevos_owners_and_links(self):
-        from .sku_proposal_models import SkuProposal
-        from .sku_proposals import catalog_owners, link_existing
+        from .new_products import link, place
+        from .sku_proposals import catalog_owners
         lines = hidden('MR-968365', 'EJE MIT')
         self.assertEqual(catalog_owners('MR968365'), [])
         self.assertEqual(catalog_owners('MR968365-P'), [])
@@ -397,21 +397,20 @@ class LibraryReaderTests(TestCase):
         self.assertEqual([owner[1] for owner in catalog_owners('MR968365KSM')], [part.sku])
         supplier, root = make_supplier('PROVEEDOR PN'), make_user('pn-root', superuser=True)
         item = make_variant(supplier, 'PN-1', 'MR-968377', 1, actor=root)
-        proposal = SkuProposal.objects.create(key='MR968377|', sku='MR-968377', fingerprint='x')
-        proposal.items.create(item=item)
-        for line in lines.values():
+        product, _ = place(item)   # S6: a new product is a line in preparación
+        product.refresh_from_db()
+        for line in lines.values():  # Vincular takes a line on sale only
             with self.assertRaises(ValidationError):
-                link_existing(proposal.pk, root, proposal.version, line.pk)
+                link(product.pk, root, product.version, line.pk)
 
     def test_the_ai_review_reads_lines_on_sale(self):
-        from .sku_proposal_models import SkuProposal
         from .sku_review import candidates, siblings, vocabulary
         hidden('F02-3501116-01AA', 'ZZQUIRKY DISCO')
         part = make_line('FX12-3501116-01AA', description='DISCO FRENO')
-        proposal = SkuProposal.objects.create(key='FX11|', sku='FX11-3501116-01AA', fingerprint='x')
-        self.assertEqual([row['codigo'] for row in siblings(proposal, [])], [part.sku])
-        hidden('FX11-3501116-01AB', 'ZZQUIRKY DISCO')
-        self.assertEqual([row['sku'] for row in candidates(proposal) if row['kind'] == 'part'], [])
+        product = make_line('FX11-3501116-01AA', estado='preparacion', origen='proveedor')   # S6: a new product is a line in preparación
+        self.assertEqual([row['codigo'] for row in siblings(product, [])], [part.sku])
+        hidden('FX11-3501116-01AA-X', 'ZZQUIRKY DISCO')
+        self.assertEqual([row['sku'] for row in candidates(product) if row['kind'] == 'part'], [])
         self.assertNotIn('ZZQUIRKY', vocabulary())
 
     def test_the_supplier_catalog_import_counts_shafts_on_sale(self):

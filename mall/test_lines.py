@@ -399,19 +399,18 @@ class LineWriterFlowTests(APITestCase):
         self.assertEqual(stored(run(True)), ('publicada', True))
         self.assertEqual(stored(run(False)), ('retirada', False))
 
-    def test_an_approved_proposal_creates_a_line_from_the_supplier(self):
-        from .sku_proposals import approve, propose
+    def test_an_approved_new_product_is_a_line_from_the_supplier(self):
+        from .new_products import place, publish
         supplier = make_supplier('PROVEEDOR S1')
-        from .matching_engine import item_row, save_case
         item = SupplierItem.objects.create(supplier=supplier, supplier_invent_id='P1', codigo='025CHA-1502607', brand='WURTH',
                                            description='CLIP DE COVER', source='apiag')
-        save_case(key=f'supplier:{item.pk}', kind='supplier', sources=[item_row(item)], candidates=[], item=item, status='unmatched')
-        propose()
-        proposal = SkuProposal.objects.get(sku='025CHA-1502607')
-        approve(proposal.pk, self.root, proposal.version)
-        proposal.refresh_from_db()
-        line = proposal.part
-        self.assertEqual((line.origen, line.estado, line.decided_by, line.decided_at), ('proveedor', 'publicada', self.root, proposal.decided_at))
+        line, _ = place(item)   # S6: Productos nuevos is a line in preparación
+        line.refresh_from_db()
+        self.assertEqual((line.origen, line.estado, line.active), ('proveedor', 'preparacion', False))
+        publish(line.pk, self.root, line.version)
+        line.refresh_from_db()
+        self.assertEqual((line.origen, line.estado, line.decided_by, line.active), ('proveedor', 'publicada', self.root, True))
+        self.assertIsNotNone(line.decided_at)
 
     def test_a_new_product_line_comes_from_the_supplier(self):
         # S6: no parent is invented from suffixed codes any more; a code no line has gets a line of its own in preparación.

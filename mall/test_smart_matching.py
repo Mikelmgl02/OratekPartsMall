@@ -229,6 +229,8 @@ class SmartMatchingTests(APITestCase):
         provider.assert_not_called()  # hints are never sent to the matching AI: Revisión IA sees them in Productos nuevos
         self.assertEqual(result['matched_items'], 0)
         self.assertFalse(MatchingCase.objects.filter(item__in=[item, lone]).exists())
+        item.refresh_from_db()
+        self.assertEqual((item.part.estado, item.matching_status), ('preparacion', 'pending'))  # placed at ingest (rule 4), no case
 
     def test_pads_sold_as_a_set_link_by_code_and_a_shared_code_goes_to_a_line_case(self):
         create_line('0446502220', description='PASTILLA FRENO DEL TOYOTA HILUX', main_brand='TOYOTA', main_tipo='oem')
