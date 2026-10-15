@@ -750,6 +750,17 @@ def undo(log, run):
             before = line['before']
             result['corridas'] += SkuReviewRun.objects.filter(pk=line['id']).update(proposal_ids=before['proposal_ids'],
                                                                                     finished_at=before['finished_at'], metrics=before['metrics'])
+    # The legacy supplier cases mall.new_products.placed dismissed after landing (evidence['colocado'] keeps what they were) whose item
+    # has no line now: they wait again as they did, or the code before S6 would keep the item out of its review queue.
+    from ..new_products import PLACED_BEFORE, PLACED_REASON
+    for case in MatchingCase.objects.filter(kind='supplier', status='dismissed', reason=PLACED_REASON, evidence__has_key=PLACED_BEFORE,
+                                            item__part__isnull=True).order_by('pk'):
+        before = case.evidence[PLACED_BEFORE]
+        log.append({**run, 'model': 'mall.MatchingCase', 'id': str(case.pk), 'action': 'reopen',
+                    'before': {'status': case.status, 'reason': case.reason}})
+        MatchingCase.objects.filter(pk=case.pk).update(status=before.get('status') or 'unmatched', reason=before.get('reason') or '',
+                                                       evidence={key: value for key, value in case.evidence.items() if key != PLACED_BEFORE})
+        result['casos_reabiertos'] += 1
     s6_cases = Q()
     for prefix in S6_KEYS:
         s6_cases |= Q(key__startswith=prefix)

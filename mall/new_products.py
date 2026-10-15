@@ -253,14 +253,21 @@ def joined(line, item, *, prepared=False):
 LEGACY_OPEN = ('unmatched', 'review')
 
 
+PLACED_BEFORE = 'colocado'  # evidence key: what placed() overwrote, so python -m mall.refactor.s6_new_products --rollback reopens it
+
+
 def placed(items):
     """The legacy supplier cases (kind supplier) of items placed on a line outside the catalog: an unmatched one (D1: no code
-    evidence) or one waiting for review becomes dismissed, 'Colocado en Productos nuevos' (plan A5); one an administrator dismissed
-    stays as it was."""
+    evidence) or one waiting for review becomes dismissed, 'Colocado en Productos nuevos' (plan A5), keeping its status and reason in
+    evidence['colocado'] (the S6 rollback gives them back to an item it takes off that line); one an administrator dismissed stays as
+    it was."""
     MatchingCase = _models()[4]
     ids = [item.pk for item in items]
-    if ids:
-        MatchingCase.objects.filter(item_id__in=ids, kind='supplier', status__in=LEGACY_OPEN).update(status='dismissed', reason=PLACED_REASON)
+    if not ids:
+        return
+    for case in MatchingCase.objects.filter(item_id__in=ids, kind='supplier', status__in=LEGACY_OPEN).only('pk', 'status', 'reason', 'evidence'):
+        MatchingCase.objects.filter(pk=case.pk).update(status='dismissed', reason=PLACED_REASON, evidence={
+            **(case.evidence or {}), PLACED_BEFORE: {'status': case.status, 'reason': case.reason}})
 
 
 def refresh(line, *, save=True, extra=()):

@@ -440,8 +440,13 @@ class DataStepTests(Helpers, TestCase):
         self.assertIn('Cerrada en S6', run.metrics['nota'])
 
     def test_lines_placed_after_landing_go_back_too(self):
-        line, _ = new_products.place(self.item(self.dealer, '1', 'LATE-1', 'WURTH', 'PIEZA'))
-        published, _ = new_products.place(self.item(self.dealer, '2', 'LATE-2', 'WURTH', 'PIEZA'))
+        late = self.item(self.dealer, '1', 'LATE-1', 'WURTH', 'PIEZA', case='review')
+        reason = MatchingCase.objects.get(key=f'supplier:{late.pk}').reason
+        line, _ = new_products.place(late)
+        sold = self.item(self.dealer, '2', 'LATE-2', 'WURTH', 'PIEZA')
+        published, _ = new_products.place(sold)
+        legacy = MatchingCase.objects.get(key=f'supplier:{late.pk}')
+        self.assertEqual((legacy.status, legacy.reason), ('dismissed', new_products.PLACED_REASON))
         published.refresh_from_db()
         new_products.publish(published.pk, self.root, published.version)
         code, out = self.cli('--rollback', '--user', self.root.username)
@@ -449,6 +454,9 @@ class DataStepTests(Helpers, TestCase):
         self.assertFalse(Part.objects.filter(pk=line.pk).exists())
         self.assertTrue(Part.objects.filter(pk=published.pk, estado='publicada').exists())   # decided since: left, listed
         self.assertIn('LATE-2', out)
+        legacy.refresh_from_db()   # its item has no line again: its legacy case waits as it did, for the code before S6
+        self.assertEqual((legacy.status, legacy.reason, new_products.PLACED_BEFORE in legacy.evidence), ('review', reason, False))
+        self.assertNotEqual(MatchingCase.objects.get(key=f'supplier:{sold.pk}').status, 'unmatched')   # its line was published: left
 
     def test_the_rollback_writes_back_codigo_interno_only_when_someone_ticked_it(self):
         ticked = self.proposal('T-88', [self.item(self.dealer, '1', 'T-88', 'WURTH', 'PIEZA')], brand='WURTH')
