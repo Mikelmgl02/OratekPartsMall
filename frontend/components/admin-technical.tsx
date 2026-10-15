@@ -59,7 +59,7 @@ export default function AdminTechnical({ applications = false }: { applications?
   const applicationGrid = useMemo(() => applicationColumns(wide), [wide]);
   function saved() { setCreating(false); setEditing(null); setRevision(v => v + 1); setNotice('Cambios guardados.'); }
   return <section className="inventory-panel admin-panel technical-panel">
-    <div className="admin-toolbar"><div><h2>{applications ? 'Aplicaciones vehiculares' : 'Plantillas técnicas'}</h2><p>{applications ? 'Configuraciones reutilizables. Vincúlalas a los SKU desde su ficha técnica.' : 'Cada subgrupo es un tipo de repuesto y tiene su propia plantilla.'}</p></div><button className="button primary" onClick={() => setCreating(true)}><Plus size={17}/>{applications ? 'Crear aplicación' : 'Crear subgrupo'}</button></div>
+    <div className="admin-toolbar"><div><h2>{applications ? 'Aplicaciones vehiculares' : 'Plantillas técnicas'}</h2><p>{applications ? 'Configuraciones reutilizables. Vincúlalas a los SKU desde su ficha técnica.' : 'Cada subgrupo es un tipo de repuesto y tiene su propia plantilla. Los grupos y subgrupos se crean, renombran y mueven en Grupos y subgrupos.'}</p></div><button className="button primary" onClick={() => setCreating(true)}><Plus size={17}/>{applications ? 'Crear aplicación' : 'Crear subgrupo'}</button></div>
     {notice && <div className="notice success" role="status">{notice}</div>}
     <label className="technical-search">{applications ? 'Buscar aplicaciones' : 'Buscar grupo o subgrupo'}<UppercaseInput value={search} onChange={e => setSearch(e.target.value)} placeholder={applications ? 'MARCA, MODELO O MOTOR' : 'EJ.: FRENOS'}/></label>
     {applications
