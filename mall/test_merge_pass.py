@@ -463,17 +463,22 @@ class RollbackTests(MergePassBase):
 
     def test_the_rollback_leaves_a_skus_catalog_link_where_it_was(self):
         """The rehearsal of 2026-10-15: a SKU's catalog link to a number the pass merged into it stays on the SKU after Separar (it
-        moved to the number's own referencia line, so the code still serving, which reads the links, lost the SKU's equivalents)."""
+        moved to the number's own referencia line, or to the line of the same number under another make, so the code still serving,
+        which reads the links, lost the SKU's equivalents)."""
+        Brand.objects.get_or_create(nombre='LEXUS', defaults={'tipo': 'vehiculo'})
         sku = make_line('BOMBA-L1', description='BOMBA AGUA TOY')
         number = self.number('16100-45454')
+        twin = self.number('16100-45454', 'LEXUS', 'LEXUS RX')  # the same compact number under another make: its own referencia line
+        self.assertNotEqual(twin.part_id, number.part_id)
         store_catalog_links({(sku.pk, number.pk): [gmb(20)]})
         self.file('AISIN', 'WPT-454', number, citations=[gmb(556)])
         links = lambda: sorted((str(part), ref, source) for part, ref, source in PartOEMLink.objects.values_list('part_id', 'reference_id', 'source'))
         before = links()
         self.apply()
-        self.assertEqual(self.line_of(number).pk, sku.pk)
+        self.assertEqual((self.line_of(number).pk, self.line_of(twin).pk), (sku.pk, sku.pk))
         self.assertEqual(merge_pass.run(rollback=True, stdout=io.StringIO())['unificaciones_separadas'], 1)
         self.assertNotEqual(self.line_of(number).pk, sku.pk)
+        self.assertNotEqual(self.line_of(twin).pk, sku.pk)
         self.assertEqual(links(), before)
         again = merge_pass.run(stdout=io.StringIO(), marks_path=self.marks)['planned']  # and a later run proposes the same merge again
         self.assertEqual(self.group_of(again, number)['route'], 'auto')

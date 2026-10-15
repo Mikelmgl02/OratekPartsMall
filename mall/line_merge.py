@@ -922,9 +922,10 @@ class Owners:
 def rehome_catalog_links(target, restored):
     """A supplier catalog tied the canonical SKU to an OEM number because its code or an alterno matched the catalog item (the item's
     code closes each citation; the number is the link's). Each link goes to the restored SKUs that hold those codes now; it stays on the
-    canonical SKU when that one holds them too (shared) or nobody does. A restored line that holds the linked number itself is no owner:
-    the link was the canonical SKU's before the merge (the merge pass, S9, brought that number's referencia line into the SKU it was
-    linked to, and Separar gives the number back, not the SKU's link)."""
+    canonical SKU when that one holds them too (shared) or nobody does. A restored line in referencia, or one that holds the linked
+    number itself, is no owner: a link ties a product to a library number, and the merge pass (S9) brings numbers' referencia lines (that
+    number's, or the same compact number under another make: CHEVROLET and DAEWOO 90528603) into the SKU a catalog linked to them, so
+    Separar gives the numbers back, never the SKU's link."""
     from .catalog_families import normalized_reference
     from .oem_reference_models import PartOEMLink
     m = _models()
@@ -938,7 +939,8 @@ def rehome_catalog_links(target, restored):
     moved = shared = 0
     for link in links:
         wanted = {normalized_reference(link.reference.code)} | {normalized_reference(cite.rsplit(' · ', 1)[-1]) for cite in link.citations if ' · ' in cite}
-        owners = [part for part in restored if keys[part.pk] & wanted and part.pk != link.reference.part_id]
+        owners = [part for part in restored
+                  if keys[part.pk] & wanted and part.pk != link.reference.part_id and part.estado != 'referencia']
         if not owners:
             continue
         PartOEMLink.objects.bulk_create([PartOEMLink(part=part, reference_id=link.reference_id, source='catalog', citations=link.citations)
