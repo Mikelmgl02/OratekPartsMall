@@ -21,15 +21,17 @@ The rules, in order (resolve), for an item without a Reference (new, or waiting 
    for a competitor's code and only from a PDF-checked catalog (OD17), with a catalogo source. Two or more lines: a line case, and a
    merge case for those lines (OD15: a supplier sells the code).
 3. Rule 3 (D2). Trailing TAGs are stripped while each is auto-eligible (mall.catalog_suffixes.auto_eligible: -L, -RH and the other D4
-   tokens never are). The base's clave on exactly one live line, the description heads agreeing and no spec_conflict: a new Reference
-   for the full code on that line (58411-1R000-GMB on 58411-1R000), its tipo from its brand's (a brandless item takes the brand an
-   identified TAG names). Otherwise a line case.
+   tokens never are). The base's clave on exactly one live line, the description heads agreeing, no spec_conflict and every stripped
+   TAG a known brand suffix (brand_tag): a new Reference for the full code on that line (58411-1R000-GMB on 58411-1R000), its tipo from
+   its brand's (a brandless item takes the brand an identified TAG names). Otherwise a line case on that line (an origin or genuine
+   mark such as -J or -G: guard sufijo, a click links it).
 4. Rule 5. A new attach whose description contradicts its line (spec_conflict) still hangs from the Reference, but in review (out of
    the line's stock) with a variant case.
 5. Rule 4 and D1 (S0.9, kept). No code evidence: no_line, and place() makes a line in preparación (Productos nuevos) whose main is
    interno (scoped to the supplier) for a brandless or placeholder-brand short code (OD6), a Revisión IA internal_code, or a brand that
    is the supplier's own name (OD20); a shared Reference otherwise. Description words never link an item: they stay hints
-   (mall.matching_engine.MatchIndex.hints) for Revisión IA.
+   (mall.matching_engine.MatchIndex.hints) for Revisión IA. An item no line can be made for (a code with no letter or digit, a key
+   place() refuses) waits in a line case that says why (refused_case), so no item is ever without a Reference and without a case (I10).
 For an attached item (plan_load): a code change whose new key stays on its line applies on its own (S3, OD5); any other waits in
 codigo_pendiente with a code_change case (rule 5b, out of stock: OD7). Each declared code not already on the item's line is one reference
 case (rule 5b); nothing is stored on the item for it. A description change is checked against the line again (rule 5).
@@ -65,6 +67,13 @@ CATALOGS = (('GMB Water Pump Catalog', 'GMB', True),
             ('ASVA Tensioner', 'ASVA', True),
             ('ATE K24', 'ATE', True))
 TAG_ROLES = ('brand', 'house_brand')
+# D2 (owner, 2026-10-13): rule 3 links "a dash plus a known brand suffix" on its own; any other auto-eligible TAG (an origin such as -J,
+# a genuine mark such as -G, -NP) finds the base's line but waits for a click there. The suffix roles that name a brand (brand and
+# company_code share the role brand); widening it is the owner's call.
+RULE3_ROLES = ('brand', 'house_brand')
+# What a case's fingerprint rests on, besides its evidence: bumped only when the fingerprints themselves change shape (never with the
+# matching engine's VERSION, which would put every dismissed case back in review).
+FINGERPRINT_VERSION = 1
 KINDS = ('reference', 'code_change', 'variant', 'line', 'merge')
 ITEM_KINDS = ('reference', 'code_change', 'variant', 'line')
 HOLDS_STOCK = ('variant', 'code_change')  # open cases that keep their item in review, out of the line's stock
@@ -76,11 +85,13 @@ REASONS = {
     'catalogo': 'Un catálogo de repuesto lo vincula a una línea, pero no es un catálogo revisado contra el PDF: confírmalo.',
     'noun': 'El código base está en una línea, pero el nombre del repuesto no coincide: confírmalo.',
     'spec_conflict': 'El código base está en una línea, pero hay una contradicción de posición, medida o aplicación.',
+    'sufijo': 'El código base está en una línea, pero su sufijo no es una marca conocida (origen, genuino, comercial): confírmalo.',
 }
 
 Resolution = namedtuple('Resolution', 'action rule reference line new status cases evidence reason')
 Resolution.__new__.__defaults__ = (None, None, None, 'pending', (), None, '')
-LoadPlan = namedtuple('LoadPlan', 'plan resolution cases')
+LoadPlan = namedtuple('LoadPlan', 'plan resolution cases refresh')
+LoadPlan.__new__.__defaults__ = (None,)  # refresh: the line in preparación whose description follows the item's new text
 
 
 def _models():
@@ -172,9 +183,12 @@ class Lookups:
         return [row for row in self.claves[key] if references.is_live(row.part)]
 
     def cross(self, number):
+        """The catalogs' aftermarket rows filed under a compact number ([] for a code with no letter or digit: '.' has no number)."""
+        if not number:
+            return []
         if number not in self.numbers:
             self._load_numbers({number})
-        return self.numbers[number]
+        return self.numbers.get(number, [])
 
     def canonical(self, spelling):
         """mall.brands.resolve, cached."""
@@ -252,9 +266,24 @@ def own_name_brand(subject, lookups):
     return bool(name) and bool(own) and name in (lookups.canonical(own), ' '.join(own.upper().split()))
 
 
+def brand_tag(entry):
+    """Whether a suffix-table entry is a known brand suffix (D2: '58411-1R000-GMB'): a TAG of a brand, house brand or company code, every
+    part of a slash compound too. Origin, genuine, commercial and supplier markers (J, JAPON, G, PROMO, NP) are TAGs but name no brand:
+    rule 3 finds the base's line through them and waits for a click there (a line case, guard sufijo)."""
+    from .catalog_suffixes import ROLE_BY_KIND
+    components = getattr(entry, 'components', None)
+    if components:
+        return all(brand_tag(component) for component in components)
+    kind = getattr(entry, 'tag_kind', None)  # a suffix table row's, or an Entry's kind (as auto_eligible reads them)
+    if kind is None:
+        kind = getattr(entry, 'kind', '')
+    return getattr(entry, 'cls', None) == 'TAG' and ROLE_BY_KIND.get(kind or '', 'other') in RULE3_ROLES
+
+
 def strip_eligible(code, lookups=None):
-    """(base, stripped TAG entries) once a code's trailing TAGs are stripped while each is auto-eligible (rule 3), or (None, []) when
-    none is: 58411-1R000-GMB → 58411-1R000. A position or size token (-L, -RH: D4) is no TAG and stops the strip."""
+    """(base, stripped TAG entries) once a code's trailing TAGs are stripped while each is auto-eligible (rule 3: the shared
+    mall.catalog_suffixes.auto_eligible), or (None, []) when none is: 58411-1R000-GMB → 58411-1R000. A position or size token (-L, -RH:
+    D4) is no TAG and stops the strip. Whether the strip links on its own is rule 3's (brand_tag: D2)."""
     from . import catalog_suffixes
     table = lookups.suffixes() if lookups is not None else None
     try:
@@ -314,13 +343,31 @@ def rank(row):
     return (row.supplier_id is None, not row.is_main, references.ESTADO_RANK.get(row.estado, 9), row.pk)
 
 
+def supplier_text(line):
+    """Whether a line's description is its items' own text: a line in preparación whose description no administrator wrote (the
+    supplier's, or Revisión IA's fix of it). Rule 5 has nothing to compare there: the line follows its items (mall.new_products.refresh),
+    so a supplier correcting its text never puts its own item in review."""
+    if line is None or line.estado != 'preparacion':
+        return False
+    return (((line.field_sources or {}).get('description') or {}).get('source')) != 'admin'
+
+
 def item_status(line, description, wanted=None):
     """(status, conflict) of an item hanging from `line`: review with a contradiction (rule 5), else matched on a catalog line,
-    pending elsewhere."""
+    pending elsewhere. A line in preparación whose text is its items' (supplier_text) contradicts nothing."""
     from .matching_engine import spec_conflict
     from .variants import status_for
-    conflict = bool(description) and bool(line.description) and spec_conflict(description, line.description)
+    conflict = (bool(description) and bool(line.description) and not supplier_text(line)
+                and spec_conflict(description, line.description))
     return ('review' if conflict else status_for(line, wanted)), conflict
+
+
+def written_brand(spelling, lookups=None):
+    """The brand a Reference the S6 code writes carries (I12 from S6): the canonical Brand.nombre of a spelling or alias (TOY →
+    TOYOTA), '' for a blank or placeholder brand (GENERICO, S/M: no brand), else the normalized spelling (mall.references.ensure_brand
+    makes it a brand)."""
+    name = (lookups or Lookups()).canonical(spelling)
+    return '' if not name or name in PLACEHOLDER_BRANDS else name
 
 
 def attach_to(subject, row, rule, evidence, lookups):
@@ -339,6 +386,23 @@ def line_case_for(subject, rows, guard, rule, evidence, lines=None):
                          'refs': [ref_row(row) for row in rows]},
             'reason': REASONS.get(guard, REASONS['lineas'])}
     return Resolution('case', rule, None, None, None, 'pending', (spec,), spec['evidence'], spec['reason'])
+
+
+def refused_case(subject, guard, message):
+    """The line case of an item no line can take and place() cannot give one (a code with no letter or digit, one over 120 characters,
+    a key the brandless reservation gives to other lines): it waits there with no Reference (I10) until the supplier fixes its code or
+    a person chooses its line. Its fingerprint (code, brand, guard) keeps it from being rewritten on every pass."""
+    key = references.clave(subject.code) if subject.code else ''
+    spec = {'kind': 'line', 'lines': [], 'line_rows': [], 'guard': guard, 'reference': None,
+            'evidence': {'rule': '4', 'code': subject.code, 'brand': subject.brand, 'clave': key, 'refs': [], 'motivo': message},
+            'reason': f'{message} Corrige el código con el proveedor o elige la línea OEM del artículo.'.strip()}
+    return Resolution('case', '4', None, None, None, 'pending', (spec,), spec['evidence'], spec['reason'])
+
+
+def has_code(code):
+    """Whether a code has a letter or a digit (a supplier's '.' or '-' is no code)."""
+    import re
+    return bool(re.search(r'[0-9A-Z]', (code or '').upper()))
 
 
 def variant_case(subject, line, row):
@@ -395,9 +459,9 @@ def rule_1_2(subject, brand, lookups):
 
 def rule_3e(subject, brand, lookups):
     """3e-lazy: a branded aftermarket code the catalogs file under OEM numbers, or None."""
-    if not brand:
-        return None
     number = compact(subject.code)
+    if not brand or not number:
+        return None
     printed = ' '.join(subject.code.split())
     short = not references.oem_like(number)
     rows = [row for row in lookups.cross(number) if lookups.canonical(row.brand) == brand
@@ -411,9 +475,10 @@ def rule_3e(subject, brand, lookups):
     lines = sorted({ref.part for ref in refs}, key=lambda line: (line.sku, str(line.pk)))
     if len(lines) > 1:
         resolution = line_case_for(subject, refs, 'lineas', '3e', evidence, lines=lines)
-        merge = merge_case_spec(lines, evidence={**evidence, 'code': subject.code, 'brand': brand, 'regla': '3e'},
-                                reason=f'Los catálogos ponen {brand} {subject.code} en los números OEM de varias líneas, y un proveedor lo '
-                                       'vende: si son el mismo repuesto, unifícalas.')
+        # The case is about the lines (its key and fingerprint); the codes that brought them together are gathered in its evidence.
+        merge = merge_case_spec(lines, evidence={**evidence, 'codes': [{'code': subject.code, 'brand': brand}], 'regla': '3e'},
+                                reason='Los catálogos ponen un código que un proveedor vende en los números OEM de varias líneas: si son el '
+                                       'mismo repuesto, unifícalas.')
         return resolution._replace(cases=resolution.cases + ((merge,) if merge else ()))
     catalogs = [catalog_of(citation) for citation in citations]
     own = any(catalog_brand == brand for _, catalog_brand, _ in catalogs)
@@ -453,6 +518,8 @@ def rule_3(subject, brand, lookups):
         return line_case_for(subject, rows, 'noun', '3', evidence, lines=lines)
     if spec_conflict(subject.description, line.description):
         return line_case_for(subject, rows, 'spec_conflict', '3', evidence, lines=lines)
+    if not all(brand_tag(entry) for entry in entries):  # D2: only a known brand suffix links on its own; any other waits for a click
+        return line_case_for(subject, rows, 'sufijo', '3', evidence, lines=lines)
     named = brand or tag_brand(entries, lookups)
     new = {'line': line, 'code': subject.code, 'brand': named, 'tipo': tipo_for(named, lookups), 'estado': 'declarado',
            'source': '', 'rule': '3'}
@@ -468,8 +535,8 @@ def resolve(subject, lookups=None):
     """Which Reference the item hangs from (the module's docstring): a Resolution, read-only. subject: subject_of(item, data)."""
     lookups = lookups or Lookups()
     brand = effective_brand(subject, lookups)
-    if not subject.code:
-        return Resolution('no_line', '4', evidence={'why': 'sin_codigo'})
+    if not has_code(subject.code):  # nothing to look up, and no line can be made of it: it waits in a line case (I10)
+        return refused_case(subject, 'sin_codigo', 'El artículo no tiene código.')
     for rule in (rule_1_2, rule_3e, rule_3):
         found = rule(subject, brand, lookups)
         if found is not None:
@@ -480,10 +547,16 @@ def resolve(subject, lookups=None):
 # --- rule 4: a line of its own -------------------------------------------------------------------------------------------------------
 
 def internal_code(item):
-    """Whether Revisión IA said the item's code is the supplier's internal code (SkuProposal.internal_code, until the proposals are
-    lines: then the main of its line in preparación is interno)."""
+    """Whether Revisión IA (or a person) said the item's code is the supplier's internal code: its line outside the catalog (a new
+    product, in preparación or rechazada) has the supplier's interno code as its main (from S6: new_products.make_interno, ai_fill), or
+    before S6 its proposal said so (SkuProposal.internal_code, frozen history)."""
     if item is None or not getattr(item, 'pk', None):
         return False
+    _, Reference, _ = _models()
+    if getattr(item, 'part_id', None) and Reference.all_objects.filter(
+            part_id=item.part_id, is_main=True, tipo='interno', supplier_id=item.supplier_id, part__estado__in=('preparacion', 'rechazada'),
+            estado__in=references.LIVE).exists():
+        return True
     from .sku_proposal_models import SkuProposalItem
     return SkuProposalItem.objects.filter(item_id=item.pk, proposal__internal_code=True).exists()
 
@@ -523,16 +596,17 @@ def place(variant, *, actor=None, interno=False):
     return line
 
 
-def enter_preparacion(line, *, actor=None):
+def enter_preparacion(line, *, item=None, actor=None):
     """Rule 7: a line in referencia (a library number no product carried) that a variant joins becomes a line in preparación
-    (mall.lines.prepare: the matching's own move, nobody decided it)."""
+    (mall.lines.prepare: the matching's own move, nobody decided it; field_sources['estado'] says so, for Productos nuevos and the
+    rollback)."""
     from .lines import prepare
     from .models import Part
     if line.estado != 'referencia':
         return line
     locked = Part.objects.select_for_update().get(pk=line.pk)
     if locked.estado == 'referencia':
-        prepare(locked)
+        prepare(locked, item=item)
     return locked
 
 
@@ -589,18 +663,25 @@ def carry_out(item, resolution, *, actor=None, save=False, queue=True, _again=Fa
     a line case)."""
     from .variants import attach
     if resolution.action == 'no_line':
+        from .new_products import PlaceRefused
         line = None
         try:
             with transaction.atomic():
                 line = place(item, actor=actor)
+        except PlaceRefused as error:  # a reason a pass does not change: a line case says it (I10), and the item waits there
+            if error.guard == 'sin_articulo':  # deleted meanwhile: nothing waits
+                return resolution._replace(action='failed')
+            refused = refused_case(subject_of(item), error.guard or 'colocacion', str(error))
+            return carry_out(item, refused, actor=actor, save=save, queue=queue, _again=True)
         except Exception:  # its line is made by the next pass
             logger.exception('No se pudo colocar el artículo %s en Productos nuevos.', item.pk)
             if queue:
                 from .matching_queue import enqueue_matching
                 enqueue_matching()
+            moved = item.reference_id is not None or item.part_id is not None or item.matching_status != 'pending'
             item.reference, item.part, item.matching_status = None, None, 'pending'
             item._attached = True
-            if save:
+            if save and moved:  # an item already waiting is not written again (C6's I10 query reads updated_at)
                 item.save(update_fields=['reference', 'part', 'matching_status', 'updated_at'])
             return resolution._replace(action='failed')
         item.refresh_from_db(fields=['reference', 'part', 'matching_status'])
@@ -621,6 +702,8 @@ def carry_out(item, resolution, *, actor=None, save=False, queue=True, _again=Fa
         if not share_line(new['line']):  # merged meanwhile: resolved again, once
             again = Resolution('no_line', '4') if _again else resolve(subject_of(item))
             return carry_out(item, again, actor=actor, save=save, queue=queue, _again=True)
+        Part, _, _ = _models()
+        new = {**new, 'line': Part._base_manager.get(pk=new['line'].pk)}  # read again under its lock: published meanwhile, say
         try:
             with transaction.atomic():
                 ref = add_reference(new, item, actor=actor)
@@ -637,8 +720,9 @@ def carry_out(item, resolution, *, actor=None, save=False, queue=True, _again=Fa
             return carry_out(item, resolve(subject_of(item)), actor=actor, save=save, queue=queue, _again=True)
         ref = held
     prepared = ref.part.estado == 'referencia'
-    line = enter_preparacion(ref.part, actor=actor) if prepared else ref.part
-    status = resolution.status if line.estado == ref.part.estado else item_status(line, item.description)[0]
+    line = enter_preparacion(ref.part, item=item, actor=actor) if prepared else ref.part
+    # The status from the line as it is under its lock (resolve read it unlocked: a line in preparación published since, say).
+    status = item_status(line, item.description)[0]
     attach(item, ref, status=status, save=save)
     joined(item, line, prepared=prepared)
     for spec in resolution.cases:
@@ -714,29 +798,35 @@ def plan_load(item, data, *, lookups=None, supplier=None):
         part_id = resolution.line.pk if resolution.line is not None else None
         return LoadPlan(Plan(part_id, resolution.status, codigo, brand, (None, None), resolution.reference, 'directo'), resolution, ())
     line = item.part
+    from .matching_engine import description
+    # A line in preparación follows its items' text (mall.new_products.refresh, after the row is saved; its lock is taken first).
+    refresh = line.pk if line.estado == 'preparacion' and description(item.description) != description(text) else None
     if (codigo, brand) == (item.codigo, item.brand):  # the same code (a change that waited and is sent back is dropped)
         status, spec = attached_status(item, line, text)
-        return LoadPlan(Plan(item.part_id, status, codigo, brand, (None, None), item.reference, 'igual'), None, (spec,) if spec else ())
+        return LoadPlan(Plan(item.part_id, status, codigo, brand, (None, None), item.reference, 'igual'), None, (spec,) if spec else (),
+                        refresh)
     waiting = (item.codigo_pendiente or item.codigo, item.brand if item.brand_pendiente is None else item.brand_pendiente)
     if (codigo, brand) == waiting:
         return LoadPlan(Plan(item.part_id, 'review', item.codigo, item.brand, (item.codigo_pendiente, item.brand_pendiente),
-                             item.reference, 'pendiente'), None, (code_change_case(item, codigo, brand),))
+                             item.reference, 'pendiente'), None, (code_change_case(item, codigo, brand),), refresh)
     if rejected_change(item, codigo, brand):  # a person turned this change down: the item keeps its code and stays as it is
         status, spec = attached_status(item, line, text)
         return LoadPlan(Plan(item.part_id, status, item.codigo, item.brand, (None, None), item.reference, 'rechazado'), None,
-                        (spec,) if spec else ())
+                        (spec,) if spec else (), refresh)
     if references.clave(codigo) == references.clave(item.codigo) and (brand == item.brand or not item.brand):
         found = item.reference if brand == item.brand else reference_for(line, codigo, brand, item.supplier_id, exact=True)[0]
         free = found is not None or not references.conflicts(codigo, brand, line=line.pk, estado='declarado').exclude(part_id=line.pk).exists()
         if free:
             status, spec = attached_status(item, line, text)
-            return LoadPlan(Plan(item.part_id, status, codigo, brand, (None, None), found, 'misma_clave'), None, (spec,) if spec else ())
+            return LoadPlan(Plan(item.part_id, status, codigo, brand, (None, None), found, 'misma_clave'), None, (spec,) if spec else (),
+                            refresh)
     found = references.find(codigo, brand, supplier=item.supplier_id)
     if found is not None and found.part_id == item.part_id:
         status, spec = attached_status(item, line, text)
-        return LoadPlan(Plan(item.part_id, status, codigo, brand, (None, None), found, 'misma_linea'), None, (spec,) if spec else ())
+        return LoadPlan(Plan(item.part_id, status, codigo, brand, (None, None), found, 'misma_linea'), None, (spec,) if spec else (),
+                        refresh)
     return LoadPlan(Plan(item.part_id, 'review', item.codigo, item.brand, (codigo, brand), item.reference, 'pendiente'), None,
-                    (code_change_case(item, codigo, brand),))
+                    (code_change_case(item, codigo, brand),), refresh)
 
 
 def carry_out_load(item, load, *, actor=None):
@@ -748,6 +838,8 @@ def carry_out_load(item, load, *, actor=None):
         item.codigo, item.brand = load.plan.codigo, load.plan.brand
         item.codigo_pendiente = item.brand_pendiente = None
         return carry_out(item, load.resolution, actor=actor)
+    if load.refresh is not None and item.part is not None:
+        share_line(item.part)  # FOR UPDATE: its description follows the item (finish_load), the line locked before the item (§1.6.5)
     write_plan(item, load.plan, actor=actor)
     return None
 
@@ -767,6 +859,12 @@ def finish_load(item, load, *, actor=None, changed=True):
                 description(held.evidence['item_description']) != description(item.description):
             close_case(held, 'applied', actor=None, action='automatic', note='La descripción ya no contradice la línea.')
             settle_item(item)
+    if load.refresh is not None and item.part_id == load.refresh:
+        from .models import Part
+        from .new_products import refresh
+        line = Part._base_manager.filter(pk=load.refresh).first()
+        if line is not None:
+            refresh(line, save=True)  # the new text, unless a person wrote the line's (version + 1 when it changes)
     if changed or load.resolution is not None:
         sync_declared(item)
 
@@ -852,8 +950,10 @@ def case_key(spec, item=None):
 
 
 def fingerprint_of(spec, item=None):
-    """What a case rests on: a change to it reopens the case (and clears its AI answer); anything else is refreshed in place."""
-    from .matching_engine import VERSION, description, digest
+    """What a case rests on: a change to it reopens the case (and clears its AI answer); anything else is refreshed in place. A merge
+    case rests on its lines (and its batch): the codes that brought them together are evidence, gathered as they come (open_case), so
+    two codes pointing at the same lines never rewrite it in turn."""
+    from .matching_engine import description, digest
     kind, evidence = spec['kind'], spec.get('evidence') or {}
     lines = sorted(str(pk) for pk in spec['lines'])
     if kind == 'line':
@@ -865,8 +965,8 @@ def fingerprint_of(spec, item=None):
     elif kind == 'reference':
         basis = [spec['new_code'], spec.get('new_brand', ''), (evidence.get('declared') or {}).get('ref_type', ''), lines]
     else:
-        basis = [lines, spec.get('batch_key', ''), evidence.get('code'), evidence.get('brand')]
-    return digest([VERSION, kind, basis])
+        basis = [lines, spec.get('batch_key', '')]
+    return digest([FINGERPRINT_VERSION, kind, basis])
 
 
 def open_case(spec, *, item=None, status='review'):
@@ -891,6 +991,9 @@ def open_case(spec, *, item=None, status='review'):
     if created:
         case.lines.set(spec['lines'])
         return case
+    if spec['kind'] == 'merge' and case.fingerprint == fingerprint and 'codes' in fields['evidence']:
+        known = list((case.evidence or {}).get('codes') or [])  # every code that brought these lines together, once each
+        fields['evidence'] = {**fields['evidence'], 'codes': known + [row for row in fields['evidence']['codes'] if row not in known]}
     if case.fingerprint != fingerprint:
         for name, value in fields.items():
             setattr(case, name, value)
@@ -957,8 +1060,15 @@ def sync_declared(item, lookups=None):
     from .sku_proposals import merge_references
     if item.reference_id is None or item.part_id is None:
         return 0
-    declared = merge_references(item.references or [])  # one at a time: a malformed code is skipped, not the rest with it
     lookups = lookups or Lookups()
+    declared, seen = [], set()
+    # One case per key: two spellings of one code (04465-02220 and 0446502220) or of one brand (TOY and TOYOTA) are the same code; the
+    # first in merge_references' stable order is kept, so a sync never flips the case between them.
+    for row in merge_references(item.references or []):  # one at a time: a malformed code is skipped, not the rest with it
+        key = (references.clave(references.code_key(row['code'])), lookups.canonical(row.get('brand', '')))
+        if key not in seen:
+            seen.add(key)
+            declared.append(row)
     keys = []
     for row in declared:
         holders = declared_holders(row, item, lookups)
@@ -1010,28 +1120,37 @@ def backlog(*, seconds=PASS_SECONDS, actor=None, stats=None):
             request_another_pass()
             counts['stopped'] = True
             break
-        with transaction.atomic():
-            Account.objects.select_for_update().get(pk=supplier_id)  # the order of every writer of this supplier's items
-            item = SupplierItem.objects.select_related('supplier').filter(pk=pk, reference__isnull=True).first()
-            if item is None:
-                continue
-            counts['examined'] += 1
-            done = carry_out(item, resolve(subject_of(item)), actor=actor, save=True, queue=False)
-            if done.action == 'failed':
-                counts['failed'] += 1
-            elif done.action == 'no_line':
-                counts['placed'] += 1
-            elif done.action == 'case':
-                counts['line_cases'] += 1
-            else:
-                counts['attached'] += 1
-            if item.reference_id is not None:
-                sync_declared(item)
+        try:  # one item's failure is logged and left for the next pass: it never stops the pass for the others
+            with transaction.atomic():
+                Account.objects.select_for_update().get(pk=supplier_id)  # the order of every writer of this supplier's items
+                item = SupplierItem.objects.select_related('supplier').filter(pk=pk, reference__isnull=True).first()
+                if item is None:
+                    continue
+                counts['examined'] += 1
+                done = carry_out(item, resolve(subject_of(item)), actor=actor, save=True, queue=False)
+                if done.action == 'failed':
+                    counts['failed'] += 1
+                elif done.action == 'no_line':
+                    counts['placed'] += 1
+                elif done.action == 'case':
+                    counts['line_cases'] += 1
+                else:
+                    counts['attached'] += 1
+                if item.reference_id is not None:
+                    sync_declared(item)
+        except Exception:
+            logger.exception('No se pudo emparejar el artículo %s; se reintenta en la próxima pasada.', pk)
+            counts['failed'] += 1
     lookups = Lookups()
     held = SupplierItem.objects.filter(reference__isnull=False).exclude(supplier_id__in=busy).filter(
         Q(codigo_pendiente__isnull=False) | Q(brand_pendiente__isnull=False) | ~Q(references=[]))
     for item in held.select_related('part', 'reference', 'supplier').order_by('pk').iterator(chunk_size=500):
-        sync_cases(item, lookups)
+        try:
+            with transaction.atomic():
+                sync_cases(item, lookups)
+        except Exception:
+            logger.exception('No se pudieron revisar los casos del artículo %s; se reintenta en la próxima pasada.', item.pk)
+            counts['failed'] += 1
     stats['supplier_examined'] = stats.get('supplier_examined', 0) + counts['examined']
     return counts
 
@@ -1186,20 +1305,22 @@ class CaseChanged(ValidationError):
 
 
 def lock_for(case, line_ids=()):
-    """The locks of a decision on an item case, in the plan's order (§1.6.5): the supplier's Account, then the lines by id; the item is
-    read under the Account's lock (every writer of a supplier's items takes it first) and written last by the decision, and the case is
-    locked when it is decided (confirm). Refuses (CaseChanged) a case decided or changed meanwhile, or a supplier importing. Returns
-    (item, {line id: Part})."""
+    """The locks of a decision on an item case, in the plan's order (§1.6.5): the Accounts of the item's supplier and of every supplier
+    with items on the lines involved (a decision may merge the item's own line into the chosen one: mall.line_merge locks them too), by
+    id, then the lines by id; the item is read under its Account's lock (every writer of a supplier's items takes it first) and written
+    last by the decision, and the case is locked when it is decided (confirm). Refuses (CaseChanged) a case decided or changed
+    meanwhile, or a supplier importing. Returns (item, {line id: Part})."""
     from .models import Account, Part
     _, _, SupplierItem = _models()
     item = SupplierItem.objects.filter(pk=case.item_id).first()
     if item is None:
         raise CaseChanged('El artículo de este caso ya no existe.')
-    Account.objects.select_for_update().get(pk=item.supplier_id)
-    from .line_merge import importing
-    if importing([item.supplier_id]):
-        raise CaseChanged('Espera a que termine la importación de este proveedor.')
     ids = sorted({str(pk) for pk in [*line_ids, item.part_id] if pk})
+    suppliers = sorted({item.supplier_id, *SupplierItem.objects.filter(part_id__in=ids).values_list('supplier_id', flat=True)}, key=str)
+    list(Account.objects.select_for_update().filter(pk__in=suppliers).order_by('pk').values_list('pk', flat=True))
+    from .line_merge import importing
+    if importing(suppliers):
+        raise CaseChanged('Espera a que termine la importación de este proveedor.')
     lines = {str(line.pk): line for line in Part.objects.select_for_update().filter(pk__in=ids).order_by('pk')}
     item = SupplierItem.objects.select_related('supplier', 'part', 'reference').get(pk=item.pk)
     current(case)
@@ -1245,16 +1366,40 @@ def line_reference(line, item):
     return None
 
 
+def absorb_new_product(item, line, *, actor=None):
+    """The item's own line in preparación, a new product holding only this item (Productos nuevos, rule 4), merged into `line` before
+    the item moves there (mall.line_merge.merge_lines: its codes go along, Separar SKU undoes it): no empty line is left holding the
+    item's code for the next supplier's stock to join. Returns whether it merged. A merge the catalog refuses (MergeGuard, a code
+    another line holds) refuses the decision with its reason."""
+    Part, _, SupplierItem = _models()
+    if not item.part_id or str(item.part_id) == str(line.pk):
+        return False
+    own = Part._base_manager.filter(pk=item.part_id).first()
+    if own is None or own.estado != 'preparacion' or own.merged_into_id:
+        return False
+    if SupplierItem.objects.filter(part_id=own.pk).exclude(pk=item.pk).exists():
+        return False
+    from .line_merge import merge_lines, service_actor
+    merge_lines(line, [own], actor=actor if getattr(actor, 'pk', None) else service_actor(), reason='Vincular un producto nuevo')
+    item.refresh_from_db(fields=['reference', 'part', 'matching_status'])
+    return True
+
+
 def hang_on_line(item, line, *, actor=None, status=None, approve=True):
     """A person's Vincular from a case (S6): the item hangs from `line`'s Reference for its code, or from a new one: shared (declarado,
     a proveedor source) when placement says so and the key is free, else interno for its supplier (mall.variants.reference_for: a
-    code reviewed onto a line is the supplier's own name for it). approve applies a waiting code first (rule 5b). Refuses a unificada
-    line (VariantConflict). Returns the item, saved."""
-    from .variants import VariantConflict, apply_pending, attach, declared_by, reference_for, status_for
+    code reviewed onto a line is the supplier's own name for it), under its brand's canonical nombre (I12). approve applies a waiting
+    code first (rule 5b: the code_change case approved); without it a waiting code keeps waiting and the item stays in review, out of
+    stock (OD7). The item's own line in preparación, when it holds nothing else, joins `line` first (absorb_new_product). Refuses a
+    unificada line (VariantConflict). Returns the item, saved."""
+    from .variants import VariantConflict, apply_pending, attach, declared_by, reference_for, status_for, waiting
+    Part, _, _ = _models()
     if not references.is_live(line):
         raise VariantConflict(f'El SKU {line.sku} se agrupó en otro: vincula el artículo al SKU en el que se agrupó.')
     if approve:
         apply_pending(item)
+    if absorb_new_product(item, line, actor=actor):
+        line = Part._base_manager.get(pk=line.pk)  # the merge may have moved it (a line in referencia takes preparación)
     ref = line_reference(line, item)
     if ref is None:
         spec = placement(item)
@@ -1266,20 +1411,41 @@ def hang_on_line(item, line, *, actor=None, status=None, approve=True):
             except references.ReferenceConflict:
                 ref = None
         if ref is None:
-            ref, _ = reference_for(line, item.codigo, item.brand, item.supplier_id, create=True, actor=actor, source=declared_by(item), item=item)
+            own = placement(item, interno=True)  # the brand an interno code carries: canonical, '' for a placeholder
+            ref, _ = reference_for(line, item.codigo, own['brand'], item.supplier_id, create=True, actor=actor, source=declared_by(item),
+                                   item=item)
     if ref is None:
         raise VariantConflict(f'El código {item.codigo} es un código interno de este proveedor en otro SKU: corrígelo allí antes de vincularlo aquí.')
     prepared = line.estado == 'referencia'
-    line = enter_preparacion(line, actor=actor) if prepared else line
-    attach(item, ref, status=status or status_for(line), save=True)
+    line = enter_preparacion(line, item=item, actor=actor) if prepared else line
+    if status is None:
+        status = 'review' if waiting(item) else status_for(line)
+    attach(item, ref, status=status, save=True)
     joined(item, line, prepared=prepared)
     return item
 
 
 def separate(item, *, actor=None):
     """Separar referencia: the item leaves its line (or its line case) for a line of its own in preparación whose main is an interno
-    code of its supplier (its code is another line's, so it cannot be a shared one). Returns the new line."""
-    from .variants import detach
+    code of its supplier (its code is another line's, so it cannot be a shared one). A new product holding only this item keeps its
+    line: its main becomes the supplier's own code (mall.new_products.make_interno). Refused while a code change waits (rule 5b: the
+    code_change case decides it first). Returns the line."""
+    from .variants import detach, waiting
+    Part, _, SupplierItem = _models()
+    if waiting(item):
+        raise ValidationError('Este artículo tiene un cambio de código esperando revisión: apruébalo o recházalo antes de separar su '
+                              'referencia.')
+    own = item.part if item.reference_id is not None else None
+    if (own is not None and own.estado == 'preparacion' and not own.merged_into_id
+            and not SupplierItem.objects.filter(part_id=own.pk).exclude(pk=item.pk).exists()):
+        main = references.main_of(own)
+        if main is not None and main.pk == item.reference_id:
+            if main.tipo != 'interno':
+                from django.db.models import F
+                from .new_products import make_interno
+                make_interno(own, main, actor if getattr(actor, 'pk', None) else None)
+                Part.objects.filter(pk=own.pk).update(version=F('version') + 1, changed_at=timezone.now())
+            return Part._base_manager.get(pk=own.pk)
     if item.reference_id is not None:
         detach(item)
     return place(item, actor=actor, interno=True)
@@ -1305,6 +1471,7 @@ def decide(case, action, *, actor, line=None):
     merge, keep_apart   merge cases (keep_apart writes CatalogSeparation pairs; on lines a legacy merge joined it takes them apart)
     One transaction, in the plan's lock order: the supplier's Account and the lines (lock_for), the catalog rows, the item, then the
     cases (confirm: a case changed meanwhile rolls everything back). Returns the case."""
+    from .new_products import PlaceRefused
     from .variants import VariantConflict
     kind = case.kind
     if kind == 'merge':
@@ -1333,6 +1500,8 @@ def decide(case, action, *, actor, line=None):
             return case
     except VariantConflict as error:
         raise ValidationError(error.message)
+    except PlaceRefused as error:  # Separar referencia on a code no line of its own can take
+        raise ValidationError(str(error))
 
 
 def decide_item(case, action, item, chosen, lines, holder, actor):
@@ -1355,15 +1524,16 @@ def decide_item(case, action, item, chosen, lines, holder, actor):
         remember_choice(item, chosen, actor)
         return 'applied', 'approved', {'line': str(chosen.pk)}, False
     if kind == 'variant':
-        case_line = next(iter(case.lines.all()), None)
-        if case_line is None or item.part_id != case_line.pk:
+        # The case is about the item on the line it hangs from, one of the case's lines (a merge adds the line it went into: follow_cases).
+        if item.part_id is None or str(item.part_id) not in {str(pk) for pk in case.lines.values_list('pk', flat=True)}:
             raise CaseChanged('El artículo ya no está en la línea de este caso.')
+        case_line = item.part
         if action == 'dismiss' or chosen is None or chosen.pk == case_line.pk:
             settle_item(item, ignore=case)
             if action == 'dismiss':
                 return 'dismissed', 'dismissed', {'line': str(case_line.pk)}, False
             return 'applied', 'approved', {'line': str(case_line.pk)}, False
-        hang_on_line(item, chosen, actor=actor)
+        hang_on_line(item, chosen, actor=actor, approve=False)  # a move approves no waiting code (rule 5b): its code_change case does
         remember_choice(item, chosen, actor)
         settle_item(item, ignore=case)
         return 'applied', 'approved', {'line': str(chosen.pk), 'from': str(case_line.pk)}, True
@@ -1398,8 +1568,8 @@ def decide_item(case, action, item, chosen, lines, holder, actor):
         from .variants import declared_by
         try:
             with transaction.atomic():
-                # The brand as its canonical nombre (I12 from S6: an alias spelling such as TOY is written TOYOTA).
-                ref, _ = references.add(item.part, case.new_code, Lookups().canonical(case.new_brand),
+                # The brand as its canonical nombre (I12 from S6: an alias spelling such as TOY is written TOYOTA; a placeholder, none).
+                ref, _ = references.add(item.part, case.new_code, written_brand(case.new_brand),
                                         tipo=references.tipo_of(declared[0].get('ref_type', 'unknown')),
                                         estado='declarado', source=declared_by(item), actor=actor,
                                         detail={TAG: stamp('referencia_declarada', item)})
@@ -1434,7 +1604,11 @@ def decide_merge(case, action, *, actor, line=None):
         if merged:
             with transaction.atomic():
                 return close_case(confirm(case), 'applied', actor=actor, action='approved', note='Se conserva la unificación.')
-        first = (case.sources or [{}])[0].get('id') or ids[0]  # the case's first line: publicada before the rest (merge_case_spec)
+        # By default the line the case proposes to keep: its target_sku (merge_case_spec puts the publicada line first; a legacy case
+        # converted by mall.refactor.s6_cases names its parent there), else its first row.
+        skus = dict(Part._base_manager.filter(pk__in=ids).values_list('pk', 'sku'))
+        proposed = next((str(pk) for pk, sku in skus.items() if case.target_sku and sku == case.target_sku), None)
+        first = proposed or (case.sources or [{}])[0].get('id') or ids[0]
         target_id = str(line) if line else str(first)
         if target_id not in ids:
             raise ValidationError('Elige una de las líneas del caso como línea principal.')

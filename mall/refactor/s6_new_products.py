@@ -33,12 +33,22 @@ output/refactor/s6/new_products_manifest.jsonl before the transaction commits.
 Before 0083/0084 are applied its dry run is a simulation (cases and verdicts are only counted), and before S4's backfill no proposal
 can join a library number. A rehearsal copy gives the real numbers.
 
---rollback (plan S6 rollback 1): the lines S6 made (this manifest, and the mains tagged detail['s6'] by mall.new_products.place after
-landing) that are still in preparación or rechazada lose their items (pending, no Reference) and are deleted with their References
-when nothing else points at them (images, favourites, specifications... keep them, listed); lines published or merged since stay,
-listed. A line in referencia that a proposal joined gets back its estado once it holds no items; the References the join added go.
-The cases it opened are deleted and the legacy ones it dismissed come back; verdicts and runs get their values back. Then reverse
-0084 and 0083 from the worktree.
+--rollback (plan S6 rollback 1; run python -m mall.refactor.s6_cases --rollback first), for the code before S6, which reads proposals:
+1. Revisión IA's verdicts since landing (line only): a line that was a proposal gives the verdict its proposal back, the others are
+   deleted (logged), so 0084 reverses.
+2. The lines S6 made (this manifest; a Reference tagged detail['s6'] by a proposal or mall.new_products.place, an edited main
+   included; any line from a supplier in preparación or rechazada, which no code before S6 made). A line that was a pending proposal
+   writes back to it what was decided or edited since (approved, linked, rejected; its codigo, description, subgrupo, OEM number,
+   código interno, alternos, version). Still in preparación or rechazada, it loses its items (pending, no Reference) and is deleted
+   with its References when nothing else points at them (images, favourites, specifications... keep it, listed); published or merged
+   since, it stays, listed. A rejection of a line that was no proposal is lost, listed.
+3. The lines rule 7 moved from referencia (this manifest's joins; the rule-7 mark in field_sources, mall.lines.prepared_q, for the
+   engine's moves after landing), still in preparación or rechazada: their items detached, the References S6 added to them purged
+   (this manifest's, tagged ones, any created since the apply), back to referencia with their version and last change.
+4. The cases this manifest created are deleted and the legacy ones it dismissed come back; every case the S6 code opened (keys
+   reference:, code_change:, variant:, line:, merge:) is deleted, logged with its values; verdicts and runs get their values back.
+References S6 added to catalog lines (rules 3 and 3e, approved declared codes) stay: the code before S6 reads them as alternos. Then
+reverse 0084 and 0083 from the worktree.
 """
 import argparse
 import json
@@ -309,6 +319,7 @@ def write(planned, log, run, user):
     from ..matching_models import MatchingCase
     from ..models import Part, Reference
     from ..new_products import PLACED_REASON, canonical_brand, citation, declared_cases
+    from ..reference_matching import written_brand
     from ..sku_review_models import SkuReviewRun, SkuReviewVerdict
     written, now = Counter(), timezone.now()
     entries = planned['entries']
@@ -358,7 +369,7 @@ def write(planned, log, run, user):
 
     def own_ref(line, item):
         """The Reference of `line` an item that is not of the main's key hangs from: its supplier's own code there (interno)."""
-        ref, added = references.add(line, item.codigo, canonical_brand(item.brand) if item.brand.strip() else '', tipo='interno',
+        ref, added = references.add(line, item.codigo, written_brand(item.brand), tipo='interno',
                                     supplier=item.supplier_id, source=citation(item, line), actor=user,
                                     detail={TAG: {**stamp, 'como': 'articulo'}})
         if added:
@@ -527,18 +538,107 @@ def kept_by(line):
     return ', '.join(names)
 
 
+S6_KEYS = ('reference:', 'code_change:', 'variant:', 'line:', 'merge:')  # the keys of the cases the S6 code opens (plan §2)
+
+
+def model_values(row):
+    """A row's columns as the manifest records them (its values before a rollback deletes it)."""
+    return recorded({field.attname: getattr(row, field.attname) for field in row._meta.concrete_fields})
+
+
+def applied_at(entries):
+    """When the first --apply of this manifest ran (the S6 data step runs under the freeze right before S6 lands): rows created on a line
+    since then are the S6 code's. None without one."""
+    stamps = sorted(line['at'] for line in manifest_lines() if line.get('action') == 'run' and line.get('mode') == 'apply' and line.get('at'))
+    if not stamps:
+        return None
+    from django.utils.dateparse import parse_datetime
+    return parse_datetime(stamps[0])
+
+
+def write_back(proposal, line, log, run, result):
+    """What a person (or Revisión IA) did since S6 landed to the line a pending proposal became, written back to the proposal for the
+    code before S6, which reads proposals: published → approved (part: the line), merged → linked (part: the line it went into),
+    rejected → rejected with its reason and note; still in preparación → its codigo, description, subgrupo, OEM number, «código
+    interno», administrator's alternos, field_sources and version. The values before go to the manifest. Returns what it wrote."""
+    from django.utils import timezone
+    from .. import lines, references
+    from ..lines import PREPARED
+    from ..models import Reference, SupplierItem
+    from ..new_products import oem_of
+    from ..sku_proposal_models import SkuProposal
+    names = ('status', 'part_id', 'decided_by_id', 'decided_at', 'reject_reason', 'reject_note', 'sku', 'description', 'part_type_id',
+             'field_sources', 'version', 'internal_code', 'oem_code', 'oem_brand', 'references', 'updated_at')
+    before = {name: getattr(proposal, name) for name in names}
+    decided_at = line.decided_at or line.updated_at or timezone.now()
+    if line.merged_into_id or line.estado == 'unificada':
+        target = lines.canonical(line)
+        fields = {'status': 'linked', 'part_id': target.pk if target is not None else line.merged_into_id, 'decided_at': decided_at,
+                  'decided_by_id': line.decided_by_id}
+    elif line.estado in ('publicada', 'retirada'):
+        fields = {'status': 'approved', 'part_id': line.pk, 'decided_at': decided_at, 'decided_by_id': line.decided_by_id}
+    elif line.estado == 'rechazada':
+        fields = {'status': 'rejected', 'reject_reason': line.decision_reason or 'other', 'reject_note': line.decision_note or '',
+                  'decided_at': decided_at, 'decided_by_id': line.decided_by_id}
+    elif line.estado == 'preparacion':
+        codes = list(Reference.objects.filter(part_id=line.pk).order_by('pk'))
+        main, oem = references.main_in(codes), oem_of(line, codes)
+        sources = {key: value for key, value in (line.field_sources or {}).items() if key != PREPARED}
+        fields = {'sku': line.sku, 'description': line.description, 'part_type_id': line.part_type_id, 'field_sources': sources,
+                  'version': line.version, 'internal_code': main is not None and main.tipo == 'interno',
+                  'oem_code': oem.code if oem is not None and oem.brand else '', 'oem_brand': oem.brand if oem is not None and oem.code else ''}
+        if (sources.get('references') or {}).get('source') == 'admin':
+            hung = set(SupplierItem.objects.filter(part_id=line.pk).values_list('reference_id', flat=True))
+            fields['references'] = [{'code': ref.code, 'brand': ref.brand, 'ref_type': ref.ref_type} for ref in codes
+                                    if not ref.is_main and ref.tipo != 'interno' and (oem is None or ref.pk != oem.pk) and ref.pk not in hung]
+        if line.changed_at:
+            fields['updated_at'] = line.changed_at
+    else:
+        return {}
+    changed = {name: value for name, value in fields.items() if before.get(name) != value}
+    if set(changed) - {'updated_at'}:
+        SkuProposal.objects.filter(pk=proposal.pk).update(**changed)
+        log.append({**run, 'model': 'mall.SkuProposal', 'id': str(proposal.pk), 'action': 'write_back',
+                    'before': recorded({name: before[name] for name in changed}), 'after': recorded(changed)})
+        result['propuestas_actualizadas'] += 1
+        return changed
+    return {}
+
+
 def undo(log, run):
     """--rollback (the module's docstring). Returns the counts and what it left."""
     from django.db import IntegrityError, transaction
     from django.db.models import ProtectedError, Q, RestrictedError
     from .. import lines, references, variants
+    from ..lines import PREPARED, prepared_q
     from ..matching_models import MatchingCase
     from ..models import Part, Reference, SupplierItem
+    from ..sku_proposal_models import SkuProposal
     from ..sku_review_models import SkuReviewRun, SkuReviewVerdict
     entries = [line for line in manifest_lines() if line.get('action') not in (None, 'run', 'rolled_back')]
+    since = applied_at(entries)
+    result, left = Counter(), []
+
+    # 1. Verdicts Revisión IA wrote after landing hang only from their line (proposal NULL), and reversing 0084 makes proposal NOT NULL
+    #    again: a line that was a proposal gives it back its id; any other line's verdicts are deleted, their values in the manifest.
+    proposals = set(str(pk) for pk in SkuProposal.objects.values_list('pk', flat=True))
+    for verdict in SkuReviewVerdict.objects.filter(proposal__isnull=True).order_by('pk'):
+        if verdict.line_id and str(verdict.line_id) in proposals:
+            SkuReviewVerdict.objects.filter(pk=verdict.pk).update(proposal_id=verdict.line_id)
+            log.append({**run, 'model': 'mall.SkuReviewVerdict', 'id': str(verdict.pk), 'action': 'set_proposal', 'before': {'proposal_id': None}})
+            result['veredictos_con_propuesta'] += 1
+        else:
+            log.append({**run, 'model': 'mall.SkuReviewVerdict', 'id': str(verdict.pk), 'action': 'delete', 'before': model_values(verdict)})
+            verdict.delete()
+            result['veredictos_borrados'] += 1
+
+    # 2. The lines S6 made: the manifest's, those whose References carry the tag of mall.new_products.place or of a proposal (a main an
+    #    edit or «código interno» replaced keeps it), and any line from a supplier in preparación or rechazada (none existed before S6).
     created_lines = {line['id'] for line in entries if line['model'] == 'mall.Part' and line['action'] == 'create'}
-    created_lines |= {str(part) for part, detail in Reference.all_objects.filter(detail__has_key=TAG, is_main=True).values_list('part_id', 'detail')
+    created_lines |= {str(part) for part, detail in Reference.all_objects.filter(detail__has_key=TAG).values_list('part_id', 'detail')
                       if (detail.get(TAG) or {}).get('como') in ('propuesta', 'place')}
+    created_lines |= {str(pk) for pk in Part._base_manager.filter(origen='proveedor', estado__in=('preparacion', 'rechazada'))
+                      .values_list('pk', flat=True)}
     joined = {}
     for line in entries:
         if line['model'] == 'mall.Part' and line['action'] == 'join':
@@ -548,19 +648,29 @@ def undo(log, run):
     for line in entries:
         if line['model'] == 'mall.SupplierItem' and line['action'] == 'hang':
             hung[str(line['after']['part_id'])].add(line['id'])
-    result, left = Counter(), []
-    for pk in sorted(created_lines):
+
+    def detach_all(items):
+        for item in items:
+            log.append({**run, 'model': 'mall.SupplierItem', 'id': str(item.pk), 'action': 'rollback',
+                        'before': recorded({'reference_id': item.reference_id, 'part_id': item.part_id, 'matching_status': item.matching_status,
+                                            'codigo': item.codigo, 'codigo_pendiente': item.codigo_pendiente})})
+            variants.detach(item)
+            result['articulos'] += 1
+
+    rule_7 = {str(pk) for pk in Part._base_manager.filter(prepared_q()).values_list('pk', flat=True)}
+    for pk in sorted(created_lines - set(joined) - rule_7):
         line = Part._base_manager.filter(pk=pk).first()
         if line is None:
             continue
+        proposal = SkuProposal.objects.filter(pk=pk, status='pending').first()  # a line the data step made keeps its proposal's id
+        if proposal is not None:
+            write_back(proposal, line, log, run, result)
+        elif line.estado == 'rechazada':
+            left.append(f'línea {line.sku} ({pk}): se rechazó después de S6 y no era una propuesta; el rechazo se pierde')
         if line.estado not in ('preparacion', 'rechazada') or line.merged_into_id:
             left.append(f'línea {line.sku} ({pk}): está {lines.phrase(line.estado)}, se deja')
             continue
-        for item in SupplierItem.objects.filter(part_id=line.pk).order_by('pk'):
-            log.append({**run, 'model': 'mall.SupplierItem', 'id': str(item.pk), 'action': 'rollback',
-                        'before': recorded({'reference_id': item.reference_id, 'part_id': item.part_id, 'matching_status': item.matching_status})})
-            variants.detach(item)
-            result['articulos'] += 1
+        detach_all(SupplierItem.objects.filter(part_id=line.pk).order_by('pk'))
         why = kept_by(line)
         if why:
             left.append(f'línea {line.sku} ({pk}): tiene {why}, se deja sin artículos')
@@ -577,36 +687,67 @@ def undo(log, run):
         result['referencias'] += purged
         log.append({**run, 'model': 'mall.Part', 'id': str(pk), 'action': 'delete', 'before': recorded({'sku': line.sku, 'estado': line.estado})})
         result['lineas'] += 1
-    for pk, before in joined.items():
+
+    # 3. The lines rule 7 brought from referencia: the manifest's joins and every line with the rule-7 mark (mall.lines.prepared_q: the
+    #    engine's moves after landing). Still in preparación or rechazada, each loses its items (all came with S6: a line in referencia
+    #    holds none) and the codes S6 added to it, and goes back to referencia with its version, its last change and no decision.
+    marked = {str(pk): None for pk in Part._base_manager.filter(prepared_q(), estado__in=('preparacion', 'rechazada')).values_list('pk', flat=True)}
+    for pk, before in {**marked, **joined}.items():
         line = Part._base_manager.filter(pk=pk).first()
         if line is None:
             continue
-        refs = [ref for ref in Reference._base_manager.filter(part_id=pk, pk__in=created_refs)]
-        for item in SupplierItem.objects.filter(Q(reference_id__in=[ref.pk for ref in refs]) | Q(pk__in=hung.get(pk, set()), part_id=pk)).order_by('pk'):
-            log.append({**run, 'model': 'mall.SupplierItem', 'id': str(item.pk), 'action': 'rollback',
-                        'before': recorded({'reference_id': item.reference_id, 'part_id': item.part_id, 'matching_status': item.matching_status})})
-            variants.detach(item)
-            result['articulos'] += 1
-        result['referencias'] += references.purge([ref.pk for ref in refs])
+        mark = (line.field_sources or {}).get(PREPARED) or {}
+        before = before or {'estado': mark.get('desde', 'referencia'), 'version': mark.get('version') or line.version,
+                            'changed_at': mark.get('changed_at'), 'decided_by_id': None, 'decided_at': None}
+        if line.estado not in ('preparacion', 'rechazada') or line.merged_into_id:
+            left.append(f'línea {line.sku} ({pk}): estaba {lines.phrase(before.get("estado"))} y está {lines.phrase(line.estado)}, se deja')
+            continue
+        if line.estado == 'rechazada':
+            left.append(f'línea {line.sku} ({pk}): se rechazó después de S6; vuelve a referencia y el rechazo se pierde')
+        added = Q(pk__in=created_refs) | Q(detail__has_key=TAG, is_main=False)
+        if since is not None:
+            added |= Q(created_at__gte=since, is_main=False)
+        refs = list(Reference._base_manager.filter(Q(part_id=pk) & added).values_list('pk', flat=True))
+        detach_all(SupplierItem.objects.filter(Q(part_id=pk) | Q(reference_id__in=refs)).order_by('pk'))
+        result['referencias'] += references.purge(refs)
         for ref_pk, detail in Reference._base_manager.filter(part_id=pk, detail__has_key=TAG).values_list('pk', 'detail'):
             Reference._base_manager.filter(pk=ref_pk).update(detail={key: value for key, value in detail.items() if key != TAG})
-        if line.estado == 'preparacion' and before.get('estado') == 'referencia' and not SupplierItem.objects.filter(part_id=pk).exists():
-            Part._base_manager.filter(pk=pk).update(estado='referencia', version=before['version'], changed_at=before['changed_at'],
-                                                   decided_by_id=before['decided_by_id'], decided_at=before['decided_at'])
-            result['lineas_devueltas'] += 1
-        elif line.estado != before.get('estado'):
-            left.append(f'línea {line.sku} ({pk}): estaba {lines.phrase(before.get("estado"))} y está {lines.phrase(line.estado)}, se deja')
+        if SupplierItem.objects.filter(part_id=pk).exists():
+            left.append(f'línea {line.sku} ({pk}): aún tiene artículos, se deja en {lines.phrase(line.estado)}')
+            continue
+        sources = {key: value for key, value in (line.field_sources or {}).items() if key != PREPARED}
+        Part._base_manager.filter(pk=pk).update(estado=before.get('estado') or 'referencia', active=False, version=before.get('version') or line.version,
+                                               changed_at=before.get('changed_at'), decided_by_id=before.get('decided_by_id'),
+                                               decided_at=before.get('decided_at'), decision_reason='', decision_note='', field_sources=sources)
+        log.append({**run, 'model': 'mall.Part', 'id': str(pk), 'action': 'return_referencia',
+                    'before': recorded({'estado': line.estado, 'version': line.version, 'field_sources': line.field_sources})})
+        result['lineas_devueltas'] += 1
+
+    # 4. Cases: those the manifest created go, the legacy ones it dismissed come back; then every case the S6 code opened since (its
+    #    keys: reference:, code_change:, variant:, line:, merge:), logged with its values. Converted legacy cases keep their legacy keys:
+    #    python -m mall.refactor.s6_cases --rollback gives them back their kind first.
     for line in entries:
         if line['model'] == 'mall.MatchingCase' and line['action'] == 'create':
             result['casos'] += MatchingCase.objects.filter(pk=line['id']).delete()[1].get('mall.MatchingCase', 0)
         elif line['model'] == 'mall.MatchingCase' and line['action'] == 'update':
             result['casos_legados'] += MatchingCase.objects.filter(pk=line['id'], status='dismissed').update(**line['before'])
-        elif line['model'] == 'mall.SkuReviewVerdict':
+        elif line['model'] == 'mall.SkuReviewVerdict' and line['action'] == 'update':
             result['veredictos'] += SkuReviewVerdict.objects.filter(pk__in=line['ids']).update(line_id=None)
         elif line['model'] == 'mall.SkuReviewRun':
             before = line['before']
             result['corridas'] += SkuReviewRun.objects.filter(pk=line['id']).update(proposal_ids=before['proposal_ids'],
                                                                                     finished_at=before['finished_at'], metrics=before['metrics'])
+    s6_cases = Q()
+    for prefix in S6_KEYS:
+        s6_cases |= Q(key__startswith=prefix)
+    for case in MatchingCase.objects.filter(s6_cases).order_by('pk'):
+        log.append({**run, 'model': 'mall.MatchingCase', 'id': str(case.pk), 'action': 'delete',
+                    'before': {**model_values(case), 'lines': [str(pk) for pk in case.lines.values_list('pk', flat=True)]}})
+        case.delete()
+        result['casos_s6'] += 1
+    later = SkuReviewRun.objects.filter(created_at__gte=since) if since is not None else SkuReviewRun.objects.none()
+    for review in later.order_by('created_at'):
+        left.append(f'revisión IA {review.pk}: se creó después de S6; sus ids son líneas, y las que ya no existen se ignoran')
     log.append({**run, 'model': 'manifest', 'action': 'rolled_back', 'rows': len(entries)})
     return {**dict(result), 'left': left}
 

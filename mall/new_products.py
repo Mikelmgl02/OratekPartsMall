@@ -66,7 +66,12 @@ AUTOMATIC = ('supplier', 'oem_library')  # field_sources the suppliers' data may
 
 class PlaceRefused(Exception):
     """place() could not give the item a line: the key sits on a catalog line (the matching attaches it there), on two or more lines
-    (rule 2: a line case decides), or the item has no code. The item stays pending, without a Reference."""
+    (rule 2: a line case decides), or the item has no code. The item stays pending, without a Reference, in a line case whose guard
+    says why (mall.reference_matching.refused_case: I10)."""
+
+    def __init__(self, message, guard='colocacion'):
+        super().__init__(message)
+        self.guard = guard
 
 
 def _models():
@@ -157,7 +162,7 @@ def place(variant, *, actor=None, internal=False):
     with transaction.atomic():
         supplier_id = SupplierItem.objects.filter(pk=item_id).values_list('supplier_id', flat=True).first()
         if supplier_id is None:
-            raise PlaceRefused('El artículo ya no existe.')
+            raise PlaceRefused('El artículo ya no existe.', 'sin_articulo')
         list(Account.objects.select_for_update().filter(pk=supplier_id).values_list('pk', flat=True))
         item = SupplierItem.objects.select_related('supplier', 'part').get(pk=item_id)
         if item.reference_id:
@@ -166,9 +171,9 @@ def place(variant, *, actor=None, internal=False):
         code = references.code_key(source.codigo_pendiente or source.codigo)  # an item no line holds takes a waiting code at once
         printed_brand = source.brand if source.brand_pendiente is None else source.brand_pendiente
         if not re.search(r'[0-9A-Z]', code):
-            raise PlaceRefused(f'El artículo {item.supplier_invent_id} no tiene código.')
+            raise PlaceRefused(f'El artículo {item.supplier_invent_id} no tiene código.', 'sin_codigo')
         if len(code) > 120:
-            raise PlaceRefused(f'El código {code[:40]}… supera 120 caracteres.')
+            raise PlaceRefused(f'El código {code[:40]}… supera 120 caracteres.', 'codigo_largo')
         brand, tipo, supplier = main_plan(code, printed_brand, item.supplier, internal=internal, item=item)
         references.lock(references.clave(code))
         held = references.find(code, brand, supplier=item.supplier_id)  # rule 1: the supplier's own code first, then the public key
@@ -183,7 +188,7 @@ def place(variant, *, actor=None, internal=False):
                                      field_sources={'sku': {'source': 'supplier'}, 'description': {'source': 'supplier'}},
                                      changed_at=timezone.now())
         except references.ReferenceConflict as error:
-            raise PlaceRefused(error.message) from error
+            raise PlaceRefused(error.message, 'conflicto') from error
         main = references.main_of(line)
         locked = SupplierItem.objects.select_for_update().select_related('supplier').get(pk=item.pk)
         item = given if given is not None else locked
@@ -208,19 +213,19 @@ def join(variant, ref, *, actor=None):
         ref = Reference.all_objects.get(pk=getattr(ref, 'pk', ref))
         line = all_lines(Part.objects.select_for_update()).get(pk=ref.part_id)
         if not references.is_live(line):
-            raise PlaceRefused(f'El SKU {line.sku} se agrupó en otro.')
+            raise PlaceRefused(f'El SKU {line.sku} se agrupó en otro.', 'unificada')
         if line.estado in lines.CATALOG:
-            raise PlaceRefused(f'El código {ref.code} ya es del SKU {line.sku}: el emparejamiento vincula ahí el artículo.')
+            raise PlaceRefused(f'El código {ref.code} ya es del SKU {line.sku}: el emparejamiento vincula ahí el artículo.', 'en_catalogo')
         prepared = line.estado == 'referencia'
         if prepared:
-            lines.prepare(line)
+            lines.prepare(line, item=item_id)
         locked = SupplierItem.objects.select_for_update().select_related('supplier').get(pk=item_id)
         item = given if given is not None else locked
         variants.apply_pending(item)
         try:
             variants.attach(item, ref, status='pending')
         except variants.VariantConflict as error:
-            raise PlaceRefused(error.message) from error
+            raise PlaceRefused(error.message, 'conflicto') from error
         declared_cases(item, line)
         line = joined(line, item, prepared=prepared)
     return line

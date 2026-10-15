@@ -378,9 +378,10 @@ class SupplierInventoryImport(APIView):
 
 
 def outcome_key(action, line, status):
-    """A row's outcome as the snapshot compares it: its line and status, a new product (no line yet, or a line in preparación, which
-    an earlier row or batch of the same upload may have just made) as one token."""
-    if action == 'no_line' or (line is not None and line.estado == 'preparacion' and status == 'pending'):
+    """A row's outcome as the snapshot compares it: its line and status, a new product as one token: no line yet, a line in
+    preparación (an earlier row or batch of the same upload may have just made it) or a line in referencia (an earlier batch's item
+    may have just moved it to preparación: rule 7)."""
+    if action == 'no_line' or (line is not None and line.estado in ('preparacion', 'referencia') and status == 'pending'):
         return 'nuevo', 'pending'
     return (str(line.pk) if line is not None else ''), status
 

@@ -442,3 +442,44 @@ class DataStepTests(Helpers, TestCase):
         self.assertFalse(Part.objects.filter(pk=line.pk).exists())
         self.assertTrue(Part.objects.filter(pk=published.pk, estado='publicada').exists())   # decided since: left, listed
         self.assertIn('LATE-2', out)
+
+    def test_the_rollback_writes_back_what_was_decided_and_takes_back_what_s6_did_after_landing(self):
+        from . import reference_matching as rm
+        kept = self.proposal('K-77', [self.item(self.dealer, '1', 'K-77', 'WURTH', 'PIEZA')], brand='WURTH')
+        dropped = self.proposal('D-77', [self.item(self.dealer, '2', 'D-77', 'WURTH', 'PIEZA')], brand='WURTH')
+        code, out = self.cli('--apply', '--user', self.root.username)
+        self.assertEqual(code, 0, out)
+        # After landing: Revisión IA's verdicts hang from lines only; a person edits one line and rejects another; a later item gets a
+        # line of its own; the engine moves a library line to preparación (rule 7) and opens a line case.
+        kept_line, dropped_line = Part.objects.get(pk=kept.pk), Part.objects.get(pk=dropped.pk)
+        run = SkuReviewRun.objects.create(id=uuid.uuid4(), created_by=self.root, batch_size=5, proposal_ids=[str(kept.pk)])
+        on_proposal = SkuReviewVerdict.objects.create(run=run, line=kept_line, position=0, proposal_version=kept_line.version, method='ai',
+                                                      verdict='good')
+        late_line, _ = new_products.place(self.item(self.dealer, '3', 'LATE-77', 'WURTH', 'PIEZA'))
+        on_late = SkuReviewVerdict.objects.create(run=run, line=late_line, position=1, proposal_version=1, method='ai', verdict='good')
+        new_products.edit(kept_line.pk, self.root, kept_line.version, {'description': 'PIEZA EDITADA'})
+        new_products.reject(dropped_line.pk, self.root, dropped_line.version, 'not_a_part', 'no es un repuesto')
+        number = make_library_number('TOYOTA', '16100-39999')
+        moved = self.item(self.other, '4', '16100-39999', 'TOYOTA', 'BOMBA', case=None)
+        rm.carry_out(moved, rm.resolve(rm.subject_of(moved)), save=True)
+        library = Part.objects.get(pk=number.part_id)
+        self.assertTrue(lines.prepared_by_rule_7(library))
+        waiting = self.item(self.other, '5', '.', 'KAIYI', 'TORNILLO', case=None)
+        rm.carry_out(waiting, rm.resolve(rm.subject_of(waiting)), save=True)
+        self.assertTrue(MatchingCase.objects.filter(key=f'line:{waiting.pk}').exists())
+        code, out = self.cli('--rollback', '--user', self.root.username)
+        self.assertEqual(code, 0, out)
+        on_proposal.refresh_from_db()
+        self.assertEqual(on_proposal.proposal_id, kept.pk)
+        self.assertFalse(SkuReviewVerdict.objects.filter(pk=on_late.pk).exists())
+        self.assertFalse(SkuReviewVerdict.objects.filter(proposal__isnull=True).exists())  # 0084 reverses
+        kept.refresh_from_db()
+        dropped.refresh_from_db()
+        self.assertEqual((kept.status, kept.description, kept.field_sources['description']['source']), ('pending', 'PIEZA EDITADA', 'admin'))
+        self.assertEqual((dropped.status, dropped.reject_reason, dropped.reject_note), ('rejected', 'not_a_part', 'no es un repuesto'))
+        self.assertFalse(Part.objects.filter(pk__in=[kept.pk, dropped.pk, late_line.pk]).exists())
+        library.refresh_from_db()
+        moved.refresh_from_db()
+        self.assertEqual((library.estado, lines.prepared_by_rule_7(library), moved.part_id, moved.reference_id), ('referencia', False, None, None))
+        self.assertFalse(MatchingCase.objects.filter(key__startswith='line:').exists())
+        self.assertIn('rechaz', SkuProposal.objects.get(pk=dropped.pk).get_status_display().lower())

@@ -189,6 +189,21 @@ test('Buscar otra línea OEM finds a line by search and Vincular sends its id; a
   await expect(card).toBeVisible();  // refused: still waiting
 });
 
+test('a line case says why it waits: a code with no letter or digit, or a suffix that names no brand', async ({page}) => {
+  const dot=base(10,'line',{sources:[item(10,'.','KAIYI','TORNILLO')],lines:[],guard:'sin_codigo',reason:'El artículo no tiene código. Corrige el código con el proveedor o elige la línea OEM del artículo.'});
+  const origin=base(11,'line',{sources:[item(11,'58411-1R000-K','','TAMBOR HYUNDAI ACCENT 11-16')],lines:[L.accent],guard:'sufijo',fingerprint:fp(1),
+    reason:'El código base está en una línea, pero su sufijo no es una marca conocida (origen, genuino, comercial): confírmalo.'});
+  await mockMatching(page,[dot,origin]);
+  const dialog=await openMatching(page);
+  const waiting=dialog.getByRole('article',{name:'ELEGIR LÍNEA OEM .'});
+  await expect(waiting.getByText('El artículo no tiene código: corrígelo con el proveedor o elige su línea.',{exact:true})).toBeVisible();
+  await expect(waiting.getByRole('radio')).toHaveCount(0);  // no line yet: Buscar otra línea OEM
+  await expect(waiting.getByRole('button',{name:'Buscar otra línea OEM',exact:true})).toBeVisible();
+  const suffixed=dialog.getByRole('article',{name:'ELEGIR LÍNEA OEM 58411-1R000-K'});
+  await expect(suffixed.getByText('El sufijo del código no es una marca conocida (origen, genuino, comercial).',{exact:true})).toBeVisible();
+  await expect(suffixed.getByRole('radio',{name:/58411-1R000/})).toBeVisible();
+});
+
 test('the history keeps the cases before S6 read-only, and the kind filter asks the backend for one kind', async ({page}) => {
   const legacy=base(8,'supplier',{status:'applied',sources:[item(8,'D-HYU-1R','GMB',drum,{references:[{code:'58411-1R000',brand:'HYUNDAI'}]})],candidates:[L.accent],
     target_sku:L.accent.sku,reason:'Coincidencia semántica: requiere confirmar.',ai:{target_sku:L.accent.sku,reason:'Revisar aplicación antes de agrupar.',confidence:.8}});

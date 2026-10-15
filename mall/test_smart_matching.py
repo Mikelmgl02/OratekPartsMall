@@ -61,9 +61,14 @@ class SmartMatchingTests(APITestCase):
 
     def test_a_later_catalog_line_takes_the_item_by_rule_3_once_its_base_exists(self):
         target = create_line('58411-07000', description=self.description)
-        item = self.ingest('58411-07000-K', description='TAMBOR KIA PICANTO TRAS 04-11')
-        self.assertEqual((item.part_id, item.matching_status, item.reference.code), (target.pk, 'matched', '58411-07000-K'))
+        item = self.ingest('58411-07000-GMB', description='TAMBOR KIA PICANTO TRAS 04-11')
+        self.assertEqual((item.part_id, item.matching_status, item.reference.code), (target.pk, 'matched', '58411-07000-GMB'))
         self.assertEqual(StockEntry.objects.count(), 1)
+        # D2: only a known brand suffix links on its own. -K (an origin) finds the base's line and waits there for a click.
+        origin = self.ingest('58411-07000-K', description='TAMBOR KIA PICANTO TRAS 04-11')
+        case = MatchingCase.objects.get(key=f'line:{origin.pk}')
+        self.assertEqual((origin.part_id, origin.matching_status, case.guard, list(case.lines.values_list('pk', flat=True))),
+                         (None, 'pending', 'sufijo', [target.pk]))
 
     def test_leading_zeros_and_short_codes_keep_their_identity(self):
         target = create_line('00123-45678', description=self.description)

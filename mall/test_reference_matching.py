@@ -489,6 +489,260 @@ class LineMergeTests(Matching, TestCase):
         self.assertEqual((item.part_id, item.matching_status), (target.pk, 'matched'))
 
 
+class RuleThreeGuardTests(Matching, TestCase):
+    """Rule 3's negatives (the variant and year guards of the families before S6, test_catalog_family_parents): only a known brand
+    suffix links on its own (D2); a position, size or year never strips, and a contradiction or another part name waits for a click."""
+
+    def test_the_guards(self):
+        base = line('58411-07000', 'TAMBOR 180MM KIA PICANTO 04-11')
+        rows = [
+            ('58411-07000-GMB', 'TAMBOR 180MM KIA PICANTO 04-11', ('new_reference_on_line', '')),  # the positive control
+            ('58411-07000-LH', 'TAMBOR 180MM KIA PICANTO 04-11', ('no_line', '')),       # a position is no TAG
+            ('58411-07000-RH', 'TAMBOR 180MM KIA PICANTO 04-11', ('no_line', '')),
+            ('58411-07000-20', 'TAMBOR 180MM KIA PICANTO 04-11', ('no_line', '')),       # nor is a size
+            ('58411-07000-GMB', 'TAMBOR 180MM KIA PICANTO 12-18', ('case', 'spec_conflict')),  # other years
+            ('58411-07000-GMB', 'TAMBOR 200MM KIA PICANTO 04-11', ('case', 'spec_conflict')),  # another size
+            ('58411-07000-GMB', 'DISCO 180MM KIA PICANTO 04-11', ('case', 'noun')),       # another part
+            ('58411-07000-K', 'TAMBOR 180MM KIA PICANTO 04-11', ('case', 'sufijo')),      # an origin: the base's line, by a click
+            ('58411-07000-NP', 'TAMBOR 180MM KIA PICANTO 04-11', ('case', 'sufijo')),
+            ('58411-07000-G', 'TAMBOR 180MM KIA PICANTO 04-11', ('case', 'sufijo')),      # a genuine mark
+        ]
+        for code, description, expected in rows:
+            with self.subTest(code=code, description=description):
+                found = rm.resolve(self.subject(code, '', description))
+                guard = found.cases[0]['guard'] if found.action == 'case' else ''
+                self.assertEqual((found.action, guard), expected)
+                if found.action == 'case':
+                    self.assertEqual(found.cases[0]['lines'], [base.pk])
+
+
+class ReviewFixTests(Matching, APITestCase):
+    """The S6 review's findings, each kept from coming back."""
+
+    def setUp(self):
+        super().setUp()
+        self.client.force_authenticate(self.admin)
+
+    def decide(self, case, action, **data):
+        return self.client.post(f'/api/v1/management/matching/{case.pk}/', {'action': action, 'fingerprint': case.fingerprint, **data},
+                                format='json')
+
+    def test_a_code_with_no_letter_or_digit_waits_in_a_line_case_and_never_stops_the_pass(self):
+        self.assertEqual(rm.Lookups().cross(''), [])
+        found = rm.resolve(self.subject('.', 'KAIYI'))
+        self.assertEqual((found.action, found.cases[0]['guard']), ('case', 'sin_codigo'))
+        item = self.ingest('.', brand='KAIYI', description='TORNILLO')
+        case = MatchingCase.objects.get(key=f'line:{item.pk}')
+        self.assertEqual((item.reference_id, item.part_id, case.guard, case.lines.count()), (None, None, 'sin_codigo', 0))
+        loose = SupplierItem.objects.create(supplier=self.supplier, supplier_invent_id='LOOSE-2', codigo='ZZ-LOOSE-22', description='SENSOR')
+        updated = SupplierItem.objects.get(pk=item.pk).updated_at
+        rm.backlog()
+        loose.refresh_from_db()
+        self.assertEqual(loose.part.estado, 'preparacion')  # the items after it are placed
+        self.assertEqual(MatchingCase.objects.get(pk=case.pk).fingerprint, case.fingerprint)
+        self.assertEqual(SupplierItem.objects.get(pk=item.pk).updated_at, updated)  # not written on every pass (C6's I10 reads it)
+        response = self.decide(case, 'separar_referencia')
+        self.assertEqual(response.status_code, 409, response.data)  # no line of its own can be made of it: the reason, not a 500
+        from .supplier_import import stock_plan
+        plan, _ = stock_plan(self.supplier, [{'row': 2, 'data': {'supplier_invent_id': 'DOT', 'codigo': '.', 'brand': 'KAIYI',
+                                                                     'description': 'TORNILLO', 'quantity': 1}}])
+        self.assertEqual((plan['preview'][0]['resolucion'], plan['errors']), ('case', []))
+
+    def test_one_items_failure_is_logged_and_the_pass_goes_on(self):
+        boom = SupplierItem.objects.create(supplier=self.supplier, supplier_invent_id='BOOM', codigo='ZZ-BOOM-11', description='SENSOR')
+        after = SupplierItem.objects.create(supplier=self.supplier, supplier_invent_id='AFTER', codigo='ZZ-AFTER-11', description='SENSOR')
+        real = rm.resolve
+
+        def flaky(subject, lookups=None):
+            if subject.code == 'ZZ-BOOM-11':
+                raise KeyError('')
+            return real(subject, lookups)
+        with patch.object(rm, 'resolve', side_effect=flaky), self.assertLogs('mall.reference_matching', 'ERROR'):
+            counts = rm.backlog()
+        boom.refresh_from_db()
+        after.refresh_from_db()
+        self.assertEqual((counts['failed'], boom.reference_id, after.part.estado), (1, None, 'preparacion'))
+
+    def test_a_place_refusal_opens_a_line_case_instead_of_retrying_forever(self):
+        from .new_products import PlaceRefused
+        with patch.object(rm, 'place', side_effect=PlaceRefused('El código choca con otra línea.', 'conflicto')):
+            item = self.ingest('ZZ-REFUSED-12', description='SENSOR')
+        case = MatchingCase.objects.get(key=f'line:{item.pk}')
+        self.assertEqual((item.reference_id, item.matching_status, case.guard), (None, 'pending', 'conflicto'))
+        rm.backlog()  # the refusal is gone: the backlog places it and the case is applied
+        item.refresh_from_db()
+        self.assertEqual((item.part.estado, MatchingCase.objects.get(pk=case.pk).status), ('preparacion', 'applied'))
+
+    def test_a_new_products_line_follows_its_items_text_and_never_puts_it_in_review(self):
+        item = self.ingest('ZQ-77700001', stable='P', brand='GMB', description='BOMBA AGUA DEL')
+        new = item.part
+        version = new.version
+        fixed = self.ingest('ZQ-77700001', stable='P', brand='GMB', description='BOMBA AGUA TRAS')
+        new.refresh_from_db()
+        self.assertEqual((fixed.matching_status, new.description, new.version), ('pending', 'BOMBA AGUA TRAS', version + 1))
+        self.assertFalse(MatchingCase.objects.filter(kind='variant').exists())
+
+    def test_two_codes_on_the_same_lines_never_rewrite_their_merge_case(self):
+        from .oem_reference_models import OEMCrossReference
+        pump = line('16100-39315', 'BOMBA AGUA TOYOTA', 'TOYOTA', 'oem')
+        twin = line('16100-39316', 'BOMBA AGUA TOYOTA', 'TOYOTA', 'oem')
+        gmb = 'GMB Water Pump Catalog 2016 · pág. 5'
+        for number in (pump, twin):
+            for code in ('GWT-41A', 'GWT-41B'):
+                OEMCrossReference.objects.create(reference=references.main_of(number), brand='GMB', code=code, citations=[gmb])
+        self.ingest('GWT-41A', brand='GMB', description='BOMBA AGUA')
+        case = MatchingCase.objects.get(kind='merge')
+        MatchingCase.objects.filter(pk=case.pk).update(ai={'target_sku': pump.sku})
+        self.ingest('GWT-41B', brand='GMB', description='BOMBA AGUA')
+        self.ingest('GWT-41A', brand='GMB', description='BOMBA AGUA', quantity=6)
+        again = MatchingCase.objects.get(pk=case.pk)
+        self.assertEqual((MatchingCase.objects.filter(kind='merge').count(), again.fingerprint, again.ai), (1, case.fingerprint, {'target_sku': pump.sku}))
+        self.assertEqual({row['code'] for row in again.evidence['codes']}, {'GWT-41A', 'GWT-41B'})
+
+    def test_two_spellings_of_one_declared_code_are_one_case(self):
+        declared = [{'code': '04465-02220', 'brand': 'TOYOTA'}, {'code': '0446502220', 'brand': 'TOYOTA'}]
+        self.ingest('58411-1R000', description='DISCO FRENO DEL', references_=declared, update='spellings-5')
+        case = MatchingCase.objects.get(kind='reference')
+        MatchingCase.objects.filter(pk=case.pk).update(status='dismissed')
+        for quantity in (6, 7):
+            self.ingest('58411-1R000', description='DISCO FRENO DEL', references_=declared, quantity=quantity, update=f'spellings-{quantity}')
+        self.assertEqual((MatchingCase.objects.filter(kind='reference').count(), MatchingCase.objects.get(pk=case.pk).status), (1, 'dismissed'))
+
+    def test_an_item_takes_the_status_its_line_has_under_the_lock(self):
+        from . import new_products
+        first = self.ingest('ZQ-88800001', brand='GMB', description='BOMBA AGUA')
+        new = first.part
+        late = SupplierItem.objects.create(supplier=self.other, supplier_invent_id='LATE', codigo='ZQ-88800001', brand='GMB',
+                                           description='BOMBA AGUA')
+        resolution = rm.resolve(rm.subject_of(late))
+        self.assertEqual((resolution.action, resolution.status), ('attach', 'pending'))
+        new.refresh_from_db()
+        new_products.publish(new.pk, self.admin, new.version)  # published between resolve and the write
+        rm.carry_out(late, resolution, save=True)
+        late.refresh_from_db()
+        self.assertEqual((late.part_id, late.matching_status), (new.pk, 'matched'))
+
+    def test_moving_an_item_from_a_variant_case_keeps_its_waiting_code_waiting(self):
+        item = self.ingest('58411-1R000', stable='VW', description='DISCO FRENO HYUNDAI TRAS')
+        variant = MatchingCase.objects.get(kind='variant')
+        self.ingest('J69-3502010', stable='VW', description='DISCO FRENO HYUNDAI TRAS', quantity=6)
+        variant.refresh_from_db()
+        rear = line('58411-1R100', 'DISCO FRENO HYUNDAI ACCENT TRAS', 'HYUNDAI', 'oem')
+        response = self.decide(variant, 'approve', line=str(rear.pk))
+        self.assertEqual(response.status_code, 200, response.data)
+        item.refresh_from_db()
+        self.assertEqual((item.part_id, item.codigo, item.codigo_pendiente, item.matching_status), (rear.pk, '58411-1R000', 'J69-3502010', 'review'))
+        rm.recheck_cases()
+        self.assertTrue(MatchingCase.objects.filter(key=f'code_change:{item.pk}', status='review').exists())  # rule 5b: still its decision
+        with self.assertRaises(rm.ValidationError):
+            rm.separate(item)
+
+    def test_moving_a_new_products_only_item_merges_its_line_instead_of_leaving_it_empty(self):
+        other = self.ingest('ZZ-OTRO-12345', supplier=self.other, brand='KAIYI', description='TAMBOR',
+                            references_=[{'code': 'J69-3502010', 'brand': 'CHERY'}])
+        own = other.part
+        self.assertEqual((own.estado, references.main_of(own).tipo), ('preparacion', 'oem'))
+        case = MatchingCase.objects.get(key__startswith=f'reference:{other.pk}:')
+        response = self.decide(case, 'approve', line=str(self.chery.pk))
+        self.assertEqual(response.status_code, 200, response.data)
+        own.refresh_from_db()
+        other.refresh_from_db()
+        self.assertEqual((own.estado, own.merged_into_id), ('unificada', self.chery.pk))
+        self.assertEqual((other.part_id, other.reference.code, other.reference.part_id, other.matching_status),
+                         (self.chery.pk, 'ZZ-OTRO-12345', self.chery.pk, 'matched'))
+        self.assertFalse(Part.objects.filter(estado='preparacion').exists())  # estado: no empty line keeps the code
+        late = self.ingest('ZZ-OTRO-12345', brand='KAIYI', description='TAMBOR')
+        self.assertEqual(late.part_id, self.chery.pk)
+
+    def test_a_variant_case_follows_its_item_when_its_line_is_merged(self):
+        item = self.ingest('58411-1R000', stable='MV', description='DISCO FRENO HYUNDAI TRAS')
+        case = MatchingCase.objects.get(kind='variant')
+        target = line('DISC-TARGET-1', 'DISCO FRENO HYUNDAI ACCENT DEL')
+        merge_lines(target, [self.disc], actor=self.admin)
+        case.refresh_from_db()
+        item.refresh_from_db()
+        self.assertEqual((case.key, case.status, set(case.lines.values_list('pk', flat=True)), item.part_id),
+                         (f'variant:{item.pk}:{target.pk}', 'review', {target.pk}, target.pk))
+        self.assertEqual(rm.open_review_case(item, ('variant',)).pk, case.pk)
+        rm.recheck_cases()
+        self.assertEqual(MatchingCase.objects.get(pk=case.pk).status, 'review')
+        response = self.decide(case, 'dismiss')
+        self.assertEqual(response.status_code, 200, response.data)
+        item.refresh_from_db()
+        self.assertEqual(item.matching_status, 'matched')
+
+    def test_a_line_rule_7_brought_stays_in_productos_nuevos_once_published(self):
+        from . import lines
+        number = make_library_number('TOYOTA', '16100-39999', description='BOMBA AGUA')
+        self.ingest('16100-39999', description='BOMBA AGUA')
+        library = Part.objects.get(pk=number.part_id)
+        self.assertEqual((library.estado, library.origen, lines.prepared_by_rule_7(library)), ('preparacion', 'biblioteca', True))
+        response = self.client.post(f'/api/v1/management/catalog/proposals/{library.pk}/',
+                                    {'action': 'approve', 'expected_version': library.version}, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        listed = self.client.get('/api/v1/management/catalog/proposals/', {'status': 'approved'})
+        self.assertIn(str(library.pk), [row['id'] for row in listed.data['results']])
+
+    def test_codes_the_s6_code_writes_carry_their_brands_canonical_name(self):
+        from .brand_models import BrandAlias
+        from .variants import reference_for
+        BrandAlias.objects.create(alias='TOY', brand=Brand.objects.get(nombre='TOYOTA'))
+        self.assertEqual((rm.written_brand('TOY'), rm.written_brand('GENERICO'), rm.written_brand('')), ('TOYOTA', '', ''))
+        target = line('BRAND-LINE-1', 'FILTRO')
+        alias, _ = reference_for(target, 'QQ-1', 'TOY', self.supplier.pk, create=True)
+        placeholder, _ = reference_for(target, 'QQ-2', 'GENERICO', self.supplier.pk, create=True)
+        self.assertEqual((alias.brand, alias.tipo, placeholder.brand), ('TOYOTA', 'interno', ''))
+        self.assertFalse(Brand.objects.filter(nombre='GENERICO').exists())
+
+    def test_the_excel_snapshot_reads_a_line_in_referencia_as_a_new_product(self):
+        from .supplier_import import outcome_key
+        number = make_library_number('TOYOTA', '16100-38888', description='BOMBA AGUA')
+        library = Part.objects.get(pk=number.part_id)
+        before = outcome_key('attach', library, 'pending')
+        self.ingest('16100-38888', description='BOMBA AGUA')  # an earlier batch's item: rule 7
+        library.refresh_from_db()
+        self.assertEqual((before, outcome_key('attach', library, 'pending')), (('nuevo', 'pending'), ('nuevo', 'pending')))
+
+    def test_revision_ias_codigo_interno_after_s6_makes_a_moved_items_code_its_own(self):
+        from . import new_products
+        item = self.ingest('ZQ-55500077', brand='GMB', description='BOMBA AGUA')
+        self.assertFalse(rm.internal_code(item))
+        new_products.make_interno(item.part, references.main_of(item.part), None)
+        item.refresh_from_db()
+        self.assertTrue(rm.internal_code(item))
+        self.assertEqual(rm.placement(item)['tipo'], 'interno')
+
+    def test_a_fingerprint_does_not_move_with_the_engine_version(self):
+        spec = rm.merge_case_spec([self.disc, self.chery], evidence={'codes': [{'code': 'X', 'brand': ''}]}, reason='prueba')
+        before = rm.fingerprint_of(spec)
+        with patch('mall.matching_engine.VERSION', 'otra-version'):
+            self.assertEqual(rm.fingerprint_of(spec), before)
+
+
+@skipUnless(connection.vendor == 'postgresql', 'Requires PostgreSQL.')
+class DatabaseOnDeleteTests(Matching, TestCase):
+    """0083/0084's keys act in the database too: the code before S6 deletes cases and lines without knowing them (a code-only revert)."""
+
+    def test_a_case_or_a_line_deleted_by_code_that_does_not_know_the_s6_keys(self):
+        import uuid
+        from .sku_review_models import SkuReviewRun, SkuReviewVerdict
+        from .lines import bulk_create_lines
+        a, b = line('ODEL-A1', 'BOMBA'), line('ODEL-B1', 'BOMBA')
+        case = rm.open_case(rm.merge_case_spec([a, b], evidence={}, reason='prueba'))
+        [bare] = bulk_create_lines([Part(sku='ODEL-BARE-1', description='BOMBA', estado='preparacion', origen='proveedor')], mains=False)
+        run = SkuReviewRun.objects.create(id=uuid.uuid4(), created_by=self.admin, proposal_ids=[str(bare.pk)])
+        verdict = SkuReviewVerdict.objects.create(run=run, line=bare, position=0, proposal_version=1, method='rule', verdict='good')
+        with connection.cursor() as cursor:
+            cursor.execute('DELETE FROM mall_matchingcase WHERE id = %s', [case.pk])
+            cursor.execute('SELECT count(*) FROM mall_matchingcase_lines WHERE matchingcase_id = %s', [case.pk])
+            self.assertEqual(cursor.fetchone()[0], 0)
+            cursor.execute('SET CONSTRAINTS ALL IMMEDIATE')  # nothing left pointing at the deleted case
+            cursor.execute('SET CONSTRAINTS ALL DEFERRED')
+            cursor.execute('DELETE FROM mall_part WHERE id = %s', [bare.pk])  # a line with nothing else pointing at it
+        verdict.refresh_from_db()
+        self.assertIsNone(verdict.line_id)
+
+
 @skipUnless(connection.vendor == 'postgresql', 'Requires PostgreSQL row locks.')
 class LockOrderTests(TransactionTestCase):
     """A load and a merge of the line its code is on, at once: the load waits for the merge (the line FOR SHARE behind its FOR UPDATE),

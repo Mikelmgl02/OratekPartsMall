@@ -200,6 +200,8 @@ def reference_for(line, code, brand, supplier, *, create=False, actor=None, sour
         return None, how
     if not references.is_live(line):
         raise VariantConflict(f'El SKU {line.sku} se agrupó en otro: vincula el artículo al SKU en el que se agrupó.')
+    from .reference_matching import written_brand
+    brand = written_brand(brand)  # a Reference made here carries the canonical nombre (I12 from S6), none for a placeholder brand
     if how == 'nueva':
         try:
             with transaction.atomic():

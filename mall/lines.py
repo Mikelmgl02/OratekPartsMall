@@ -493,14 +493,35 @@ def set_estado(line, estado, *, user=None, reason='', note='', at=None):
 # referencia an item joins moves there (rule 7). A person publishes it, rejects it (it keeps its References and pending items, and the
 # same code joins it again with no notice: OD13) or links it to a catalog line (mall.line_merge.merge_lines makes it unificada).
 
-def prepare(line, *, user=None, at=None):
-    """Rule 7: a line in referencia (a library number no product carried) that a supplier's item joins moves to preparación. A line
-    already in preparación is left as it is; any other estado refuses (LineStateError). The caller holds the line locked. Returns it."""
+PREPARED = 'estado'  # field_sources key of a line rule 7 moved: {'source': 'proveedor', 'regla': '7', 'desde': 'referencia', ...}
+
+
+def prepared_by_rule_7(line):
+    """Whether rule 7 brought this line to Productos nuevos (a line in referencia a supplier's item joined): it keeps origen biblioteca,
+    so Productos nuevos and the S6 rollback read this mark instead."""
+    return ((line.field_sources or {}).get(PREPARED) or {}).get('regla') == '7'
+
+
+def prepared_q(prefix=''):
+    """prepared_by_rule_7 as a Q."""
+    return Q(**{f'{prefix}field_sources__{PREPARED}__regla': '7'})
+
+
+def prepare(line, *, user=None, at=None, item=None):
+    """Rule 7: a line in referencia (a library number no product carried) that a supplier's item joins moves to preparación, marked
+    in field_sources['estado'] (prepared_by_rule_7: who moved it, from referencia, when, the item). A line already in preparación is left
+    as it is; any other estado refuses (LineStateError). The caller holds the line locked. Returns it."""
     if line.estado == 'preparacion':
         return line
     if line.estado != 'referencia' or line.merged_into_id:
         raise LineStateError(f'Esta línea está {phrase(line.estado)}: solo una línea en referencia pasa a preparación.')
-    return set_estado(line, 'preparacion', user=user, at=at)
+    at = at or timezone.now()
+    line.field_sources = {**(line.field_sources or {}), PREPARED: {
+        'source': 'proveedor', 'regla': '7', 'desde': 'referencia', 'at': at.isoformat(),
+        'articulo': str(getattr(item, 'pk', item)) if item else None, 'version': line.version,
+        'changed_at': line.changed_at.isoformat() if line.changed_at else None}}
+    line.save(update_fields=[*stage_estado(line, 'preparacion', user=user, at=at), 'field_sources'])
+    return line
 
 
 def publish(line, *, user, at=None):

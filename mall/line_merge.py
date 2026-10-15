@@ -578,8 +578,21 @@ def follow_cases(retired_ids, target):
     """The open matching cases that list a merged line list the line it went into too: the worker checks them again (a line case whose
     lines are one line now attaches its item; a merge case whose lines are one is settled)."""
     from .matching_models import MatchingCase
-    cases = list(MatchingCase.objects.filter(status='review', lines__in=list(retired_ids)).distinct())
+    retired = list(retired_ids)
+    cases = list(MatchingCase.objects.filter(status='review', lines__in=retired).distinct())
     for case in cases:
+        if case.kind == 'variant':
+            # A variant case is about its item on the line it hangs from, and the item went with its line: the case moves to the target
+            # (lines and key, variant:<item>:<line>), so a load, the worker and a decision keep finding it.
+            case.lines.remove(*retired)
+            case.lines.add(target)
+            key = f'variant:{case.item_id}:{target.pk}'
+            if MatchingCase.objects.filter(key=key).exclude(pk=case.pk).exists():  # one already asks about the item on the target
+                from .reference_matching import close_case
+                close_case(case, 'applied', actor=None, note=f'La línea se unificó en {target.sku}.')
+            else:
+                MatchingCase.objects.filter(pk=case.pk).update(key=key)
+            continue
         case.lines.add(target)
     if cases:
         from .matching_queue import enqueue_matching

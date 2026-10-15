@@ -23,7 +23,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import new_products, references
-from .lines import all_lines
+from .lines import all_lines, prepared_by_rule_7, prepared_q
 from .list_ordering import StableOrdering
 from .management import IsSuperuser
 from .models import Part, Reference, SupplierItem
@@ -43,12 +43,14 @@ def has_items():
 
 def status_q(state):
     """The lines one status of Productos nuevos lists (the module's docstring), on a queryset annotated with has_items."""
+    # A line rule 7 brought here from referencia keeps origen biblioteca: its mark (mall.lines.prepared_q) keeps it listed once decided.
+    ours = Q(origen='proveedor') | prepared_q()
     return {
         'pending': Q(estado='preparacion', has_items=True),
         'resolved': Q(estado='preparacion', has_items=False),
-        'approved': Q(estado='publicada', origen='proveedor'),
-        'linked': Q(estado='unificada', origen='proveedor'),
-        'rejected': Q(estado='rechazada') & (Q(origen='proveedor') | Q(has_items=True)),
+        'approved': Q(estado='publicada') & ours,
+        'linked': Q(estado='unificada') & ours,
+        'rejected': Q(estado='rechazada') & (ours | Q(has_items=True)),
     }[state]
 
 
@@ -100,15 +102,17 @@ def codes_of(line):
     return main, oem, alternos
 
 
-def status_for(estado, origen, with_items):
-    """status_q in Python, for a loaded line: the status Productos nuevos shows it under, or '' when it does not."""
+def status_for(estado, origen, with_items, prepared=False):
+    """status_q in Python, for a loaded line: the status Productos nuevos shows it under, or '' when it does not. prepared: rule 7
+    brought it from referencia (mall.lines.prepared_by_rule_7)."""
+    ours = origen == 'proveedor' or prepared
     if estado == 'preparacion':
         return 'pending' if with_items else 'resolved'
-    if estado == 'publicada' and origen == 'proveedor':
+    if estado == 'publicada' and ours:
         return 'approved'
-    if estado == 'unificada' and origen == 'proveedor':
+    if estado == 'unificada' and ours:
         return 'linked'
-    if estado == 'rechazada' and (origen == 'proveedor' or with_items):
+    if estado == 'rechazada' and (ours or with_items):
         return 'rejected'
     return ''
 
@@ -118,7 +122,7 @@ def status_of(line):
     if state is None:
         items = getattr(line, 'variants_list', None)
         with_items = bool(items) if items is not None else SupplierItem.objects.filter(part_id=line.pk).exists()
-        state = status_for(line.estado, line.origen, with_items)
+        state = status_for(line.estado, line.origen, with_items, prepared_by_rule_7(line))
     return state
 
 

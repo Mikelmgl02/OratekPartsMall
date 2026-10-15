@@ -14,6 +14,7 @@ from rest_framework.views import APIView
 from . import sku_review
 from .ai_budget import feature_budget, month_spend
 from .catalog_classification import ClassificationConflict, provider_configuration
+from .lines import prepared_by_rule_7
 from .management import IsSuperuser, UppercaseCharField
 from .models import Reference, SupplierItem
 from .sku_proposal_models import SkuProposal
@@ -34,7 +35,7 @@ def line_status(verdict):
     with_items = getattr(verdict, 'line_has_items', None)
     if with_items is None:
         with_items = SupplierItem.objects.filter(part_id=line.pk).exists()
-    return status_for(line.estado, line.origen, with_items)
+    return status_for(line.estado, line.origen, with_items, prepared_by_rule_7(line))
 
 
 def state(verdict):

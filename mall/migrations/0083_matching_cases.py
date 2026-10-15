@@ -11,13 +11,20 @@
 # key stays unique: every writer finds its case by it (reference:<item>:<clave>|<brand>, code_change:<item>, variant:<item>:<line>,
 # line:<item>, merge:<sorted line ids> or merge:<batch_key>). kind and status keep their legacy values until S10 (supplier, catalog,
 # catalog_reference, seed; unmatched, resolved). S6 has no tighten migration for cases.
+# The foreign keys it adds also act in the database (ON DELETE): the code before S6 does not know them, so a case or a line it deletes
+# (a code-only revert, rollback rung 1) takes its rows of the lines table with it, and a Reference or a user it deletes leaves the case's
+# column NULL, instead of failing on a constraint Django would have handled.
 
 import django.db.models.deletion
 import django.utils.timezone
 from django.conf import settings
 from django.db import migrations, models
 
-from mall.refactor.migration_ops import with_lock_timeout
+from mall.refactor.migration_ops import on_delete_in_database, with_lock_timeout
+
+# (table, column, ON DELETE action) of the keys this migration adds.
+DATABASE_ON_DELETE = (('mall_matchingcase_lines', 'matchingcase_id', 'CASCADE'), ('mall_matchingcase_lines', 'part_id', 'CASCADE'),
+                      ('mall_matchingcase', 'reference_id', 'SET NULL'), ('mall_matchingcase', 'decided_by_id', 'SET NULL'))
 
 
 class Migration(migrations.Migration):
@@ -90,4 +97,5 @@ class Migration(migrations.Migration):
             model_name='matchingcase',
             index=models.Index(fields=['kind', 'status'], name='matching_case_kind_status'),
         ),
+        on_delete_in_database(DATABASE_ON_DELETE),
     ])

@@ -26,7 +26,12 @@ const kindLabels:Record<string,string> = {code_change:'CAMBIO DE CÓDIGO',refere
   supplier:'ARTÍCULO DE PROVEEDOR',catalog:'FAMILIA DEL CATÁLOGO',catalog_reference:'ALTERNO DEL CATÁLOGO',seed:'FAMILIA SIN SKU PRINCIPAL'};
 const guardLabels:Record<string,string> = {prefix:'El prefijo del código no coincide.',noun:'La descripción no coincide.',side:'El lado no coincide (izquierdo / derecho, delantero / trasero).',
   make:'La marca del vehículo no coincide.',subgrupo:'Las líneas tienen subgrupos distintos.',spec_conflict:'Las especificaciones no coinciden con las de la línea OEM.',
-  separated:'Estas líneas se mantuvieron separadas antes.',disputa:'La referencia está en disputa.'};
+  separated:'Estas líneas se mantuvieron separadas antes.',disputa:'La referencia está en disputa.',
+  lineas:'El código está en varias líneas.',catalogo:'Un catálogo no revisado contra el PDF lo vincula.',
+  sin_codigo:'El artículo no tiene código: corrígelo con el proveedor o elige su línea.',codigo_largo:'El código supera 120 caracteres.',
+  conflicto:'El código choca con el de otra línea.',en_catalogo:'El código ya es de una línea del catálogo.',
+  unificada:'La línea del código se unificó en otra.',colocacion:'No se pudo crear su producto nuevo.',
+  sufijo:'El sufijo del código no es una marca conocida (origen, genuino, comercial).'};
 const estadoLabels:Record<string,string> = {preparacion:'EN PREPARACIÓN',referencia:'REFERENCIA',rechazada:'RECHAZADA',retirada:'RETIRADA',unificada:'UNIFICADA'};
 const batchLabels:Record<string,string> = {'legacy-auto-merge':'UNIFICACIONES AUTOMÁTICAS ANTERIORES'};
 const evidenceLabels:Record<string,string> = {numbers:'NÚMEROS OEM',codes:'CÓDIGOS',citations:'FUENTES'};
