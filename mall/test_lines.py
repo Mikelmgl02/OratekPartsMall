@@ -2,7 +2,7 @@
 writers that merge, split, retire and create lines."""
 from datetime import timedelta
 
-from django.db import IntegrityError, connection, transaction
+from django.db import DatabaseError, IntegrityError, connection, transaction
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APITestCase
@@ -33,8 +33,7 @@ def stored(line):
 
 
 class LineMirrorTests(TestCase):
-    """estado is the line's lifecycle and active its mirror (S10: 0086's trigger writes it from estado, whatever writes the row; 0089
-    makes it a generated column)."""
+    """estado is the line's lifecycle and active its mirror (S10: a generated column from 0089; 0086's trigger wrote it until then)."""
 
     def test_a_new_line_is_publicada_from_the_catalog_and_stamped(self):
         line = make_line('16100-39315')
@@ -55,8 +54,7 @@ class LineMirrorTests(TestCase):
         self.assertEqual(stored(both), ('preparacion', False))
         retired = make_line('RET-1', active=False)
         self.assertEqual(stored(retired), ('retirada', False))
-        Part.objects.filter(pk=retired.pk).update(estado='retirada')
-        with connection.cursor() as cursor:  # a writer that names the column itself: the trigger keeps the mirror
+        with self.assertRaises(DatabaseError), transaction.atomic(), connection.cursor() as cursor:  # a generated column (0089)
             cursor.execute('UPDATE mall_part SET active = true WHERE id = %s', [retired.pk])
         self.assertEqual(stored(retired), ('retirada', False))
 

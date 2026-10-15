@@ -339,13 +339,22 @@ def newest(folder):
 # on the columns an earlier stage added for it (I10 reads reference_id from S3, but holds only from S6).
 STAGE_COLUMNS = {'S1': 'mall_part.estado', 'S2a': 'mall_partcode.clave', 'S2b': 'mall_part.tipo', 'S3': 'mall_supplieritem.reference_id',
                  'S4': 'mall_oemcrossreference.ref_id', 'S6': 'mall_matchingcase.route', 'S7': 'mall_searchdocument.line_id'}
+STAGE_ORDER = ('S1', 'S2a', 'S2b', 'S3', 'S4', 'S6', 'S7')
+
+
+def reached(stage, present):
+    """Whether the database has the stage's column, or a later stage's: the stages landed in this order, and S10 archives S4's table."""
+    return any(STAGE_COLUMNS[later] in present for later in STAGE_ORDER[STAGE_ORDER.index(stage):])
+
+
+
 # Plan Appendix C. expect 0: the first value must be 0; 'none': no rows; ('filas', n): exactly n rows; None: informational. needs: the
 # other columns it reads; until: the stage from which its expectation no longer holds (it then only informs).
 Check = namedtuple('Check', 'id stage expect query needs until', defaults=((), None))
 CHECKS = [
     Check('C0', 'hoy', None, 'SELECT active, merged_into_id IS NOT NULL, count(*) FROM mall_part GROUP BY 1, 2 ORDER BY 1, 2'),
     Check('C0', 'hoy', None, 'SELECT matching_status, count(*) FROM mall_supplieritem GROUP BY 1 ORDER BY 1'),
-    Check('C0', 'hoy', None, 'SELECT ref_type, count(*) FROM mall_partcode GROUP BY 1 ORDER BY 1'),
+    Check('C0', 'hoy', None, 'SELECT ref_type, count(*) FROM mall_partcode GROUP BY 1 ORDER BY 1', ['mall_partcode.ref_type']),  # to S10
     # exactly 3 groups (publicada, retirada, unificada) until S4's referencia lines
     Check('C1', 'S1', ('filas', 3), 'SELECT estado, active, merged_into_id IS NOT NULL, count(*) FROM mall_part GROUP BY 1, 2, 3 ORDER BY 1, 2, 3',
           until='S4'),
@@ -358,7 +367,7 @@ CHECKS = [
     Check('I3', 'S2b', 0, "SELECT count(*) FROM mall_partcode r JOIN mall_part p ON p.id = r.part_id WHERE p.estado = 'unificada' "
                           "AND r.estado <> 'retirada'", ['mall_partcode.estado']),
     Check('I5', 'S2a', 'none', "SELECT a.clave FROM mall_partcode a JOIN mall_partcode b ON a.clave = b.clave AND a.part_id <> b.part_id "
-                               "WHERE a.brand = '' AND b.brand <> '' AND a.supplier_id IS NULL AND b.supplier_id IS NULL "
+                               "WHERE COALESCE(a.brand, '') = '' AND COALESCE(b.brand, '') <> '' AND a.supplier_id IS NULL AND b.supplier_id IS NULL "
                                "AND a.estado IN ('verificado', 'declarado', 'inferido') AND b.estado IN ('verificado', 'declarado', 'inferido') LIMIT 20",
           ['mall_partcode.supplier_id', 'mall_partcode.estado']),
     Check('I11', 'S2b', 0, "SELECT count(*) FROM mall_part p JOIN mall_partcode r ON r.part_id = p.id AND r.is_main AND r.estado <> 'retirada' "
@@ -375,7 +384,7 @@ CHECKS = [
     Check('C4', 'S4', None, 'SELECT estado, origen, count(*) FROM mall_part GROUP BY 1, 2 ORDER BY 1, 2', ['mall_part.origen']),
     Check('C4', 'S4', 0, 'SELECT count(*) FROM mall_oemreference o LEFT JOIN mall_partcode r ON r.uid = o.id WHERE r.id IS NULL',
           ['mall_partcode.uid', 'mall_oemreference.id']),
-    Check('C4', 'S4', 0, 'SELECT count(*) FROM mall_oemcrossreference WHERE ref_id IS NULL'),
+    Check('C4', 'S4', 0, 'SELECT count(*) FROM mall_oemcrossreference WHERE ref_id IS NULL', ['mall_oemcrossreference.ref_id']),  # to S10
     Check('C4', 'S4', None, "SELECT count(*) FROM mall_partcode WHERE tipo = 'oem' AND brand <> '' AND estado <> 'retirada'",
           ['mall_partcode.tipo', 'mall_partcode.estado']),
     Check('I9', 'S6', 0, "SELECT count(*) FROM mall_supplieritem s JOIN mall_part p ON p.id = s.part_id "
@@ -403,13 +412,13 @@ def columns():
 
 def missing_columns(check, present):
     """The columns the check reads, or waits for (its stage's), that the database does not have yet."""
-    needs = [*([STAGE_COLUMNS[check.stage]] if check.stage in STAGE_COLUMNS else []), *check.needs]
-    return [column for column in dict.fromkeys(needs) if column not in present]
+    waits = [STAGE_COLUMNS[check.stage]] if check.stage in STAGE_COLUMNS and not reached(check.stage, present) else []
+    return [*waits, *(column for column in dict.fromkeys(check.needs) if column not in present)]
 
 
 def judge(check, rows, present):
     """(outcome, detail) of a check's rows: OK, FALLA or INFO."""
-    expect = None if check.until and STAGE_COLUMNS[check.until] in present else check.expect
+    expect = None if check.until and reached(check.until, present) else check.expect
     if expect is None:
         return 'INFO', short([list(row) for row in rows], 400)
     if expect == 'none':

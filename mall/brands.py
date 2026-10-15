@@ -3,8 +3,9 @@
 normalize() is the spelling the table keeps; lookup() finds the brand a spelling names (its nombre or one of its aliases);
 familia_root() and same_familia() read the familia (KAIYI and CHERY are one familia: the same code is the same part across it, never
 the same brand alone); get_or_create() adds a brand for a new spelling. rename() and merge() are the only code that changes a nombre:
-they re-key the codes that carry it (Reference.brand, which stays text until S10) in the same transaction, keep
-the old spelling as an alias, and open a merge case when a code would end up twice under one brand. resolve() (every spelling to its
+they re-key the codes that carry it (Reference.brand: from S10, 0089, a foreign key to Brand(nombre) ON UPDATE CASCADE, so a rename
+re-keys them in the same statement and a merge moves them before the source brand goes) in the same transaction, keep the old
+spelling as an alias, and open a merge case when a code would end up twice under one brand. resolve() (every spelling to its
 canonical brand, everywhere) came with S6: the matching compares a variant's brand with a Reference's through it.
 """
 from django.db import transaction
@@ -111,33 +112,45 @@ def set_familia(brand, familia):
 
 
 def rekey(old, new, *, reason):
-    """Move the codes that carry the spelling `old` to `new` (Reference.brand), retired ones too, so every brand a code carries stays
-    a brand or an alias. A code already held under `new` stays where it is: when both are live and on two lines it opens a merge case
-    (the two lines may be one part, reviewed in Casos de coincidencia), otherwise it is only listed. They move in one UPDATE. Returns {'moved', 'kept':
-    [{id, code, part}], 'cases': [case ids]}."""
+    """Move every code that carries the spelling `old` to `new` (Reference.brand), retired ones too: from S10 (0089) a code's brand is
+    a foreign key to Brand(nombre), so no code may keep a spelling that stops being a brand (a merge deletes the source brand). A live
+    code whose key `new` already holds live (the same clave and supplier, both verificado, declarado or inferido) cannot hold it twice
+    (reference_one_live_line): on two lines it moves in disputa and a merge case asks whether the two lines are one part (Casos de
+    coincidencia); on one line it moves retired, replaced by the other (or in disputa when it is the main or variants hang from it).
+    Returns {'moved', 'kept': [{id, code, part}] (the codes that moved in disputa or retired), 'cases': [case ids]}."""
+    from django.db.models import F
+    from django.utils import timezone
     from .matching_queue import enqueue_matching
     from .models import Reference
     rows = list(Reference.all_objects.select_for_update(of=('self',)).filter(brand=old).order_by('pk'))  # the codes only: lines stay unlocked
     if not rows:
         return {'moved': 0, 'kept': [], 'cases': []}
-    held = list(Reference.all_objects.select_for_update(of=('self',)).filter(brand=new)
-                .filter(Q(code__in=[r.code for r in rows]) | Q(clave__in=[r.clave for r in rows])).order_by('pk'))
-    by_code = {row.code: row for row in held}  # the printed code under `new`, whatever its estado (unique_brand_code until 0074)
-    by_key = {row.clave: row for row in held if row.estado in Reference.EXCLUSIVE}  # its key, held by a live one
+    held = {}  # (clave, supplier) -> the live row under `new` that holds it
+    for row in (Reference.all_objects.select_for_update(of=('self',))
+                .filter(brand=new, estado__in=Reference.EXCLUSIVE, clave__in=sorted({r.clave for r in rows})).order_by('pk')):
+        held.setdefault((row.clave, row.supplier_id), row)
     moving, kept, cases = [], [], []
     for row in rows:
-        other = by_code.get(row.code) or (by_key.get(row.clave) if row.estado in Reference.EXCLUSIVE else None)
+        other = held.get((row.clave, row.supplier_id)) if row.estado in Reference.EXCLUSIVE else None
         if other is None:
             moving.append(row)
             continue
         kept.append({'id': row.pk, 'code': row.code, 'part': str(row.part_id)})
-        if other.part_id != row.part_id and 'retirada' not in (row.estado, other.estado):
+        rows_of = Reference.all_objects.filter(pk=row.pk)
+        stamp = {'version': F('version') + 1, 'updated_at': timezone.now()}  # as mall.references._bump writes a Reference
+        if other.part_id != row.part_id:
             case = open_merge_case(row, other, old, new, reason)
             if case is not None:
                 cases.append(case)
-    Reference.all_objects.filter(pk__in=[row.pk for row in moving]).update(brand=new)
+            rows_of.update(brand=new, estado='disputa', dispute_note=f'{reason}: {new} {row.code} ya es de otra línea: caso de unificación.'[:2000],
+                           **stamp)
+        elif not (row.is_main or row.variants.exists()):
+            rows_of.update(brand=new, estado='retirada', reemplazado_por=other, **stamp)
+        else:
+            rows_of.update(brand=new, estado='disputa', dispute_note=f'{reason}: la línea ya tiene {new} {row.code}.'[:2000], **stamp)
+    Reference.all_objects.filter(pk__in=[row.pk for row in moving]).update(brand=new, version=F('version') + 1, updated_at=timezone.now())
     from .search_document import refresh
-    refresh({row.part_id for row in moving})  # the brands in their lines' Search Documents (S7)
+    refresh({row.part_id for row in rows})  # the brands in their lines' Search Documents (S7)
     enqueue_matching()  # codes are matched by (code, brand): the matching index reads the new spelling
     return {'moved': len(moving), 'kept': kept, 'cases': cases}
 
@@ -162,8 +175,8 @@ def open_merge_case(code, other, old, new, reason):
 
 @transaction.atomic
 def rename(brand, new_name):
-    """Give a brand a new nombre: the codes that carry the old one take it in the same transaction (rekey) and the old spelling stays
-    as an alias. A nombre another brand has is a merge (merge()); an alias of another brand is refused. Returns
+    """Give a brand a new nombre: the codes that carry the old one take it in the same statement (0089's ON UPDATE CASCADE) and the old
+    spelling stays as an alias. A nombre another brand has is a merge (merge()); an alias of another brand is refused. Returns
     {'brand', 'moved', 'kept', 'cases'}."""
     brand = Brand.objects.select_for_update().get(pk=brand.pk)
     new, old = normalize(new_name), brand.nombre
@@ -178,9 +191,20 @@ def rename(brand, new_name):
         raise BrandConflict(f'{new} es un alias de {alias.brand.nombre}: une las dos marcas en vez de renombrar.')
     if alias is not None:
         alias.delete()  # the spelling becomes the nombre
-    moved = rekey(old, new, reason=f'La marca {old} pasó a llamarse {new}')
+    from .matching_queue import enqueue_matching
+    from .models import Reference
+    from .search_document import refresh
+    carried = list(Reference.all_objects.filter(brand=old).values_list('part_id', flat=True))
+    # S10 (0089): the codes' brand is a foreign key to Brand(nombre) ON UPDATE CASCADE, so renaming the brand re-keys every code that
+    # carries it (retired ones too) in the same statement. No code carries `new` yet (it is no brand), so none collides.
     brand.nombre = new
     brand.save(update_fields=['nombre', 'updated_at'])
+    from django.db.models import F
+    from django.utils import timezone
+    Reference.all_objects.filter(brand=new).update(version=F('version') + 1, updated_at=timezone.now())  # as _bump stamps a change
+    refresh(set(carried))  # the brands in their lines' Search Documents (S7)
+    enqueue_matching()  # codes are matched by (code, brand): the matching index reads the new spelling
+    moved = {'moved': len(carried), 'kept': [], 'cases': []}
     BrandAlias.objects.get_or_create(alias=old, defaults={'brand': brand})
     from .search_document import refresh_text_containing
     refresh_text_containing([old, *brand.aliases.values_list('alias', flat=True)])  # the brand their texts expand to (S7)

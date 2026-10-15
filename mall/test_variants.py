@@ -12,7 +12,7 @@ from .brand_models import Brand
 from .catalog_suffix_models import CatalogCodeSuffix
 from .models import Part, Reference, ReferenceSource, SupplierItem
 from .services import ingest_inventory
-from .test_factories import (Fresh, drop_variant_constraints, make_line, make_reference, make_supplier, make_user, make_variant,
+from .test_factories import (Fresh, make_line, make_reference, make_supplier, make_user, make_variant,
                              run_migration_function)
 from .test_main_references import broken_invariants
 
@@ -523,10 +523,18 @@ class TightenTests(VariantTestCase):
         self.assertTrue({'variant_line_follows_reference', 'variant_reference_iff_line', 'variant_unattached_is_pending'} <= set(present))
 
     def test_the_repair_attaches_what_moved_and_stops_for_a_unificada_line(self):
-        drop_variant_constraints()
+        from django.db.migrations.executor import MigrationExecutor
         moved = self.load('T-4', '04111-22152-AS')
         bare = self.load('T-5', '04111-22152')
         lost = self.loose('T-6', 'NADA-2')
+        merged = make_line('MERGED-9')
+        stranded = self.loose('T-7', 'NADA-3')
+        # The schema 0078's repair was written for: S10 (0089) dropped columns its models name, so the database goes back to 0077 first.
+        with connection.cursor() as cursor:
+            cursor.execute('SET CONSTRAINTS ALL IMMEDIATE')  # this test's own writes checked now: DDL refuses pending trigger events
+        MigrationExecutor(connection).migrate([('mall', '0077_variant_reference')])
+        with connection.cursor() as cursor:
+            cursor.execute('SET CONSTRAINTS ALL DEFERRED')
         SupplierItem.objects.filter(pk=moved.pk).update(part=self.branded)      # a queryset moved it, its Reference stayed
         SupplierItem.objects.filter(pk=bare.pk).update(reference=None)          # written before S3
         SupplierItem.objects.filter(pk=lost.pk).update(matching_status='review')  # no line, yet in review
@@ -537,10 +545,9 @@ class TightenTests(VariantTestCase):
         self.assertEqual(bare.reference_id, references.main_of(self.plain).pk)
         self.assertEqual(lost.matching_status, 'pending')
         run_migration_function(self.MIGRATION, 'repair_variants')  # idempotent
-        merged = make_line('MERGED-9')
-        stranded = self.loose('T-7', 'NADA-3')
         SupplierItem.objects.filter(pk=stranded.pk).update(part=merged)
-        Part.objects.filter(pk=merged.pk).update(merged_into=self.plain, estado='unificada')
+        with connection.cursor() as cursor:  # active is a plain column at 0077, kept in step by hand (the model's is generated)
+            cursor.execute("UPDATE mall_part SET merged_into_id = %s, estado = 'unificada', active = false WHERE id = %s", [self.plain.pk, merged.pk])
         with self.assertRaisesMessage(RuntimeError, 'líneas unificadas'):
             run_migration_function(self.MIGRATION, 'repair_variants')
         SupplierItem.objects.filter(pk=stranded.pk).update(part=None, matching_status='pending')

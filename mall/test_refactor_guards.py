@@ -38,9 +38,10 @@ class MigrationGuardTests(TestCase):
 
 class MigrationImportTests(SimpleTestCase):
     # What a migration may import from the app: the upload storage of 0019's and 0057's file fields (the refactor leaves
-    # mall.media_storage alone) and the lock timeout every expand, tighten and contract migration of the refactor starts with (plan
-    # §1.2). Both may import only Django, which the second test holds them to.
-    ALLOWED = {'mall.media_storage', 'mall.refactor.migration_ops'}
+    # mall.media_storage alone), the lock timeout every expand, tighten and contract migration of the refactor starts with (plan
+    # §1.2) and the refactor's output folder, where 0088 and 0089 (S10) find the export. They may import only Django, which the
+    # second test holds them to.
+    ALLOWED = {'mall.media_storage', 'mall.refactor.migration_ops', 'mall.refactor.output'}
 
     def imported(self, path, package):
         """The app modules a file imports, relative imports resolved against its package; `from mall.refactor import migration_ops`

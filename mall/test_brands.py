@@ -111,8 +111,10 @@ class BrandRenameMergeTests(TestCase):
         result = brands.merge(self.febi, self.bilstein)
         self.assertFalse(Brand.objects.filter(nombre='FEBI').exists())
         self.assertEqual(result['moved'], 1)
-        self.assertEqual(self.brand_codes('FEBI BILSTEIN'), ['01234', '05678'])
-        self.assertEqual(self.brand_codes('FEBI'), ['01234'])  # kept until the case is decided: FEBI now names FEBI BILSTEIN
+        # S10: a code's brand is a Brand's nombre (0089's foreign key): the colliding one moves too, in disputa until the case decides.
+        self.assertEqual(self.brand_codes('FEBI BILSTEIN'), ['01234', '01234', '05678'])
+        self.assertEqual(self.brand_codes('FEBI'), [])
+        self.assertEqual(Reference.objects.get(part=self.pump, code='01234').estado, 'disputa')
         self.assertEqual(set(BrandAlias.objects.filter(brand=self.bilstein).values_list('alias', flat=True)), {'FEB', 'FEBI'})
         member.refresh_from_db()
         self.assertEqual(member.familia, self.bilstein)

@@ -25,8 +25,8 @@ class MatchingCase(models.Model):
     kind: reference (a code the supplier declares for its item, rule 5b), code_change (the supplier changed its item's code, rule 5b),
     variant (an item contradicts the line its code joins, rule 5), line (the item's code is on two or more lines, or on a Reference in
     disputa: the item waits without a Reference, rule 2), merge (two or more lines may be one part: rule 8, catalog references, OD15,
-    the legacy-auto-merge batch). The legacy kinds stay until S10: supplier, catalog, catalog_reference, seed.
-    status: review, dismissed, applied (legacy: unmatched, resolved). key (unique) makes every writer idempotent:
+    the legacy-auto-merge batch). S10's 0086 converted the kinds before S6 (supplier, catalog, catalog_reference, seed).
+    status: review, dismissed, applied (unmatched and resolved converted by 0086). key (unique) makes every writer idempotent:
     reference:<item>:<clave>|<brand> · code_change:<item> · variant:<item>:<line> · line:<item> · merge:<sorted line ids> ·
     merge:<batch_key>. A dismissed case whose fingerprint has not changed stays dismissed."""
     KINDS = ('reference', 'code_change', 'variant', 'line', 'merge')
@@ -36,7 +36,7 @@ class MatchingCase(models.Model):
     ROUTES = [('lote', 'Lote'), ('caso', 'Caso')]
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     key = models.CharField(max_length=240, unique=True)
-    kind = models.CharField(max_length=20)  # KINDS, or a legacy kind until S10
+    kind = models.CharField(max_length=20)  # mall.reference_matching.KINDS (a CHECK from 0089)
     item = models.ForeignKey('mall.SupplierItem', null=True, on_delete=models.CASCADE)
     fingerprint = models.CharField(max_length=64)
     sources = models.JSONField(default=list)
@@ -65,6 +65,10 @@ class MatchingCase(models.Model):
     class Meta:
         ordering = ['-updated_at', 'id']
         indexes = [models.Index(fields=['kind', 'status'], name='matching_case_kind_status')]
+        # From 0089 (S10): the S6 kinds and statuses only (0086 converted the legacy ones).
+        constraints = [models.CheckConstraint(condition=models.Q(kind__in=['reference', 'code_change', 'variant', 'line', 'merge']),
+                                              name='matching_case_valid_kind'),
+                       models.CheckConstraint(condition=models.Q(status__in=['review', 'dismissed', 'applied']), name='matching_case_valid_status')]
 
 
 class MatchingDecision(models.Model):

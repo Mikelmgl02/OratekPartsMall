@@ -522,8 +522,12 @@ def save_plan(groups, user=None):
         library_held.update(Reference.objects.filter(part__estado='referencia', clave__in=sorted({references.clave(code) for code in printed[start:start + 2000]}))
                             .values_list('clave', flat=True))
     new_codes, built, one_by_one, queued, spellings = [], {}, [], set(), []
+    names = {}  # each brand spelling of the file as the nombre References store (S10: a foreign key to Brand(nombre)), resolved once
     for part, group in planned:
         for brand, code in group.get('codes', group.get('added', [])):  # every code of the file's rows (a plan without them: its added)
+            if brand not in names:
+                names[brand] = references.brand_name(brand)
+            brand = names[brand]
             key = (part.pk, brand, references.clave(code))
             if key in held:
                 spellings.append((held[key], code))

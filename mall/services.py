@@ -5,7 +5,7 @@ from rest_framework.exceptions import ValidationError
 from django.db.models import Q
 from .lines import storefront_lines
 from .models import Account, InventoryUpdate, StockEntry, SupplierItem
-from .references import live_q, own_interno_q
+from .references import blank_brand_q, live_q, own_interno_q
 from .matching_queue import enqueue_matching
 
 def matching_part(codigo, brand, supplier=None):
@@ -15,9 +15,11 @@ def matching_part(codigo, brand, supplier=None):
     shown = live_q('codes__')
     if supplier is not None:
         shown = shown | own_interno_q(supplier, 'codes__')
+    # The code's brand or none: '' is NULL in the database from S10 (0089), which an IN list never matches (blank_brand_q).
+    either = blank_brand_q('codes__') | (Q(codes__brand=brand) if brand else Q())
     matches = list(storefront_lines().filter(
-        Q(sku=codigo) | Q(shown, codes__code=codigo, codes__brand__in=[brand, ''])
-        | Q(shown, codes__printed_forms__contains=[codigo], codes__brand__in=[brand, ''])
+        Q(sku=codigo) | Q(shown, either, codes__code=codigo)
+        | Q(shown, either, codes__printed_forms__contains=[codigo])
     ).distinct()[:2])
     # Ambiguous legacy code mappings require review instead of arbitrary matching.
     return matches[0] if len(matches) == 1 else None

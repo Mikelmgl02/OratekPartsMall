@@ -9,9 +9,10 @@ history (Reference.objects and every line's `codes` leave retired rows out, so r
     retire(refs)                 take References off their line (estado retirada, reemplazado_por when another one replaces it)
     validate(code, brand, line)  the brandless reservation and the one-live-line rule, under the clave's advisory lock
     check(tipo, estado, ...)     what a Reference's columns must agree on (a dispute says why, interno ⇔ supplier), as 0074's CHECKs
-    ensure_brand(spelling)       every brand a Reference carries is a Brand nombre or alias (Appendix C, I12): add() and update() call it
+    ensure_brand(spelling)       the brand a spelling names, made one when none does: a Reference carries its nombre (I12, and from
+                                 0089 a foreign key to Brand(nombre)); brand_name(spelling) the nombre, read only
     brandless_q(clave, brand)    the rows a (clave, brand) is reserved against; live_q() what readers see, through a relation
-    blank_brand_q(), branded_q() the rows with no brand / with one ('' or NULL in the database: BrandField, S10)
+    blank_brand_q(), branded_q() the rows with no brand (NULL in the database, '' in Python: BrandField, S10) / with one
     clave(code)                  the database's generated mall_partcode.clave, in Python
     cite(ref, text)              upsert the ReferenceSource a source text names (A3); source_texts(ids) the newest one per Reference
     legacy_ref_type(tipo)        the JSON's ref_type (oem, company, unknown), derived from tipo (A2)
@@ -78,8 +79,11 @@ any exclusive (clave, X) on another line, and the reverse; on one line both may 
 is exempt and only clashes with the same supplier's. The database holds the rest from 0074 (reference_one_live_line: one exclusive row
 per clave, brand and supplier, NULL brands equal); validate() checks both under pg_advisory_xact_lock(724631114, hashtext(clave)), so
 two writers adding one key wait for each other. Lock order: supplier Accounts → Parts → References → SupplierItems (plan §1.6).
-"Any brand" is '' in Python and in the JSON; in the database it is '' until 0089 (S10's step 3) turns it into NULL with the foreign key
-to Brand(nombre), and BrandField reads NULL as '': filters name the blank brand through blank_brand_q()/branded_q(), which read both.
+"Any brand" is '' in Python and in the JSON, NULL in the database from 0089 (S10's step 3), which adds the foreign key to Brand(nombre)
+ON UPDATE CASCADE (a brand renamed renames its codes) and CHECK (brand <> ''): BrandField reads NULL as '' and writes '' as NULL, and
+filters name the blank brand through blank_brand_q()/branded_q(). Every writer stores a brand's nombre: add(), update(), retype_main()
+and bulk_create() resolve the spelling given (brand_name) and make it a brand (ensure_brand), as Reference.save() does for a writer
+outside this module.
 """
 import re
 
@@ -184,13 +188,13 @@ def own_interno_q(supplier, prefix=''):
 
 
 def blank_brand_q(prefix=''):
-    """The rows with no brand ("any brand"): '' until 0089 converts them, NULL from then on (BrandField reads both as '')."""
-    return Q(**{f'{prefix}brand': ''}) | Q(**{f'{prefix}brand__isnull': True})
+    """The rows with no brand ("any brand"): NULL in the database from 0089 (S10), '' in Python (BrandField)."""
+    return Q(**{f'{prefix}brand__isnull': True})
 
 
 def branded_q(prefix=''):
-    """The rows with a brand (neither '' nor NULL)."""
-    return Q(**{f'{prefix}brand__gt': ''})
+    """The rows with a brand."""
+    return Q(**{f'{prefix}brand__isnull': False})
 
 
 def brand_q(brand, prefix=''):
@@ -308,10 +312,22 @@ def check(tipo, estado, supplier=None, dispute_note=''):
         raise ReferenceConflict('Una referencia en disputa lleva el motivo de la disputa.')
 
 
+def brand_name(brand):
+    """The Brand.nombre a Reference stores for a brand spelling (S10: 0089's foreign key to Brand(nombre)): the nombre of the brand it
+    names by nombre or alias (mall.brands.resolve), else the spelling normalized (the nombre ensure_brand gives the brand it makes);
+    '' for any brand. Reads only."""
+    spelling = brand_key(brand)
+    if not spelling:
+        return ''
+    from . import brands
+    return brands.resolve(spelling)
+
+
 def ensure_brand(spelling, tipo='otro'):
-    """Make the brand spelling a Reference carries a Brand nombre or alias (Appendix C, I12), as mall.refactor.s2a_references seeds
-    them: the brand it names (mall.brands.lookup), else a new brand under its normalized name (vehiculo for an OEM code, repuesto
-    otherwise); and the spelling as an alias when it differs from the nombre. Returns the brand, or None for '' (any brand)."""
+    """Make the brand spelling a Reference carries a brand (Appendix C, I12), as mall.refactor.s2a_references seeded them: the brand it
+    names (mall.brands.lookup), else a new brand under its normalized name (vehiculo for an OEM code, repuesto otherwise); and the
+    spelling as an alias when it differs from the nombre. The Reference stores the brand's nombre (brand_name; from 0089 a foreign key
+    to Brand(nombre)). Returns the brand, or None for '' (any brand)."""
     from . import brands
     from .brand_models import Brand, BrandAlias
     spelling = brand_key(spelling)
@@ -361,6 +377,14 @@ def bulk_create(references, *, batch_size=500, actor=None, serialized=False):
         return references
     keys = sorted({clave(ref.code) for ref in references})
     with transaction.atomic():
+        # Every brand as the nombre of a brand, made one when none is (I12; from 0089 a foreign key to Brand(nombre)): resolved once per
+        # spelling, before the keys are checked.
+        names = {}
+        for spelling, tipo in {ref.brand: ref.tipo for ref in references if ref.brand}.items():
+            names[spelling] = ensure_brand(spelling, tipo).nombre
+        for ref in references:
+            if ref.brand:
+                ref.brand = names[ref.brand]
         if not serialized:
             lock(*keys)
         held = {}
@@ -384,8 +408,6 @@ def bulk_create(references, *, batch_size=500, actor=None, serialized=False):
                     raise ReferenceConflict(f'{ref.code} ya es una referencia de este SKU.', row)
                 if clash and row.part_id != ref.part_id:
                     raise ReferenceConflict(f'El código {ref.code} ya pertenece a otro SKU ({row.part.sku}).', row)
-        for spelling, tipo in {ref.brand: ref.tipo for ref in references if ref.brand}.items():
-            ensure_brand(spelling, tipo)
         Reference.objects.bulk_create(references, batch_size=batch_size)
         for ref in references:
             if getattr(ref, '_source', ''):
@@ -418,6 +440,7 @@ def add(line, code, brand='', *, tipo=None, ref_type=None, estado=None, supplier
         raise ReferenceConflict('Ingresa el código de la referencia.')
     if len(ref.code) > 120:
         raise ReferenceConflict('El código supera 120 caracteres.')
+    spelling, ref.brand = ref.brand, brand_name(ref.brand)  # the nombre of the brand it names (S10, 0089's foreign key)
     key = clave(ref.code)
     with transaction.atomic():
         if absorb_library:  # before the clave's lock (a merge locks lines first, plan §1.6.5); lines in referencia have no variants
@@ -434,7 +457,7 @@ def add(line, code, brand='', *, tipo=None, ref_type=None, estado=None, supplier
                 live = own_library_number(live, actor)
             return live, False
         validate(ref.code, ref.brand, line=ref.part_id, supplier=ref.supplier_id, estado=ref.estado)
-        ensure_brand(ref.brand, ref.tipo)
+        ensure_brand(spelling, ref.tipo)  # a brand under that nombre, made when none is (the spelling kept as its alias)
         retired = next((row for row in reversed(same) if row.code == ref.code), None) or (same[-1] if same else None)
         if retired is not None:
             return describe_library_number(revive(retired, ref, actor)), True
@@ -551,8 +574,9 @@ def update(ref, *, actor=None, **fields):
         raise ReferenceConflict('Para retirar una referencia usa mall.references.retire.')
     if 'code' in fields:
         fields['code'] = code_key(fields['code'])
+    spelling = brand_key(fields.get('brand'))
     if 'brand' in fields:
-        fields['brand'] = brand_key(fields['brand'])
+        fields['brand'] = brand_name(spelling)  # the nombre of the brand it names (S10, 0089's foreign key)
     source = (fields.pop('reference_source', '') or '').strip()[:500]
     legacy = fields.pop('ref_type', None)
     if legacy and 'tipo' not in fields:
@@ -582,7 +606,7 @@ def update(ref, *, actor=None, **fields):
             returned = {'by': getattr(actor, 'username', '') or '', 'at': timezone.now().isoformat()}
             changed['detail'] = {**(changed.get('detail', ref.detail) or {}), 'returned': returned}
         if changed.get('brand'):
-            ensure_brand(changed['brand'], changed.get('tipo', ref.tipo))
+            ensure_brand(spelling, changed.get('tipo', ref.tipo))  # a brand under that nombre, made when none is
         if 'code' in changed and ref.code and clave(ref.code) == clave(changed['code']):
             forms = [form for form in [ref.code, *ref.printed_forms] if form != changed['code']]
             changed['printed_forms'] = forms[:MAX_PRINTED]
@@ -1059,8 +1083,8 @@ def retype_main(line, tipo, *, brand=None, actor=None, reason=''):
         if main is None:
             return None
         values = {}
-        if brand is not None and brand_key(brand) != main.brand:
-            wanted = brand_key(brand)
+        if brand is not None and brand_name(brand) != main.brand:
+            wanted = brand_name(brand)
             if not Reference.objects.filter(brand_q(wanted), part_id=line.pk, clave=main.clave, supplier__isnull=True).exclude(pk=main.pk).exists():
                 try:  # as an exclusive key, even for a main in disputa: the brand is taken only when nobody else holds it
                     validate(main.code, wanted, line=line.pk, estado='declarado', exclude=main.pk)
@@ -1070,7 +1094,7 @@ def retype_main(line, tipo, *, brand=None, actor=None, reason=''):
         if main.tipo != tipo:
             values.update(tipo=tipo)
         if values.get('brand'):
-            ensure_brand(values['brand'], tipo)  # every brand a Reference carries is a Brand nombre or alias (I12), as add() does
+            ensure_brand(values['brand'], tipo)  # the brand a Reference carries is a brand (I12, 0089's foreign key), as add() does
         if values:
             _bump(Reference.all_objects.filter(pk=main.pk), **values)
             for name, value in values.items():

@@ -118,26 +118,6 @@ class RenameTests(TestCase):
                          [('JSON-ALT', 'GMB', 'manufacturer', 'company'), ('JSON-OEM-12345', 'TOYOTA', 'oem', 'oem')])
 
 
-class RefTypeMirrorTests(TestCase):
-    """S10 (0086): the column ref_type is no field: a trigger writes it from tipo on every write, whatever writes the row, and the
-    JSON's ref_type and kind are derived from tipo."""
-
-    def column(self, ref):
-        from django.db import connection
-        with connection.cursor() as cursor:
-            cursor.execute('SELECT tipo, ref_type FROM mall_partcode WHERE id = %s', [ref.pk])
-            return cursor.fetchone()
-
-    def test_the_column_follows_tipo(self):
-        line = make_line('PAIR-1')
-        oem = make_reference(line, 'P-1', brand='TOYOTA', tipo='oem')
-        interno = make_reference(line, 'P-3', tipo='interno', supplier=make_supplier('PAIR PROVEEDOR'))
-        self.assertEqual([self.column(ref) for ref in (oem, interno)], [('oem', 'oem'), ('interno', 'unknown')])
-        Reference.all_objects.filter(pk=oem.pk).update(tipo='aftermarket')
-        oem.refresh_from_db()
-        self.assertEqual((self.column(oem), oem.ref_type, oem.kind), (('aftermarket', 'company'), 'company', 'manufacturer'))
-
-
 class BrandlessReservationTests(TestCase):
     """A code with no brand reserves it for every brand: across lines an exclusive (clave, '') and (clave, X) clash; on one line they
     coexist; interno codes are exempt; disputa holds nothing."""

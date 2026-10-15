@@ -233,13 +233,17 @@ REFERENCE_LIVE = ('verificado', 'declarado', 'inferido', 'disputa')  # every est
 
 class BrandField(models.CharField):
     """Reference.brand (inventory refactor S10): the canonical Brand.nombre, '' in Python and in the JSON for "any brand". The database
-    holds NULL for it from 0089, which adds the foreign key to Brand(nombre) ON UPDATE CASCADE (a brand renamed re-keys its References
-    in the same statement): reading turns NULL into '', so every reader keeps seeing ''. Until 0089 converts the rows, '' is written as
-    ''; mall.references.blank_brand_q and branded_q read both. Its migrations see a plain CharField (deconstruct), so they never import
-    this module."""
+    holds NULL for it (0089), under the foreign key to Brand(nombre) ON UPDATE CASCADE (a brand renamed re-keys its References in the
+    same statement) and CHECK (brand <> ''): reading turns NULL into '' and writing '' into NULL, so every reader and writer keeps
+    saying '' (a lookup brand='' is brand IS NULL; mall.references.blank_brand_q and branded_q). Its migrations see a plain CharField
+    (deconstruct), so they never import this module."""
 
     def from_db_value(self, value, expression, connection):
         return '' if value is None else value
+
+    def get_prep_value(self, value):
+        value = super().get_prep_value(value)
+        return None if value == '' else value
 
     def deconstruct(self):
         name, _, args, kwargs = super().deconstruct()
@@ -357,8 +361,11 @@ class Reference(models.Model):
             # From 0077 (S3's expand): the target of the composite foreign key that keeps each variant on its Reference's line
             # (variant_line_follows_reference, 0078).
             models.UniqueConstraint(fields=['id', 'part'], name='reference_id_line'),
+            # From 0089 (S10's contract, step 3), SQL only: CHECK (brand <> '') (no brand is NULL; '' in Python, which a Python check
+            # of the constraint would refuse) and the foreign key to Brand(nombre) ON UPDATE CASCADE (brand stays a CharField here).
         ]
-        indexes = [models.Index(fields=['clave'], name='reference_clave_idx'), models.Index(fields=['part', 'is_main'], name='reference_part_main_idx')]
+        indexes = [models.Index(fields=['clave'], name='reference_clave_idx'), models.Index(fields=['part', 'is_main'], name='reference_part_main_idx'),
+                   models.Index(fields=['brand'], name='reference_brand_idx')]
 
     def __str__(self):
         return f'{self.brand} {self.code}'.strip()
@@ -373,6 +380,11 @@ class Reference(models.Model):
         self.brand = (self.brand or '').strip().upper()
         self.code = self.code.strip().upper()
         fields = kwargs.get('update_fields')
+        if self.brand and (self._state.adding or fields is None or 'brand' in fields):
+            # S10 (0089): the brand is a foreign key to Brand(nombre). A writer outside mall.references (old code, tests) may name an
+            # alias or a spelling no brand has yet: it is stored as the nombre of the brand it names, made a brand when none does.
+            from .references import ensure_brand
+            self.brand = ensure_brand(self.brand, self.tipo).nombre
         if self._state.adding and not self.__dict__.pop('_checked', False):
             # Transition shim until S10 (S2b): an insert by code outside mall.references whose key the line's main already holds
             # updates the main instead, and one whose key another line's main holds waits in disputa (mall.references.adopt_insert).

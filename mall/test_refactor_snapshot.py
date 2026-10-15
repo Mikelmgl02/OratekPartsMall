@@ -27,8 +27,8 @@ class CaptureTests(Fresh, TestCase):
         self.lines = make_catalog([('17801-30070', 'FILTRO AIRE TOY HILUX'), ('48654-0K050', 'BASE AMORT TOY HILUX'),
                                    ('28113-F2000', 'FILTRO AIRE HYU ELANTRA')])
         self.line = self.lines['17801-30070']
+        Brand.objects.create(nombre='TOYOTA')  # every brand a code carries is a brand (I12; from S10 a foreign key)
         make_reference(self.line, '17801-30070', brand='TOYOTA', tipo='oem', source='CATÁLOGO')  # a library number on its line
-        Brand.objects.create(nombre='TOYOTA')  # every brand a code carries is a brand (I12: the S1 seed, then S2a's backfill)
         make_variant(self.supplier, 'S-1', '17801-30070', 4, actor=seller, brand='KSM', line=self.line)
         duplicate = make_line('17801-30070-G', description='FILTRO AIRE TOY')
         duplicate.merged_into, duplicate.estado = self.line, 'unificada'
@@ -73,7 +73,7 @@ class CaptureTests(Fresh, TestCase):
         search_document.rebuild()  # I8 (S7): the documents are written when a transaction commits, which a TestCase never does
         results = {(check_id, outcome) for check_id, _, outcome, _ in snapshot.run_checks()}
         self.assertIn(('C1', 'INFO'), results)  # from S4 the lines in referencia make more groups: it only informs
-        self.assertIn(('C4', 'OK'), results)
+        self.assertIn(('C4', 'INFO'), results)  # S10 archived the library's tables: their checks are skipped, the line counts inform
         self.assertIn(('I6', 'OK'), results)
         self.assertIn(('C0', 'INFO'), results)
         self.assertIn(('I1', 'OK'), results)  # every line has its main since S2b (the Part.save shim makes it)
@@ -152,6 +152,15 @@ class ChecksTests(SimpleTestCase):
         # S1 alone: the brands exist, but I12 holds only once S2a has seeded the missing spellings
         s1, _ = self.run_checks(self.TODAY | {'mall_part.estado', 'mall_part.origen', 'mall_brand.nombre', 'mall_brandalias.alias'}, [(5,)])
         self.assertTrue({('I12', 'OMITIDA'), ('I1', 'OMITIDA'), ('C1', 'FALLA'), ('I6', 'FALLA')} <= s1)
+
+    def test_a_later_stage_stands_for_s4_once_s10_archives_its_table(self):
+        present = {snapshot.STAGE_COLUMNS[stage] for stage in ('S1', 'S2a', 'S2b', 'S3', 'S6', 'S7')} | {
+            'mall_part.active', 'mall_part.merged_into_id', 'mall_part.origen', 'mall_partcode.tipo', 'mall_partcode.estado'}
+        self.assertTrue(snapshot.reached('S4', present))
+        self.assertFalse(snapshot.reached('S4', present - {snapshot.STAGE_COLUMNS[stage] for stage in ('S6', 'S7')}))
+        results, asked = self.run_checks(present, [(0,)])
+        self.assertTrue({('C4', 'OMITIDA'), ('C4', 'INFO'), ('C1', 'INFO')} <= results)
+        self.assertFalse([sql for sql in asked if 'mall_oemcrossreference' in sql or 'ref_type' in sql])
 
     def test_c1_wants_exactly_three_groups_until_s4_brings_referencia_lines(self):
         check = next(check for check in snapshot.CHECKS if check.id == 'C1')
