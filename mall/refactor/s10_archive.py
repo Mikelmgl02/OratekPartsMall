@@ -1,23 +1,34 @@
-"""Inventory refactor S10's archive and drop (plan §3 S10.1-3): the read-only preconditions, and the JSON export that comes before 0088
-(the archive schema) and 0089 (the dropped columns), which refuse to run on a database whose rows the export does not hold.
+"""Inventory refactor S10's archive and drop (plan §3 S10.1-3): the read-only preconditions, the JSON export that comes before 0088
+(the archive schema) and 0089 (the dropped columns), which refuse to run on a database whose rows the export does not hold, and the
+way back for the dropped values.
 
-    python -m mall.refactor.s10_archive --check         the preconditions, read only; exit 1 when one fails
-    python -m mall.refactor.s10_archive --export [DIR]  every table 0088 archives and every value 0089 drops, as JSON lines (one row per
-                                                        line, PostgreSQL's row_to_json), with DIR/export.json, the manifest the two
-                                                        migrations check (rows and sha256 per file); and output/catalog_data copied to
+    python -m mall.refactor.s10_archive --check         the preconditions, read only; exit 1 when one fails (--dry-run says the same)
+    python -m mall.refactor.s10_archive --export [DIR]  the preconditions again (it refuses, writing nothing, when one fails), then every
+                                                        table 0088 archives and every value 0089 drops, as JSON lines (one row per
+                                                        line: PostgreSQL's row_to_json, read through a server-side cursor), with
+                                                        DIR/export.json, the manifest the two migrations check (rows and sha256 per
+                                                        file, and the preconditions), and output/catalog_data copied to
                                                         docker_backups/catalog_data-<stamp>. Read only on the database, in one
-                                                        REPEATABLE READ snapshot.
+                                                        REPEATABLE READ snapshot. --apply [--user U] is the same export to the default
+                                                        folder (the rehearsal's spelling, scripts/refactor_rehearsal.sh).
+    python -m mall.refactor.s10_archive --rollback [DIR] once 0089 is reversed (its columns back, empty): every value the export holds
+                                                        goes back to its row (rows deleted since are skipped). On the live database
+                                                        it needs the freeze (mall.refactor.guard).
 
 The migrations find the manifest at S10_EXPORT (a directory or its export.json), else the main checkout's output/refactor/s10/export
-(mall.refactor.output.stage_dir: /app/output/refactor/s10/export in the containers, REFACTOR_OUTPUT in a rehearsal). Run both inside
-the app container, from the checkout being deployed, before migrating to 0088:
+(mall.refactor.output.stage_dir: /app/output/refactor/s10/export in the containers, REFACTOR_OUTPUT in a rehearsal). Each run also
+appends what it did to manifest.jsonl beside that folder (mall.refactor.output.manifest_path). Run them inside the app container, from
+the checkout being deployed, before migrating to 0088:
 
     docker exec partsmall-app-1 python -m mall.refactor.s10_archive --check
     docker exec partsmall-app-1 python -m mall.refactor.s10_archive --export     (DIR defaults to that folder, or S10_EXPORT)
 
+S9's outcome of every OEMCrossReference row is read from S10_XREF_OUTCOMES, else the main checkout's
+output/refactor/s9/xref_outcomes.jsonl (read only; a rehearsal's REFACTOR_OUTPUT does not move it).
+
 An archived table moves back with ALTER TABLE archive.<table> SET SCHEMA public (0088's reverse does it; 0087's reverse puts its
-foreign keys back from archive.s10_constraints); a dropped column comes back only from the dump taken before the window, or from this
-export."""
+foreign keys back from archive.s10_constraints); a dropped value comes back with --rollback after 0089 is reversed, or from the dump
+taken before the window."""
 import argparse
 import hashlib
 import json
@@ -79,8 +90,11 @@ def count(cursor, sql, params=None):
 
 # ---------------------------------------------------------------- preconditions
 def outcomes_path():
-    from .output import stage_dir
-    return stage_dir('s9') / 'xref_outcomes.jsonl'
+    """S9's outcomes file: S10_XREF_OUTCOMES, else the main checkout's output/refactor/s9/xref_outcomes.jsonl (never REFACTOR_OUTPUT,
+    which a rehearsal points at its own folder for every stage)."""
+    from .output import main_checkout
+    override = os.environ.get('S10_XREF_OUTCOMES', '').strip()
+    return Path(override) if override else main_checkout() / 'output' / 'refactor' / 's9' / 'xref_outcomes.jsonl'
 
 
 def xref_outcomes(path):
@@ -120,7 +134,9 @@ def preconditions(cursor, outcomes=None):
         check('líneas con un nombre distinto de su descripción y su SKU (no unificadas)',
               count(cursor, "SELECT 1 FROM mall_part WHERE name <> '' AND name <> description AND name <> sku AND estado <> 'unificada'"), True,
               'el nombre deja de existir: la descripción es el texto de la línea (la exportación los guarda)')
+    if column_exists(cursor, 'mall_part', 'legacy_brand'):
         check('líneas con legacy_brand', count(cursor, "SELECT 1 FROM mall_part WHERE legacy_brand <> ''"), True)
+    if column_exists(cursor, 'mall_part', 'category') and column_exists(cursor, 'mall_part', 'subcategory'):
         check('líneas con categoría en texto y sin subgrupo',
               count(cursor, "SELECT 1 FROM mall_part WHERE part_type_id IS NULL AND (category <> '' OR subcategory <> '')"), True,
               'su texto se pierde: no nombra un subgrupo')
@@ -163,26 +179,33 @@ def present(cursor):
 
 
 # ---------------------------------------------------------------- export
-def copy_out(cursor, sql, path):
-    """COPY the rows of sql to path as JSON lines; returns (rows, sha256)."""
+def copy_out(connection, sql, path):
+    """Write the rows of sql to path as JSON lines (row_to_json, one row per line, read through a server-side cursor so the text is the
+    JSON as PostgreSQL wrote it: COPY's text format would double every backslash); returns (rows, sha256 of the file)."""
+    import uuid
     digest, rows = hashlib.sha256(), 0
-    with path.open('wb') as handle:
-        with cursor.cursor.copy(f'COPY (SELECT row_to_json(t) FROM ({sql}) t) TO STDOUT') as copy:
-            for data in copy:
-                chunk = bytes(data)
-                handle.write(chunk)
-                digest.update(chunk)
-                rows += chunk.count(b'\n')
+    with path.open('wb') as handle, connection.connection.cursor(name=f's10_export_{uuid.uuid4().hex[:12]}') as cursor:
+        cursor.itersize = 2000
+        cursor.execute(f'SELECT row_to_json(t)::text FROM ({sql}) t')
+        for (text,) in cursor:
+            line = text.encode('utf-8') + b'\n'
+            handle.write(line)
+            digest.update(line)
+            rows += 1
     return rows, digest.hexdigest()
 
 
-def export(directory, *, catalog_data=True, alias='default'):
-    """The export (read only, one snapshot) and its manifest. Returns the manifest."""
-    from django.conf import settings
+class ExportRefused(RuntimeError):
+    """A precondition failed: the export writes nothing (0088 and 0089 then refuse too)."""
+
+
+def export(directory, *, catalog_data=True, alias='default', outcomes=None):
+    """The export (read only, one snapshot) and its manifest, after the preconditions in the same snapshot: one that fails raises
+    ExportRefused and nothing is written. outcomes: S9's outcome per OEMCrossReference id (default: outcomes_path()). Returns the
+    manifest."""
     from django.db import connections, transaction
     from django.utils import timezone
     directory = Path(directory)
-    directory.mkdir(parents=True, exist_ok=True)
     connection = connections[alias]
     manifest = {'stage': 's10_archive', 'database': connection.settings_dict['NAME'], 'at': timezone.now().isoformat(),
                 'tables': {}, 'columns': {}}
@@ -190,16 +213,22 @@ def export(directory, *, catalog_data=True, alias='default'):
     with transaction.atomic(using=alias), connection.cursor() as cursor:
         if not outer:
             cursor.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
+        checks = preconditions(cursor, outcomes)
+        manifest['preconditions'] = [{'label': label, 'value': value, 'ok': ok, 'detail': detail} for label, value, ok, detail in checks]
+        failed = [f'{label}: {value}' for label, value, ok, _ in checks if not ok]
+        if failed:
+            raise ExportRefused('La exportación no se hizo: falla una precondición (' + '; '.join(failed) + '). Corrígela y vuelve a exportar.')
+        directory.mkdir(parents=True, exist_ok=True)
         cursor.execute("SELECT name FROM django_migrations WHERE app = 'mall' ORDER BY id DESC LIMIT 1")
         manifest['leaf'] = (cursor.fetchone() or [''])[0]
         for table in present(cursor):
-            rows, sha = copy_out(cursor, f'SELECT * FROM {qn(table)}', directory / f'{table}.jsonl')
+            rows, sha = copy_out(connection, f'SELECT * FROM {qn(table)}', directory / f'{table}.jsonl')
             manifest['tables'][table] = {'file': f'{table}.jsonl', 'rows': rows, 'sha256': sha}
         for table, key, columns in DROPPED:
             kept = tuple(column for column in columns if column_exists(cursor, table, column))
             if not kept:
                 continue
-            rows, sha = copy_out(cursor, column_query(table, key, kept), directory / f'{table}.columns.jsonl')
+            rows, sha = copy_out(connection, column_query(table, key, kept), directory / f'{table}.columns.jsonl')
             manifest['columns'][table] = {'file': f'{table}.columns.jsonl', 'key': key, 'columns': list(kept), 'rows': rows, 'sha256': sha}
     if catalog_data:
         from .output import main_checkout
@@ -213,19 +242,84 @@ def export(directory, *, catalog_data=True, alias='default'):
     return manifest
 
 
+def read_manifest(directory):
+    path = Path(directory)
+    path = path if path.suffix == '.json' else path / 'export.json'
+    if not path.exists():
+        raise SystemExit(f'No hay exportación en {path}.')
+    return path.parent, json.loads(path.read_text())
+
+
+def rollback(directory, *, alias='default', batch=2000):
+    """Put back every value of the export's columns files (written by --export before 0089) into the rows that still exist, once 0089
+    is reversed (its columns back). Checks each file's sha256 first. Returns {table: rows updated}."""
+    from django.db import connections, transaction
+    folder, manifest = read_manifest(directory)
+    connection = connections[alias]
+    restored = {}
+    with transaction.atomic(using=alias), connection.cursor() as cursor:
+        for table, entry in manifest.get('columns', {}).items():
+            path = folder / entry['file']
+            if hashlib.sha256(path.read_bytes()).hexdigest() != entry['sha256']:
+                raise SystemExit(f'{path} no coincide con su sha256 del manifiesto: no se restauró nada.')
+            missing = [column for column in entry['columns'] if not column_exists(cursor, table, column)]
+            if missing:
+                raise SystemExit(f'{table} no tiene las columnas {", ".join(missing)}: revierte 0089 primero '
+                                 '(python manage.py migrate mall 0088_archive). No se restauró nada.')
+            key, columns = entry['key'], entry['columns']
+            assign = ', '.join(f'{qn(column)} = v.{qn(column)}' for column in columns)
+            sql = (f'UPDATE {qn(table)} t SET {assign} FROM jsonb_populate_recordset(NULL::{qn(table)}, %s::jsonb) v '
+                   f'WHERE t.{qn(key)} = v.{qn(key)}')
+            count, rows = 0, []
+            with path.open(encoding='utf-8') as handle:
+                for line in handle:
+                    if line.strip():
+                        rows.append(json.loads(line))
+                    if len(rows) >= batch:
+                        cursor.execute(sql, [json.dumps(rows)])
+                        count += cursor.rowcount
+                        rows = []
+            if rows:
+                cursor.execute(sql, [json.dumps(rows)])
+                count += cursor.rowcount
+            restored[table] = count
+    return restored
+
+
+def log(action, **data):
+    """One line of what this run did in the stage's manifest.jsonl (mall.refactor.output.manifest_path)."""
+    from django.utils import timezone
+    from .output import manifest_path
+    path = manifest_path('s10')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('a', encoding='utf-8') as handle:
+        handle.write(json.dumps({'at': timezone.now().isoformat(), 'action': action, **data}, ensure_ascii=False, default=str) + '\n')
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog='python -m mall.refactor.s10_archive', description=__doc__.split('\n')[0])
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--check', action='store_true', help='Las precondiciones, solo lectura.')
+    group.add_argument('--dry-run', action='store_true', help='Lo mismo que --check (el nombre del ensayo).')
     group.add_argument('--export', metavar='DIR', nargs='?', const='',
                        help='Exporta las tablas por archivar y las columnas por quitar a DIR (por omisión, donde las migraciones la buscan).')
+    group.add_argument('--apply', action='store_true', help='La exportación a la carpeta por omisión (el nombre del ensayo).')
+    group.add_argument('--rollback', metavar='DIR', nargs='?', const='',
+                       help='Con 0089 revertida: devuelve a sus filas los valores que guarda la exportación de DIR.')
+    parser.add_argument('--user', help='Quién ejecuta (--apply; se anota en manifest.jsonl).')
     parser.add_argument('--no-catalog-data', action='store_true', help='No copia output/catalog_data a docker_backups.')
     options = parser.parse_args(argv)
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
     import django
     django.setup()
     from django.db import connection, transaction
-    if options.check:
+    from .output import stage_dir
+
+    def folder_of(value):
+        folder = Path(value or os.environ.get('S10_EXPORT') or stage_dir('s10') / 'export')  # where 0088 and 0089 look by default
+        return folder.parent if folder.suffix == '.json' else folder
+
+    if options.check or options.dry_run:
         outer = connection.in_atomic_block
         with transaction.atomic(), connection.cursor() as cursor:
             if not outer:
@@ -236,17 +330,30 @@ def main(argv=None):
             failed |= not ok
             print(f"{'OK ' if ok else 'NO '} {label}: {value}{f' ({detail})' if detail else ''}")
         return 1 if failed else 0
-    from .output import stage_dir
-    folder = Path(options.export or os.environ.get('S10_EXPORT') or stage_dir('s10') / 'export')  # where 0088 and 0089 look by default
-    if folder.suffix == '.json':
-        folder = folder.parent
-    manifest = export(folder, catalog_data=not options.no_catalog_data)
+    if options.rollback is not None:
+        from .guard import require_freeze
+        require_freeze(True)
+        folder = folder_of(options.rollback)
+        restored = rollback(folder)
+        for table, count in restored.items():
+            print(f'{table}: {count} filas restauradas')
+        log('rollback', folder=str(folder), restored=restored)
+        return 0
+    folder = folder_of(options.export if options.export is not None else '')
+    try:
+        manifest = export(folder, catalog_data=not options.no_catalog_data)
+    except ExportRefused as refused:
+        print(refused, file=sys.stderr)
+        return 1
     for section in ('tables', 'columns'):
         for table, entry in manifest[section].items():
             print(f"{table}{' (columnas)' if section == 'columns' else ''}: {entry['rows']} filas -> {entry['file']}")
     if manifest.get('catalog_data'):
         print(f"output/catalog_data copiado a {manifest['catalog_data']}")
     print(f"Manifiesto: {folder / 'export.json'}")
+    log('export', folder=str(folder), user=options.user or '', leaf=manifest.get('leaf'),
+        tables={table: entry['rows'] for table, entry in manifest['tables'].items()},
+        columns={table: entry['rows'] for table, entry in manifest['columns'].items()})
     return 0
 
 

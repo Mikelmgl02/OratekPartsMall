@@ -177,46 +177,131 @@ class PreconditionTests(TestCase):
             self.assertEqual(dict((c[0], c[1:3]) for c in s10_archive.preconditions(cursor, outcomes={row: 'case'}))[label], (0, True))
 
     def test_the_cli_prints_every_check(self):
-        out = StringIO()
-        with redirect_stdout(out), patch('django.setup'):
-            code = s10_archive.main(['--check'])
-        self.assertEqual(code, 0, out.getvalue())
-        self.assertIn('esquema archive', out.getvalue())
-        self.assertIn('marcas de referencias que no son una marca (I12): 0', out.getvalue())
+        for flag in ('--check', '--dry-run'):  # --dry-run is the rehearsal's name for it
+            out = StringIO()
+            with self.subTest(flag=flag), redirect_stdout(out), patch('django.setup'):
+                code = s10_archive.main([flag])
+                self.assertEqual(code, 0, out.getvalue())
+                self.assertIn('esquema archive', out.getvalue())
+                self.assertIn('marcas de referencias que no son una marca (I12): 0', out.getvalue())
+
+    def test_the_outcomes_file_is_s9s_whatever_the_rehearsal_folder(self):
+        with patch.dict(os.environ, {'REFACTOR_OUTPUT': '/tmp/rehearsal/s10', 'S10_XREF_OUTCOMES': ''}):
+            path = s10_archive.outcomes_path()
+        self.assertEqual(path.parts[-4:], ('output', 'refactor', 's9', 'xref_outcomes.jsonl'))
+        with patch.dict(os.environ, {'S10_XREF_OUTCOMES': '/tmp/outcomes.jsonl'}):
+            self.assertEqual(str(s10_archive.outcomes_path()), '/tmp/outcomes.jsonl')
 
 
 class ExportTests(TestCase):
-    def test_the_export_writes_every_archived_table_and_dropped_value_with_its_manifest(self):
+    TRICKY = 'GWT "78" \\ A\nB'  # a quote, a backslash and a newline: text COPY would double the backslash and break the JSON
+
+    def library_rows(self):
+        """Two OEMCrossReference rows (the table back in public for the test), one with a code and citation full of escapes."""
         unarchive('mall_oemcrossreference')
         ref = make_reference(make_line('S10-EXP-1', description='BOMBA'), '16100-39315', brand='TOYOTA', tipo='oem')
         sql("INSERT INTO mall_oemcrossreference (brand, code, number, citations, created_at, updated_at, ref_id) "
             "VALUES ('GMB', 'GWT-78A', '1610039315', '[\"GMB 2024 p. 3\"]', now(), now(), %s)", [ref.pk])
+        sql("INSERT INTO mall_oemcrossreference (brand, code, number, citations, created_at, updated_at, ref_id) "
+            "VALUES ('GMB', %s, '1610039316', %s::jsonb, now(), now(), %s)", [self.TRICKY, json.dumps([self.TRICKY]), ref.pk])
+        rows = [row[0] for row in sql('SELECT id FROM mall_oemcrossreference ORDER BY id')]
+        return ref, {row: 'case' for row in rows}
+
+    def test_the_export_writes_every_archived_table_and_dropped_value_with_its_manifest(self):
+        ref, outcomes = self.library_rows()
         ddl("ALTER TABLE mall_part ADD COLUMN legacy_brand varchar(120) NOT NULL DEFAULT ''")  # a column 0089 drops, back for the test
-        sql("UPDATE mall_part SET legacy_brand = 'ANTIGUA' WHERE id = %s", [ref.part_id])
+        sql("UPDATE mall_part SET legacy_brand = %s WHERE id = %s", ['ANTIGUA \\ "1"', ref.part_id])
         with tempfile.TemporaryDirectory() as folder:
-            manifest = s10_archive.export(folder, catalog_data=False)
+            manifest = s10_archive.export(folder, catalog_data=False, outcomes=outcomes)
             self.assertEqual(list(manifest['tables']), ['mall_oemcrossreference'])
-            self.assertEqual(manifest['tables']['mall_oemcrossreference']['rows'], 1)
+            self.assertEqual(manifest['tables']['mall_oemcrossreference']['rows'], 2)
             self.assertEqual({table: (entry['columns'], entry['rows']) for table, entry in manifest['columns'].items()},
                              {'mall_part': (['legacy_brand'], 1)})
+            self.assertTrue(manifest['preconditions'] and all(row['ok'] for row in manifest['preconditions']))
             saved = json.loads(open(os.path.join(folder, 'export.json'), encoding='utf-8').read())
             self.assertEqual((saved['tables'], saved['columns']), (manifest['tables'], manifest['columns']))
-            rows = [json.loads(line) for line in open(os.path.join(folder, 'mall_oemcrossreference.jsonl'), encoding='utf-8')]
-            self.assertEqual([(row['code'], row['ref_id'], row['citations']) for row in rows], [('GWT-78A', ref.pk, ['GMB 2024 p. 3'])])
+            path = os.path.join(folder, 'mall_oemcrossreference.jsonl')
+            rows = [json.loads(line) for line in open(path, encoding='utf-8')]
+            self.assertEqual(sorted((row['code'], row['ref_id'], row['citations']) for row in rows),
+                             sorted([('GWT-78A', ref.pk, ['GMB 2024 p. 3']), (self.TRICKY, ref.pk, [self.TRICKY])]))
+            import hashlib
+            self.assertEqual(hashlib.sha256(open(path, 'rb').read()).hexdigest(), manifest['tables']['mall_oemcrossreference']['sha256'])
             values = [json.loads(line) for line in open(os.path.join(folder, 'mall_part.columns.jsonl'), encoding='utf-8')]
-            self.assertEqual(values, [{'id': str(ref.part_id), 'legacy_brand': 'ANTIGUA'}])
+            self.assertEqual(values, [{'id': str(ref.part_id), 'legacy_brand': 'ANTIGUA \\ "1"'}])
             # The manifest the migrations read: 0088 and 0089 accept this database with it.
             with patch.dict(os.environ, {'S10_EXPORT': folder}), connection.cursor() as cursor:
                 migration_module('0088_archive').require_export(cursor)
                 migration_module('0089_drop').require_export(cursor)
 
+    def test_a_failed_precondition_writes_nothing(self):
+        _, outcomes = self.library_rows()
+        outcomes.popitem()  # one library code without its S9 outcome (S10.1)
+        with tempfile.TemporaryDirectory() as folder:
+            target = os.path.join(folder, 'export')
+            with self.assertRaisesMessage(s10_archive.ExportRefused, 'sin resultado de S9: 1'):
+                s10_archive.export(target, catalog_data=False, outcomes=outcomes)
+            self.assertFalse(os.path.exists(target))
+            with patch.dict(os.environ, {'S10_EXPORT': target}), connection.cursor() as cursor, \
+                    self.assertRaisesMessage(RuntimeError, 'no encuentra la exportación'):
+                migration_module('0088_archive').require_export(cursor)
+
     def test_the_cli_exports_where_the_migrations_look(self):
-        out = StringIO()
-        with tempfile.TemporaryDirectory() as folder, redirect_stdout(out), patch('django.setup'), \
-                patch.dict(os.environ, {'REFACTOR_OUTPUT': folder, 'S10_EXPORT': ''}):
-            self.assertEqual(s10_archive.main(['--export', '--no-catalog-data']), 0)
-            self.assertTrue(os.path.exists(os.path.join(folder, 'export', 'export.json')))
-            self.assertEqual(migration_module('0088_archive').manifest('tables'), {})
+        for argv in (['--export', '--no-catalog-data'], ['--apply', '--user', 'miguel', '--no-catalog-data']):
+            out = StringIO()
+            with self.subTest(argv=argv), tempfile.TemporaryDirectory() as folder, redirect_stdout(out), patch('django.setup'), \
+                    patch.dict(os.environ, {'REFACTOR_OUTPUT': folder, 'S10_EXPORT': ''}):
+                self.assertEqual(s10_archive.main(argv), 0)
+                self.assertTrue(os.path.exists(os.path.join(folder, 'export', 'export.json')))
+                self.assertEqual(migration_module('0088_archive').manifest('tables'), {})
+                logged = [json.loads(line) for line in open(os.path.join(folder, 'manifest.jsonl'), encoding='utf-8')]
+                self.assertEqual([(row['action'], row['user']) for row in logged], [('export', 'miguel' if '--apply' in argv else '')])
+
+
+class RollbackTests(TestCase):
+    """--rollback, once 0089 is reversed: the values the export holds go back to their rows."""
+
+    def test_the_exported_values_go_back(self):
+        import hashlib
+        import uuid
+        line = make_line('S10-RB-1', description='BOMBA')
+        other = make_line('S10-RB-2', description='DISCO')
+        ddl("ALTER TABLE mall_part ADD COLUMN name varchar(200) NOT NULL DEFAULT '', "
+            "ADD COLUMN legacy_brand varchar(120) NOT NULL DEFAULT ''")  # 0089 reversed: its columns back, for the test
+        sql("UPDATE mall_part SET name = %s, legacy_brand = 'VIEJA' WHERE id = %s", ['Bomba "A" \\ 1', line.pk])
+        sql("UPDATE mall_part SET name = 'DISCO' WHERE id = %s", [other.pk])
+        with tempfile.TemporaryDirectory() as folder:
+            manifest = s10_archive.export(folder, catalog_data=False, outcomes={})
+            self.assertEqual(manifest['columns']['mall_part']['rows'], 2)
+            # A row deleted since the export is skipped (here: one no line has).
+            path = os.path.join(folder, 'mall_part.columns.jsonl')
+            with open(path, 'a', encoding='utf-8') as handle:
+                handle.write(json.dumps({'id': str(uuid.uuid4()), 'name': 'NADIE', 'legacy_brand': ''}) + '\n')
+            manifest['columns']['mall_part']['sha256'] = hashlib.sha256(open(path, 'rb').read()).hexdigest()
+            write_manifest(folder, **manifest)
+            sql("UPDATE mall_part SET name = '', legacy_brand = ''")  # what 0089's reverse leaves
+            self.assertEqual(s10_archive.rollback(folder, batch=2), {'mall_part': 2})
+            self.assertEqual(sql('SELECT name, legacy_brand FROM mall_part WHERE id = %s', [line.pk]), [('Bomba "A" \\ 1', 'VIEJA')])
+            self.assertEqual(sql('SELECT name, legacy_brand FROM mall_part WHERE id = %s', [other.pk]), [('DISCO', '')])
+            # The CLI, on the same export (a test database is never the live one: no freeze needed), and its log.
+            out = StringIO()
+            with redirect_stdout(out), patch('django.setup'), patch.dict(os.environ, {'REFACTOR_OUTPUT': folder}):
+                self.assertEqual(s10_archive.main(['--rollback', folder]), 0)
+            self.assertIn('mall_part: 2 filas restauradas', out.getvalue())
+            logged = [json.loads(row) for row in open(os.path.join(folder, 'manifest.jsonl'), encoding='utf-8')]
+            self.assertEqual([row['action'] for row in logged], ['rollback'])
+
+    def test_it_refuses_before_0089_is_reversed_or_on_a_changed_file(self):
+        make_line('S10-RB-3', description='FILTRO')
+        with tempfile.TemporaryDirectory() as folder:
+            write_manifest(folder, columns={'mall_part': {'file': 'mall_part.columns.jsonl', 'key': 'id', 'columns': ['name'], 'rows': 0,
+                                                          'sha256': 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'}})
+            open(os.path.join(folder, 'mall_part.columns.jsonl'), 'w').close()
+            with self.assertRaisesMessage(SystemExit, 'revierte 0089 primero'):
+                s10_archive.rollback(folder)
+            with open(os.path.join(folder, 'mall_part.columns.jsonl'), 'w') as handle:
+                handle.write('{}\n')
+            with self.assertRaisesMessage(SystemExit, 'no coincide con su sha256'):
+                s10_archive.rollback(folder)
 
 
 class ArchiveGuardTests(TestCase):
@@ -234,10 +319,18 @@ class ArchiveGuardTests(TestCase):
             with patch.dict(os.environ, {'S10_EXPORT': '/nonexistent/s10'}), self.assertRaisesMessage(RuntimeError, 'no encuentra la exportación'):
                 module.require_export(cursor)
             with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {'S10_EXPORT': folder}):
-                write_manifest(folder, tables={'mall_oemcrossreference': {'rows': 99}})
+                passed = [{'label': 'precondición', 'value': 0, 'ok': True}]
+                write_manifest(folder, tables={'mall_oemcrossreference': {'rows': 99}}, preconditions=passed)
                 with self.assertRaisesMessage(RuntimeError, 'mall_oemcrossreference: 1, 99'):
                     module.require_export(cursor)
-                write_manifest(folder, tables={'mall_oemcrossreference': {'rows': 1}})
+                write_manifest(folder, tables={'mall_oemcrossreference': {'rows': 1}})  # no preconditions recorded
+                with self.assertRaisesMessage(RuntimeError, 'no registra las precondiciones'):
+                    module.require_export(cursor)
+                write_manifest(folder, tables={'mall_oemcrossreference': {'rows': 1}},
+                               preconditions=[{'label': 'sin resultado de S9', 'value': 3, 'ok': False}])
+                with self.assertRaisesMessage(RuntimeError, 'sin resultado de S9: 3'):
+                    module.require_export(cursor)
+                write_manifest(folder, tables={'mall_oemcrossreference': {'rows': 1}}, preconditions=passed)
                 module.require_export(cursor)
 
     def test_0089_needs_the_export_of_every_value_it_drops(self):

@@ -5,7 +5,8 @@
 #   Alternate (the alternos history).
 # It runs only on a database whose rows the export of python -m mall.refactor.s10_archive --export holds: the manifest (S10_EXPORT, a
 # directory or its export.json; else the main checkout's output/refactor/s10/export, mall.refactor.output.stage_dir) must list every
-# non-empty table with its row count. A database whose tables are all empty (a new or test database) needs none.
+# non-empty table with its row count, and record the preconditions passing (the export checks them in its snapshot, S10.1 among them:
+# every OEMCrossReference row has its S9 outcome). A database whose tables are all empty (a new or test database) needs none.
 # First, the codes an open merge case of the merge pass (S9) waits on, filed under its lines' numbers, are copied into the case's
 # evidence (catalog_rows; 4,162 OEMCrossReference rows with outcome espera_grupo on 2026-10-15), so deciding it still makes them
 # References. 0087 recorded and dropped the foreign keys between these tables and the rest (any made since is recorded and dropped here
@@ -24,13 +25,19 @@ ARCHIVED = ('mall_skuproposalitem', 'mall_skuproposal', 'mall_oemcrossreferencer
             'mall_oemreferencesource', 'mall_oemreference', 'mall_suppliercodemapping', 'mall_alternate')
 
 
-def manifest(section):
-    """The export manifest's entries of a section (tables or columns), or None when there is no manifest."""
+def manifest_data():
+    """The export manifest, or None when there is none."""
     location = Path(os.environ.get('S10_EXPORT') or stage_dir('s10') / 'export')
     path = location if location.suffix == '.json' else location / 'export.json'
     if not path.exists():
         return None
-    return json.loads(path.read_text()).get(section) or {}
+    return json.loads(path.read_text())
+
+
+def manifest(section):
+    """The export manifest's entries of a section (tables or columns), or None when there is no manifest."""
+    data = manifest_data()
+    return None if data is None else data.get(section) or {}
 
 
 def require_export(cursor):
@@ -53,6 +60,13 @@ def require_export(cursor):
         raise RuntimeError('0088: la exportación no coincide con la base de datos (tabla: filas ahora, filas exportadas): '
                            + '; '.join(f'{table}: {now}, {then}' for table, (now, then) in sorted(wrong.items()))
                            + '. Exporta otra vez y vuelve a migrar.')
+    # The export ran the preconditions in its snapshot (S10.1: every OEMCrossReference row has S9's outcome, I12...) and refuses
+    # when one fails; a manifest that does not record them passing is no export of this database.
+    checks = manifest_data().get('preconditions')
+    if checks is None or not all(row.get('ok') for row in checks):
+        failed = [f"{row.get('label')}: {row.get('value')}" for row in checks or [] if not row.get('ok')]
+        raise RuntimeError('0088: la exportación no registra las precondiciones cumplidas'
+                           + (f" ({'; '.join(failed)})" if failed else '') + '. Ejecuta python -m mall.refactor.s10_archive --export.')
 
 
 S9_RULES = ('3d', '3e', 'paso0', '3f')  # mall.merge_pass.S9_RULES
