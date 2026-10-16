@@ -144,6 +144,56 @@ class BrandRenameMergeTests(TestCase):
         self.assertEqual((code.brand, list(library.values_list('pk', 'brand'))), ('TOYOTA', [(code.pk, 'TOYOTA')]))
 
 
+class BrandRekeyKeptApartTests(TestCase):
+    """S10: a code that collides under the new nombre on a line with no open merge case for the two lines (kept apart, or their case
+    decided) is retired, replaced by the other, unless variants hang from it or it is the main: then it stays in disputa with a note
+    that says so. The answers list what happened to each one (kept)."""
+
+    def setUp(self):
+        self.febi = Brand.objects.create(nombre='FEBI', tipo='repuesto')
+        self.bilstein = Brand.objects.create(nombre='FEBI BILSTEIN', tipo='repuesto')
+        self.pump = make_line('16100-39315', description='BOMBA DE AGUA')
+        self.other = make_line('16100-39315-FB', description='BOMBA DE AGUA')
+        self.code = make_reference(self.pump, '01234', brand='FEBI', tipo='aftermarket')
+        self.held = make_reference(self.other, '01234', brand='FEBI BILSTEIN', tipo='aftermarket')
+        decided = MatchingCase.objects.create(key='merge:kept-apart', kind='merge', status='dismissed', fingerprint='x', method='', reason='')
+        decided.lines.add(self.pump, self.other)
+
+    def test_a_code_nothing_hangs_from_is_retired_and_replaced(self):
+        result = brands.merge(self.febi, self.bilstein)
+        self.code.refresh_from_db()
+        self.assertEqual((self.code.brand, self.code.estado, self.code.reemplazado_por_id), ('FEBI BILSTEIN', 'retirada', self.held.pk))
+        self.assertEqual(result['cases'], [])
+        self.assertEqual(result['kept'], [{'id': self.code.pk, 'code': '01234', 'part': str(self.pump.pk), 'estado': 'retirada', 'case': None}])
+        self.assertEqual(MatchingCase.objects.filter(kind='merge', status='review').count(), 0)  # the decided case is not reopened
+
+    def test_a_code_variants_hang_from_stays_in_disputa_saying_why(self):
+        from .models import SupplierItem
+        from .test_factories import make_supplier
+        SupplierItem.objects.create(supplier=make_supplier('PROVEEDOR REKEY'), supplier_invent_id='rekey-1', codigo='01234', brand='FEBI',
+                                    source='upload', part=self.pump, reference=self.code)
+        result = brands.merge(self.febi, self.bilstein)
+        self.code.refresh_from_db()
+        self.assertEqual((self.code.brand, self.code.estado), ('FEBI BILSTEIN', 'disputa'))
+        self.assertIn('se mantiene separada', self.code.dispute_note)
+        self.assertNotIn('caso de unificación', self.code.dispute_note)
+        self.assertEqual([(row['estado'], row['case']) for row in result['kept']], [('disputa', None)])
+
+    def test_the_answers_list_the_kept_codes(self):
+        from rest_framework.test import APIClient
+        client = APIClient()
+        client.force_authenticate(make_user('brand-rekey-root', superuser=True))
+        response = client.patch(f'/api/v1/management/brands/{self.febi.pk}/', {'merge_into': self.bilstein.pk}, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual((response.data['nombre'], response.data['moved'], response.data['cases']), ('FEBI BILSTEIN', 0, []))
+        self.assertEqual([(row['code'], row['estado']) for row in response.data['kept']], [('01234', 'retirada')])
+        renamed = client.patch(f'/api/v1/management/brands/{self.bilstein.pk}/', {'nombre': 'FEBI BILSTEIN GMBH'}, format='json')
+        self.assertEqual((renamed.status_code, renamed.data['nombre'], renamed.data['kept']), (200, 'FEBI BILSTEIN GMBH', []))
+        self.assertEqual(renamed.data['moved'], 2)
+        plain = client.patch(f'/api/v1/management/brands/{self.bilstein.pk}/', {'notas': 'x'}, format='json')
+        self.assertNotIn('kept', plain.data)
+
+
 class BrandAdminTests(TestCase):
     """The Django admin keeps the brand rules: a brand is merged, never deleted; an alias is added, never edited or deleted (codes
     may carry its spelling); a familia has one level; a spelling is a nombre or an alias, never both."""

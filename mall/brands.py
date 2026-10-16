@@ -115,9 +115,11 @@ def rekey(old, new, *, reason):
     """Move every code that carries the spelling `old` to `new` (Reference.brand), retired ones too: from S10 (0089) a code's brand is
     a foreign key to Brand(nombre), so no code may keep a spelling that stops being a brand (a merge deletes the source brand). A live
     code whose key `new` already holds live (the same clave and supplier, both verificado, declarado or inferido) cannot hold it twice
-    (reference_one_live_line): on two lines it moves in disputa and a merge case asks whether the two lines are one part (Casos de
-    coincidencia); on one line it moves retired, replaced by the other (or in disputa when it is the main or variants hang from it).
-    Returns {'moved', 'kept': [{id, code, part}] (the codes that moved in disputa or retired), 'cases': [case ids]}."""
+    (reference_one_live_line): on two lines it moves in disputa while an open merge case asks whether the two lines are one part (Casos
+    de coincidencia); with no open case (the lines kept apart, or their case already decided), and on one line, it moves retired,
+    replaced by the other, unless it is its line's main or variants hang from it: then it moves in disputa with a note saying so (the
+    line editor settles it). Returns {'moved', 'kept': [{id, code, part, estado, case}] (the codes that moved in disputa or retired),
+    'cases': [case ids]}."""
     from django.db.models import F
     from django.utils import timezone
     from .matching_queue import enqueue_matching
@@ -126,7 +128,7 @@ def rekey(old, new, *, reason):
     if not rows:
         return {'moved': 0, 'kept': [], 'cases': []}
     held = {}  # (clave, supplier) -> the live row under `new` that holds it
-    for row in (Reference.all_objects.select_for_update(of=('self',))
+    for row in (Reference.all_objects.select_for_update(of=('self',)).select_related('part')
                 .filter(brand=new, estado__in=Reference.EXCLUSIVE, clave__in=sorted({r.clave for r in rows})).order_by('pk')):
         held.setdefault((row.clave, row.supplier_id), row)
     moving, kept, cases = [], [], []
@@ -135,19 +137,24 @@ def rekey(old, new, *, reason):
         if other is None:
             moving.append(row)
             continue
-        kept.append({'id': row.pk, 'code': row.code, 'part': str(row.part_id)})
         rows_of = Reference.all_objects.filter(pk=row.pk)
         stamp = {'version': F('version') + 1, 'updated_at': timezone.now()}  # as mall.references._bump writes a Reference
-        if other.part_id != row.part_id:
-            case = open_merge_case(row, other, old, new, reason)
-            if case is not None:
-                cases.append(case)
-            rows_of.update(brand=new, estado='disputa', dispute_note=f'{reason}: {new} {row.code} ya es de otra línea: caso de unificación.'[:2000],
-                           **stamp)
+        case = open_merge_case(row, other, old, new, reason) if other.part_id != row.part_id else None
+        if case is not None:
+            cases.append(case)
+            estado, note = 'disputa', f'{reason}: {new} {row.code} ya es de otra línea ({other.part.sku}): caso de unificación abierto.'
         elif not (row.is_main or row.variants.exists()):
+            estado, note = 'retirada', ''
+        elif other.part_id != row.part_id:
+            estado, note = 'disputa', (f'{reason}: {new} {row.code} ya es de otra línea ({other.part.sku}), que se mantiene separada de esta: '
+                                       'decide en el editor de la línea qué código lleva.')
+        else:
+            estado, note = 'disputa', f'{reason}: la línea ya tiene {new} {row.code}.'
+        if estado == 'retirada':
             rows_of.update(brand=new, estado='retirada', reemplazado_por=other, **stamp)
         else:
-            rows_of.update(brand=new, estado='disputa', dispute_note=f'{reason}: la línea ya tiene {new} {row.code}.'[:2000], **stamp)
+            rows_of.update(brand=new, estado='disputa', dispute_note=note[:2000], **stamp)
+        kept.append({'id': row.pk, 'code': row.code, 'part': str(row.part_id), 'estado': estado, 'case': case})
     Reference.all_objects.filter(pk__in=[row.pk for row in moving]).update(brand=new, version=F('version') + 1, updated_at=timezone.now())
     from .search_document import refresh
     refresh({row.part_id for row in rows})  # the brands in their lines' Search Documents (S7)
@@ -158,19 +165,23 @@ def rekey(old, new, *, reason):
 def open_merge_case(code, other, old, new, reason):
     """A merge case (route caso) asking whether the line holding `code` (brand `old`) is the line holding the same code under `new`:
     Unificar merges them, Mantener separadas keeps them apart (until S10 a legacy catalog_reference case). A merge case these lines
-    already have, decided or not, is returned as it is; lines kept apart get none. Returns the case id, or None."""
+    already have is returned as it is (a decided one is never reopened here). Returns the id of the case open for these lines, or None
+    when none is open: the lines are kept apart, or a person already decided their case."""
     from .models import Part
     from .reference_matching import merge_case_spec, open_case
     from .references import covering_case
     existing = covering_case([code.part_id, other.part_id])
     if existing is not None:
-        return str(existing.pk)
+        return str(existing.pk) if existing.status == 'review' else None
     source, target = (Part.objects.get(pk=pk) for pk in (code.part_id, other.part_id))
     spec = merge_case_spec([target, source], evidence={'regla': 'brand_merge', 'codes': [{'brand': new, 'code': code.code}],
                                                       'old': old, 'new': new},
                            reason=f'{reason}: el código {code.code} queda como {old} en {source.sku} y como {new} en {target.sku}. '
                                   'Si son el mismo repuesto, unifícalos; si no, mantenlos separados.')
-    return str(open_case(spec).pk) if spec is not None else None
+    if spec is None:
+        return None
+    case = open_case(spec)
+    return str(case.pk) if case.status == 'review' else None
 
 
 @transaction.atomic

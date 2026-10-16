@@ -81,7 +81,12 @@ export type BrandRef = { id: number; nombre: string };
 export type BrandAlias = { id: number; alias: string };
 export type Brand = { id: number; nombre: string; tipo: BrandTipo; familia: BrandRef | null; aliases: BrandAlias[]; miembros: BrandRef[]; notas: string;
   reference_count: number; created_at: string; updated_at: string };
-export type BrandAliasAdded = { alias: BrandAlias; moved: number; cases: string[]; brand: Brand };
+// What a rename, a merge or an alias did to the codes that carried the old spelling (mall.brands.rekey): moved, the codes repeated under
+// the new nombre (retired, replaced by the other line's, or in disputa: case is the open merge case deciding it, if any) and the cases.
+export type BrandKeptCode = { id: number; code: string; part: string; estado: 'disputa' | 'retirada'; case: string | null };
+export type BrandRekey = { moved: number; kept: BrandKeptCode[]; cases: string[] };
+export type BrandChanged = Brand & Partial<BrandRekey>;
+export type BrandAliasAdded = Partial<BrandRekey> & { alias: BrandAlias; moved: number; cases: string[]; brand: Brand };
 
 // grupos/: every grupo with its subgrupos (the PartType rows the technical sheet keys on) and their catalog line counts.
 export type Subgrupo = { id: string; name: string; line_count: number };

@@ -45,7 +45,13 @@ async function mockBrands(page: Page) {
       return route.fulfill({ status: 201, json: { alias, moved: 7, cases: ['0e000000-0000-4000-8000-000000000001'], brand: row } });
     }
     if (parts[2] === 'aliases') { row.aliases = row.aliases.filter(alias => alias.id !== Number(parts[3])); return route.fulfill({ status: 204, body: '' }); }
-    if (body?.merge_into) { const kept = rows.get(Number(body.merge_into))!; rows.delete(row.id); kept.aliases = [...kept.aliases, { id: ++next, alias: row.nombre }]; return route.fulfill({ json: kept }); }
+    if (body?.merge_into) {
+      const kept = rows.get(Number(body.merge_into))!; rows.delete(row.id); kept.aliases = [...kept.aliases, { id: ++next, alias: row.nombre }];
+      // S10 (mall.brands.rekey): a merge answers what happened to the codes repeated under the kept nombre
+      const repeated = [{ id: 41, code: 'GFT-1', part: '0e000000-0000-4000-8000-000000000041', estado: 'retirada', case: null },
+        { id: 42, code: 'GWT-2', part: '0e000000-0000-4000-8000-000000000042', estado: 'disputa', case: null }];
+      return route.fulfill({ json: { ...kept, moved: 988, kept: repeated, cases: [] } });
+    }
     if (body?.nombre) { row.aliases = [...row.aliases, { id: ++next, alias: row.nombre }]; row.nombre = String(body.nombre).toUpperCase(); }
     if (body && 'tipo' in body) row.tipo = body.tipo as Brand['tipo'];
     if (body && 'familia' in body) row.familia = body.familia ? { id: Number(body.familia), nombre: rows.get(Number(body.familia))!.nombre } : null;
@@ -134,7 +140,7 @@ test('a brand is created, renamed into its familia, given and stripped of an ali
   expect(mock.writes.length).toBe(writes);
   await dialog.getByRole('button', { name: 'Unir GMB con TOYOTA' }).click();
   await confirm.getByRole('button', { name: 'Confirmar unión' }).click();
-  await expect(screen.getByRole('status')).toHaveText('GMB se unió a TOYOTA: sus códigos y alias pasaron a TOYOTA.');
+  await expect(screen.getByRole('status')).toHaveText('GMB se unió a TOYOTA: sus códigos y alias pasaron a TOYOTA. 1 código repetido quedó retirado, reemplazado por el de la otra línea. Queda en disputa (GWT-2): decide en el editor de su línea qué código lleva.');
   expect(mock.writes.at(-1)).toBe('PATCH brands/5 {"merge_into":1}');
   await expect(screen.getByRole('row', { name: /^GMB/ })).toHaveCount(0);
   expect(mock.unexpected).toEqual([]);

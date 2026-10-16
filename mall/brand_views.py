@@ -161,6 +161,30 @@ class BrandList(ErrorBodies, generics.ListAPIView):
         return Response(serialize_brand(brand), status=201)
 
 
+class KeptCodeSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    code = serializers.CharField()
+    part = serializers.UUIDField(help_text='La línea del código.')
+    estado = serializers.ChoiceField(choices=['disputa', 'retirada'], help_text='Retirada (reemplazada por la otra) o en disputa.')
+    case = serializers.UUIDField(allow_null=True, help_text='El caso de unificación abierto que la decide, si lo hay.')
+
+
+class BrandChangeSerializer(BrandSerializer):
+    """A brand after PATCH; a rename or merge adds what happened to the codes that carried the old nombre (mall.brands.rekey)."""
+    moved = serializers.IntegerField(required=False, help_text='Códigos que pasaron al nombre nuevo.')
+    kept = KeptCodeSerializer(many=True, required=False, help_text='Códigos repetidos bajo el nombre nuevo: retirados o en disputa.')
+    cases = serializers.ListField(child=serializers.UUIDField(), required=False, help_text='Casos de unificación abiertos.')
+
+    class Meta(BrandSerializer.Meta):
+        fields = [*BrandSerializer.Meta.fields, 'moved', 'kept', 'cases']
+        read_only_fields = fields
+
+
+def rekey_result(result):
+    """What a rename or merge did to the codes (mall.brands.rekey), for the response."""
+    return {'moved': result['moved'], 'kept': result['kept'], 'cases': result['cases']}
+
+
 class BrandEditRequest(serializers.Serializer):
     nombre = serializers.CharField(max_length=120, required=False, help_text='Renombra la marca (sus códigos la siguen).')
     merge_into = serializers.IntegerField(required=False, help_text='Une esta marca a otra: la respuesta es esa marca.')
@@ -176,7 +200,7 @@ class BrandDetail(ErrorBodies, APIView):
     def get(self, request, pk):
         return Response(serialize_brand(brand_or_404(pk)))
 
-    @extend_schema(operation_id='v1_management_brands_partial_update', request=BrandEditRequest, responses=BrandSerializer,
+    @extend_schema(operation_id='v1_management_brands_partial_update', request=BrandEditRequest, responses=BrandChangeSerializer,
                    description='Renombra (mall.brands.rename), une (merge_into: mall.brands.merge) o cambia el tipo, la familia o las notas.')
     def patch(self, request, pk):
         data = BrandEditRequest(data=request.data)
@@ -185,15 +209,18 @@ class BrandDetail(ErrorBodies, APIView):
         brand = brand_or_404(pk)
         if 'merge_into' in data and len(data) > 1:
             raise ValidationError({'merge_into': 'Une las marcas en un cambio aparte.'})
+        result = None
         try:
             with transaction.atomic():
                 if 'merge_into' in data:
                     target = Brand.objects.filter(pk=data['merge_into']).first()
                     if target is None:
                         raise ValidationError({'merge_into': 'Elige una marca que exista.'})
-                    return Response(serialize_brand(brands.merge(brand, target)['brand']))
+                    result = brands.merge(brand, target)
+                    return Response({**serialize_brand(result['brand']), **rekey_result(result)})
                 if data.get('nombre') is not None and brands.normalize(data['nombre']) != brand.nombre:
-                    brand = brands.rename(brand, data['nombre'])['brand']
+                    result = brands.rename(brand, data['nombre'])
+                    brand = result['brand']
                 if 'tipo' in data and data['tipo'] != brand.tipo:
                     Brand.objects.filter(pk=brand.pk).update(tipo=data['tipo'])
                 if 'familia' in data:
@@ -202,7 +229,7 @@ class BrandDetail(ErrorBodies, APIView):
                     Brand.objects.filter(pk=brand.pk).update(notas=data['notas'].strip())
         except brands.BrandConflict as error:
             raise ValidationError({'detail': str(error)})
-        return Response(serialize_brand(brand))
+        return Response({**serialize_brand(brand), **(rekey_result(result) if result else {})})
 
 
 class AliasRequest(serializers.Serializer):
@@ -213,6 +240,7 @@ class AliasResponse(serializers.Serializer):
     alias = AliasSerializer()
     moved = serializers.IntegerField(help_text='Códigos que tenían esa grafía y pasaron al nombre de la marca.')
     cases = serializers.ListField(child=serializers.UUIDField(), help_text='Casos de unificación abiertos por códigos repetidos.')
+    kept = KeptCodeSerializer(many=True, help_text='Códigos repetidos bajo el nombre de la marca: retirados o en disputa.')
     brand = BrandSerializer()
 
 
@@ -229,7 +257,7 @@ class BrandAliases(ErrorBodies, APIView):
             alias, moved = brands.add_alias(brand, data.validated_data['alias'])
         except brands.BrandConflict as error:
             raise ValidationError({'alias': str(error)})
-        return Response({'alias': AliasSerializer(alias).data, 'moved': moved['moved'], 'cases': moved['cases'],
+        return Response({'alias': AliasSerializer(alias).data, 'moved': moved['moved'], 'cases': moved['cases'], 'kept': moved['kept'],
                          'brand': serialize_brand(brand)}, status=201)
 
 

@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useState } from 'react';
 import { Check, LoaderCircle, Plus, Search, Tags, X } from 'lucide-react';
 import { Page, request } from '@/lib/types';
 import { brandTipoLabels } from '@/lib/line-types';
-import type { Brand, BrandAliasAdded, BrandTipo } from '@/lib/line-types';
+import type { Brand, BrandAliasAdded, BrandChanged, BrandRekey, BrandTipo } from '@/lib/line-types';
 import Modal from './modal';
 import { UppercaseInput } from './uppercase-field';
 
@@ -62,6 +62,18 @@ export default function AdminBrands() {
 }
 
 // A brand picked by its name or alias (the familia and the brand a merge keeps).
+// The codes a rename, merge or alias moved onto a nombre that already had them (mall.brands.rekey), said after the main notice.
+function rekeyNotice(result: Partial<BrandRekey>) {
+  const kept = result.kept ?? [], cases = result.cases ?? [];
+  const retired = kept.filter(row => row.estado === 'retirada').length;
+  const disputed = kept.filter(row => row.estado === 'disputa' && !row.case);
+  const parts: string[] = [];
+  if (cases.length) parts.push(`${number(cases.length)} ${cases.length === 1 ? 'caso de unificación abierto' : 'casos de unificación abiertos'} por códigos repetidos.`);
+  if (retired) parts.push(`${number(retired)} ${retired === 1 ? 'código repetido quedó retirado, reemplazado' : 'códigos repetidos quedaron retirados, reemplazados'} por el de la otra línea.`);
+  if (disputed.length) parts.push(`${disputed.length === 1 ? 'Queda en disputa' : `Quedan ${number(disputed.length)} en disputa`} (${disputed.map(row => row.code).join(', ')}): decide en el editor de su línea qué código lleva.`);
+  return parts.length ? ` ${parts.join(' ')}` : '';
+}
+
 function BrandChooser({ label, value, onChange, exclude }: { label: string; value: { id: number; nombre: string } | null; onChange: (brand: { id: number; nombre: string } | null) => void; exclude?: number }) {
   const [text, setText] = useState(''); const [results, setResults] = useState<Brand[]>([]);
   useEffect(() => {
@@ -104,8 +116,8 @@ function BrandEditor({ brand, onClose, onSaved }: { brand: Brand | null; onClose
       if ((familia?.id ?? null) !== (current.familia?.id ?? null)) changes.familia = familia?.id ?? null;
       if (notas !== current.notas) changes.notas = notas;
       if (!Object.keys(changes).length) { onClose(aliasChanged); return; }
-      const saved = await request<Brand>(`${base}/brands/${current.id}`, { method: 'PATCH', body: JSON.stringify(changes) });
-      onSaved(changes.nombre ? `Marca renombrada a ${saved.nombre}: sus códigos la siguen y ${current.nombre} queda como alias.` : `Marca ${saved.nombre} guardada.`);
+      const saved = await request<BrandChanged>(`${base}/brands/${current.id}`, { method: 'PATCH', body: JSON.stringify(changes) });
+      onSaved(changes.nombre ? `Marca renombrada a ${saved.nombre}: sus códigos la siguen y ${current.nombre} queda como alias.${rekeyNotice(saved)}` : `Marca ${saved.nombre} guardada.`);
     } catch (caught) { setError(message(caught)); } finally { setBusy(''); }
   }
   async function addAlias() {
@@ -114,7 +126,7 @@ function BrandEditor({ brand, onClose, onSaved }: { brand: Brand | null; onClose
     try {
       const result = await request<BrandAliasAdded>(`${base}/brands/${current.id}/aliases`, { method: 'POST', body: JSON.stringify({ alias }) });
       setCurrent(result.brand); setAlias(''); setAliasChanged(true);
-      setNotice(`Alias ${result.alias.alias} agregado.${result.moved ? ` ${number(result.moved)} ${result.moved === 1 ? 'código pasó' : 'códigos pasaron'} a ${result.brand.nombre}.` : ''}${result.cases.length ? ` ${number(result.cases.length)} ${result.cases.length === 1 ? 'caso de unificación abierto' : 'casos de unificación abiertos'} por códigos repetidos.` : ''}`);
+      setNotice(`Alias ${result.alias.alias} agregado.${result.moved ? ` ${number(result.moved)} ${result.moved === 1 ? 'código pasó' : 'códigos pasaron'} a ${result.brand.nombre}.` : ''}${rekeyNotice(result)}`);
     } catch (caught) { setError(message(caught)); } finally { setBusy(''); }
   }
   async function removeAlias(id: number, text: string) {
@@ -130,8 +142,8 @@ function BrandEditor({ brand, onClose, onSaved }: { brand: Brand | null; onClose
     if (!current || !mergeInto) return;
     setBusy('merge'); setError(''); setConfirming(false);
     try {
-      const kept = await request<Brand>(`${base}/brands/${current.id}`, { method: 'PATCH', body: JSON.stringify({ merge_into: mergeInto.id }) });
-      onSaved(`${current.nombre} se unió a ${kept.nombre}: sus códigos y alias pasaron a ${kept.nombre}.`);
+      const kept = await request<BrandChanged>(`${base}/brands/${current.id}`, { method: 'PATCH', body: JSON.stringify({ merge_into: mergeInto.id }) });
+      onSaved(`${current.nombre} se unió a ${kept.nombre}: sus códigos y alias pasaron a ${kept.nombre}.${rekeyNotice(kept)}`);
     } catch (caught) { setError(message(caught)); } finally { setBusy(''); }
   }
   return <Modal title={current ? `Marca · ${current.nombre}` : 'Crear marca'} onClose={() => { if (!busy) onClose(aliasChanged); }} wide>
