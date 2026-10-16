@@ -113,6 +113,6 @@ test('Crear SKU has no References or Ficha técnica yet, and needs its codigo', 
   await editor.getByLabel('SKU principal (MAIN)').fill('df-4512');
   await editor.getByRole('button', { name: 'Crear SKU', exact: true }).click();
   await expect(editor.getByRole('alert')).toHaveText('SKU interno: Este SKU o código ya identifica otro repuesto del catálogo.');
-  expect(creates).toEqual([{ sku: 'DF-4512', name: '', description: '', active: true, codes: [] }]);
+  expect(creates).toEqual([{ sku: 'DF-4512', description: '', active: true, codes: [] }]);  // S10: no name (a line's name is its description)
   expect(mock.unexpected).toEqual([]);
 });

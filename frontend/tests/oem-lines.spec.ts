@@ -160,6 +160,6 @@ test('Crear SKU creates the line from its codigo and opens its References', asyn
   const opened = page.getByRole('dialog', { name: 'Línea OEM · NEW-100' });
   await expect(opened.getByRole('tab', { name: /^Referencias/ })).toHaveAttribute('aria-selected', 'true');
   await expect(opened.getByRole('list', { name: 'Referencias de la línea OEM' })).toContainText('NEW-100');
-  expect(posts).toEqual([{ sku: 'NEW-100', name: '', description: 'SENSOR OXIGENO', active: true, codes: [], part_type: grupos[0].subgrupos[1].id }]);
+  expect(posts).toEqual([{ sku: 'NEW-100', description: 'SENSOR OXIGENO', active: true, codes: [], part_type: grupos[0].subgrupos[1].id }]);
   expect(mock.unexpected).toEqual([]);
 });
