@@ -443,12 +443,24 @@ def add(line, code, brand='', *, tipo=None, ref_type=None, estado=None, supplier
     spelling, ref.brand = ref.brand, brand_name(ref.brand)  # the nombre of the brand it names (S10, 0089's foreign key)
     key = clave(ref.code)
     with transaction.atomic():
+        merges = []
         if absorb_library:  # before the clave's lock (a merge locks lines first, plan §1.6.5); lines in referencia have no variants
-            absorb_library_lines(ref.part_id, ref.code, ref.brand, supplier=ref.supplier_id, estado=ref.estado, actor=actor)
+            merges = absorb_library_lines(ref.part_id, ref.code, ref.brand, supplier=ref.supplier_id, estado=ref.estado, actor=actor)
         lock(key)
         same = list(Reference.all_objects.select_for_update().filter(brand_q(ref.brand), part_id=ref.part_id, clave=key,
                                                                      supplier_id=ref.supplier_id).order_by('pk'))
         live = next((row for row in same if row.estado != 'retirada'), None)
+        if live is None and not ref.brand and merges:
+            # A code typed without its maker that a line in referencia held under one (LEXUS 43410-0E020 added to an aftermarket line):
+            # the number the merge just brought is that code, so it is the one kept, never a brandless copy beside it.
+            brought = [pk for merge in merges for source in merge.sources for pk in source.get('references', [])]
+            arrived = Reference.objects.select_for_update().filter(pk__in=brought, part_id=ref.part_id, clave=key,
+                                                                   supplier_id=ref.supplier_id).exclude(estado='retirada').order_by('pk').first()
+            if arrived is not None:
+                add_spelling(arrived, ref.code)
+                if ref._source:
+                    cite(arrived, ref._source, actor)
+                return own_library_number(arrived, actor), True  # new to the line: it came with the merge
         if live is not None:
             add_spelling(live, ref.code)
             if ref._source:  # another source of the same code (a library number, S4, takes the source a code adds)

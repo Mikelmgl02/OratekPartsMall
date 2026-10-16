@@ -92,6 +92,10 @@ class LibraryNumberTests(Fresh, TestCase):
         self.assertEqual((ref.part_id, ref.is_main, ref.estado), (sku.pk, False, 'declarado'))
         self.assertEqual(ref.sources.count(), 2)  # its sources came along
         self.assertEqual(CatalogMerge.objects.get(target=sku).summary['reason'], 'biblioteca')
+        # The code typed without its maker is the TOYOTA number that came with the merge: one Reference, no brandless copy beside it.
+        self.assertEqual(code.pk, ref.pk)
+        self.assertEqual(list(Reference.objects.filter(part=sku, clave='1780130070').exclude(estado='retirada').values_list('brand', flat=True)),
+                         ['TOYOTA'])
         # Promote: a catalog line created with a referencia line's codigo is that line, published.
         other, _ = references.add_library_number('TOYOTA', '04465-0K290', description='PASTILLA')
         line = create_line('04465-0K290', description='PASTILLA DEL HILUX', actor=self.root)
