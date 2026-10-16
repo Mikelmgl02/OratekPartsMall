@@ -133,6 +133,8 @@ DDL = [
 ]
 
 REVERSE_DDL = [
+    # The deferred key checks of the rows this rewrites run at once: an index cannot be built on a table with pending trigger events.
+    'SET CONSTRAINTS ALL IMMEDIATE',
     'ALTER TABLE mall_matchingcase DROP CONSTRAINT IF EXISTS matching_case_valid_status',
     'ALTER TABLE mall_matchingcase DROP CONSTRAINT IF EXISTS matching_case_valid_kind',
     'ALTER TABLE mall_partcode DROP CONSTRAINT IF EXISTS reference_brand_fk',
@@ -156,11 +158,12 @@ REVERSE_DDL = [
     "ADD COLUMN name varchar(200) NOT NULL DEFAULT '', ADD COLUMN category varchar(120) NOT NULL DEFAULT '', "
     "ADD COLUMN subcategory varchar(120) NOT NULL DEFAULT '', ADD COLUMN legacy_brand varchar(120) NOT NULL DEFAULT '', "
     "ADD COLUMN active boolean NOT NULL DEFAULT true, ADD COLUMN \"is_OEM\" boolean NOT NULL DEFAULT false",
-    "UPDATE mall_part SET active = (estado = 'publicada'), \"is_OEM\" = (tipo = 'OEM')",
-    # The subgrupo's text, as 0086's triggers kept it (python -m mall.refactor.s10_archive --rollback then puts back what the export holds).
+    # The mirrors, and the subgrupo's text as 0086's triggers kept it (python -m mall.refactor.s10_archive --rollback then puts back what
+    # the export holds), in one pass over mall_part.
     'UPDATE mall_parttype t SET category = g.nombre FROM mall_grupo g WHERE g.id = t.grupo_id',
-    'UPDATE mall_part p SET category = g.nombre, subcategory = t.name FROM mall_parttype t JOIN mall_grupo g ON g.id = t.grupo_id '
-    'WHERE t.id = p.part_type_id',
+    "UPDATE mall_part p SET active = (p.estado = 'publicada'), \"is_OEM\" = (p.tipo = 'OEM'), "
+    "category = COALESCE((SELECT g.nombre FROM mall_parttype t JOIN mall_grupo g ON g.id = t.grupo_id WHERE t.id = p.part_type_id), ''), "
+    "subcategory = COALESCE((SELECT t.name FROM mall_parttype t WHERE t.id = p.part_type_id), '')",
     'CREATE INDEX "mall_part_is_OEM_027dd94b" ON mall_part ("is_OEM")',
     "ALTER TABLE mall_part ADD CONSTRAINT line_active_iff_publicada CHECK ((active AND estado = 'publicada') OR (NOT active AND estado <> 'publicada'))",
     "ALTER TABLE mall_part ADD CONSTRAINT line_oem_iff_tipo CHECK ((\"is_OEM\" AND tipo = 'OEM') OR (NOT \"is_OEM\" AND tipo <> 'OEM'))",

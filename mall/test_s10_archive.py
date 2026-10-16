@@ -388,7 +388,8 @@ class DropReverseTests(TestCase):
         pads, discs = part_type_for('FRENOS', 'PASTILLAS'), part_type_for('FRENOS', 'DISCOS')
         line = make_line('S10-REV-1', part_type=pads)
         ref = make_reference(line, 'S10-REV-A')
-        sql('SET CONSTRAINTS ALL IMMEDIATE')
+        # No SET CONSTRAINTS here: the reverse runs its own (this test's inserts leave deferred key checks pending, as a deploy's
+        # writes do, and an index cannot be built on a table with pending trigger events).
         with connection.cursor() as cursor:
             for statement in module.REVERSE_DDL:
                 cursor.execute(statement)

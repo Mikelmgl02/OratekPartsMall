@@ -45,10 +45,13 @@ def validate_reference_type(initial, data, instance=None):
 
 
 class NonMainReferences(serializers.ListSerializer):
-    """A line's code list without its main Reference (inventory refactor S2b): the codigo already shows it. Writes are unchanged."""
+    """A line's code list without its main Reference (inventory refactor S2b): the codigo already shows it, in the order the codes were
+    added (pk), as the line editor lists them: a prefetch has no order of its own, and 0089's rewrite of the brandless codes (S10)
+    reordered the table on disk. Writes are unchanged."""
     def to_representation(self, data):
         rows = data.all() if hasattr(data, 'all') else data
-        return super().to_representation([row for row in rows if not getattr(row, 'is_main', False)])
+        rows = sorted((row for row in rows if not getattr(row, 'is_main', False)), key=lambda row: (row.pk is None, row.pk or 0))
+        return super().to_representation(rows)
 
 
 class MainReferenceSerializer(serializers.Serializer):

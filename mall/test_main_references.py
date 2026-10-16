@@ -286,6 +286,14 @@ class ManagementTests(APITestCase):
         self.assertEqual(self.client.delete(f'/api/v1/management/alternates/{main(line).pk}/').status_code, 404)
         self.assertEqual(self.client.delete(f'/api/v1/management/alternates/{alt.pk}/').status_code, 204)
 
+    def test_a_lines_codes_list_in_the_order_they_were_added(self):
+        """S10: a line's code list is in pk order, whatever order the table holds them in (0089 rewrites every brandless code)."""
+        line = make_line('ORDER-1')
+        first, second, third = (make_reference(line, code) for code in ('ORDER-A', 'ORDER-B', 'ORDER-C'))
+        Reference.all_objects.filter(pk=first.pk).update(code='ORDER-A')  # a new row version: first on disk is now last
+        codes = self.client.get(f'/api/v1/management/catalog/{line.pk}/').data['codes']
+        self.assertEqual([code['id'] for code in codes], [first.pk, second.pk, third.pk])
+
     def test_the_alternos_grid_sorts_a_brandless_code_where_a_blank_brand_was(self):
         """S10: any brand is NULL in the database (0089); the grid keeps sorting it first, as '' sorted, and last when descending."""
         line = make_line('GRID-2')
