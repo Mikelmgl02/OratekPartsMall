@@ -230,21 +230,6 @@ class RefreshHookTests(TestCase):
         self.assertEqual(search_document.word_pattern('S/M'), '(^|[^A-Z0-9])S[^A-Z0-9]+M([^A-Z0-9]|$)')
         self.assertIsNone(search_document.word_pattern('.'))
 
-    def test_the_biblioteca_cross_reference_routes_refresh_the_lines_that_reach_the_number(self):
-        from rest_framework.test import APIClient
-        pump = make_line('BOMBA-4', description='BOMBA DE AGUA')
-        number = references.add(pump, '16100-29156', 'TOYOTA', tipo='oem', source='CATÁLOGO GMB 2016')[0]  # a number the line carries
-        client = APIClient()
-        client.force_authenticate(make_user('biblioteca-admin', superuser=True))
-        fresh_hooks()
-        added = client.post(f'/api/v1/management/oem-references/{number.uid}/cross-references/', {'brand': 'GMB', 'code': 'GWT-79A'}, format='json')
-        self.assertEqual(added.status_code, 201, added.data)
-        self.assertIn(str(pump.pk), search_document.connection_pending())
-        fresh_hooks()
-        retired = client.delete(f'/api/v1/management/oem-references/{number.uid}/cross-references/{added.data["id"]}/')
-        self.assertEqual(retired.status_code, 204)
-        self.assertIn(str(pump.pk), search_document.connection_pending())
-
     def test_outside_a_transaction_the_document_is_written_at_once(self):
         from types import SimpleNamespace
         line = make_line('O-1', description='AFUERA')

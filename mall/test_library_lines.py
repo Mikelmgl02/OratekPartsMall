@@ -1,11 +1,10 @@
 """Inventory refactor S4: library numbers are References on the line that carries them, or on lines of their own in referencia
 (mall.references.add_library_number), a code absorbs such a line (rule 3f), a new catalog line with its codigo promotes it, a number
-taken off its line goes back to one of its own (durability), the rows hanging from a number protect it, and the Biblioteca keeps its
-legacy JSON. python -m mall.refactor.s4_library is mall.test_refactor_s4's."""
+taken off its line goes back to one of its own (durability), and the rows hanging from a number protect it. (The Biblioteca OEM's API,
+whose legacy JSON was tested here, went with its screen in S10.)"""
 
 from django.db import models
 from django.test import TestCase
-from rest_framework.test import APIClient
 
 from . import references
 from .brand_models import Brand
@@ -14,8 +13,6 @@ from .models import CatalogMerge, Part, PartType, Reference, ReferenceSource
 from .technical_models import TechnicalTemplate
 from .oem_finder import load_snapshot
 from .test_factories import Fresh, make_line, make_reference, make_user
-
-URL = '/api/v1/management/oem-references/'
 
 
 def library_ref(maker, code):
@@ -129,79 +126,3 @@ class LibraryNumberTests(Fresh, TestCase):
         references.retire(plain)
         plain.refresh_from_db()
         self.assertEqual(plain.estado, 'retirada')
-
-class BibliotecaTests(Fresh, TestCase):
-    def setUp(self):
-        super().setUp()
-        self.root = make_user('s4-biblio', superuser=True)
-        self.client = APIClient()
-        self.client.force_authenticate(self.root)
-        self.ref, _ = references.add_library_number('TOYOTA', '16100-79445', description='BOMBA AGUA', part_type='BOMBAS DE AGUA',
-                                                    source_kind='aftermarket_catalog', citation='GMB 2016', source_detail={'catalog': 'gmb'})
-        references.add(self.ref.part_id, 'GWT-78A', 'GMB', tipo='aftermarket', source='GMB 2016 · pág. 4')  # S9: the code is the line's
-
-    def test_rows_keep_the_legacy_values_and_the_filters_take_both(self):
-        response = self.client.get(URL)
-        self.assertEqual(response.status_code, 200, response.content)
-        row = response.json()['results'][0]
-        self.assertEqual((row['id'], row['manufacturer'], row['code'], row['status'], row['source_kinds']),
-                         (str(self.ref.uid), 'TOYOTA', '1610079445', 'declared', {'aftermarket_catalog': 1}))
-        self.assertEqual((row['description'], row['part_type'], row['cross_reference_count'], row['linked_count']), ('BOMBA AGUA', 'BOMBAS DE AGUA', 1, 0))
-        self.assertEqual(response.json()['counts'], {'status': {'declared': 1}, 'manufacturer': {'TOYOTA': 1}, 'total': 1})
-        for params in ({'status': 'declared'}, {'status': 'declarado'}, {'source_kind': 'aftermarket_catalog'}, {'source_kind': 'catalogo'},
-                       {'q': 'GWT78'}, {'q': '1610079'}, {'manufacturer': 'toyota'}, {'linked': 'false'}):
-            self.assertEqual(self.client.get(URL, params).json()['count'], 1, params)
-        for params in ({'status': 'verified'}, {'source_kind': 'manual'}, {'linked': 'true'}):
-            self.assertEqual(self.client.get(URL, params).json()['count'], 0, params)
-        detail = self.client.get(f'{URL}{self.ref.uid}/').json()
-        self.assertEqual([source['kind'] for source in detail['sources']], ['aftermarket_catalog'])
-        self.assertEqual([code['code'] for code in detail['cross_references']], ['GWT-78A'])
-
-    def test_a_published_line_lists_itself_via_linea(self):
-        line = create_line('16100-79445', actor=self.root)  # promotes the referencia line
-        row = self.client.get(f'{URL}{self.ref.uid}/').json()
-        self.assertEqual([(sku['id'], sku['via']) for sku in row['linked_skus']], [(str(line.pk), 'linea')])
-
-    def test_edits_write_the_detail_and_the_referencia_line_only(self):
-        version = self.client.get(f'{URL}{self.ref.uid}/').json()['version']
-        response = self.client.patch(f'{URL}{self.ref.uid}/', {'expected_version': version, 'action': 'edit', 'description': 'BOMBA DE AGUA',
-                                                              'part_type': 'DISCOS DE FRENO'}, format='json')
-        self.assertEqual(response.status_code, 200, response.content)
-        self.ref.refresh_from_db()
-        self.assertEqual((self.ref.detail['description'], self.ref.detail['part_type'], self.ref.detail['updated_by']),
-                         ('BOMBA DE AGUA', 'DISCOS DE FRENO', 's4-biblio'))
-        line = self.ref.part
-        line.refresh_from_db()
-        self.assertEqual((line.description, line.subcategory), ('BOMBA DE AGUA', 'DISCOS DE FRENO'))
-        stale = self.client.patch(f'{URL}{self.ref.uid}/', {'expected_version': version, 'action': 'edit', 'notes': 'X'}, format='json')
-        self.assertEqual(stale.status_code, 409)
-        # A published line keeps its own texts.
-        published = create_line('16100-79445', actor=self.root, description='MI BOMBA')
-        version = self.client.get(f'{URL}{self.ref.uid}/').json()['version']
-        self.client.patch(f'{URL}{self.ref.uid}/', {'expected_version': version, 'action': 'edit', 'description': 'OTRA'}, format='json')
-        published.refresh_from_db()
-        self.assertEqual(published.description, 'MI BOMBA')
-
-    def test_dispute_supersede_sources_and_creation(self):
-        self.ref.refresh_from_db()
-        version = self.ref.version
-        response = self.client.patch(f'{URL}{self.ref.uid}/', {'expected_version': version, 'action': 'dispute', 'note': 'NO ES BOMBA'}, format='json')
-        self.assertEqual(response.json()['status'], 'disputed')
-        self.ref.refresh_from_db()
-        self.assertEqual((self.ref.estado, self.ref.dispute_note), ('disputa', 'NO ES BOMBA'))
-        response = self.client.patch(f'{URL}{self.ref.uid}/', {'expected_version': self.ref.version, 'action': 'clear_dispute'}, format='json')
-        self.assertEqual(response.json()['status'], 'declared')
-        self.ref.refresh_from_db()
-        response = self.client.patch(f'{URL}{self.ref.uid}/', {'expected_version': self.ref.version, 'action': 'set_superseded_by',
-                                                              'code': '16100-79446'}, format='json')
-        self.assertEqual(response.status_code, 200, response.content)
-        new = library_ref('TOYOTA', '1610079446')
-        self.assertEqual(response.json()['superseded_by']['id'], str(new.uid))
-        self.ref.refresh_from_db()
-        response = self.client.patch(f'{URL}{self.ref.uid}/', {'expected_version': self.ref.version, 'action': 'add_source',
-                                                              'source': {'kind': 'manual', 'citation': 'EPC', 'verified': True}}, format='json')
-        self.assertEqual(response.json()['status'], 'verified')
-        created = self.client.post(URL, {'manufacturer': 'MITSUBISHI', 'code': 'MR-968365'}, format='json')
-        self.assertEqual(created.status_code, 201, created.content)
-        self.assertEqual(created.json()['code'], 'MR968365')
-        self.assertEqual(self.client.post(URL, {'manufacturer': 'MITSUBISHI', 'code': 'MR968365'}, format='json').status_code, 200)

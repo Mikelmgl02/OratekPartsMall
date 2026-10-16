@@ -1,14 +1,11 @@
 """What a line reaches through its OEM numbers (inventory refactor S10): its aftermarket References in an exclusive estado, each with the
-numbers of the line the merge pass placed it under (detail s9 numbers), and the Biblioteca's view of the same codes."""
+numbers of the line the merge pass placed it under (detail s9 numbers), and the read-only catalog/<id>/oem-equivalents route."""
 from rest_framework.test import APITestCase
 
 from . import references
 from .models import Part, User
 from .oem_links import equivalents_for, part_equivalents
-from .oem_reference import linked_parts
 from .test_oem_finder import Fresh
-
-URL = '/api/v1/management/oem-references/'
 
 
 def number(manufacturer, code, citation='CATÁLOGO GMB 2016'):
@@ -73,21 +70,3 @@ class EquivalentsTests(Fresh, APITestCase):
         for user in (None, staff):
             self.client.force_authenticate(user)
             self.assertIn(self.client.get(url).status_code, (401, 403))
-
-    def test_the_library_shows_the_codes_and_the_line_that_carries_each_number(self):
-        rows = {row['code']: row for row in self.client.get(URL).json()['results']}
-        self.assertEqual(([s['sku'] for s in rows['1610029155']['linked_skus']], rows['1610029155']['cross_reference_count']), ([], 0))
-        self.carry()
-        rows = {row['code']: row for row in self.client.get(URL).json()['results']}
-        self.assertEqual((rows['1610029155']['cross_reference_count'], [c['code'] for c in rows['1610029155']['cross_reference_preview']]),
-                         (2, ['WPT-111', 'GWT-101A']))  # AW-1698 was placed under the sister only; GWT-101A under no number: both
-        self.assertEqual([(s['sku'], s['via']) for s in rows['1610029155']['linked_skus']], [('16100-29155-NPW', 'linea')])
-        self.assertEqual([(s['sku'], s['via']) for s in rows['1610029156']['linked_skus']], [('16100-29155-NPW', 'linea')])
-        detail = self.client.get(f'{URL}{self.sister.uid}/').json()
-        self.assertEqual([(c['brand'], c['code'], c['citations']) for c in detail['cross_references']],
-                         [('AIRTEX', 'AW-1698', ['ASVA 2017 · pág. 9']), ('AISIN', 'WPT-111', ['GMB 2016 · pág. 5']),
-                          ('GMB', 'GWT-101A', ['GMB 2016 · pág. 5'])])
-        self.assertEqual(sorted(r['code'] for r in self.client.get(URL, {'q': 'wpt 111'}).json()['results']), ['1610029155', '1610029156'])
-        lone = number('TOYOTA', '16100-00001')
-        self.assertEqual([r['code'] for r in self.client.get(URL, {'linked': 'false'}).json()['results']], [lone.clave])
-        self.assertEqual(linked_parts([lone])[lone.pk], [])

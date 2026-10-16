@@ -807,8 +807,6 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .admin-inventory-tabs { display:flex; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:21px; padding-bottom:16px; border-bottom:1px solid var(--line); }
 .admin-inventory-tabs button { padding:9px 12px; border-radius:7px; font-size:10px; color:#849773; }
 .admin-inventory-tabs button.selected { background:#eef3e5; color:#607f48; font-weight:600; }
-.oem-section-tabs button { display:inline-flex; align-items:center; gap:6px; }
-.oem-section .oem-panel>.modal-description { margin-top:0; }
 .admin-catalog-table td .status { display:inline-flex; align-items:center; gap:5px; }
 .admin-notes-cell { white-space:normal; min-width:170px; max-width:300px; line-height:1.7; }
 .catalog-editor textarea,.catalog-editor select { width:100%; min-width:0; padding:12px 13px; border:1px solid #dbe2d1; border-radius:7px; background:white; color:var(--ink); font:inherit; font-size:12px; }
@@ -2185,7 +2183,7 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
  .suffix-examples,.suffix-actions { min-width:0; }
  .suffix-actions .button { flex:1 1 auto; justify-content:center; }
 }
-/* Batch bars and progress (Productos nuevos, Revisión IA), evidence lists and chips (Biblioteca OEM) */
+/* Batch bars and progress (Productos nuevos, Revisión IA) */
 .oem-bulk-bar { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px; background:#f6f8f1; border-radius:9px; font-size:11px; color:#5d6e51; }
 .oem-bulk { display:grid; gap:12px; padding:16px; border:1px solid #cfdcbf; border-radius:12px; background:#fff; min-width:0; }
 .oem-bulk-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; }
@@ -2193,51 +2191,8 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .oem-bulk p { font-size:12px; line-height:1.6; margin:0; overflow-wrap:anywhere; }
 .oem-progress { height:8px; border-radius:6px; background:#edf0e8; overflow:hidden; }
 .oem-progress span { display:block; height:100%; background:#7fa35c; transition:width .3s; }
-.oem-evidence { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:8px 14px; margin:0; }
-.oem-evidence>div { min-width:0; }
-.oem-evidence>div.wide { grid-column:1/-1; }
-.oem-evidence dt { font-size:9px; letter-spacing:.5px; color:#849773; margin-bottom:3px; }
-.oem-evidence dd { margin:0; font-size:11px; line-height:1.5; overflow-wrap:anywhere; }
-.oem-evidence dd small { display:block; font-size:10px; color:#7b896e; }
-.oem-chips { display:flex; flex-wrap:wrap; gap:5px; }
-.oem-chips span { padding:3px 7px; border-radius:5px; font-size:9px; background:#fbebdf; color:#8d6a45; }
 @media(max-width:760px) {
- .oem-evidence { grid-template-columns:1fr; }
  .oem-bulk { padding:12px; }
-}
-/* Biblioteca OEM (Inventario → Biblioteca OEM) */
-.oem-library-bar { display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px; margin:-8px 0 14px; }
-.oem-library-bar .suffix-counts { margin:0; flex:1 1 320px; }
-.oem-library-bar .button { margin-left:auto; }
-.oem-ref-status { display:inline-block; padding:4px 8px; border-radius:5px; font-size:9px; font-weight:700; letter-spacing:.3px; white-space:nowrap; }
-.oem-ref-status.verified { background:#e3f1d8; color:#3f6a33; }
-.oem-ref-status.declared { background:#eef0fb; color:#4d5594; }
-.oem-ref-status.inferred { background:#f3efe2; color:#6e5e33; }
-.oem-ref-status.disputed { background:#fbe3dc; color:#9a4a33; }
-.suffix-table td>span.oem-ref-status { display:inline-block; margin-top:0; }
-.suffix-table td>span.oem-ref-sku { color:#405238; font-size:10px; font-weight:600; }
-.oem-ref-kinds span { background:#eef2e4; color:#55703f; }
-.oem-library-table td:first-child strong { font-size:12px; letter-spacing:.2px; }
-.oem-library-editor .suffix-editor-heading .pill { display:inline-block; background:#eef2e4; color:#55703f; border-radius:5px; padding:5px 8px; font-size:10px; font-weight:600; }
-.oem-library-editor .form-row { grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr)); }
-.oem-library-editor .form-row>* { min-width:0; }
-.oem-library-editor textarea { width:100%; min-height:64px; padding:11px 12px; border:1px solid #dbe2d1; border-radius:7px; background:#fff; color:var(--ink); font:inherit; font-size:12px; line-height:1.6; resize:vertical; }
-.oem-library-editor textarea:focus-visible { outline:3px solid #a3c556; outline-offset:3px; }
-.oem-library-editor .suffix-inline-form textarea { min-height:44px; }
-.oem-library-editor .suffix-scope { flex-wrap:wrap; }
-.oem-ref-dispute { margin:0; padding:10px 12px; border-radius:8px; background:#fff1ec; color:#9a4a33; font-size:12px; line-height:1.6; overflow-wrap:anywhere; white-space:pre-wrap; }
-.oem-ref-sources,.oem-ref-skus { margin:0; padding:0; list-style:none; display:grid; gap:8px; }
-.oem-ref-sources li { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; padding:10px 12px; background:#f6f8f1; border-radius:8px; }
-.oem-ref-sources li>div { display:grid; gap:3px; min-width:0; font-size:11px; }
-.oem-ref-sources a,.oem-ref-sources span { overflow-wrap:anywhere; color:#405238; }
-.oem-ref-sources a { display:inline-flex; align-items:center; gap:4px; text-decoration:underline; }
-.oem-ref-sources small { font-size:10px; color:#6f7f62; overflow-wrap:anywhere; }
-.oem-ref-skus li { display:grid; gap:2px; font-size:11px; overflow-wrap:anywhere; }
-.oem-ref-skus span { font-size:10px; color:#6f7f62; }
-.oem-ref-actions { display:flex; flex-wrap:wrap; gap:10px; }
-.oem-ref-source-form { gap:12px; }
-@media(max-width:760px) {
- .oem-library-bar .button { flex:1 1 100%; justify-content:center; margin-left:0; }
 }
 
 /* Inventario: header, view tabs, grouped tools, one filter row and a calmer table */
@@ -2617,8 +2572,6 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .basket-page-summary .button { border-radius:22px; }
 .basket-page-summary .button.primary { min-height:44px; font-weight:700; }
 .admin-grid .admin-grid-text.strong { color:var(--ink); font-weight:600; }
-.admin-grid .oem-chips { flex-wrap:nowrap; overflow:hidden; }
-.admin-grid .oem-linked .oem-ref-sku { padding:3px 7px; border-radius:5px; background:#f0f4e9; color:#4f6342; font-size:11px; font-weight:600; }
 
 /* Alternos step 2a: aftermarket codes filed under the OEM number, read-only in the SKU editor and in Biblioteca OEM */
 .part-oem-equivalents { display:grid; gap:10px; background:#fbfcf8; }
@@ -2632,7 +2585,6 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .part-oem-codes { display:flex; flex-wrap:wrap; gap:6px; }
 .part-oem-codes li { display:inline-flex; align-items:center; gap:6px; padding:4px 8px; border-radius:6px; background:#f1efe6; color:#6f6545; font-size:11px; font-weight:600; cursor:help; }
 .part-oem-codes li small { font-size:9px; font-weight:500; color:#8a8064; }
-.oem-ref-cross li span { overflow-wrap:anywhere; }
 
 /* Alternos por revisar: catalog copies no OEM number of their SKU carries, decided one code at a time */
 .alt-review { display:grid; gap:12px; }
@@ -2727,16 +2679,7 @@ td>span:not(.status) { display:block; font-size:9px; color:#a0af90; max-width:26
 .merge-result+.merge-result { border-top:1px solid var(--line); }
 .merge-result>.button { flex-shrink:0; }
 .merge-empty { padding:12px 14px; color:#7c8b6f; font-size:11px; }
-/* Biblioteca OEM, Editar celdas: the Alternos and Estado popups */
-.codes-editor-add .oem-alternos-add { grid-column:1 / -1; justify-content:center; }
-.oem-retire { display:flex; flex-direction:column; gap:8px; margin:0; padding:9px 11px; border-radius:8px; background:#fdf1ec; color:#7d3a2a; font-size:11px; line-height:1.5; }
-.oem-retire p { margin:0; }
-.oem-retire div { display:flex; flex-wrap:wrap; gap:8px; }
-.oem-status-note { margin:0; color:#33452c; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
-.oem-status-reason { display:flex; flex-direction:column; gap:6px; color:#637455; font-size:11px; }
-.oem-status-reason textarea { width:100%; padding:8px 10px; border:1px solid #dce4d2; border-radius:7px; font-size:12px; resize:vertical; }
-.oem-status-editor>.button { justify-self:start; }
-/* Admin side panels (the SKU editor, Biblioteca OEM's detail): the grid stays in view behind them, dimmed but not blurred, with its rows
+/* Admin side panels: the grid stays in view behind them, dimmed but not blurred, with its rows
    and scroll exactly where they were. A wide one fits the SKU editor's equivalences table. */
 .modal.drawer.side-panel::backdrop { background:#14201a2e; backdrop-filter:none; }
 .modal.drawer.wide { width:min(770px,100%); }

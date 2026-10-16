@@ -33,7 +33,7 @@ export class PartialSaveError<T> extends Error {
 }
 
 /**
- * EssaMobileApp's grid editing, shared by the Inventario and Biblioteca OEM grids. Edits and pastes collect for BATCH_MS and save as one
+ * EssaMobileApp's grid editing, used by the Inventario grid. Edits and pastes collect for BATCH_MS and save as one
  * batch; the saved rows come back into the grid and only the cells that changed flash. A refused batch puts every one of its cells back,
  * then re-reads them (another person's change shows); a batch saved row by row keeps the rows the server saved (PartialSaveError). The
  * rows on screen are re-read every POLL_MS, but never while a cell is being edited or saved: a poll must never move a cell under the cursor.

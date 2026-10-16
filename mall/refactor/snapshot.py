@@ -11,10 +11,11 @@ writes, not outside calls, so it blanks the outside services' variables (config.
 them, and refuses to go on if they were read earlier with a value.
 
 What it captures: the storefront catalog and suggest for 30 searches, the offers of 50 lines and the availability of every live line;
-the admin grid (pages 1-3 in 4 orderings); the Biblioteca (pages 1-3 and 50 numbers); Productos nuevos (list and summary); each
+the admin grid (pages 1-3 in 4 orderings); Productos nuevos (list and summary); each
 supplier's first inventory page; the equivalents of every line that has them; the matching overview with its review and unmatched
 cases; the merged list, 10 split plans and the alternates grid; 50 oem-equivalents, 20 technical sheets and a 200-row supplier import
-preview (Revisión OEM, Pendientes and the mark-oem plan left with the owner's retirement of OEM linking: inventory refactor S10).
+preview (Revisión OEM, Pendientes and the mark-oem plan left with the owner's retirement of OEM linking, and the Biblioteca OEM with
+its screen: inventory refactor S10).
 
 Each snapshot keeps its sample (the users, searches, lines, numbers and import rows it read) and is saved as gzipped JSON in --out.
 --diff captures again with the base's sample, so both read the same inputs (BASE defaults to the newest snapshot in --out; --against
@@ -41,7 +42,7 @@ WORDS = ['FILTRO AIRE', 'BOMBA AGUA', 'BASE AMORT', 'TERM ESTAB', 'PASTILLA FREN
          'SENSOR OXIGENO']
 ORDERINGS = ['sku', '-stock_record_count', 'description', '-is_OEM']
 PAGES = (1, 2, 3)
-SIZES = {'searches': 30, 'offers': 50, 'biblioteca': 50, 'oem_equivalents': 50, 'technical': 20, 'split': 10, 'import_rows': 200,
+SIZES = {'searches': 30, 'offers': 50, 'oem_equivalents': 50, 'technical': 20, 'split': 10, 'import_rows': 200,
          'import_new': 20}
 MATCHING_STATUSES = ('review', 'unmatched')
 # What the matching worker changes between two reads of an unchanged catalog: the run's state in the overview of each status. Anchored
@@ -97,7 +98,6 @@ def choose_sample(username=None):
         'users': {'admin': admin.pk, 'client': client, 'suppliers': suppliers},
         'searches': searches,
         'offers': ids(live.filter(pk__in=stocked.values('part_id')), SIZES['offers']),
-        'biblioteca': [str(uid) for uid in ordered_by_hash(Reference.objects.filter(library_q())).values_list('uid', flat=True)[:SIZES['biblioteca']]],
         'oem_equivalents': ids(live.filter(numbered), SIZES['oem_equivalents']),
         'technical': ids(live.filter(part_type__isnull=False), SIZES['technical']),
         'split': ids(live.filter(pk__in=catalog_lines(('unificada',)).values('merged_into_id')), SIZES['split']),
@@ -214,8 +214,6 @@ def sections(sample, reader):
         ('equivalents', lambda: reader.run('equivalents', lambda: equivalents(live_ids()))),
         ('admin_grid', lambda: {f'{ordering} p{page}': get(admin, f'{management}/catalog/', {'ordering': ordering, 'page': page})
                                 for ordering in ORDERINGS for page in PAGES}),
-        ('biblioteca', lambda: {**{f'p{page}': get(admin, f'{management}/oem-references/', {'page': page}) for page in PAGES},
-                                **{pk: get(admin, f'{management}/oem-references/{pk}/') for pk in sample['biblioteca']}}),
         ('productos_nuevos', lambda: {'list': get(admin, f'{management}/catalog/proposals/'),
                                       'summary': get(admin, f'{management}/catalog/proposals/summary/')}),
         ('supplier_inventory', lambda: {pk: get(member, f'/api/v1/accounts/{pk}/inventory/') for pk, member in users['suppliers'].items()}),

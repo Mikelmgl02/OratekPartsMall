@@ -41,7 +41,7 @@ class CaptureTests(Fresh, TestCase):
         self.assertEqual(snap['errors'], [])
         self.assertEqual([q['sql'] for q in queries.captured_queries if snapshot.WRITES.match(q['sql']) or LOCKS.search(q['sql'])], [])
         sections, sample, line = snap['sections'], snap['sample'], str(self.line.pk)
-        self.assertEqual(list(sections), ['catalog', 'suggest', 'offers', 'availability', 'equivalents', 'admin_grid', 'biblioteca', 'productos_nuevos',
+        self.assertEqual(list(sections), ['catalog', 'suggest', 'offers', 'availability', 'equivalents', 'admin_grid', 'productos_nuevos',
                                           'supplier_inventory', 'matching', 'merged', 'split', 'alternates', 'oem_equivalents', 'technical',
                                           'import_preview'])
         self.assertEqual(sample['users']['admin'], self.root.pk)

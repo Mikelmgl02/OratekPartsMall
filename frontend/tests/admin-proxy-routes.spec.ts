@@ -4,30 +4,24 @@ import { expect, test } from '@playwright/test';
 // routes in the browser, before the proxy, so this one calls the real proxy and backend: GETs, and a batch the backend refuses unread.
 const origin = process.env.E2E_BASE_URL || 'http://localhost:8080';
 
-test('the proxy forwards the routes of Editar celdas (Inventario and Biblioteca OEM), Separar SKU and the SKU editor', async ({ page }) => {
+test('the proxy forwards the routes of Editar celdas (Inventario), Separar SKU and the SKU editor', async ({ page }) => {
   test.skip(!process.env.E2E_ADMIN_TOKEN, 'A disposable superuser token is required.');
   await page.context().addCookies([{ name: 'partsmall_session', value: process.env.E2E_ADMIN_TOKEN!, url: origin, httpOnly: true, sameSite: 'Strict' }]);
   const catalog = await page.request.get('/api/management/catalog?page=1');
   expect(catalog.status()).toBe(200);
   const first = (await catalog.json()).results[0]?.id;
   const paths = ['/api/management/catalog/taxonomy', '/api/management/catalog/merged?page=1&origin=automatic',
-    '/api/management/oem-references/part-types',
     ...(first ? [`/api/management/catalog/${first}/oem-equivalents`, `/api/management/catalog/${first}/split`] : [])];
   for (const path of paths) {
     const response = await page.request.get(path);
     expect(response.status(), `${path}: ${await response.text()}`).toBe(200);
-  }
-  const reference = (await (await page.request.get('/api/management/oem-references?page=1')).json()).results[0]?.id;
-  if (reference) {  // Biblioteca OEM's Editar celdas re-reads its rows the same way
-    const oem = await page.request.get(`/api/management/oem-references?ids=${reference}`);
-    expect((await oem.json()).results.map((row: { id: string }) => row.id)).toEqual([reference]);
   }
   if (first) {  // the rows Editar celdas re-reads after a save, a popup or a poll
     const reread = await page.request.get(`/api/management/catalog?ids=${first}`);
     expect((await reread.json()).results.map((row: { id: string }) => row.id)).toEqual([first]);
   }
   // Empty batches reach the backend and are refused there, so nothing is written.
-  for (const path of ['/api/management/catalog/bulk-edit', '/api/management/oem-references/bulk-edit']) {
+  for (const path of ['/api/management/catalog/bulk-edit']) {
     const batch = await page.request.post(path, { data: { rows: [] }, headers: { Origin: origin } });
     expect(batch.status(), `${path}: ${await batch.text()}`).toBe(400);
     expect(await batch.text()).not.toContain('La ruta solicitada no existe');
@@ -49,6 +43,21 @@ test('the proxy no longer forwards the OEM-link routes the owner retired on 2026
   for (const path of ['/api/management/catalog/mark-oem', '/api/management/catalog/create-oem', '/api/management/catalog/unmark-oem']) {
     const response = await page.request.post(path, { data: { rows: [] }, headers: { Origin: origin } });
     expect(response.status(), path).toBe(404);
+    expect(await response.text()).toContain('La ruta solicitada no existe');
+  }
+});
+
+test('the proxy no longer forwards the Biblioteca OEM, removed with its screen (S10, owner 2026-10-15)', async ({ page }) => {
+  test.skip(!process.env.E2E_ADMIN_TOKEN, 'A disposable superuser token is required.');
+  await page.context().addCookies([{ name: 'partsmall_session', value: process.env.E2E_ADMIN_TOKEN!, url: origin, httpOnly: true, sameSite: 'Strict' }]);
+  // Library numbers are References, edited in Inventario's Referencia tab: the proxy answers itself, so nothing reaches the backend.
+  const zero = '00000000-0000-4000-8000-000000000000';
+  for (const response of [await page.request.get('/api/management/oem-references?page=1'), await page.request.get('/api/management/oem-references/part-types'),
+    await page.request.get(`/api/management/oem-references/${zero}`),
+    await page.request.post('/api/management/oem-references/bulk-edit', { data: { rows: [] }, headers: { Origin: origin } }),
+    await page.request.patch(`/api/management/oem-references/${zero}`, { data: {}, headers: { Origin: origin } }),
+    await page.request.delete(`/api/management/oem-references/${zero}/cross-references/1`, { headers: { Origin: origin } })]) {
+    expect(response.status()).toBe(404);
     expect(await response.text()).toContain('La ruta solicitada no existe');
   }
 });

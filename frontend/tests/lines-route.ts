@@ -138,7 +138,7 @@ export async function mockLines(page: Page, initial: { lines: OEMLine[]; referen
 }
 
 // A catalog/ row as the Inventario grid now reads it from lines/, for the specs whose fixtures still hold catalog rows (Agrupar con…,
-// Separar SKU, Sufijos, Biblioteca OEM): the line's tipo from is_OEM, its estado from active, its codes with their tipo.
+// Separar SKU, Sufijos): the line's tipo from is_OEM, its estado from active, its codes with their tipo.
 export function lineFromPart(part: ManagedPart): OEMLine {
   const tipo = part.is_OEM ? 'OEM' : part.identity?.ref_type === 'company' ? 'AFTERMARKET' : 'UNKNOWN';
   return makeLine(0, part.sku, part.description, { id: part.id, name: part.name, tipo, brand: part.identity?.brand ?? '', estado: part.active === false ? 'retirada' : 'publicada',

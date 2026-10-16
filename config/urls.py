@@ -31,8 +31,7 @@ from mall.catalog_grouping import CatalogGroupingMerge
 from mall.catalog_split import CatalogMergedList, CatalogSplitView
 from mall.oem_lookup import CatalogOEMLookup
 from mall.catalog_suffix_views import CompanySuffixes, SuffixDetail, SuffixList
-from mall.oem_reference_views import (OEMReferenceBulkEdit, OEMReferenceCrossReference, OEMReferenceCrossReferences, OEMReferenceItem, OEMReferenceList,
-                                     OEMReferencePartTypes, PartOEMEquivalents)
+from mall.oem_reference_views import PartOEMEquivalents
 from mall.catalog_media import CatalogImages, CatalogImageDetail, CatalogImageOrder
 from mall.supplier_import import SupplierInventoryImport, SupplierInventoryImportTemplate, SupplierInventoryImportJobView, SupplierInventoryImportErrors
 from mall.request_views import AccountRequests, ClientSentRequests, ClientSentRequestSummary, ClientSentRequestDetail, ClientPartRequestState, ClientOpenUnits, ClientOpenUnitOrders, SupplierRequestDetail, SupplierRequestReview
@@ -94,12 +93,6 @@ urlpatterns = [
     path('api/v1/management/catalog/<uuid:pk>/images/', CatalogImages.as_view()),
     path('api/v1/management/catalog/<uuid:pk>/images/order/', CatalogImageOrder.as_view()),
     path('api/v1/management/catalog/<uuid:pk>/images/<uuid:image_id>/', CatalogImageDetail.as_view()),
-    path('api/v1/management/oem-references/', OEMReferenceList.as_view()),
-    path('api/v1/management/oem-references/part-types/', OEMReferencePartTypes.as_view()),
-    path('api/v1/management/oem-references/bulk-edit/', OEMReferenceBulkEdit.as_view()),
-    path('api/v1/management/oem-references/<uuid:pk>/', OEMReferenceItem.as_view()),
-    path('api/v1/management/oem-references/<uuid:pk>/cross-references/', OEMReferenceCrossReferences.as_view()),
-    path('api/v1/management/oem-references/<uuid:pk>/cross-references/<int:code_id>/', OEMReferenceCrossReference.as_view()),
     path('api/v1/management/matching/', MatchingOverview.as_view()),
     path('api/v1/management/matching/<uuid:pk>/', MatchingReview.as_view()),
     path('api/v1/management/inventory/', management.InventoryList.as_view()),

@@ -10,8 +10,7 @@ archives (archive schema, 0088), and git keeps the CLI. What stays, for the writ
   each code whose numbers sit on one line becomes its Reference (declarado for the catalog's own code; inferido for a competitor's, only
   from a PDF-checked catalog: OD17), with a catalogo source per citation (settle_line); a code on two or more lines opens a merge case
   only when a supplier sells it (OD15), else it is left out (it would have stayed a catalog row: from S10 the import's report names it).
-- code_added (the Biblioteca's POST of an aftermarket code): on one line, it becomes that line's Reference; on two or more, a merge case.
-- retire_citation (the Biblioteca's DELETE, a catalog replace): the catalog's sources on the code's Reference are retired, and an
+- retire_citation (a catalog replace): the catalog's sources on the code's Reference are retired, and an
   inferido Reference left with no live source (or a declarado one this pass made) goes to disputa; a code behind an automatic merge of
   the pass opens a case on that merge's lines.
 - convert_case_codes (a merge case of the pass decided): merged, the catalog rows the case waits on (evidence catalog_rows) become the
@@ -35,8 +34,8 @@ CHUNK = 200
 GMB_TITLE = 'GMB Water Pump Catalog 2016'
 MARKS_FILE = Path(__file__).with_name('merge_pass_gmb_marks.json')
 EXTRACTS = ('asva_hub_2017', 'asva_tensioner_2017', 'asva_cv_2017', 'ate_wear_2017', 'gmb_wp_2016_v3')
-MANUAL = 'Registro manual'  # how the Biblioteca cites a code a person added (oem_reference_views)
-RETIRED_HERE = 'Retirado en la Biblioteca OEM'  # mall.oem_reference_views.RETIRED_HERE: a code a person retired from a number
+MANUAL = 'Registro manual'  # how the Biblioteca OEM (gone with its screen in S10) cited a code a person added
+RETIRED_HERE = 'Retirado en la Biblioteca OEM'  # detail.retired.reason of a code a person retired from a number there: it stays retired
 MERGE_DISPUTE = 'caso de unificación'  # mall.line_merge.MERGE_DISPUTE: a merge settles a dispute whose note ends so
 CASE_ROWS = 'catalog_rows'  # a merge case's evidence: [pk, number Reference id, brand, code, compact code, citations] it waits on
 
@@ -349,7 +348,7 @@ def load(*, marks_path=MARKS_FILE, positions_folder=None, scope=None, rows=(), l
     """Read the snapshot (read-only). rows: the aftermarket codes a catalog import read for its numbers, in memory (pk, number Reference
     id, brand, code, compact code, citations); links: the (SKU line id, number Reference id) its items matched. From S10 nothing reads
     them from a table (S10 archived OEMCrossReference and PartOEMLink). scope {'lines': line ids, 'numbers': compact codes}: only the
-    library numbers on those lines and the ones the rows of those codes are filed under (settle_line, code_added); no supplier sales
+    library numbers on those lines and the ones the rows of those codes are filed under (settle_line); no supplier sales
     then."""
     from .brand_models import Brand, BrandAlias
     from .line_merge import separated_pairs
@@ -1095,7 +1094,7 @@ def write_code(snap, entry, rows, *, user, extra=None):
 
 
 
-# --- later changes (3f): imports, the Biblioteca, catalog replaces ---------------------------------------------------------------------
+# --- later changes (3f): imports, catalog replaces -----------------------------------------------------------------------------------
 
 
 
@@ -1128,84 +1127,9 @@ def settle_line(line_ids, *, rows=(), actor=None, extra=None):
     return added
 
 
-def lines_of_code(brand, code, number=None):
-    """{line id: [library Reference ids]} of the live lines that hold this code (brand, any spelling) as an exclusive Reference, and the
-    line of `number` (the library Reference a person files it under, the Biblioteca's POST), after following merges. From S10 no table
-    keeps the codes filed under numbers: a code sits on a line only as one of its References."""
-    from .brands import resolve
-    from .lines import canonical_ids
-    from .models import Reference
-    name = resolve(brand)
-    found = defaultdict(list)
-    if number is not None:
-        found[str(number.part_id)].append(number.pk)
-    key = references.clave(references.code_key(code))
-    for part_id in Reference.all_objects.filter(references.brand_q(name) | references.blank_brand_q(), clave=key, supplier__isnull=True,
-                                                estado__in=references.EXCLUSIVE).values_list('part_id', flat=True):
-        found.setdefault(str(part_id), [])
-    canonical = canonical_ids(found)
-    out = defaultdict(list)
-    for pk, refs in found.items():
-        target = canonical.get(pk, pk)
-        out[target] += refs
-    from .lines import LIVE, catalog_lines
-    live = {str(pk) for pk in catalog_lines(tuple(estado for estado in LIVE if estado != 'rechazada')).filter(pk__in=list(out))
-            .values_list('pk', flat=True)}
-    return {pk: refs for pk, refs in out.items() if pk in live}
-
-
 def quiet(snap, line_ids):
     """Whether every line is in referencia without variants (3f: only those merge on their own after S9)."""
     return all(pk in snap.lines and snap.lines[pk].estado == 'referencia' and not snap.lines[pk].variants for pk in line_ids)
-
-
-def lines_case(snap, line_ids, *, evidence, reason):
-    """The merge case for lines a code a person typed puts together (3f from the Biblioteca: it writes References, merge cases and
-    Source retirements, never a merge; rule 3b: a hand-typed or competitor code joins no lines on its own), the keeper by 3g first and
-    the failing guard on it. Returns ('case', case), or ('apart', None) when the lines are kept apart or a case already asks about them."""
-    from .reference_matching import open_case
-    line_ids = sorted(set(line_ids))
-    if kept_apart(snap, line_ids) or covered(snap, line_ids):
-        return 'apart', None
-    info = evaluate(snap, line_ids, {}, {})
-    order = sorted(line_ids, key=lambda pk: keeper_rank(snap, pk))
-    spec = merge_case_for(snap, order, evidence={**evidence, 'flags': info['flags']}, reason=reason,
-                          guard=info['guard'] or 'lineas', route='caso')
-    if spec is None:
-        return 'apart', None
-    return 'case', open_case(spec)
-
-
-def code_added(number, brand, code, citation, *, actor=None):
-    """3e/3f for an aftermarket code a person added by hand to a library number (the Biblioteca's POST): on one line, it becomes that
-    line's Reference (declarado, with an admin source); on two or more, a merge case lists the lines and the code waits there (never a
-    merge on its own: rule 3b). Returns {'reference': id or None, 'case': id or None}."""
-    from django.db import transaction
-    from .brands import resolve
-    name = resolve(brand)
-    out = {'reference': None, 'case': None}
-    with transaction.atomic():
-        lines = lines_of_code(name, code, number)
-        if not lines:
-            return out
-        if len(lines) > 1:
-            snap = load(scope={'lines': set(lines), 'numbers': {cc(code)}})
-            reason = (f'{name} {code}, registrado a mano, está en varias líneas: si son el mismo repuesto, unifícalas; si no, mantenlas '
-                      'separadas y elige la línea del código.')
-            outcome, value = lines_case(snap, list(lines), reason=reason,
-                                        evidence={'regla': '3f', 'codes': [{'brand': name, 'code': code, 'manual': True}]})
-            if outcome == 'case':
-                out['case'] = str(value.pk)
-            return out
-        target = next(iter(lines))
-        try:
-            ref, _ = references.add(target, code, name, tipo='aftermarket', estado='declarado', actor=actor, absorb_library=False,
-                                    detail={TAG: {'regla': '3e', 'manual': True}})
-        except references.ReferenceConflict:
-            return out
-        references.cite(ref, citation, actor, kind='admin')
-        out['reference'] = ref.pk
-    return out
 
 
 def case_rows(case):
@@ -1303,7 +1227,7 @@ def join_numbers(ref_ids, *, rows=(), links=(), actor=None, reason=''):
 
 
 def retire_citation(line, brand, code, citations, *, actor=None):
-    """3f, when a code is retired (the Biblioteca's DELETE on one of a number's codes, a catalog replace): the sources these citations
+    """3f, when a code is retired (a catalog replace): the sources these citations
     gave the code's Reference on `line` (a line, its id, or a Reference on it: the number) become retired; an inferido Reference left with
     no live source goes to disputa, and so does a declarado one this pass made (3e from a catalog's own code, or a code added by hand in
     the Biblioteca); and when the code was one of the catalog's own codes behind an automatic merge of this pass, a merge case lists that

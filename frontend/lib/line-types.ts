@@ -91,7 +91,7 @@ export type Grupo = { id: string; nombre: string; subgrupos: Subgrupo[]; line_co
 export const lineEstadoLabels: Record<LineEstado, string> = { referencia: 'REFERENCIA', preparacion: 'EN PREPARACIÓN', publicada: 'PUBLICADA',
   rechazada: 'RECHAZADA', retirada: 'RETIRADA', unificada: 'UNIFICADA' };
 export const lineEstadoHints: Record<LineEstado, string> = {
-  referencia: 'Un número de la Biblioteca OEM que ningún producto lleva todavía.', preparacion: 'Un producto nuevo por revisar: no se vende hasta publicarlo.',
+  referencia: 'Un número OEM que ningún producto lleva todavía (pestaña Referencia de Inventario).', preparacion: 'Un producto nuevo por revisar: no se vende hasta publicarlo.',
   publicada: 'En el catálogo: los clientes la ven y sus artículos cuentan en las existencias.', rechazada: 'Descartada con su motivo; sus referencias se conservan.',
   retirada: 'Fuera de la venta; conserva sus códigos y su historial.', unificada: 'Unificada en otra línea OEM; Separar SKU la devuelve.',
 };

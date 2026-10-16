@@ -29,8 +29,7 @@ from .apiag_models import ApiagConnection
 from .apiag_sync import process_due
 from .apiag_sync_models import ApiagSync
 from .apiag_tokens import encrypt
-from .maintenance import (ALL_DETAIL, BIBLIOTECA_DETAIL, CATALOG_DETAIL, CATALOG_ROUTES, MaintenanceFreezeMiddleware, biblioteca_frozen,
-                          freeze_level)
+from .maintenance import ALL_DETAIL, CATALOG_DETAIL, CATALOG_ROUTES, MaintenanceFreezeMiddleware, freeze_level
 from .matching_models import MatchingQueue
 from .matching_runner import STOP, WorkerStopping
 from .matching_worker import process_queue
@@ -83,12 +82,6 @@ class FreezeLevelTests(FreezeFolderMixin, SimpleTestCase):
         (self.folder / 'freeze').mkdir()  # exists, cannot be read: fail closed
         self.assertEqual(freeze_level(), 'catalog')
 
-    def test_the_biblioteca_file_is_its_own_switch(self):
-        self.assertFalse(biblioteca_frozen())
-        (self.folder / 'biblioteca').touch()
-        self.assertTrue(biblioteca_frozen())
-        self.assertIsNone(freeze_level())
-
 
 class FreezeMiddlewareTests(FreezeFolderMixin, SimpleTestCase):
     # What the freeze holds back at each level, and what always goes through.
@@ -101,7 +94,6 @@ class FreezeMiddlewareTests(FreezeFolderMixin, SimpleTestCase):
         ('post', f'/api/v1/management/catalog/{ID}/images/'), ('put', f'/api/v1/management/catalog/{ID}/technical/'),
         ('patch', f'/api/v1/management/inventory/{ID}/'), ('post', '/api/v1/management/alternates/'),
         ('delete', '/api/v1/management/alternates/7/'),
-        ('patch', f'/api/v1/management/oem-references/{ID}/'),
         ('post', '/api/v1/management/matching/'), ('post', f'/api/v1/management/matching/{ID}/'),
         ('post', '/api/v1/management/part-types/'), ('patch', f'/api/v1/management/part-types/{ID}/template/'),
         ('delete', f'/api/v1/management/applications/{ID}/'),
@@ -127,7 +119,7 @@ class FreezeMiddlewareTests(FreezeFolderMixin, SimpleTestCase):
         ('post', '/api/v1/whatsapp/webhook/'), ('put', f'/api/v1/wishlist/{ID}/'), ('post', '/api/v1/analytics/events/'),
         ('post', f'{ACCOUNT}/apiag/sync/'), ('get', f'{ACCOUNT}/inventory/import/template/'), ('post', f'{ACCOUNT}/prices/import/'),
         ('patch', f'/api/v1/management/accounts/{ID}/'),
-        ('get', f'/api/v1/management/catalog/{ID}/'), ('get', '/api/v1/management/oem-references/'), ('head', '/api/v1/management/matching/'),
+        ('get', f'/api/v1/management/catalog/{ID}/'), ('head', '/api/v1/management/matching/'),
         ('options', f'{ACCOUNT}/basket/'), ('get', f'{ACCOUNT}/sent-requests/'),
     ]
 
@@ -151,7 +143,6 @@ class FreezeMiddlewareTests(FreezeFolderMixin, SimpleTestCase):
             self.assertEqual(self.call(method, path), 'passed', f'{method.upper()} {path} was held back')
 
     def test_without_the_freeze_everything_goes_through(self):
-        (self.folder / 'biblioteca').unlink(missing_ok=True)
         self.assert_open(self.CATALOG_WRITES + self.ALL_WRITES + self.ALWAYS_OPEN)
 
     def test_level_catalog_holds_catalog_and_inventory_writes_only(self):
@@ -164,15 +155,6 @@ class FreezeMiddlewareTests(FreezeFolderMixin, SimpleTestCase):
         self.assert_held(self.CATALOG_WRITES, CATALOG_DETAIL)
         self.assert_held(self.ALL_WRITES, ALL_DETAIL)
         self.assert_open(self.ALWAYS_OPEN)
-
-    def test_the_biblioteca_file_holds_only_the_biblioteca(self):
-        (self.folder / 'biblioteca').touch()
-        biblioteca = [(method, path) for method, path in self.CATALOG_WRITES if '/oem-references/' in path]
-        self.assert_held(biblioteca + [('post', '/api/v1/management/oem-references/bulk-edit/'),
-                                       ('delete', f'/api/v1/management/oem-references/{ID}/cross-references/9/')], BIBLIOTECA_DETAIL)
-        self.assert_open([route for route in self.CATALOG_WRITES if route not in biblioteca] + self.ALL_WRITES + self.ALWAYS_OPEN)
-        self.freeze('catalog')  # the catalog freeze says the broader thing
-        self.assert_held(biblioteca, CATALOG_DETAIL)
 
     def test_every_management_route_is_frozen_or_known_to_stay_open(self):
         # A new management screen must decide: does it write the catalog (add it to CATALOG_ROUTES) or not (add it here)?
@@ -408,7 +390,6 @@ class CliGuardTests(FreezeFolderMixin, TestCase):
             self.freeze('catalog')
             self.assertIsNone(refusal())
             (self.folder / 'freeze').unlink()
-            (self.folder / 'biblioteca').touch()  # the Biblioteca switch is not the catalog freeze
             self.assertIsNotNone(refusal())
 
     def test_the_freeze_also_waits_for_the_writers_already_running(self):
@@ -604,4 +585,3 @@ class MaintenanceDirTests(SimpleTestCase):
         if not os.getenv('MAINTENANCE_DIR') and sys.argv[1:2] == ['test']:
             self.assertEqual(settings.MAINTENANCE_DIR, Path(os.devnull) / 'maintenance')
             self.assertIsNone(freeze_level())
-            self.assertFalse(biblioteca_frozen())

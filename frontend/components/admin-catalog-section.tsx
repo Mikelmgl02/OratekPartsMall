@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import type { CellDoubleClickedEvent, CellValueChangedEvent, GridApi } from 'ag-grid-community';
-import { Boxes, BrainCircuit, Check, Combine, FileSpreadsheet, FileWarning, History, Layers3, Library, LoaderCircle, PencilLine, Plus, Repeat2, Search, Sparkles, Tags, Ungroup, Warehouse } from 'lucide-react';
+import { Boxes, BrainCircuit, Check, Combine, FileSpreadsheet, FileWarning, History, Layers3, LoaderCircle, PencilLine, Plus, Repeat2, Search, Sparkles, Tags, Ungroup, Warehouse } from 'lucide-react';
 import { CatalogImportIssuePage, ManagedAlternate, ManagedPart, ManagedStockItem, Page, request } from '@/lib/types';
 import { asManagedPart, LINE_TABS, lineTipoLabels } from '@/lib/line-types';
 import type { LineTipo, OEMLine } from '@/lib/line-types';
@@ -24,7 +24,6 @@ import InventoryAssistant from './admin-inventory-assistant';
 import CatalogImages from './admin-catalog-images';
 import SmartMatching from './admin-smart-matching';
 import CatalogSuffixes from './admin-catalog-suffixes';
-import OEMLibrary from './admin-oem-library';
 import AdminNewProducts from './admin-new-products';
 import AdminSupplierLedger from './admin-supplier-ledger';
 
@@ -34,7 +33,6 @@ const errorText = (error: unknown) => error instanceof Error ? error.message : '
 export default function AdminCatalogSection({ section }: { section: 'inventory' | 'alternates' }) {
   const [matchingOpen, setMatchingOpen] = useState(false);
   const [suffixesOpen, setSuffixesOpen] = useState(false);
-  const [oemLibraryOpen, setOemLibraryOpen] = useState(false);
   const [imagePart, setImagePart] = useState<ManagedPart | null>(null);
   const [mainLine, setMainLine] = useState<OEMLine | null>(null);  // Marcar referencia principal, from the grid's right click
   const [stockView, setStockView] = useState(false);
@@ -85,12 +83,12 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
   const reviewChanged = useCallback(() => setRevision(value => value + 1), []);
   function saved(text: string) { setRevision(value => value + 1); setNotice(text); }
   return <section className="inventory-panel admin-panel" aria-label={section === 'inventory' ? 'Inventario' : 'Alternos'}>
-    <div className="admin-toolbar inventory-header"><div><h2>{section === 'inventory' ? 'Inventario' : 'Alternos'}</h2><p>{section === 'inventory' ? 'SKU internos que agrupan repuestos idénticos y existencias por proveedor.' : 'Biblioteca de referencias OEM y de fabricantes equivalentes a cada SKU maestro.'}</p></div>{kind !== 'inventory' && !newView && !ledgerView && <div className="admin-toolbar-actions">{kind === 'catalog' && <button className="button soft" onClick={() => setImportOpen(true)}><FileSpreadsheet size={17}/>Importar Excel</button>}<button className="button primary" onClick={() => { if (kind === 'alternates') setAlternateEditor(null); else setPartEditor({ part: null, tab: 'general' }); }}><Plus size={17}/>{kind === 'alternates' ? 'Crear alterno' : 'Crear SKU'}</button></div>}</div>
+    <div className="admin-toolbar inventory-header"><div><h2>{section === 'inventory' ? 'Inventario' : 'Alternos'}</h2><p>{section === 'inventory' ? 'SKU internos que agrupan repuestos idénticos y existencias por proveedor.' : 'Referencias OEM y de fabricantes equivalentes a cada SKU maestro.'}</p></div>{kind !== 'inventory' && !newView && !ledgerView && <div className="admin-toolbar-actions">{kind === 'catalog' && <button className="button soft" onClick={() => setImportOpen(true)}><FileSpreadsheet size={17}/>Importar Excel</button>}<button className="button primary" onClick={() => { if (kind === 'alternates') setAlternateEditor(null); else setPartEditor({ part: null, tab: 'general' }); }}><Plus size={17}/>{kind === 'alternates' ? 'Crear alterno' : 'Crear SKU'}</button></div>}</div>
     {section === 'inventory' && <>
       <div className="inventory-view-tabs" role="group" aria-label="Vistas de inventario"><button className={!stockView && !newView && !ledgerView ? 'selected' : ''} aria-pressed={!stockView && !newView && !ledgerView} onClick={() => showInventory('catalog')}><Boxes size={15} aria-hidden="true"/>Inventario interno</button><button className={stockView ? 'selected' : ''} aria-pressed={stockView} onClick={() => showInventory('stock')}><Warehouse size={15} aria-hidden="true"/>Existencias por proveedor</button><button className={newView ? 'selected' : ''} aria-pressed={newView} onClick={() => showInventory('new')}><Sparkles size={15} aria-hidden="true"/>Productos nuevos{!!newCount && <span className="import-issues-count" aria-label={`${newCount} productos nuevos por revisar`}>{newCount}</span>}</button><button className={ledgerView ? 'selected' : ''} aria-pressed={ledgerView} onClick={() => showInventory('ledger')}><History size={15} aria-hidden="true"/>Libro de movimientos</button></div>
       <div className="inventory-tools" role="group" aria-label="Herramientas del inventario">
         <div className="inventory-tool-group"><span>Calidad del catálogo</span><div><Link className="inventory-tool" href="/administracion?seccion=casos"><Layers3 size={15}/>Casos de coincidencia</Link>{!stockView && <button className="inventory-tool" onClick={() => setSplitTarget(null)}><Ungroup size={15}/>Separar SKU</button>}<button className="inventory-tool" onClick={()=>setMatchingOpen(true)}><Combine size={15}/>Agrupación inteligente</button>{!stockView && <button className={`inventory-tool${pendingIssueCount ? ' attention' : ''}`} aria-label="Errores de importación" onClick={() => setIssuesOpen(true)}><FileWarning size={15}/>Errores de importación{!!pendingIssueCount && <span className="import-issues-count" aria-hidden="true">{pendingIssueCount}</span>}</button>}</div></div>
-        <div className="inventory-tool-group"><span>OEM</span><div><button className="inventory-tool" onClick={()=>setOemLibraryOpen(true)}><Library size={15}/>Biblioteca OEM</button><button className="inventory-tool" onClick={()=>setSuffixesOpen(true)}><Tags size={15}/>Sufijos</button></div></div>
+        <div className="inventory-tool-group"><span>Códigos</span><div><button className="inventory-tool" onClick={()=>setSuffixesOpen(true)}><Tags size={15}/>Sufijos</button></div></div>
         {!stockView && <div className="inventory-tool-group"><span>Asistencia</span><div><button type="button" className="inventory-tool" onClick={()=>setAssistantOpen(true)}><BrainCircuit size={15}/>Asistente IA</button></div></div>}
       </div>
     </>}
@@ -101,7 +99,6 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
     <p className="admin-footnote">{ledgerView ? 'El libro muestra unidades, nunca precios: cada movimiento de existencias del proveedor (cotizaciones confirmadas y cargas) y lo que cada carga Excel, sincronización con apiag-cloud o actualización manual cambió en sus artículos.' : newView ? 'Cada propuesta reúne los artículos de proveedores con el mismo código y marca que no coinciden con ningún SKU. Nada llega al catálogo hasta que lo apruebes; un SKU aprobado se vincula con sus artículos y los de otros proveedores con el mismo código se vinculan solos en el siguiente análisis.' : kind === 'alternates' ? 'Los alternos de un SKU también aparecen en su editor de inventario interno. Cada artículo del proveedor mantiene su propio inventario e historial.' : kind === 'catalog' ? 'El SKU maestro no tiene marca. Sus referencias identifican piezas equivalentes; los artículos del proveedor conservan sus propios códigos y existencias.' : 'Los registros conservan el ID de inventario de cada proveedor y su vínculo con el SKU interno.'}</p>
     {matchingOpen && <SmartMatching onClose={()=>setMatchingOpen(false)} onSaved={()=>saved('Coincidencias actualizadas.')}/>}
     {suffixesOpen && <CatalogSuffixes onClose={()=>{ setSuffixesOpen(false); setRevision(value => value + 1); }}/>}
-    {oemLibraryOpen && <OEMLibrary onClose={()=>setOemLibraryOpen(false)}/>}
     {imagePart && <CatalogImages part={imagePart} onClose={() => setImagePart(null)} onChanged={() => setRevision(value => value + 1)}/>}
     {partEditor !== undefined && <LineEditor key={partEditor.part?.id ?? 'new'} line={partEditor.part} initialTab={partEditor.tab} onClose={() => setPartEditor(undefined)}
       onSaved={(_, text) => { setRevision(value => value + 1); if (text) setNotice(text); }}/>}

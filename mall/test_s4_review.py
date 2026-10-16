@@ -1,10 +1,10 @@
 """Inventory refactor S4, review fixes: a short library number is found by its compact form (OPEL 5 69 036 is 569036) and written
 without the punctuation an extract left at its edges, the rollback leaves what moved since the apply and gives the OEM table back what
 the code wrote after landing, a catalog replace drops a
-number to a rejected line of its own and a later import brings it back, Editar celdas maps a subgrupo's name, a number variants hang
-from never leaves its line, rule 3f locks no supplier, the automatic families and the import absorb or promote a line in referencia,
-the Biblioteca refuses to dispute a catalog line's main, a code a person adds stops being library data, and the S0 tool that merged
-the OEM table's twins refuses to write once S4 ran."""
+number to a rejected line of its own and a later import brings it back, a number variants hang from never leaves its line, rule 3f
+locks no supplier, the automatic families and the import absorb or promote a line in referencia, a code a person adds stops being
+library data, and the S0 tool that merged the OEM table's twins refuses to write once S4 ran. (The Biblioteca OEM's Editar celdas and
+dispute checks went with its screen in S10.)"""
 import io
 import json
 import os
@@ -27,19 +27,14 @@ from .catalog_grouping import merge_catalog_parts
 from .lines import bulk_create_lines, create_line
 from .models import CatalogMerge, Part, Reference
 from .supplier_import_models import SupplierInventoryImportJob
-from .technical_data import part_type_for
 from .test_factories import Fresh, make_line, make_reference, make_supplier, make_user, make_variant
 from .test_supplier_catalog_import import extract, item
-
-URL = '/api/v1/management/oem-references/'
 
 
 class ShortNumberTests(Fresh, TestCase):
     def setUp(self):
         super().setUp()
         self.root = make_user('s4r-short', superuser=True)
-        self.client = APIClient()
-        self.client.force_authenticate(self.root)
 
     def test_a_short_number_is_the_library_number_of_its_compact_form(self):
         ref, created = references.add_library_number('OPEL', '5 69 036', printed=['5 69 036'], source_kind='aftermarket_catalog', citation='GMB')
@@ -49,19 +44,14 @@ class ShortNumberTests(Fresh, TestCase):
         self.assertFalse(created)  # the same number (manufacturer, compact code), not a second line
         self.assertEqual(again.pk, ref.pk)
         self.assertEqual(Part.objects.filter(estado='referencia').count(), 1)
-        rows = self.client.get(URL, {'q': '569036'}).json()
-        self.assertEqual(rows['count'], 1)
-        self.assertEqual(rows['results'][0]['code'], '569036')  # the legacy JSON keeps the compact number
-        self.assertIn('5 69 036', rows['results'][0]['printed_forms'])
+        from .oem_reference import LibraryNumber
+        number = LibraryNumber(Reference.objects.get(pk=ref.pk))  # as catalog/<id>/oem-equivalents shows it
+        self.assertEqual((number.code, number.printed_forms), ('569036', ['5 69 036']))  # the legacy JSON keeps the compact number
         self.assertEqual(sci.CatalogImport.library_ids(None, {('OPEL', '569036')}), {('OPEL', '569036'): ref.pk})
         self.assertEqual(Reference.objects.filter(references.compact_q(['569036'])).get().pk, ref.pk)
         self.assertEqual(Reference.objects.filter(references.compact_match_q('9036', exact=False)).get().pk, ref.pk)
         references.update(ref, estado='disputa', dispute_note='NO ES')
         self.assertEqual(catalog_identity.disputed_codes(['5-69-036']), {'569036'})
-        supersede = self.client.patch(f'{URL}{ref.uid}/', {'expected_version': Reference.objects.get(pk=ref.pk).version,
-                                                          'action': 'set_superseded_by', 'code': '5 69 037'}, format='json')
-        self.assertEqual(supersede.status_code, 200, supersede.content)
-        self.assertEqual(supersede.json()['superseded_by']['code'], '569037')
 
     def test_an_edge_comma_never_reaches_the_code(self):
         ref, _ = references.add_library_number('TOYOTA', '4405285', printed=['4405285,'], source_kind='aftermarket_catalog', citation='ATE')
@@ -114,22 +104,6 @@ class CatalogReplaceDropTests(Fresh, TestCase):
         self.assertEqual((dropped.estado, Part.objects.get(pk=dropped.part_id).estado), ('disputa', 'rechazada'))
 
 
-class SubgrupoNameTests(Fresh, TestCase):
-    def test_editar_celdas_maps_a_subgrupos_name(self):
-        root = make_user('s4r-celdas', superuser=True)
-        client = APIClient()
-        client.force_authenticate(root)
-        part_type_for('TRANSMISIÓN', 'CV JOINT')
-        ref, _ = references.add_library_number('TOYOTA', '43460-69115', part_type='TERM CREM')
-        self.assertIn('CV JOINT', client.get(f'{URL}part-types/').json()['results'])
-        response = client.patch(f'{URL}{ref.uid}/', {'expected_version': Reference.objects.get(pk=ref.pk).version,
-                                                     'action': 'edit', 'part_type': 'CV JOINT'}, format='json')
-        self.assertEqual(response.status_code, 200, response.content)
-        line = Part.objects.get(pk=ref.part_id)
-        self.assertEqual((line.category, line.subcategory), ('TRANSMISIÓN', 'CV JOINT'))
-        self.assertNotIn('sin_mapa', line.field_sources.get('subgrupo', {}))
-
-
 class ReviewGuardTests(Fresh, TestCase):
     def setUp(self):
         super().setUp()
@@ -155,17 +129,6 @@ class ReviewGuardTests(Fresh, TestCase):
         self.assertEqual(Part.objects.get(pk=line.pk).estado, 'publicada')
         self.assertNotIn('origen', ref.detail)  # the code a person added is the line's own from now on
         self.assertIn('adoptada', ref.detail)
-
-    def test_the_biblioteca_does_not_dispute_a_catalog_lines_main(self):
-        client = APIClient()
-        client.force_authenticate(self.root)
-        ref, _ = references.add_library_number('TOYOTA', '16100-79445')
-        line = create_line('16100-79445', actor=self.root)
-        response = client.patch(f'{URL}{ref.uid}/', {'expected_version': Reference.objects.get(pk=ref.pk).version, 'action': 'dispute',
-                                                     'note': 'NO ES'}, format='json')
-        self.assertEqual(response.status_code, 400, response.content)
-        self.assertIn(line.sku, json.dumps(response.json(), ensure_ascii=False))
-        self.assertEqual(Reference.objects.get(pk=ref.pk).estado, 'declarado')
 
 
 class AutomaticPathTests(Fresh, TestCase):

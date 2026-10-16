@@ -149,6 +149,20 @@ test('a stale version is reported instead of overwriting the newer label', async
   expect(mock.unexpected).toEqual([]);
 });
 
+test('the OEM section is gone: its old link opens Inventario, whose tools keep Sufijos', async ({ page }) => {
+  const mock = await fixture(page);
+  await page.goto('/administracion?seccion=oem');  // the Biblioteca OEM and Sufijos lived there until S10
+  await expect(page.getByRole('heading', { name: 'Inventario', exact: true })).toBeVisible();
+  const menu = page.getByRole('navigation', { name: 'Gestión administrativa' });
+  await expect(menu.getByRole('link', { name: 'Inventario', exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(menu.getByRole('link', { name: 'OEM', exact: true })).toHaveCount(0);
+  const tools = page.getByRole('group', { name: 'Herramientas del inventario' });
+  await expect(tools.getByRole('button', { name: 'Biblioteca OEM' })).toHaveCount(0);
+  await tools.getByRole('button', { name: 'Sufijos', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Sufijos de códigos' })).toBeVisible();
+  expect(mock.unexpected).toEqual([]);
+});
+
 test('the OEM lookup reads company suffixes from the suffix table', async ({ page }) => {
   const part: ManagedPart = { id: '05000000-0000-4000-8000-000000000001', sku: 'ABC-123456-ACME', name: '', description: 'BOMBA AGUA', active: true,
     stock_record_count: 0, codes: [], identity: { ref_type: 'company', brand: 'ACME CORP' } };

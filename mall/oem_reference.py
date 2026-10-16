@@ -8,8 +8,10 @@ Until S8 the Biblioteca's JSON keeps the OEM table's legacy values: a number's i
 numbers the library had before S4), its code is the compact number (compact(code): a short number's clave is its printed spelling), status is verified, declared, inferred or disputed
 (Reference estado verificado, declarado, inferido, disputa) and a source's kind is one of the 8 old kinds (ReferenceSource keeps it in
 detail.legacy_kind; a source written before S4 from a code's reference_source text maps back by its kind). LibraryNumber and
-LibrarySource wrap the rows with those names. Nothing here renames a line, writes a Reference or calls an AI provider: the writers are
-mall.references (add_library_number, update, cite_library, refresh_library_estado) and the Biblioteca's views.
+LibrarySource wrap the rows with those names (the read-only catalog/<id>/oem-equivalents route still shows a line's numbers that way;
+the Biblioteca OEM's screen and API went in S10: library numbers are managed in Inventario's Referencia tab). Nothing here renames a
+line, writes a Reference or calls an AI provider: the writer is mall.references (add_library_number, update, cite_library,
+refresh_library_estado).
 """
 import re
 from collections import defaultdict
@@ -19,7 +21,7 @@ from types import SimpleNamespace
 import unicodedata
 
 from django.db import connection
-from django.db.models import CharField, Func, Prefetch, Q, Value
+from django.db.models import CharField, Func, Q, Value
 from django.db.models.functions import Replace, Upper
 
 from .catalog_families import normalized_reference
@@ -65,11 +67,9 @@ def citation_list(citations, *more):
 
 VERIFIED_KINDS = {'price_list', 'manufacturer_catalog'}
 DECLARED_KINDS = {'aftermarket_catalog', 'supplier_declaration', 'catalog_approval', 'manual'}
-FILLABLE = ('description', 'part_type', 'applications')
 ALGO_RE = re.compile(r'^algo:(?P<finder>[^:]+):(?P<version>[^:]+):(?P<rule>.+):(?P<run>\d+)$', re.I)
 # Characters the database strips where it has no REGEXP_REPLACE (SQLite): every separator the catalog's SKUs and codes use.
 SEPARATORS = ' -/_.+()#,:;*&\'"[]{}|\\°!?@$%=<>~`^\t'
-LINKED_LIMIT = 20
 
 # The library's status and the Reference's estado (plan §3 S4: legacy values in the JSON and the filters until S8).
 LIBRARY_ESTADO = {'verified': 'verificado', 'declared': 'declarado', 'inferred': 'inferido', 'disputed': 'disputa'}
@@ -114,8 +114,8 @@ SUBGRUPO_BY_FOLD = {fold(text): pair for text, pair in LIBRARY_SUBGRUPOS.items()
 
 
 def subgrupo_for(part_type, subgrupos=None):
-    """(grupo, subgrupo) a library part type maps to: A6 (OD9), else the subgrupo with that name (Editar celdas offers the subgrupos'
-    names, mall.oem_reference_views.part_types) when a single grupo has one; None otherwise. subgrupos: {fold(name): [(grupo, name)]}
+    """(grupo, subgrupo) a library part type maps to: A6 (OD9), else the subgrupo with that name (the Biblioteca's Editar celdas offered the subgrupos'
+    names) when a single grupo has one; None otherwise. subgrupos: {fold(name): [(grupo, name)]}
     as subgrupo_names() reads it (pass {} for A6 alone: S4's backfill maps the library by A6 only), read here when None."""
     key = fold(part_type)
     if not key:
@@ -169,15 +169,6 @@ def legacy_kind_of(source):
     if source.kind == 'proveedor' and (source.citation or '').startswith('Declarado por'):
         return 'catalog_approval'
     return LEGACY_KIND_OF.get(source.kind, 'manual')
-
-
-def kinds_for(value):
-    """The (legacy kinds, ReferenceSource kinds) a source_kind filter names: an old kind or a new one (both are accepted until S8)."""
-    if value in SOURCE_KIND_OF:
-        return {value}, set()
-    if value in LEGACY_KIND_OF:
-        return {old for old, new in SOURCE_KIND_OF.items() if new == value}, {value}
-    return set(), set()
 
 
 def source_of(text):
@@ -244,25 +235,7 @@ def compact_sql(field):
     return reduce(lambda expression, char: Replace(expression, Value(char), Value('')), SEPARATORS, Upper(field))
 
 
-# --- the library's rows -------------------------------------------------------------------------------------------------------------
-
-def library_rows():
-    """The Biblioteca's rows (mall.references.library_q) with what a page shows: sources (and who registered them), the number that
-    replaces each, who created it and its line."""
-    from . import references
-    from .models import Reference, ReferenceSource
-    return (Reference.objects.filter(references.library_q()).select_related('reemplazado_por', 'created_by', 'part')
-            .prefetch_related(Prefetch('sources', queryset=ReferenceSource.objects.filter(retirada=False).select_related('created_by')
-                                       .order_by('created_at', 'id'))))
-
-
-def by_uid(uid, queryset=None):
-    """The library's Reference with this Biblioteca id (its uid), or None."""
-    try:
-        return (queryset if queryset is not None else library_rows()).filter(uid=uid).first()
-    except (ValueError, TypeError):
-        return None
-
+# --- the library's rows, as LibraryNumber shows them -------------------------------------------------------------------------------
 
 def parse_time(value):
     try:

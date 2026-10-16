@@ -3,7 +3,6 @@ containers, the main checkout's .maintenance/ on the host, git-ignored) turn it 
 
     mkdir -p .maintenance && echo catalog > .maintenance/freeze     catalog and inventory writes wait (level catalog)
     echo all > .maintenance/freeze                                   also orders, deal actions and the cesta (level all, S10 only)
-    touch .maintenance/biblioteca                                    only the Biblioteca OEM is read-only (24 h after S4)
     rm .maintenance/freeze                                           back to normal
 
 While it is on, MaintenanceFreezeMiddleware answers the writes of the frozen routes with a 503; reads, sign-in, messages, the inbox,
@@ -17,17 +16,17 @@ from pathlib import Path
 from django.conf import settings
 from django.http import JsonResponse
 
-FREEZE_FILE, BIBLIOTECA_FILE = 'freeze', 'biblioteca'
+FREEZE_FILE = 'freeze'
 LEVELS = ('catalog', 'all')
 SAFE_METHODS = frozenset({'GET', 'HEAD', 'OPTIONS', 'TRACE'})
 RETRY_AFTER = '120'
 
-# Level catalog: the management screens that write the catalog, the Biblioteca, matching and the taxonomy (catalog/ covers its proposals,
+# Level catalog: the management screens that write the catalog, matching and the taxonomy (catalog/ covers its proposals,
 # import, assistant and suffixes), and the supplier's own stock writes: ingest and the Excel import, its preview too (a preview staged
 # now would be checked against a catalog about to change, and its job would hold up the next window's pre-flight). From S7 also the
 # lines, References, cases, merges, brands and grupos of the inventory refactor's routes.
 CATALOG_ROUTES = [re.compile(pattern) for pattern in (
-    r'^/api/v1/management/(catalog|inventory|alternates|oem-references|matching|part-types|applications)(/|$)',
+    r'^/api/v1/management/(catalog|inventory|alternates|matching|part-types|applications)(/|$)',
     r'^/api/v1/management/(lines|references|cases|merges|brands|grupos)(/|$)',
     r'^/api/v1/accounts/[^/]+/inventory/(ingest|import)(/|$)',
 )]
@@ -39,11 +38,9 @@ ALL_ROUTES = [re.compile(pattern) for pattern in (
     r'^/api/v1/management/deals/[^/]+/cancel/?$',
     r'^/api/v1/accounts/[^/]+/basket/?$',
 )]
-BIBLIOTECA_ROUTES = [re.compile(r'^/api/v1/management/oem-references(/|$)')]
 
 CATALOG_DETAIL = 'Mantenimiento del catálogo en curso. Intenta de nuevo en unos minutos.'
 ALL_DETAIL = 'Mantenimiento en curso. Intenta de nuevo en unos minutos.'
-BIBLIOTECA_DETAIL = 'La Biblioteca OEM está en solo lectura por mantenimiento. Intenta de nuevo más tarde.'
 
 
 def folder():
@@ -61,10 +58,6 @@ def freeze_level():
     return 'all' if text.strip().lower() == 'all' else 'catalog'
 
 
-def biblioteca_frozen():
-    return (folder() / BIBLIOTECA_FILE).exists()
-
-
 def frozen_detail(method, path):
     """The 503 message for a request the freeze holds back, or None when it goes through."""
     if method.upper() in SAFE_METHODS:
@@ -75,8 +68,6 @@ def frozen_detail(method, path):
     elif any(route.match(path) for route in ALL_ROUTES):
         if freeze_level() == 'all':
             return ALL_DETAIL
-    if any(route.match(path) for route in BIBLIOTECA_ROUTES) and biblioteca_frozen():
-        return BIBLIOTECA_DETAIL
     return None
 
 
