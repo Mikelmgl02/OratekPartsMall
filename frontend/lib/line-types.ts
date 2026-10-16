@@ -131,9 +131,10 @@ export const brandTipoLabels: Record<Exclude<BrandTipo, ''>, string> = { vehicul
 export const calidadLabels: Record<Calidad, string> = { original: 'ORIGINAL', oes: 'OES (EQUIPO ORIGINAL)', alternativo: 'ALTERNATIVO' };
 export const condicionLabels: Record<Condicion, string> = { nuevo: 'NUEVO', remanufacturado: 'REMANUFACTURADO' };
 
-// The line estados the Inventario grid lists by tab; the catalog (publicada and retirada) first, as lines/ reads by default.
+// The line estados the Inventario grid lists by tab; Publicadas (what clients see) first, then Retiradas.
 export const LINE_TABS: { key: string; estado: string; label: string }[] = [
-  { key: 'catalogo', estado: 'publicada,retirada', label: 'Publicadas y retiradas' }, { key: 'preparacion', estado: 'preparacion', label: 'En preparación' },
+  { key: 'publicada', estado: 'publicada', label: 'Publicadas' }, { key: 'retirada', estado: 'retirada', label: 'Retiradas' },
+  { key: 'preparacion', estado: 'preparacion', label: 'En preparación' },
   { key: 'referencia', estado: 'referencia', label: 'Referencia' }, { key: 'rechazada', estado: 'rechazada', label: 'Rechazadas' },
   { key: 'unificada', estado: 'unificada', label: 'Unificadas' },
 ];

@@ -21,12 +21,13 @@ for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 1000 });
     await page.goto('/administracion?seccion=inventario');
     const tabs = page.getByRole('group', { name: 'Estado de la línea OEM' });
-    await expect(tabs.getByRole('button', { name: 'Publicadas y retiradas', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(tabs.getByRole('button', { name: 'Publicadas', exact: true })).toHaveAttribute('aria-pressed', 'true');
     await expect(cell(page, filter.id, 'sku')).toContainText('90915-YZZE1');
     await expect(cell(page, filter.id, 'sku')).toContainText('OEM · TOYOTA');
-    await expect(cell(page, retired.id, 'estado')).toHaveText('RETIRADA');
+    await expect(cell(page, filter.id, 'estado')).toHaveText('PUBLICADA');
+    await expect(page.locator(`.ag-row[row-id="${retired.id}"]`)).toHaveCount(0);
     await expect(page.locator(`.ag-row[row-id="${fresh.id}"]`)).toHaveCount(0);
-    expect(mock.lists[0].get('estado')).toBe('publicada,retirada');
+    expect(mock.lists[0].get('estado')).toBe('publicada');
     if (width >= 900) {
       await expect(cell(page, pump.id, 'tipo')).toHaveText('AFTERMARKET');
       await expect(cell(page, pump.id, 'brand')).toHaveText('GMB');
@@ -42,6 +43,16 @@ for (const width of [1440, 390]) {
     await expect(cell(page, filter.id, 'sku')).toContainText('90915-YZZE1');
     await expect(page.locator(`.ag-row[row-id="${pump.id}"]`)).toHaveCount(0);
     await page.getByRole('combobox', { name: 'Tipo de línea OEM', exact: true }).selectOption('');
+
+    // Retiradas: the lines out of sale, alone; their estado still changes from the cell.
+    await tabs.getByRole('button', { name: 'Retiradas', exact: true }).click();
+    await expect(cell(page, retired.id, 'estado')).toHaveText('RETIRADA');
+    await expect(page.locator(`.ag-row[row-id="${filter.id}"]`)).toHaveCount(0);
+    expect(new URL(page.url()).searchParams.get('estado')).toBe('retirada');
+    expect(mock.queries().at(-1)?.get('estado')).toBe('retirada');
+    await page.getByRole('button', { name: 'Editar celdas', exact: true }).click();
+    await expect(page.getByText(/se guardan juntos al soltar/)).not.toContainText('El estado se cambia en el editor');
+    await page.getByRole('button', { name: 'Editando celdas', exact: true }).click();
 
     await tabs.getByRole('button', { name: 'En preparación', exact: true }).click();
     await expect(cell(page, fresh.id, 'sku')).toContainText('EC01');
@@ -84,7 +95,7 @@ test('Marcar referencia principal makes another Reference the main: the SKU foll
   await expect(cell(page, pump.id, 'sku')).toContainText('OEM · TOYOTA');
   expect(mock.calls).toContain(`POST lines/${pump.id}/main {"reference":201,"expected_version":1}`);
   // A line with only its main has nothing to choose from.
-  await cell(page, retired.id, 'description').click({ button: 'right' });
+  await cell(page, filter.id, 'description').click({ button: 'right' });
   await expect(page.locator('.ag-menu-option-disabled').filter({ hasText: 'Marcar referencia principal…' })).toBeVisible();
   expect(mock.unexpected).toEqual([]);
 });

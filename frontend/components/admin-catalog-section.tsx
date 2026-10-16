@@ -122,9 +122,11 @@ type CollectionProps = { onTechnical: (line: OEMLine) => void; onImages: (line: 
 
 function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditAlternate, onEditMatch, onRemoveAlternate, onSplit, onMerge, onMain }: CollectionProps) {
   const [tipoFilter, setTipoFilter] = useState('');
-  // The OEM lines by estado (plan S8.2): the catalog (publicada and retirada) first; ?estado= deep-links a tab.
+  // The OEM lines by estado (plan S8.2): Publicadas first; ?estado= deep-links a tab.
   const [estadoTab, setEstadoTab] = useState(LINE_TABS[0].key);
   const tab = LINE_TABS.find(item => item.key === estadoTab) ?? LINE_TABS[0];
+  // Publicadas and Retiradas change a line's estado from its cell; the other tabs, in the line's editor.
+  const estadoCells = tab.key === 'publicada' || tab.key === 'retirada';
   useEffect(() => {
     if (kind !== 'catalog') return;
     const wanted = new URL(window.location.href).searchParams.get('estado');
@@ -185,8 +187,8 @@ function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditA
     [onEditPart, onTechnical, onImages, onEditAlternate, onRemoveAlternate, onEditMatch, onCodesChanged, onSplit, onMerge, onMain]);
   const params = useMemo<Record<string, string>>(() => (kind === 'catalog' ? { search: query, estado: tab.estado, tipo: tipoFilter } : { search: query }) as Record<string, string>, [query, tipoFilter, kind, tab.estado]);
   const subgroupOf = useCallback((label: string) => { const option = options?.find(row => row.label === label); return option ? { grupo: option.grupo, subgrupo: { id: option.id, name: option.name } } : null; }, [options]);
-  const edit = useMemo(() => editing && options ? { subgroups: options.map(option => option.label), subgroupOf, isSaving, estados: tab.key === 'catalogo' } : null,
-    [editing, options, subgroupOf, isSaving, tab.key]);
+  const edit = useMemo(() => editing && options ? { subgroups: options.map(option => option.label), subgroupOf, isSaving, estados: estadoCells } : null,
+    [editing, options, subgroupOf, isSaving, estadoCells]);
   const partColumns = useMemo(() => catalogColumns(wide, edit), [wide, edit]);
   const pasteCodes = useCallback(async (line: OEMLine, codes: string[]) => {
     setCellStatus({ kind: 'saving', text: `Agregando ${codes.length} ${codes.length === 1 ? 'referencia' : 'referencias'} a ${line.sku}…` });
@@ -229,7 +231,7 @@ function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditA
   const codeColumns = useMemo(() => alternateColumns(wide), [wide]);
   const label = kind === 'catalog' ? 'Buscar repuestos' : kind === 'inventory' ? 'Buscar existencias' : 'Buscar alternos';
   const filtered = !!(query || tipoFilter);
-  const emptyCatalog = tab.key === 'catalogo' ? 'Todavía no hay SKU en el inventario interno.' : `No hay líneas OEM ${tab.key === 'referencia' ? 'en referencia' : tab.label.toLowerCase()}.`;
+  const emptyCatalog = `No hay líneas OEM ${tab.key === 'referencia' ? 'en referencia' : tab.label.toLowerCase()}.`;
   const empty = <div className="empty-state">{kind === 'alternates' ? <Repeat2 size={30}/> : <Boxes size={30}/>}<h3>{filtered ? 'No encontramos resultados.' : kind === 'alternates' ? 'Todavía no hay alternos registrados.' : kind === 'catalog' ? emptyCatalog : 'Todavía no hay existencias reportadas.'}</h3><p>{filtered ? 'Prueba con otra búsqueda o filtro.' : kind === 'alternates' ? 'Selecciona Crear alterno para agregar un código a un SKU interno.' : kind === 'catalog' ? 'Selecciona Crear SKU para agregarlo junto con sus referencias.' : 'Los registros aparecerán cuando los proveedores publiquen su inventario.'}</p></div>;
   return <>
     {kind === 'catalog' && <div className="admin-inventory-tabs line-estado-tabs" role="group" aria-label="Estado de la línea OEM">{LINE_TABS.map(item =>
@@ -240,7 +242,7 @@ function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditA
       {kind === 'catalog' && tab.key !== 'unificada' && <button type="button" className={`inventory-edit-toggle${editing ? ' selected' : ''}`} aria-pressed={editing} onClick={toggleEditing}><PencilLine size={15} aria-hidden="true"/>{editing ? 'Editando celdas' : 'Editar celdas'}</button>}
       <span className="inventory-count" aria-live="polite">{count === null ? <><LoaderCircle className="spin" size={13}/>Cargando…</> : `${count.toLocaleString('es-PA')} ${count === 1 ? 'resultado' : 'resultados'}`}</span>
     </div>
-    {kind === 'catalog' && editing && <p className="inventory-edit-hint">{options ? `Escribe sobre una celda punteada o haz doble clic; también puedes pegar desde Excel. Los cambios se guardan juntos al soltar, cada SKU con la versión que leíste, y las celdas que cambian destellan. Esc cancela, Ctrl+Z deshace. Doble clic en Referencias para agregar o retirar códigos; el SKU sigue a la referencia principal.${tab.key === 'catalogo' ? '' : ' El estado se cambia en el editor de la línea OEM.'}` : 'Cargando grupos y subgrupos…'}
+    {kind === 'catalog' && editing && <p className="inventory-edit-hint">{options ? `Escribe sobre una celda punteada o haz doble clic; también puedes pegar desde Excel. Los cambios se guardan juntos al soltar, cada SKU con la versión que leíste, y las celdas que cambian destellan. Esc cancela, Ctrl+Z deshace. Doble clic en Referencias para agregar o retirar códigos; el SKU sigue a la referencia principal.${estadoCells ? '' : ' El estado se cambia en el editor de la línea OEM.'}` : 'Cargando grupos y subgrupos…'}
       {cellStatus && cellStatus.kind !== 'error' && <span className={`inventory-edit-status ${cellStatus.kind}`} role="status">{cellStatus.text}</span>}</p>}
     {cellStatus?.kind === 'error' && <div className="notice error" role="alert">{cellStatus.text}<button type="button" onClick={() => setCellStatus(null)}>Cerrar</button></div>}
     {kind === 'catalog' ? <ServerGrid<OEMLine> storageKey="admin-lines" label="Inventario interno" path="/api/management/lines" params={params} columns={partColumns} rowId={line => line.id} ordering={catalogOrdering} revision={revision} rowHeight={64} context={actions} empty={empty} onCount={setCount}
