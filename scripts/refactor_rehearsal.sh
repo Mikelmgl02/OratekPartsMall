@@ -24,6 +24,11 @@
 # (output-refactor/snapshots/) and the CLI's manifest (output-refactor/<stage>/, which REFACTOR_OUTPUT also names) never land where a
 # live --rollback would read them.
 #
+# S10 has three land points (0086, 0087, then 0088 + 0089) with their own code each, and this script runs one code: with the tip it
+# rehearses the archive and its way back (--expand 0087_contract_step2 --tighten 0089_drop --cli mall.refactor.s10_archive, whose
+# --dry-run is --check, --apply the export and --rollback puts the exported values back once 0089 is reversed), not the land points
+# in order.
+#
 # Safety: every app command is a one-off container (docker compose run --rm --no-deps) with POSTGRES_DB set to the copy, whose name
 # must start with partsmall_rehearsal, and with the outside services blank (Spaces, Resend, Gemini, WhatsApp, web push, Redis). It never
 # touches the freeze file, the live database or the running containers. --print shows the commands without running any.
@@ -110,7 +115,10 @@ run() {  # run <command...>: or only print it with --print
 app_db() {  # app_db <database> <code dir in the container> <command...>: a one-off app container on a rehearsal database
     local db=$1 code=$2; shift 2
     [[ $db =~ $COPY_RE ]] || die "El ensayo solo usa bases partsmall_rehearsal…, no '$db'."
-    run "${COMPOSE[@]}" run --rm --no-deps -T -v "$HOST_MOUNT:/app/output/refactor" -e POSTGRES_DB="$db" -e REFACTOR_OUTPUT="$STAGE_OUT" \
+    # S9's outcomes, read only, where S10's archive reads them (mall.refactor.s10_archive.outcomes_path): the HOST_MOUNT mount hides
+    # the live output/refactor.
+    run "${COMPOSE[@]}" run --rm --no-deps -T -v "$HOST_MOUNT:/app/output/refactor" -v "$REPO/output/refactor/s9:/app/output/refactor/s9:ro" \
+        -e POSTGRES_DB="$db" -e REFACTOR_OUTPUT="$STAGE_OUT" \
         "${BLANK[@]}" "${NO_HTTP[@]}" -w "$code" app "$@"
 }
 
