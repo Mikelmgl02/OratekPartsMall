@@ -9,9 +9,10 @@
 # every OEMCrossReference row has its S9 outcome). A database whose tables are all empty (a new or test database) needs none.
 # First, the codes an open merge case of the merge pass (S9) waits on, filed under its lines' numbers, are copied into the case's
 # evidence (catalog_rows; 4,162 OEMCrossReference rows with outcome espera_grupo on 2026-10-15), so deciding it still makes them
-# References. 0087 recorded and dropped the foreign keys between these tables and the rest (any made since is recorded and dropped here
-# the same way, archive.s10_constraints). ALTER TABLE ... SET SCHEMA moves each table with its indexes and sequences. Reversing it moves
-# them back to public (0087's reverse makes the keys again).
+# References (evidence s10_rows names the rows it added). 0087 recorded and dropped the foreign keys between these tables and the rest
+# (any made since is recorded and dropped here the same way, archive.s10_constraints). ALTER TABLE ... SET SCHEMA moves each table with
+# its indexes and sequences. Reversing it takes the rows it added off the cases again and moves the tables back to public (0087's
+# reverse makes the keys again).
 import json
 import os
 from pathlib import Path
@@ -95,16 +96,36 @@ def keep_case_rows(apps, cursor):
                           ORDER BY x.id""", [lines, list(LIVE)])
         rows = evidence.get('catalog_rows') or []
         index = {(row[1], row[2], row[4]) for row in rows}
+        added = []
         for pk, ref_id, brand, code, number, citations in cursor.fetchall():
             if (ref_id, brand, number) not in index:
                 citations = json.loads(citations) if isinstance(citations, str) else (citations or [])
                 rows.append([f'x{pk}', ref_id, brand, code, number, citations])
                 index.add((ref_id, brand, number))
+                added.append(f'x{pk}')
                 kept += 1
-        if rows:
+        if added:  # s10_rows: what this migration added, so its reverse takes exactly those off again
             evidence['catalog_rows'] = rows
+            evidence['s10_rows'] = sorted(set(evidence.get('s10_rows') or []) | set(added))
             MatchingCase.objects.filter(pk=case.pk).update(evidence=evidence)
     return kept
+
+
+def drop_case_rows(apps):
+    """keep_case_rows undone: the rows it added (evidence s10_rows) leave each case's catalog_rows. Returns how many left."""
+    MatchingCase = apps.get_model('mall', 'MatchingCase')
+    dropped = 0
+    for case in MatchingCase.objects.filter(evidence__has_key='s10_rows').order_by('pk'):
+        evidence = dict(case.evidence or {})
+        added = set(evidence.pop('s10_rows') or [])
+        rows = [row for row in evidence.get('catalog_rows') or [] if row[0] not in added]
+        dropped += len(evidence.get('catalog_rows') or []) - len(rows)
+        if rows:
+            evidence['catalog_rows'] = rows
+        else:
+            evidence.pop('catalog_rows', None)
+        MatchingCase.objects.filter(pk=case.pk).update(evidence=evidence)
+    return dropped
 
 
 def archive(apps, schema_editor):
@@ -134,6 +155,7 @@ def archive(apps, schema_editor):
 
 
 def unarchive(apps, schema_editor):
+    drop_case_rows(apps)
     with schema_editor.connection.cursor() as cursor:
         for table in ARCHIVED:
             cursor.execute('SELECT to_regclass(%s) IS NOT NULL', [f'archive.{table}'])

@@ -943,7 +943,8 @@ def open_case(spec, *, item=None, status='review'):
     if spec['kind'] == 'merge' and case.fingerprint == fingerprint and 'codes' in fields['evidence']:
         known = list((case.evidence or {}).get('codes') or [])  # every code that brought these lines together, once each
         fields['evidence'] = {**fields['evidence'], 'codes': known + [row for row in fields['evidence']['codes'] if row not in known]}
-    for kept in ('catalog_rows', 's10'):  # the catalog rows a merge case waits on (mall.merge_pass.keep_case_rows), what 0086 converted
+    # The catalog rows a merge case waits on (mall.merge_pass.keep_case_rows) and which of them 0088 added (s10_rows), what 0086 converted.
+    for kept in ('catalog_rows', 's10_rows', 's10'):
         if kept in (case.evidence or {}) and kept not in fields['evidence']:
             fields['evidence'] = {**fields['evidence'], kept: case.evidence[kept]}
     if case.fingerprint != fingerprint:

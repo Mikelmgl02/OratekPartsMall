@@ -376,7 +376,56 @@ class KeepCaseRowsTests(TestCase):
         rows = case.evidence['catalog_rows']
         self.assertEqual([(row[1], row[2], row[3], row[4], row[5]) for row in rows], [(number.pk, 'BREMBO', 'D2220', '0446502220', ['BREMBO p. 9'])])
         self.assertTrue(rows[0][0].startswith('x'))
+        self.assertEqual(case.evidence['s10_rows'], [rows[0][0]])
         self.assertNotIn('catalog_rows', decided.evidence)
+
+    def test_the_reverse_takes_off_only_the_rows_0088_added(self):
+        unarchive('mall_oemcrossreference')
+        module = migration_module('0088_archive')
+        line = make_line('S10-KEEP-3')
+        number = make_reference(line, '04465-02240', brand='TOYOTA', tipo='oem')
+        sql("INSERT INTO mall_oemcrossreference (brand, code, number, citations, created_at, updated_at, ref_id) "
+            "VALUES ('BREMBO', 'D2240', '0446502240', '[]', now(), now(), %s)", [number.pk])
+        own = ['imp-1', number.pk, 'ATE', 'A2240', '0446502240', []]  # a row an import put there (mall.merge_pass.join_numbers)
+        case = MatchingCase.objects.create(key='merge:s10-keep-3', kind='merge', status='review', fingerprint='x', method='', reason='',
+                                           evidence={'regla': '3f', 'catalog_rows': [own]})
+        case.lines.add(line)
+        with connection.cursor() as cursor:
+            self.assertEqual(module.keep_case_rows(apps, cursor), 1)
+        self.assertEqual(module.drop_case_rows(apps), 1)
+        case.refresh_from_db()
+        self.assertEqual(case.evidence, {'regla': '3f', 'catalog_rows': [own]})
+
+
+class CaseConversionTests(TestCase):
+    """0086's convert_cases and its reverse (restore_cases) put a legacy case back as it was, its reason included."""
+
+    def test_a_converted_case_comes_back_as_it_was(self):
+        from types import SimpleNamespace
+        from .models import SupplierItem
+        from .test_factories import make_supplier
+        step1 = migration_module('0086_contract_step1')
+        for name in ('matching_case_valid_kind', 'matching_case_valid_status'):  # the legacy kinds, as before 0089
+            ddl(f'ALTER TABLE mall_matchingcase DROP CONSTRAINT {name}')
+        supplier = make_supplier('PROVEEDOR CASOS S10')
+        item = SupplierItem.objects.create(supplier=supplier, supplier_invent_id='s10-case-1', codigo='S10-CASE', brand='', source='upload')
+        MatchingCase.objects.filter(item=item).delete()
+        holder = MatchingCase.objects.create(key=f'line:{item.pk}', kind='line', status='review', fingerprint='x', method='', reason='',
+                                             item=item)
+        legacy = MatchingCase.objects.create(key='supplier:s10-case-1', kind='supplier', status='unmatched', fingerprint='x', method='m',
+                                             reason='Sin evidencia de código', item=item)
+        editor = SimpleNamespace(connection=connection)
+        step1.convert_cases(apps, editor)
+        legacy.refresh_from_db()
+        self.assertEqual((legacy.kind, legacy.status, legacy.key), ('line', 'dismissed', 'supplier:s10-case-1'))
+        self.assertTrue(legacy.reason.startswith('Ya hay un caso de línea para este artículo.'))
+        step1.restore_cases(apps, editor)
+        legacy.refresh_from_db()
+        holder.refresh_from_db()
+        self.assertEqual((legacy.kind, legacy.status, legacy.key, legacy.reason), ('supplier', 'unmatched', 'supplier:s10-case-1',
+                                                                                  'Sin evidencia de código'))
+        self.assertNotIn('s10', legacy.evidence)
+        self.assertEqual((holder.kind, holder.status), ('line', 'review'))
 
 
 class DropReverseTests(TestCase):
