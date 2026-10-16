@@ -286,6 +286,18 @@ class ManagementTests(APITestCase):
         self.assertEqual(self.client.delete(f'/api/v1/management/alternates/{main(line).pk}/').status_code, 404)
         self.assertEqual(self.client.delete(f'/api/v1/management/alternates/{alt.pk}/').status_code, 204)
 
+    def test_the_alternos_grid_sorts_a_brandless_code_where_a_blank_brand_was(self):
+        """S10: any brand is NULL in the database (0089); the grid keeps sorting it first, as '' sorted, and last when descending."""
+        line = make_line('GRID-2')
+        make_reference(line, 'GRID-B', brand='ACME')
+        make_reference(line, 'GRID-B')
+        make_reference(line, 'GRID-C', brand='ZETA')
+        url = '/api/v1/management/alternates/'
+        rows = lambda query='': [(row['code'], row['brand']) for row in self.client.get(url + query).data['results']]
+        self.assertEqual(rows(), [('GRID-B', ''), ('GRID-B', 'ACME'), ('GRID-C', 'ZETA')])
+        self.assertEqual(rows('?ordering=brand'), [('GRID-B', ''), ('GRID-B', 'ACME'), ('GRID-C', 'ZETA')])
+        self.assertEqual(rows('?ordering=-brand'), [('GRID-C', 'ZETA'), ('GRID-B', 'ACME'), ('GRID-B', '')])
+
 
 class AIRankingTests(TestCase):
     def test_ai_ranking_is_back_from_s6_for_line_and_merge_cases_only(self):

@@ -799,9 +799,11 @@ class AlternateList(SuperuserMixin, generics.ListCreateAPIView):
     filter_backends = [filters.SearchFilter, StableOrdering]
     search_fields = ['part__sku', 'part__description', 'code', 'brand']
     ordering_fields = ['part__sku', 'code', 'brand', 'ref_type']
-    ordering_aliases = {'ref_type': 'tipo'}  # the legacy column name of a Reference's tipo
+    # ref_type: the legacy column name of a Reference's tipo. brand: NULL for any brand from 0089 (S10), sorted where '' was (first).
+    ordering_aliases = {'ref_type': 'tipo', 'brand': F('brand')}
     # A line's main Reference is its SKU (S2b): it changes in Editar SKU, so the Alternos grid neither lists nor edits it.
-    queryset = Reference.objects.filter(is_main=False).select_related('part').prefetch_related('sources').order_by('part__sku', 'code', 'brand', 'id')
+    queryset = (Reference.objects.filter(is_main=False).select_related('part').prefetch_related('sources')
+                .order_by('part__sku', 'code', F('brand').asc(nulls_first=True), 'id'))
 
 
 class AlternateDetail(SuperuserMixin, generics.RetrieveUpdateDestroyAPIView):
