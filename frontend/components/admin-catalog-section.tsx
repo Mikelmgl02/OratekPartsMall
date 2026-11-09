@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import type { CellDoubleClickedEvent, CellValueChangedEvent, GridApi } from 'ag-grid-community';
-import { Boxes, BrainCircuit, Check, Combine, FileSpreadsheet, FileWarning, History, Layers3, LoaderCircle, PencilLine, Plus, Repeat2, Search, Sparkles, Tags, Ungroup, Warehouse } from 'lucide-react';
+import { Boxes, BrainCircuit, Check, Combine, FileSpreadsheet, FileWarning, History, Layers3, LoaderCircle, PencilLine, Plus, Repeat2, Search, Sparkles, Tags, Ungroup, Warehouse, X } from 'lucide-react';
 import { CatalogImportIssuePage, ManagedAlternate, ManagedPart, ManagedStockItem, Page, request } from '@/lib/types';
 import { asManagedPart, LINE_TABS, lineTipoLabels } from '@/lib/line-types';
 import type { LineTipo, OEMLine } from '@/lib/line-types';
@@ -24,6 +24,7 @@ import InventoryAssistant from './admin-inventory-assistant';
 import CatalogImages from './admin-catalog-images';
 import SmartMatching from './admin-smart-matching';
 import CatalogSuffixes from './admin-catalog-suffixes';
+import ClassificationLab from './admin-classification-lab';
 import AdminNewProducts from './admin-new-products';
 import AdminSupplierLedger from './admin-supplier-ledger';
 
@@ -32,6 +33,7 @@ const errorText = (error: unknown) => error instanceof Error ? error.message : '
 
 export default function AdminCatalogSection({ section }: { section: 'inventory' | 'alternates' }) {
   const [matchingOpen, setMatchingOpen] = useState(false);
+  const [classificationLine, setClassificationLine] = useState<OEMLine | null>(null);
   const [suffixesOpen, setSuffixesOpen] = useState(false);
   const [imagePart, setImagePart] = useState<ManagedPart | null>(null);
   const [mainLine, setMainLine] = useState<OEMLine | null>(null);  // Marcar referencia principal, from the grid's right click
@@ -95,7 +97,7 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
     {notice && <div className="notice success admin-notice" role="status"><Check size={16}/>{notice}</div>}
     {section === 'inventory' && ledgerView ? <AdminSupplierLedger/>
       : section === 'inventory' && newView ? <AdminNewProducts onCount={setNewCount} onChanged={reviewChanged}/>
-      : <Collection onTechnical={editTechnical} onImages={showImages} key={kind} kind={kind} revision={revision} onEditPart={editPart} onEditAlternate={setAlternateEditor} onEditMatch={setMatchEditor} onRemoveAlternate={setRemoveAlternate} onSplit={setSplitTarget} onMerge={mergeLines} onMain={setMainLine}/>}
+      : <Collection onClassify={setClassificationLine} onTechnical={editTechnical} onImages={showImages} key={kind} kind={kind} revision={revision} onEditPart={editPart} onEditAlternate={setAlternateEditor} onEditMatch={setMatchEditor} onRemoveAlternate={setRemoveAlternate} onSplit={setSplitTarget} onMerge={mergeLines} onMain={setMainLine}/>}
     <p className="admin-footnote">{ledgerView ? 'El libro muestra unidades, nunca precios: cada movimiento de existencias del proveedor (cotizaciones confirmadas y cargas) y lo que cada carga Excel, sincronización con apiag-cloud o actualización manual cambió en sus artículos.' : newView ? 'Cada propuesta reúne los artículos de proveedores con el mismo código y marca que no coinciden con ningún SKU. Nada llega al catálogo hasta que lo apruebes; un SKU aprobado se vincula con sus artículos y los de otros proveedores con el mismo código se vinculan solos en el siguiente análisis.' : kind === 'alternates' ? 'Los alternos de un SKU también aparecen en su editor de inventario interno. Cada artículo del proveedor mantiene su propio inventario e historial.' : kind === 'catalog' ? 'El SKU maestro no tiene marca. Sus referencias identifican piezas equivalentes; los artículos del proveedor conservan sus propios códigos y existencias.' : 'Los registros conservan el ID de inventario de cada proveedor y su vínculo con el SKU interno.'}</p>
     {matchingOpen && <SmartMatching onClose={()=>setMatchingOpen(false)} onSaved={()=>saved('Coincidencias actualizadas.')}/>}
     {suffixesOpen && <CatalogSuffixes onClose={()=>{ setSuffixesOpen(false); setRevision(value => value + 1); }}/>}
@@ -107,6 +109,7 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
     {issuesOpen && <ImportIssues onClose={() => { setIssuesOpen(false); setRevision(value => value + 1); }} onSaved={() => saved('Fila corregida y guardada en el inventario interno.')}/>}
     {splitTarget !== undefined && <CatalogSplit part={splitTarget} onClose={() => setSplitTarget(undefined)} onChanged={saved}/>}
     {mergeParts && <CatalogMergeWith key={mergeParts.map(part => part.id).join()} parts={mergeParts} onClose={() => setMergeParts(null)} onSaved={text => { setMergeParts(null); saved(text); }}/>}
+    {classificationLine && <ClassificationLab initialLine={classificationLine} onClose={() => setClassificationLine(null)} onChanged={reviewChanged}/>}
     {assistantOpen && <InventoryAssistant onClose={()=>setAssistantOpen(false)} onSaved={()=>saved('Clasificación de inventario actualizada desde el asistente IA.')}/>}
     {alternateEditor !== undefined && <AlternateEditor alternate={alternateEditor} onClose={() => setAlternateEditor(undefined)} onSaved={() => { setAlternateEditor(undefined); saved('Alterno guardado.'); }}/>}
     {matchEditor && <MatchEditor item={matchEditor} onClose={() => setMatchEditor(null)} onSaved={text => { setMatchEditor(null); saved(text || 'Coincidencia actualizada.'); }}/>}
@@ -116,11 +119,11 @@ export default function AdminCatalogSection({ section }: { section: 'inventory' 
 
 const ALL_ESTADOS = 'referencia,preparacion,publicada,rechazada,retirada,unificada';
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : 'No se pudo guardar el cambio.';
-type CollectionProps = { onTechnical: (line: OEMLine) => void; onImages: (line: OEMLine) => void; kind: Kind; revision: number; onEditPart: (line: OEMLine) => void;
+type CollectionProps = { onClassify: (line: OEMLine) => void; onTechnical: (line: OEMLine) => void; onImages: (line: OEMLine) => void; kind: Kind; revision: number; onEditPart: (line: OEMLine) => void;
   onEditAlternate: (alternate: ManagedAlternate) => void; onEditMatch: (item: ManagedStockItem) => void; onRemoveAlternate: (alternate: ManagedAlternate) => void;
   onSplit: (part: { id: string; sku: string }) => void; onMerge: (lines: OEMLine[]) => void; onMain: (line: OEMLine) => void };
 
-function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditAlternate, onEditMatch, onRemoveAlternate, onSplit, onMerge, onMain }: CollectionProps) {
+function Collection({ onClassify, onTechnical, onImages, kind, revision, onEditPart, onEditAlternate, onEditMatch, onRemoveAlternate, onSplit, onMerge, onMain }: CollectionProps) {
   const [tipoFilter, setTipoFilter] = useState('');
   // The OEM lines by estado (plan S8.2): Publicadas first; ?estado= deep-links a tab.
   const [estadoTab, setEstadoTab] = useState(LINE_TABS[0].key);
@@ -141,6 +144,7 @@ function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditA
     window.history.replaceState(window.history.state, '', url);
   }
   const [search, setSearch] = useState(''); const [query, setQuery] = useState('');
+  const searchInput = useRef<HTMLInputElement>(null);
   const [count, setCount] = useState<number | null>(null);
   // Columns pin to the sides only where there is room for them next to the scrolling middle.
   const [wide] = useState(() => typeof window === 'undefined' || window.innerWidth >= 900);
@@ -183,8 +187,8 @@ function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditA
   useEffect(() => { const timer = setTimeout(() => setQuery(search.trim()), 300); return () => clearTimeout(timer); }, [search]);
   useEffect(() => { if (editing && gruposError) { setEditing(false); setCellStatus({ kind: 'error', text: gruposError }); } }, [editing, gruposError, setCellStatus]);
   const onCodesChanged = useCallback((lineId: string) => { refreshRows([lineId]).catch(error => setCellStatus({ kind: 'error', text: errorText(error) })); }, [refreshRows, setCellStatus]);
-  const actions = useMemo<CatalogGridActions>(() => ({ onEditPart, onTechnical, onImages, onEditAlternate, onRemoveAlternate, onEditMatch, onCodesChanged, onSplit, onMerge, onMain }),
-    [onEditPart, onTechnical, onImages, onEditAlternate, onRemoveAlternate, onEditMatch, onCodesChanged, onSplit, onMerge, onMain]);
+  const actions = useMemo<CatalogGridActions>(() => ({ onClassify, onEditPart, onTechnical, onImages, onEditAlternate, onRemoveAlternate, onEditMatch, onCodesChanged, onSplit, onMerge, onMain }),
+    [onClassify, onEditPart, onTechnical, onImages, onEditAlternate, onRemoveAlternate, onEditMatch, onCodesChanged, onSplit, onMerge, onMain]);
   const params = useMemo<Record<string, string>>(() => (kind === 'catalog' ? { search: query, estado: tab.estado, tipo: tipoFilter } : { search: query }) as Record<string, string>, [query, tipoFilter, kind, tab.estado]);
   const subgroupOf = useCallback((label: string) => { const option = options?.find(row => row.label === label); return option ? { grupo: option.grupo, subgrupo: { id: option.id, name: option.name } } : null; }, [options]);
   const edit = useMemo(() => editing && options ? { subgroups: options.map(option => option.label), subgroupOf, isSaving, estados: estadoCells } : null,
@@ -237,7 +241,7 @@ function Collection({ onTechnical, onImages, kind, revision, onEditPart, onEditA
     {kind === 'catalog' && <div className="admin-inventory-tabs line-estado-tabs" role="group" aria-label="Estado de la línea OEM">{LINE_TABS.map(item =>
       <button key={item.key} type="button" className={item.key === tab.key ? 'selected' : ''} aria-pressed={item.key === tab.key} onClick={() => showTab(item.key)}>{item.label}</button>)}</div>}
     <div className="inventory-filters">
-      <div className="catalog-search admin-search"><Search size={19}/><label className="sr-only" htmlFor="catalog-admin-search">{label}</label><UppercaseInput id="catalog-admin-search" value={search} onChange={event => setSearch(event.target.value)} placeholder={kind === 'catalog' ? 'SKU, nombre o código de referencia…' : kind === 'inventory' ? 'Proveedor, marca o código del repuesto…' : 'SKU interno, código alterno o marca…'}/></div>
+      <div className="catalog-search admin-search"><Search size={19}/><label className="sr-only" htmlFor="catalog-admin-search">{label}</label><UppercaseInput id="catalog-admin-search" ref={searchInput} style={{ minWidth: 0 }} value={search} onChange={event => setSearch(event.target.value)} placeholder={kind === 'catalog' ? 'SKU, nombre o código de referencia…' : kind === 'inventory' ? 'Proveedor, marca o código del repuesto…' : 'SKU interno, código alterno o marca…'}/>{search && <button type="button" className="icon-button" aria-label="Limpiar búsqueda de inventario" onClick={() => { setSearch(''); setQuery(''); searchInput.current?.focus(); }}><X size={16} aria-hidden="true"/></button>}</div>
       {kind === 'catalog' && <label className="inventory-filter-select"><span>Tipo</span><select aria-label="Tipo de línea OEM" value={tipoFilter} onChange={event => setTipoFilter(event.target.value)}><option value="">TODOS</option>{(Object.keys(lineTipoLabels) as LineTipo[]).map(value => <option key={value} value={value}>{lineTipoLabels[value]}</option>)}</select></label>}
       {kind === 'catalog' && tab.key !== 'unificada' && <button type="button" className={`inventory-edit-toggle${editing ? ' selected' : ''}`} aria-pressed={editing} onClick={toggleEditing}><PencilLine size={15} aria-hidden="true"/>{editing ? 'Editando celdas' : 'Editar celdas'}</button>}
       <span className="inventory-count" aria-live="polite">{count === null ? <><LoaderCircle className="spin" size={13}/>Cargando…</> : `${count.toLocaleString('es-PA')} ${count === 1 ? 'resultado' : 'resultados'}`}</span>

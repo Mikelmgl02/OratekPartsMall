@@ -1,7 +1,7 @@
 'use client';
 import type { ColDef, DefaultMenuItem, GetContextMenuItemsParams, GridApi, MenuItemDef, SuppressKeyboardEventParams } from 'ag-grid-community';
 import type { CustomCellRendererProps } from 'ag-grid-react';
-import { Images, Pencil, SearchCheck, Trash2, Ungroup, Wrench } from 'lucide-react';
+import { Sparkles, Images, Pencil, SearchCheck, Trash2, Ungroup, Wrench } from 'lucide-react';
 import { referenceClass, referenceLabel } from '@/lib/reference-label';
 import type { ManagedAlternate, ManagedPart, ManagedStockItem } from '@/lib/types';
 import { lineEstadoLabels, lineText, lineTipoLabels, referenceEstadoLabels, subgrupoLabel } from '@/lib/line-types';
@@ -9,6 +9,7 @@ import type { LineCode, LineEstado, OEMLine } from '@/lib/line-types';
 import CodesEditor from './admin-codes-editor';
 
 export type CatalogGridActions = {
+  onClassify: (line: OEMLine) => void;
   onEditPart: (line: OEMLine) => void; onTechnical: (line: OEMLine) => void; onImages: (line: OEMLine) => void;
   onEditAlternate: (alternate: ManagedAlternate) => void; onRemoveAlternate: (alternate: ManagedAlternate) => void; onEditMatch: (item: ManagedStockItem) => void;
   onCodesChanged: (lineId: string) => void; onSplit: (target: { id: string; sku: string }) => void; onMerge: (lines: OEMLine[]) => void;
@@ -50,8 +51,15 @@ function SkuCell({ data, context }: Cell<OEMLine>) {
       onClick={() => context.onSplit({ id: data.id, sku: data.sku })}><Ungroup size={11} aria-hidden="true"/>{merged}</button>}</div>
     <span className={`sku-identity ${data.tipo === 'OEM' ? 'oem' : 'internal'}`}>{lineIdentity(data)}</span></div>;
 }
-function TipoCell({ data }: Cell<OEMLine>) {
-  return data ? <div className="admin-grid-stack"><span className={`sku-identity ${data.tipo === 'OEM' ? 'oem' : 'internal'}`}>{lineTipoLabels[data.tipo] ?? data.tipo}</span></div> : null;
+function TipoCell({ data, context }: Cell<OEMLine>) {
+  if (!data) return null;
+  return <div className="admin-grid-stack"><div className="classification-type-label">
+    <span className={`sku-identity ${data.tipo === 'OEM' ? 'oem' : 'internal'}`}>{lineTipoLabels[data.tipo] ?? data.tipo}</span>
+    {(data.tipo === 'UNKNOWN' || data.tipo === 'AFTERMARKET') && <button type="button" className="icon-button classification-ai-action" aria-label={`Clasificar con IA ${data.sku}`} title="Clasificar con IA"
+      onPointerDown={event => event.stopPropagation()} onMouseDown={event => event.stopPropagation()} onDoubleClick={event => event.stopPropagation()}
+      onKeyDown={event => { if (event.key !== 'Tab') event.stopPropagation(); }}
+      onClick={event => { event.stopPropagation(); context.onClassify(data); }}><Sparkles size={15} aria-hidden="true"/></button>}
+  </div></div>;
 }
 function chip(code: LineCode) {
   return <span key={code.id} className={`${referenceClass(code)}${code.estado === 'disputa' ? ' disputa' : ''}`}
@@ -129,7 +137,14 @@ export function catalogColumns(wide: boolean, edit: CatalogEdit | null = null): 
   const title = (text: string) => editing ? `${text} ✎` : text;
   return [
     { colId: 'sku', headerName: 'SKU interno', width: 214, minWidth: 170, pinned: wide ? 'left' : undefined, cellRenderer: SkuCell, tooltipValueGetter: ({ data }) => data?.sku },
-    { colId: 'tipo', headerName: 'Tipo', width: 132, cellRenderer: TipoCell, valueGetter: ({ data }) => data ? lineTipoLabels[data.tipo] ?? data.tipo : '' },
+    { colId: 'tipo', headerName: 'Tipo', width: 190, minWidth: 180, cellClass: 'classification-type-cell', cellRenderer: TipoCell,
+      cellRendererParams: { suppressMouseEventHandling: () => true },
+      suppressKeyboardEvent: ({ data, event, context }) => {
+        if ((data?.tipo === 'UNKNOWN' || data?.tipo === 'AFTERMARKET') && (event.key === 'Enter' || event.key === ' ')) {
+          event.preventDefault(); context.onClassify(data); return true;
+        }
+        return false;
+      }, valueGetter: ({ data }) => data ? lineTipoLabels[data.tipo] ?? data.tipo : '' },
     { colId: 'brand', headerName: 'Marca', width: 140, valueGetter: ({ data }) => data?.brand || '—', cellClass: 'admin-grid-text', tooltipValueGetter: ({ data }) => data?.brand || 'Sin marca' },
     { colId: 'description', headerName: title('Descripción'), field: 'description', valueFormatter: ({ data }) => data ? lineText(data) : '', flex: 1.2, minWidth: 200, cellClass: 'admin-grid-text',
       cellClassRules: cue, tooltipValueGetter: ({ data }) => data ? lineText(data) : '', editable, cellEditor: 'agTextCellEditor', cellDataType: false },

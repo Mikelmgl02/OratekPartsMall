@@ -113,7 +113,7 @@ class OEMIdentityTests(APITestCase):
         self.assertEqual(self.client.patch(self.url, {'main_reference': {'code':'X','brand':'Y'}}, format='json').status_code, 403)
 
     def grounded(self, relationship='equivalent'):
-        return ({'references':[{'code':'43460-TEST','brand':'TOYOTA','relationship':relationship,'source_url':'https://example.com/part','reason':'REF EN FICHA'}], 'note':'REVISAR'},
+        return ({'references':[{'code':'43460-TEST','brand':'TOYOTA','relationship':relationship,'source_url':'https://example.com/part','reason':'REF EN FICHA', 'comparison': {'basis': {'equivalent':'same_part','component':'larger_assembly','uncertain':'insufficient'}[relationship], 'source_item':'KIT DE FUELLE' if relationship == 'equivalent' else 'ROTULA', 'oem_item':'KIT DE FUELLE' if relationship == 'equivalent' else 'BRAZO COMPLETO', 'marker':'none', 'details':'Comparación individual documentada de las unidades vendidas.', 'oem_source_url':'https://example.com/part'}}], 'note':'REVISAR'},
                 {'total_tokens':100}, {'groundingChunks':[{'web':{'uri':'https://example.com/part','title':'Fabricante'}}]})
 
     def research_responses(self, relationship='equivalent'):

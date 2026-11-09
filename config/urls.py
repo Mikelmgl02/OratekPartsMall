@@ -30,6 +30,7 @@ from mall.catalog_import_issues import CatalogImportIssueList, CatalogImportIssu
 from mall.catalog_grouping import CatalogGroupingMerge
 from mall.catalog_split import CatalogMergedList, CatalogSplitView
 from mall.oem_lookup import CatalogOEMLookup
+from mall.oem_classification import OEMClassification
 from mall.catalog_suffix_views import CompanySuffixes, SuffixDetail, SuffixList
 from mall.oem_reference_views import PartOEMEquivalents
 from mall.catalog_media import CatalogImages, CatalogImageDetail, CatalogImageOrder
@@ -104,6 +105,7 @@ urlpatterns = [
     path('api/v1/management/lines/<uuid:pk>/transition/', LineTransition.as_view()),
     path('api/v1/management/lines/<uuid:pk>/references/', LineReferences.as_view()),
     path('api/v1/management/lines/<uuid:pk>/main/', LineMain.as_view()),
+    path('api/v1/management/lines/<uuid:pk>/oem-classification/', OEMClassification.as_view()),
     path('api/v1/management/references/<int:pk>/', ReferenceDetail.as_view()),
     path('api/v1/management/cases/', CaseList.as_view()),
     path('api/v1/management/cases/batches/', CaseBatchIndex.as_view()),

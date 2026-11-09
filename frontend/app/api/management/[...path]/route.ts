@@ -16,7 +16,7 @@ async function handle(request: NextRequest, context: Context) {
   // The inventory refactor's S7 routes (mall/line_views.py, case_views.py, brand_views.py), read and written by S8's screens.
   const s7 = {
     GET: `lines|lines/${uuid}|lines/${uuid}/references|lines/${uuid}/main|cases|cases/${uuid}|cases/batches|cases/batches/${batch}|merges|brands|brands/[0-9]+|grupos|grupos/${uuid}`,
-    POST: `lines/${uuid}/transition|lines/${uuid}/references|lines/${uuid}/main|cases/${uuid}|cases/batches/${batch}|brands|brands/[0-9]+/aliases|grupos|inventory/${uuid}/separate`,
+    POST: `lines/${uuid}/oem-classification|lines/${uuid}/transition|lines/${uuid}/references|lines/${uuid}/main|cases/${uuid}|cases/batches/${batch}|brands|brands/[0-9]+/aliases|grupos|inventory/${uuid}/separate`,
     PATCH: `lines/${uuid}|references/[0-9]+|brands/[0-9]+|grupos/${uuid}`,
     DELETE: `references/[0-9]+|brands/[0-9]+/aliases/[0-9]+`,
   };

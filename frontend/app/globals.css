@@ -3232,3 +3232,77 @@ a.inventory-tool { text-decoration:none; }
 .subgrupo-list li small { color:var(--muted); font-size:11px; }
 @media(max-width:600px) { .matching-batches li { flex-direction:column; align-items:flex-start; } .matching-cases .matching-route { margin-left:0; } .brand-alias-add { flex-direction:column; align-items:stretch; } }
 .offer-variant-facts { margin:4px 0 0; color:#6f7c64; font-size:10px; font-weight:600; letter-spacing:.02em; overflow-wrap:anywhere; }
+
+.classification-search-field { position:relative; }
+.classification-search-field input { padding-right:44px; }
+.classification-search-field .icon-button { position:absolute; right:5px; top:50%; transform:translateY(-50%); }
+
+.classification-type-label { display:flex; align-items:center; gap:6px; width:100%; }
+.classification-ai-action { width:28px; height:28px; margin-left:auto; color:#4b6a29; background:#edf4e5; opacity:0; pointer-events:none; }
+.classification-type-cell:hover .classification-ai-action,
+.classification-type-cell:focus-within .classification-ai-action { opacity:1; pointer-events:auto; }
+@media (hover:none), (pointer:coarse), (max-width:700px) {
+  .classification-ai-action { opacity:1; pointer-events:auto; }
+}
+
+.modal.classification-modal { width:min(1180px,calc(100vw - 32px)); max-width:1180px; }
+.classification-change { margin-bottom:18px; font-size:12px; }
+.classification-change > summary { cursor:pointer; color:#526d3d; margin-bottom:12px; }
+.classification-workbench { display:flex; flex-direction:column; gap:18px; }
+.classification-research { border:1px solid #dde5d5; border-radius:12px; padding:16px; display:flex; flex-direction:column; gap:12px; margin:0; min-width:0; }
+.classification-research legend { font-weight:700; font-size:12px; padding:0 6px; }
+.classification-research small { color:#708068; font-size:11px; }
+.classification-columns,.classification-summary { display:grid; grid-template-columns:minmax(0,1.2fr) minmax(0,1fr); gap:18px; }
+.classification-pane { min-width:0; padding:20px; border:1px solid #dae4d0; border-radius:14px; background:#f7faf4; display:flex; flex-direction:column; gap:14px; }
+.classification-aftermarket { background:#f8f8f5; border-color:#e2e2d9; }
+.classification-pane header { border-bottom:1px solid #dde5d7; padding-bottom:12px; }
+.classification-pane h3 { font-size:20px; margin:4px 0 6px; }
+.classification-pane p { margin:5px 0; font-size:12px; line-height:1.6; }
+.classification-kicker { font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:#6e8061; }
+.classification-card { min-width:0; padding:15px; border:1px solid #dfe5d7; border-radius:10px; background:white; display:flex; flex-direction:column; align-items:flex-start; gap:9px; overflow-wrap:anywhere; }
+.classification-card.selected { border-color:#85a85a; box-shadow:0 0 0 1px #85a85a; }
+.classification-card strong,.classification-summary strong { font-size:13px; }
+.classification-card small { font-size:10px; color:#6b7963; }
+.classification-card a,.classification-summary a { font-size:11px; text-decoration:underline; color:#416929; }
+.stack-form .classification-pick { display:flex; flex-direction:row; align-items:center; gap:9px; font-size:12px; color:var(--ink); width:100%; }
+.stack-form .classification-pick input { width:16px; height:16px; padding:0; flex-shrink:0; accent-color:#577a33; }
+.classification-main { background:#e7f0db; border-left:3px solid #6e934a; padding:14px; display:flex; flex-direction:column; gap:7px; font-size:12px; }
+.classification-main small,.classification-results-heading small { font-size:10px; color:#657956; }
+.classification-results-heading { display:flex; flex-direction:column; gap:5px; font-size:12px; }
+.classification-registered { background:#f0f5e9; padding:10px; width:100%; border-radius:6px; }
+.classification-pane .classification-empty { color:#7b8573; border:1px dashed #d4deca; border-radius:8px; padding:16px; }
+.classification-review-bar { display:flex; align-items:center; justify-content:space-between; gap:14px; background:#f0f4e9; border-radius:12px; padding:16px; font-size:12px; }
+.classification-review-bar > span { display:flex; flex-direction:column; gap:6px; }
+.classification-final-review { border:1px solid #91ad70; padding:20px; border-radius:14px; background:#fff; }
+.classification-final-review h3 { margin:0; }
+.classification-summary > div { background:#f6f8f2; border-radius:9px; padding:15px; display:flex; flex-direction:column; gap:9px; min-width:0; overflow-wrap:anywhere; }
+.classification-summary small { font-size:10px; color:#6b7e5b; }
+.classification-summary p { font-size:12px; margin:0; }
+.classification-summary ul { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:12px; }
+.classification-summary li { display:flex; flex-direction:column; gap:5px; font-size:11px; }
+@media(max-width:700px) {
+  .classification-columns,.classification-summary { grid-template-columns:minmax(0,1fr); }
+  .classification-pane,.classification-final-review { padding:14px; }
+  .classification-review-bar { align-items:stretch; flex-direction:column; }
+}
+
+.classification-reference-table { min-width:0; border-collapse:collapse; width:100%; table-layout:fixed; background:#fff; font-size:11px; border:1px solid #dce3d4; }
+.classification-reference-table th { text-align:left; background:#edf2e6; color:#58694c; padding:10px 8px; font-size:10px; border-bottom:1px solid #d4deca; }
+.classification-aftermarket .classification-reference-table th { background:#efefea; }
+.classification-reference-table td { vertical-align:top; padding:12px 8px; border-bottom:1px solid #e1e7db; overflow-wrap:anywhere; }
+.classification-reference-table td strong { font-size:11px; }
+.classification-reference-table td small { display:block; font-size:10px; line-height:1.5; color:#6b7963; margin-top:5px; }
+.classification-reference-table td a,.classification-reference-table summary { font-size:10px; color:#416929; cursor:pointer; }
+.classification-reference-table .classification-check-col { width:54px; }
+.classification-reference-table tr.selected { background:#f2f8e9; }
+.classification-reference-table tr.classification-preserved { background:#e7f0da; }
+.stack-form .classification-reference-table .classification-select { width:16px; height:16px; padding:0; accent-color:#577a33; }
+.classification-reference-table .classification-registered { padding:7px; margin-top:8px; }
+.classification-reference-table .classification-pick { align-items:flex-start; font-size:10px; }
+@media(max-width:700px) {
+  .classification-reference-table th,.classification-reference-table td { padding:8px 5px; }
+  .classification-reference-table .classification-check-col { width:48px; }
+  .classification-pane { padding:10px; }
+}
+
+.modal.classification-modal .classification-reference-table { min-width:0; white-space:normal; }
